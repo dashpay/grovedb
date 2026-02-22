@@ -3,7 +3,8 @@ use proptest::prelude::*;
 use rand::{Rng, seq::SliceRandom, thread_rng};
 
 use crate::{
-    Error, MMR, MmrNode, helper::pos_height_in_tree, leaf_index_to_mmr_size, mem_store::MemStore,
+    Error, MMR, MMRStoreReadOps, MerkleProof, MmrNode, MmrTreeProof, helper::pos_height_in_tree,
+    leaf_index_to_mmr_size, mem_store::MemStore,
 };
 
 /// Create an MmrNode leaf from an integer (for test convenience).
@@ -174,7 +175,7 @@ fn test_invalid_proof_verification(
         .map(|pos| {
             (
                 *pos,
-                mmr.batch()
+                mmr.batch
                     .element_at_position(*pos)
                     .unwrap()
                     .expect("read")
@@ -194,11 +195,11 @@ fn test_invalid_proof_verification(
     let handrolled_proof: Option<crate::MerkleProof> =
         handrolled_proof_positions.map(|handrolled_proof_positions| {
             crate::MerkleProof::new(
-                mmr.mmr_size(),
+                mmr.mmr_size,
                 handrolled_proof_positions
                     .iter()
                     .map(|pos| {
-                        mmr.batch()
+                        mmr.batch
                             .element_at_position(*pos)
                             .unwrap()
                             .expect("read")
@@ -273,7 +274,7 @@ fn test_batch_cache_hit_returns_nonzero_cost() {
     let pos = mmr.push(leaf).unwrap().expect("push should succeed");
 
     // Before commit, read from the batch (cache hit)
-    let cost_result = mmr.batch().element_at_position(pos);
+    let cost_result = mmr.batch.element_at_position(pos);
     let cost = cost_result.cost;
     let elem = cost_result.value.expect("element should exist");
     assert!(elem.is_some(), "element should be found in batch");
@@ -345,6 +346,252 @@ fn test_get_root_cost_reflects_peak_reads() {
     assert!(
         root_cost.storage_loaded_bytes > 0,
         "get_root should report non-zero loaded bytes"
+    );
+}
+
+/// MmrTreeProof generate → verify round-trip for standard leaves.
+#[test]
+fn test_mmr_tree_proof_standard_leaf_verify_succeeds() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+
+    // Push standard leaves — leaf_hash(value) matches the stored hash
+    for i in 0u32..5 {
+        mmr.push(MmrNode::leaf(i.to_le_bytes().to_vec()))
+            .unwrap()
+            .expect("push should succeed");
+    }
+    mmr.commit().unwrap().expect("commit should succeed");
+
+    let mmr_size = mmr.mmr_size;
+    let root = mmr.get_root().unwrap().expect("get root should succeed");
+
+    let get_node = |pos: u64| -> crate::Result<Option<MmrNode>> {
+        (&store)
+            .element_at_position(pos)
+            .value
+            .map_err(|e| crate::Error::StoreError(format!("{}", e)))
+    };
+
+    let proof =
+        MmrTreeProof::generate(mmr_size, &[0, 2, 4], get_node).expect("generate should succeed");
+
+    let verified = proof
+        .verify(&root.hash())
+        .expect("verify should succeed for standard leaves");
+
+    assert_eq!(verified.len(), 3, "should return 3 verified leaves");
+    assert_eq!(verified[0].0, 0, "first leaf index should be 0");
+    assert_eq!(verified[1].0, 2, "second leaf index should be 2");
+    assert_eq!(verified[2].0, 4, "third leaf index should be 4");
+}
+
+/// Single-element MMR: get_root returns the leaf itself (mmr_size == 1 fast
+/// path).
+#[test]
+fn test_single_element_mmr_root() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    let leaf = MmrNode::leaf(b"only leaf".to_vec());
+    let expected_hash = leaf.hash();
+    mmr.push(leaf).unwrap().expect("push should succeed");
+
+    let root = mmr.get_root().unwrap().expect("get_root should succeed");
+    assert_eq!(
+        root.hash(),
+        expected_hash,
+        "single-element MMR root should equal the leaf hash"
+    );
+}
+
+/// gen_proof rejects an empty positions list.
+#[test]
+fn test_gen_proof_empty_positions() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    mmr.push(MmrNode::leaf(b"leaf".to_vec()))
+        .unwrap()
+        .expect("push should succeed");
+
+    assert!(
+        matches!(
+            mmr.gen_proof(vec![]).unwrap(),
+            Err(Error::GenProofForInvalidLeaves)
+        ),
+        "should reject empty positions"
+    );
+}
+
+/// gen_proof rejects internal (non-leaf) node positions.
+#[test]
+fn test_gen_proof_rejects_internal_positions() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    for i in 0u32..4 {
+        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+    }
+    // Position 2 is an internal node (height 1, merge of pos 0 and 1)
+    assert!(
+        matches!(
+            mmr.gen_proof(vec![2]).unwrap(),
+            Err(Error::NodeProofsNotSupported)
+        ),
+        "should reject internal node positions"
+    );
+}
+
+/// gen_proof rejects leaf positions that are beyond the MMR range.
+#[test]
+fn test_gen_proof_out_of_range_leaf_positions() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    for i in 0u32..4 {
+        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+    }
+    // mmr_size = 7. Position 7 is a leaf position (height 0) but beyond range.
+    assert!(
+        matches!(
+            mmr.gen_proof(vec![7]).unwrap(),
+            Err(Error::GenProofForInvalidLeaves)
+        ),
+        "should reject leaf positions beyond MMR range"
+    );
+}
+
+/// When proved leaves are only in the first peak, trailing peaks are bagged
+/// together. This exercises the bagging_track > 1 path in gen_proof.
+#[test]
+fn test_gen_proof_bags_trailing_peaks() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    // 11 leaves → mmr_size=19, 3 peaks at positions [14, 17, 18]
+    let positions: Vec<u64> = (0u32..11)
+        .map(|i| mmr.push(leaf_from_u32(i)).unwrap().expect("push"))
+        .collect();
+    let root = mmr.get_root().unwrap().expect("get_root");
+
+    // Prove only leaf 0 (under peak 14). Peaks 17, 18 have no proved leaves
+    // → bagging_track = 2 → triggers bag_peaks of the trailing peaks.
+    let proof = mmr
+        .gen_proof(vec![positions[0]])
+        .unwrap()
+        .expect("gen_proof should succeed");
+    let valid = proof
+        .verify(root, vec![(positions[0], leaf_from_u32(0))])
+        .expect("verify should succeed");
+    assert!(
+        valid,
+        "proof with bagged trailing peaks should verify correctly"
+    );
+}
+
+/// calculate_root_with_new_leaf: adding a leaf that doesn't trigger merges
+/// (else branch). With 8 leaves (perfect binary tree), adding leaf 8 creates a
+/// new standalone peak.
+#[test]
+fn test_gen_root_from_proof_no_merge_on_new_leaf() {
+    test_gen_new_root_from_proof(8);
+}
+
+/// verify_incremental: extend an MMR and verify the old root + incremental
+/// leaves.
+#[test]
+fn test_verify_incremental_success() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+
+    // Build initial MMR with 4 leaves → single peak at position 6
+    for i in 0u32..4 {
+        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+    }
+    let prev_root = mmr.get_root().unwrap().expect("prev root");
+    let peak_node = mmr
+        .batch
+        .element_at_position(6)
+        .unwrap()
+        .expect("read peak")
+        .expect("peak exists");
+
+    // Add 3 more incremental leaves
+    let incremental_leaves: Vec<MmrNode> = (4u32..7).map(leaf_from_u32).collect();
+    for leaf in &incremental_leaves {
+        mmr.push(leaf.clone()).unwrap().expect("push incremental");
+    }
+    let current_root = mmr.get_root().unwrap().expect("current root");
+
+    // Proof items = previous peak hashes (just [peak at 6])
+    let proof = MerkleProof::new(mmr.mmr_size, vec![peak_node]);
+
+    let valid = proof
+        .verify_incremental(current_root, prev_root, incremental_leaves)
+        .expect("verify_incremental should not error");
+    assert!(valid, "incremental verification should succeed");
+}
+
+/// verify_incremental returns false when the previous root doesn't match.
+#[test]
+fn test_verify_incremental_wrong_prev_root() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+
+    for i in 0u32..4 {
+        mmr.push(leaf_from_u32(i)).unwrap().expect("push");
+    }
+    let peak_node = mmr
+        .batch
+        .element_at_position(6)
+        .unwrap()
+        .expect("read peak")
+        .expect("peak exists");
+
+    let incremental_leaves: Vec<MmrNode> = (4u32..7).map(leaf_from_u32).collect();
+    for leaf in &incremental_leaves {
+        mmr.push(leaf.clone()).unwrap().expect("push incremental");
+    }
+    let current_root = mmr.get_root().unwrap().expect("current root");
+
+    let proof = MerkleProof::new(mmr.mmr_size, vec![peak_node]);
+    let wrong_prev = MmrNode::internal([0xFFu8; 32]);
+
+    let valid = proof
+        .verify_incremental(current_root, wrong_prev, incremental_leaves)
+        .expect("should not error, just return false");
+    assert!(!valid, "should return false when prev_root doesn't match");
+}
+
+/// verify_incremental rejects when incremental count >= current leaf count.
+#[test]
+fn test_verify_incremental_too_many_incremental() {
+    // mmr_size=7 → 4 leaves. 4 incremental leaves >= 4 → error.
+    let proof = MerkleProof::new(7, vec![]);
+    let incremental: Vec<MmrNode> = (0..4).map(leaf_from_u32).collect();
+    let result = proof.verify_incremental(
+        MmrNode::internal([1u8; 32]),
+        MmrNode::internal([2u8; 32]),
+        incremental,
+    );
+    assert!(
+        result.is_err(),
+        "should reject when incremental count >= current leaf count"
+    );
+}
+
+/// verify_incremental rejects when proof item count doesn't match previous peak
+/// count.
+#[test]
+fn test_verify_incremental_proof_count_mismatch() {
+    // Current: 7 leaves (mmr_size=11). Incremental: 1 leaf.
+    // Previous: 6 leaves → mmr_size=10 → peaks at [6, 9] → 2 peaks.
+    // But proof has only 1 item → mismatch.
+    let proof = MerkleProof::new(11, vec![MmrNode::internal([1u8; 32])]);
+    let result = proof.verify_incremental(
+        MmrNode::internal([1u8; 32]),
+        MmrNode::internal([2u8; 32]),
+        vec![leaf_from_u32(0)],
+    );
+    assert!(
+        result.is_err(),
+        "should reject when proof item count doesn't match previous peak count"
     );
 }
 

@@ -29,7 +29,7 @@ lazy_static! {
         (0u32..100_000)
             .map(|i| {
                 mmr.push(leaf_from_u32(i)).unwrap().expect("push");
-                mmr.mmr_size()
+                mmr.mmr_size
             })
             .collect()
     };

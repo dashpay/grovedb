@@ -15,7 +15,7 @@ pub struct MMRBatch<Store> {
 
 impl<Store> MMRBatch<Store> {
     /// Create a new batch wrapping the given store.
-    pub fn new(store: Store) -> Self {
+    pub(crate) fn new(store: Store) -> Self {
         MMRBatch {
             memory_batch: Vec::new(),
             store,
@@ -23,7 +23,7 @@ impl<Store> MMRBatch<Store> {
     }
 
     /// Buffer a contiguous run of elements starting at `pos`.
-    pub fn append(&mut self, pos: u64, elems: Vec<MmrNode>) {
+    pub(crate) fn append(&mut self, pos: u64, elems: Vec<MmrNode>) {
         self.memory_batch.push((pos, elems));
     }
 
@@ -60,7 +60,7 @@ impl<Store: MMRStoreReadOps> MMRBatch<Store> {
 
 impl<Store: MMRStoreWriteOps> MMRBatch<Store> {
     /// Flush all buffered elements to the underlying store.
-    pub fn commit(&mut self) -> CostResult<(), Error> {
+    pub(crate) fn commit(&mut self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         for (pos, elems) in self.memory_batch.drain(..) {
             let result = self.store.append(pos, elems).unwrap_add_cost(&mut cost);

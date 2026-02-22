@@ -1,10 +1,20 @@
 /// Convert a 0-based leaf index to its MMR position.
+///
+/// # Safety (arithmetic)
+///
+/// Overflows when `index >= 2^63 - 1`. Callers must validate indices
+/// before calling (e.g. check `index < mmr_size_to_leaf_count(mmr_size)`).
 pub fn leaf_index_to_pos(index: u64) -> u64 {
     // mmr_size - H - 1, H is the height(intervals) of last peak
     leaf_index_to_mmr_size(index) - (index + 1).trailing_zeros() as u64 - 1
 }
 
 /// Compute the MMR size after inserting `index + 1` leaves.
+///
+/// # Safety (arithmetic)
+///
+/// Overflows when `index >= 2^63 - 1` because `2 * leaves_count` exceeds
+/// `u64::MAX`. Callers must validate indices before calling.
 pub fn leaf_index_to_mmr_size(index: u64) -> u64 {
     // leaf index start with 0
     let leaves_count = index + 1;
@@ -92,9 +102,11 @@ pub fn get_peak_map(mmr_size: u64) -> u64 {
 ///
 /// please note that when the mmr_size is invalid, it will return the peaks of
 /// the last valid mmr. in the below example, the mmr_size is 6, but it's not a
-/// valid mmr, it will return [2, 3].   2     5
-///  / \   /  \
-/// 0   1 3   4
+/// valid mmr (size 4 is the last valid one with 3 leaves), so it will return
+/// [2, 3].
+///   2
+///  / \
+/// 0   1 3
 pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
     if mmr_size == 0 {
         return vec![];
@@ -118,17 +130,13 @@ pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
 
 // ── Storage and cost helpers ────────────────────────────────────────────
 
-/// Prefix for MMR node keys in storage.
-const MMR_NODE_PREFIX: u8 = b'm';
-
 /// Build the storage key for an MMR node at a given position.
 ///
-/// Format: `m{pos}` (9 bytes: `'m'` + u64 BE).
-pub fn mmr_node_key(pos: u64) -> [u8; 9] {
-    let mut key = [0u8; 9];
-    key[0] = MMR_NODE_PREFIX;
-    key[1..9].copy_from_slice(&pos.to_be_bytes());
-    key
+/// Format: raw u64 big-endian (8 bytes).
+/// No prefix is needed because each MMR subtree gets its own isolated
+/// storage context in GroveDB (keyed by the Blake3 hash of the path).
+pub fn mmr_node_key(pos: u64) -> [u8; 8] {
+    pos.to_be_bytes()
 }
 
 /// Returns the exact number of Blake3 hash calls for pushing one leaf.

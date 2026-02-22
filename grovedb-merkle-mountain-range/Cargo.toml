@@ -6,12 +6,10 @@ authors = [
     "Nervos Core Dev <dev@nervos.org>",
 ]
 edition = "2024"
-rust-version = "1.85.0"
 license = "MIT"
 description = "A generalized merkle mountain range implementation for GroveDB"
 repository = "https://github.com/dashpay/grovedb"
 homepage = "https://www.grovedb.org"
-readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [features]

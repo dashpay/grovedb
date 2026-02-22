@@ -73,16 +73,33 @@ impl MerkleProof {
         new_elem: MmrNode,
         new_mmr_size: u64,
     ) -> Result<MmrNode> {
+        if new_pos >= new_mmr_size {
+            return Err(Error::InvalidInput(format!(
+                "new_pos {} must be less than new_mmr_size {}",
+                new_pos, new_mmr_size
+            )));
+        }
         let pos_height = pos_height_in_tree(new_pos);
         let next_height = pos_height_in_tree(new_pos + 1);
         if next_height > pos_height {
             let mut peaks_hashes =
                 calculate_peaks_hashes(leaves, self.mmr_size, self.proof.iter())?;
             let peaks_pos = get_peaks(new_mmr_size);
-            // reverse touched peaks
-            let mut i = 0;
-            while peaks_pos[i] < new_pos {
-                i += 1
+            let i = peaks_pos
+                .iter()
+                .position(|p| *p >= new_pos)
+                .ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "new_pos {} exceeds all peaks for new_mmr_size {}",
+                        new_pos, new_mmr_size
+                    ))
+                })?;
+            if i > peaks_hashes.len() {
+                return Err(Error::InvalidInput(format!(
+                    "peak index {} out of range for {} peak hashes",
+                    i,
+                    peaks_hashes.len()
+                )));
             }
             peaks_hashes[i..].reverse();
             calculate_root(vec![(new_pos, new_elem)], new_mmr_size, peaks_hashes.iter())
@@ -134,8 +151,12 @@ impl MerkleProof {
         let current_peaks_positions = get_peaks(self.mmr_size);
 
         let mut reverse_index = prev_peaks_positions.len() - 1;
-        for (i, position) in prev_peaks_positions.iter().enumerate() {
-            if *position < current_peaks_positions[i] {
+        for (i, (prev_pos, cur_pos)) in prev_peaks_positions
+            .iter()
+            .zip(current_peaks_positions.iter())
+            .enumerate()
+        {
+            if prev_pos < cur_pos {
                 reverse_index = i;
                 break;
             }
@@ -320,6 +341,9 @@ pub(crate) fn take_while_vec<T, P: Fn(&T) -> bool>(v: &mut Vec<T>, p: P) -> Vec<
 // GroveDB-specific MmrTreeProof
 // =============================================================================
 
+/// Verified leaf entries: `(leaf_index, value_bytes)` pairs.
+pub type VerifiedLeaves = Vec<(u64, Vec<u8>)>;
+
 /// A proof that specific leaves exist in an MMR tree.
 ///
 /// Contains the MMR size, the proved leaf values with their indices,
@@ -446,11 +470,23 @@ impl MmrTreeProof {
     ///
     /// # Returns
     /// The verified leaf values as `(leaf_index, value_bytes)` pairs.
-    pub fn verify(&self, expected_mmr_root: &[u8; 32]) -> Result<Vec<(u64, Vec<u8>)>> {
+    pub fn verify(&self, expected_mmr_root: &[u8; 32]) -> Result<VerifiedLeaves> {
         if self.leaves.is_empty() {
             return Err(Error::InvalidProof(
                 "proof contains no leaves to verify".into(),
             ));
+        }
+
+        // Validate leaf indices to prevent arithmetic overflow in
+        // leaf_index_to_pos / leaf_index_to_mmr_size.
+        let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
+        for (idx, _) in &self.leaves {
+            if *idx >= leaf_count {
+                return Err(Error::InvalidProof(format!(
+                    "leaf index {} out of range for mmr_size {} (leaf_count {})",
+                    idx, self.mmr_size, leaf_count
+                )));
+            }
         }
 
         // Reconstruct proof items as MmrNodes (internal, hash-only)
@@ -507,11 +543,23 @@ impl MmrTreeProof {
     /// Unlike [`verify`](Self::verify), this does NOT check against an expected
     /// root — the caller is responsible for validating the root (typically via
     /// the Merk child hash mechanism).
-    pub fn verify_and_get_root(&self) -> Result<([u8; 32], Vec<(u64, Vec<u8>)>)> {
+    pub fn verify_and_get_root(&self) -> Result<([u8; 32], VerifiedLeaves)> {
         if self.leaves.is_empty() {
             return Err(Error::InvalidProof(
                 "proof contains no leaves to verify".into(),
             ));
+        }
+
+        // Validate leaf indices to prevent arithmetic overflow in
+        // leaf_index_to_pos / leaf_index_to_mmr_size.
+        let leaf_count = mmr_size_to_leaf_count(self.mmr_size);
+        for (idx, _) in &self.leaves {
+            if *idx >= leaf_count {
+                return Err(Error::InvalidProof(format!(
+                    "leaf index {} out of range for mmr_size {} (leaf_count {})",
+                    idx, self.mmr_size, leaf_count
+                )));
+            }
         }
 
         // Reconstruct proof items as MmrNodes (internal, hash-only)
@@ -665,7 +713,7 @@ mod tests {
                 .expect("push should succeed");
         }
         mmr.commit().unwrap().expect("commit should succeed");
-        let size = mmr.mmr_size();
+        let size = mmr.mmr_size;
         (store, size)
     }
 
@@ -921,5 +969,195 @@ mod tests {
             "error should mention no leaves: {}",
             err_msg
         );
+    }
+
+    #[test]
+    fn test_calculate_root_with_new_leaf_rejects_out_of_bounds() {
+        let proof = MerkleProof::new(1, vec![]);
+        let result = proof.calculate_root_with_new_leaf(vec![], 5, MmrNode::internal([0u8; 32]), 3);
+        assert!(result.is_err(), "new_pos >= new_mmr_size should error");
+        let err_msg = format!("{}", result.expect_err("should be bounds error"));
+        assert!(
+            err_msg.contains("must be less than"),
+            "error should mention bounds: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_lazy_node_store_defers_and_surfaces_error() {
+        let error_fn = |_pos: u64| -> Result<Option<MmrNode>> {
+            Err(Error::StoreError("storage exploded".into()))
+        };
+        let store = LazyNodeStore::new(error_fn);
+
+        // Read triggers error capture, returns None
+        let result: Option<MmrNode> = MMRStoreReadOps::element_at_position(&&store, 0)
+            .unwrap()
+            .expect("CostResult should be Ok");
+        assert!(
+            result.is_none(),
+            "should return None when error is deferred"
+        );
+
+        // Error is available via take_error
+        let err = store.take_error().expect("should have captured error");
+        assert!(
+            format!("{}", err).contains("storage exploded"),
+            "should contain original error message"
+        );
+    }
+
+    #[test]
+    fn test_lazy_node_store_short_circuits_on_prior_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+
+        let call_count = Arc::new(AtomicU64::new(0));
+        let count_clone = call_count.clone();
+        let failing_fn = move |_pos: u64| -> Result<Option<MmrNode>> {
+            count_clone.fetch_add(1, Ordering::Relaxed);
+            Err(Error::StoreError("fail".into()))
+        };
+        let store = LazyNodeStore::new(failing_fn);
+
+        // First read: calls closure, captures error
+        let _ = MMRStoreReadOps::element_at_position(&&store, 0);
+        assert_eq!(call_count.load(Ordering::Relaxed), 1);
+
+        // Second read: short-circuits without calling closure
+        let _ = MMRStoreReadOps::element_at_position(&&store, 1);
+        assert_eq!(
+            call_count.load(Ordering::Relaxed),
+            1,
+            "second read should short-circuit"
+        );
+    }
+
+    #[test]
+    fn test_verify_rejects_out_of_range_leaf_index() {
+        // mmr_size=7 → 4 leaves (indices 0..3). Index 10 is out of range.
+        let proof = MmrTreeProof::new(7, vec![(10, b"fake".to_vec())], vec![]);
+        let result = proof.verify(&[0u8; 32]);
+        assert!(result.is_err(), "should reject out-of-range leaf index");
+        let err_msg = format!("{}", result.expect_err("should be range error"));
+        assert!(
+            err_msg.contains("out of range"),
+            "error should mention out of range: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_verify_and_get_root_rejects_out_of_range_leaf_index() {
+        let proof = MmrTreeProof::new(7, vec![(10, b"fake".to_vec())], vec![]);
+        let result = proof.verify_and_get_root();
+        assert!(
+            result.is_err(),
+            "verify_and_get_root should reject out-of-range leaf index"
+        );
+    }
+
+    #[test]
+    fn test_verify_and_get_root_rejects_empty_leaves() {
+        let proof = MmrTreeProof::new(7, vec![], vec![]);
+        let result = proof.verify_and_get_root();
+        assert!(
+            result.is_err(),
+            "verify_and_get_root should reject empty leaves"
+        );
+    }
+
+    #[test]
+    fn test_generate_missing_leaf_node() {
+        let empty_store = |_pos: u64| -> Result<Option<MmrNode>> { Ok(None) };
+        let result = MmrTreeProof::generate(7, &[0], empty_store);
+        assert!(result.is_err(), "should error when leaf node is missing");
+        let err_msg = format!("{}", result.expect_err("should be missing node error"));
+        assert!(
+            err_msg.contains("missing"),
+            "error should mention missing: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_generate_internal_node_at_leaf_position() {
+        let internal_store =
+            |_pos: u64| -> Result<Option<MmrNode>> { Ok(Some(MmrNode::internal([0xABu8; 32]))) };
+        let result = MmrTreeProof::generate(7, &[0], internal_store);
+        assert!(
+            result.is_err(),
+            "should error when leaf position has internal node"
+        );
+        let err_msg = format!("{}", result.expect_err("should be internal node error"));
+        assert!(
+            err_msg.contains("internal"),
+            "error should mention internal: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_generate_surfaces_deferred_storage_error() {
+        // Leaf at position 0 exists, but sibling reads fail
+        let leaf = MmrNode::leaf(b"leaf_0".to_vec());
+        let get_node = move |pos: u64| -> Result<Option<MmrNode>> {
+            if pos == 0 {
+                Ok(Some(leaf.clone()))
+            } else {
+                Err(Error::StoreError("disk failure".into()))
+            }
+        };
+        // mmr_size=7 (4 leaves), prove leaf 0 → needs sibling at pos 1 → fails
+        let result = MmrTreeProof::generate(7, &[0], get_node);
+        assert!(result.is_err(), "should surface deferred storage error");
+        let err_msg = format!("{}", result.expect_err("should be deferred error"));
+        assert!(
+            err_msg.contains("disk failure"),
+            "should contain original error message: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_verify_rejects_excess_proof_items() {
+        // Build a valid proof for 3 leaves, then append extra proof items
+        let (store, mmr_size) = build_mmr(&[b"a", b"b", b"c"]);
+        let root = root_hash(&store, mmr_size);
+
+        let proof = MmrTreeProof::generate(mmr_size, &[0], get_node_from_store(&store))
+            .expect("generate should succeed");
+
+        // Add 2 extra proof items to trigger the "excess proof items" check
+        let mut items = proof.proof_items().to_vec();
+        items.push([0xFFu8; 32]);
+        items.push([0xEEu8; 32]);
+
+        let tampered = MmrTreeProof::new(mmr_size, proof.leaves().to_vec(), items);
+        let result = tampered.verify(&root);
+        assert!(result.is_err(), "should reject proof with excess items");
+    }
+
+    #[test]
+    fn test_verify_and_get_root_roundtrip() {
+        let (store, mmr_size) = build_mmr(&[b"item_0", b"item_1", b"item_2", b"item_3", b"item_4"]);
+        let root = root_hash(&store, mmr_size);
+
+        let proof = MmrTreeProof::generate(mmr_size, &[1, 3], get_node_from_store(&store))
+            .expect("generate should succeed");
+
+        let (computed_root, verified_leaves) = proof
+            .verify_and_get_root()
+            .expect("verify_and_get_root should succeed");
+        assert_eq!(
+            computed_root, root,
+            "computed root should match actual root"
+        );
+        assert_eq!(verified_leaves.len(), 2);
+        assert_eq!(verified_leaves[0], (1, b"item_1".to_vec()));
+        assert_eq!(verified_leaves[1], (3, b"item_3".to_vec()));
     }
 }
