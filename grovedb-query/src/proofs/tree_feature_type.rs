@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use ed::{Decode, Encode, Terminated};
+#[cfg(feature = "blockchain")]
 use grovedb_costs::TreeCostType;
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
