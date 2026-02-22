@@ -1354,16 +1354,19 @@ impl GroveDb {
                                 )
                                 .unwrap();
                             let store =
-                                grovedb_dense_fixed_sized_merkle_tree::AuxDenseTreeStore::new(
+                                grovedb_dense_fixed_sized_merkle_tree::DenseTreeStorageContext::new(
                                     &storage_ctx,
                                 );
                             use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
                             let tree = DenseFixedSizedMerkleTree::from_state(*height, *count);
                             match tree {
-                                Ok(t) => match t.root_hash(&store) {
-                                    Ok((hash, _)) => hash,
-                                    Err(_) => merk_root_hash,
-                                },
+                                Ok(t) => {
+                                    let result = t.root_hash(&store);
+                                    match result.unwrap() {
+                                        Ok(hash) => hash,
+                                        Err(_) => merk_root_hash,
+                                    }
+                                }
                                 Err(_) => merk_root_hash,
                             }
                         }

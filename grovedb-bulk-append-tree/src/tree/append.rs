@@ -1,6 +1,5 @@
 //! Append and compaction logic for BulkAppendTree.
 
-use grovedb_dense_fixed_sized_merkle_tree::compute_dense_merkle_root_from_values;
 use grovedb_merkle_mountain_range::{hash_count_for_push, mmr_size_to_leaf_count, MmrNode, MMR};
 
 use super::{
@@ -148,14 +147,6 @@ impl BulkAppendTree {
         entries: &[Vec<u8>],
     ) -> Result<(u32, [u8; 32]), BulkAppendError> {
         let mut hash_count: u32 = 0;
-
-        // Compute dense Merkle root
-        let entry_refs: Vec<&[u8]> = entries.iter().map(|e| e.as_slice()).collect();
-        let (_epoch_root, dense_hash_count) = compute_dense_merkle_root_from_values(&entry_refs)
-            .map_err(|e| {
-                BulkAppendError::CorruptedData(format!("dense merkle root failed: {}", e))
-            })?;
-        hash_count += dense_hash_count;
 
         // Store chunk blob as a standard MMR leaf — hash = blake3(0x00 || blob)
         let blob = serialize_chunk_blob(entries);

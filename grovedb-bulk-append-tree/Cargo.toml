@@ -12,7 +12,6 @@ documentation = "https://docs.rs/grovedb"
 
 [dependencies]
 grovedb-merkle-mountain-range = { version = "4.0.0", path = "../grovedb-merkle-mountain-range" }
-grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree" }
 blake3 = "1.8.1"
 bincode = { version = "2.0.1", features = ["derive"] }
 hex = "0.4"

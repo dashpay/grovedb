@@ -1362,20 +1362,19 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         // Create storage adapter
-        let store = grovedb_dense_fixed_sized_merkle_tree::AuxDenseTreeStore::new(&storage_ctx);
+        let store =
+            grovedb_dense_fixed_sized_merkle_tree::DenseTreeStorageContext::new(&storage_ctx);
 
         // Generate the proof
-        let dense_proof = cost_return_on_error_no_add!(
-            cost,
+        let dense_proof = cost_return_on_error!(
+            &mut cost,
             DenseTreeProof::generate(dense_height, dense_count, &positions, &store)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))
         );
 
-        cost += store.take_cost();
-
         // Update limit
         if let Some(limit) = overall_limit.as_mut() {
-            let count = dense_proof.entries_len() as u16;
+            let count = dense_proof.entries.len() as u16;
             *limit = limit.saturating_sub(count);
         }
 

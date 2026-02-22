@@ -464,14 +464,12 @@ fn decode_dense_proof(bytes: &[u8]) -> String {
     match DenseTreeProof::decode_from_slice(bytes) {
         Ok(proof) => {
             let mut s = format!(
-                "\n    height: {}, count: {}, entries: {}, node_value_hashes: {}, node_hashes: {}",
-                proof.height(),
-                proof.count(),
-                proof.entries_len(),
-                proof.node_value_hashes_len(),
-                proof.node_hashes_len(),
+                "\n    entries: {}, node_value_hashes: {}, node_hashes: {}",
+                proof.entries.len(),
+                proof.node_value_hashes.len(),
+                proof.node_hashes.len(),
             );
-            for (i, (pos, value)) in proof.entries().iter().enumerate() {
+            for (i, (pos, value)) in proof.entries.iter().enumerate() {
                 s.push_str(&format!(
                     "\n    entry[{}]: pos={}, value={}",
                     i,
@@ -479,7 +477,7 @@ fn decode_dense_proof(bytes: &[u8]) -> String {
                     hex_to_ascii(value),
                 ));
             }
-            for (i, (pos, hash)) in proof.node_value_hashes().iter().enumerate() {
+            for (i, (pos, hash)) in proof.node_value_hashes.iter().enumerate() {
                 s.push_str(&format!(
                     "\n    value_hash[{}]: pos={}, HASH[{}]",
                     i,
@@ -487,7 +485,7 @@ fn decode_dense_proof(bytes: &[u8]) -> String {
                     hex::encode(hash),
                 ));
             }
-            for (i, (pos, hash)) in proof.node_hashes().iter().enumerate() {
+            for (i, (pos, hash)) in proof.node_hashes.iter().enumerate() {
                 s.push_str(&format!(
                     "\n    hash[{}]: pos={}, HASH[{}]",
                     i,

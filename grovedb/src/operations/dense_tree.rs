@@ -15,7 +15,7 @@ use grovedb_costs::{
     CostsExt, OperationCost,
 };
 use grovedb_dense_fixed_sized_merkle_tree::{
-    position_key, AuxDenseTreeStore, DenseFixedSizedMerkleTree, DenseMerkleError,
+    position_key, DenseFixedSizedMerkleTree, DenseTreeStorageContext,
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
@@ -75,21 +75,18 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path.clone(), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = AuxDenseTreeStore::new(&storage_ctx);
+        let store = DenseTreeStorageContext::new(&storage_ctx);
         let mut tree = cost_return_on_error_no_add!(
             cost,
             DenseFixedSizedMerkleTree::from_state(height, existing_count)
                 .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
         );
 
-        let (new_root_hash, position, hash_calls) = cost_return_on_error_no_add!(
-            cost,
+        let (new_root_hash, position) = cost_return_on_error!(
+            &mut cost,
             tree.insert(&value, &store)
                 .map_err(|e| Error::CorruptedData(format!("dense tree insert failed: {}", e)))
         );
-
-        cost.hash_node_calls += hash_calls;
-        cost += store.take_cost();
 
         #[allow(clippy::drop_non_drop)]
         drop(storage_ctx);
@@ -245,19 +242,18 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = AuxDenseTreeStore::new(&storage_ctx);
+        let store = DenseTreeStorageContext::new(&storage_ctx);
         let tree = cost_return_on_error_no_add!(
             cost,
             DenseFixedSizedMerkleTree::from_state(height, count)
                 .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
         );
 
-        let (root_hash, hash_calls) = cost_return_on_error_no_add!(
-            cost,
+        let root_hash = cost_return_on_error!(
+            &mut cost,
             tree.root_hash(&store)
                 .map_err(|e| Error::CorruptedData(format!("dense tree root hash error: {}", e)))
         );
-        cost.hash_node_calls += hash_calls;
 
         Ok(root_hash).wrap_with_cost(cost)
     }
@@ -371,7 +367,7 @@ impl GroveDb {
                 .get_transactional_storage_context(st_path.clone(), Some(batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
-            let store = AuxDenseTreeStore::new(&storage_ctx);
+            let store = DenseTreeStorageContext::new(&storage_ctx);
             let mut tree = cost_return_on_error_no_add!(
                 cost,
                 DenseFixedSizedMerkleTree::from_state(height, existing_count)
@@ -380,17 +376,14 @@ impl GroveDb {
 
             let mut new_root_hash = [0u8; 32];
             for value in values {
-                let (hash, _pos, hash_calls) = cost_return_on_error_no_add!(
-                    cost,
+                let (hash, _pos) = cost_return_on_error!(
+                    &mut cost,
                     tree.insert(value, &store).map_err(|e| {
                         Error::CorruptedData(format!("dense tree insert failed: {}", e))
                     })
                 );
-                cost.hash_node_calls += hash_calls;
                 new_root_hash = hash;
             }
-
-            cost += store.take_cost();
 
             #[allow(clippy::drop_non_drop)]
             drop(storage_ctx);

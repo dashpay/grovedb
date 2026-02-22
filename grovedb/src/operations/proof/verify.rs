@@ -802,30 +802,11 @@ impl GroveDb {
             grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof::decode_from_slice(dense_bytes)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
 
-        // Cross-validate the proof's height and count against the Element's
-        // authenticated values to prevent count/height manipulation attacks.
-        let (proof_height, proof_count) = dense_proof.height_and_count();
-        if proof_height != element_height {
-            return Err(Error::InvalidProof(
-                query.clone(),
-                format!(
-                    "proof height {} doesn't match element height {}",
-                    proof_height, element_height
-                ),
-            ));
-        }
-        if proof_count != element_count {
-            return Err(Error::InvalidProof(
-                query.clone(),
-                format!(
-                    "proof count {} doesn't match element count {}",
-                    proof_count, element_count
-                ),
-            ));
-        }
-
+        // Height and count are NOT stored in the proof — they come from the
+        // authenticated parent Element in Merk.  We pass them from the Element
+        // directly into verification.
         let (computed_root, verified_entries) = dense_proof
-            .verify_and_get_root()
+            .verify_and_get_root(element_height, element_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Add each verified entry to the result set
