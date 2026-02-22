@@ -1,10 +1,20 @@
 /// Convert a 0-based leaf index to its MMR position.
+///
+/// # Safety (arithmetic)
+///
+/// Overflows when `index >= 2^63 - 1`. Callers must validate indices
+/// before calling (e.g. check `index < mmr_size_to_leaf_count(mmr_size)`).
 pub fn leaf_index_to_pos(index: u64) -> u64 {
     // mmr_size - H - 1, H is the height(intervals) of last peak
     leaf_index_to_mmr_size(index) - (index + 1).trailing_zeros() as u64 - 1
 }
 
 /// Compute the MMR size after inserting `index + 1` leaves.
+///
+/// # Safety (arithmetic)
+///
+/// Overflows when `index >= 2^63 - 1` because `2 * leaves_count` exceeds
+/// `u64::MAX`. Callers must validate indices before calling.
 pub fn leaf_index_to_mmr_size(index: u64) -> u64 {
     // leaf index start with 0
     let leaves_count = index + 1;
