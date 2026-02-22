@@ -1,7 +1,20 @@
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
+
 use crate::{
     hash::{node_hash, validate_height},
     DenseMerkleError, DenseTreeStore,
 };
+
+/// Unwrap a `CostResult`, accumulate its cost into `$cost`, and return early
+/// (with accumulated cost) on error.
+macro_rules! cost_return_on_error {
+    ($cost:ident, $expr:expr) => {
+        match $expr.unwrap_add_cost(&mut $cost) {
+            Ok(x) => x,
+            Err(e) => return Err(e).wrap_with_cost($cost),
+        }
+    };
+}
 
 /// A dense fixed-sized Merkle tree.
 ///
@@ -62,32 +75,36 @@ impl DenseFixedSizedMerkleTree {
 
     /// Insert a value at the next available position.
     ///
-    /// Returns `(root_hash, position, hash_calls)` where position is the
-    /// 0-based index where the value was inserted.
+    /// Returns `(root_hash, position)` where position is the 0-based index
+    /// where the value was inserted. Storage and hash costs are tracked in the
+    /// returned `OperationCost`.
     pub fn insert<S: DenseTreeStore>(
         &mut self,
         value: &[u8],
         store: &S,
-    ) -> Result<([u8; 32], u16, u32), DenseMerkleError> {
+    ) -> CostResult<([u8; 32], u16), DenseMerkleError> {
+        let mut cost = OperationCost::default();
+
         if self.count >= self.capacity() {
             return Err(DenseMerkleError::TreeFull {
                 capacity: self.capacity(),
                 count: self.count,
-            });
+            })
+            .wrap_with_cost(cost);
         }
 
         let position = self.count;
-        store.put_value(position, value)?;
+        cost_return_on_error!(cost, store.put_value(position, value));
         self.count += 1;
 
-        match self.compute_root_hash(store) {
-            Ok((root_hash, hash_calls)) => Ok((root_hash, position, hash_calls)),
+        match self.compute_root_hash(store).unwrap_add_cost(&mut cost) {
+            Ok(root_hash) => Ok((root_hash, position)).wrap_with_cost(cost),
             Err(e) => {
                 // Roll back count so the tree state remains consistent.
                 // Note: the value remains in the store; the caller is
                 // responsible for store-level cleanup if needed.
                 self.count -= 1;
-                Err(e)
+                Err(e).wrap_with_cost(cost)
             }
         }
     }
@@ -95,25 +112,27 @@ impl DenseFixedSizedMerkleTree {
     /// Try to insert a value at the next available position.
     ///
     /// Returns `None` if the tree is full, otherwise returns
-    /// `Some((root_hash, position, hash_calls))`.
+    /// `Some((root_hash, position))`.
     pub fn try_insert<S: DenseTreeStore>(
         &mut self,
         value: &[u8],
         store: &S,
-    ) -> Result<Option<([u8; 32], u16, u32)>, DenseMerkleError> {
+    ) -> CostResult<Option<([u8; 32], u16)>, DenseMerkleError> {
+        let mut cost = OperationCost::default();
+
         if self.count >= self.capacity() {
-            return Ok(None);
+            return Ok(None).wrap_with_cost(cost);
         }
 
         let position = self.count;
-        store.put_value(position, value)?;
+        cost_return_on_error!(cost, store.put_value(position, value));
         self.count += 1;
 
-        match self.compute_root_hash(store) {
-            Ok((root_hash, hash_calls)) => Ok(Some((root_hash, position, hash_calls))),
+        match self.compute_root_hash(store).unwrap_add_cost(&mut cost) {
+            Ok(root_hash) => Ok(Some((root_hash, position))).wrap_with_cost(cost),
             Err(e) => {
                 self.count -= 1;
-                Err(e)
+                Err(e).wrap_with_cost(cost)
             }
         }
     }
@@ -126,27 +145,31 @@ impl DenseFixedSizedMerkleTree {
         &self,
         position: u16,
         store: &S,
-    ) -> Result<Option<Vec<u8>>, DenseMerkleError> {
+    ) -> CostResult<Option<Vec<u8>>, DenseMerkleError> {
+        let mut cost = OperationCost::default();
+
         if position >= self.count {
-            return Ok(None);
+            return Ok(None).wrap_with_cost(cost);
         }
-        let value = store.get_value(position)?.ok_or_else(|| {
-            DenseMerkleError::StoreError(format!(
+
+        let opt = cost_return_on_error!(cost, store.get_value(position));
+        match opt {
+            Some(v) => Ok(Some(v)).wrap_with_cost(cost),
+            None => Err(DenseMerkleError::StoreError(format!(
                 "expected value at position {} but found none (count={})",
                 position, self.count
-            ))
-        })?;
-        Ok(Some(value))
+            )))
+            .wrap_with_cost(cost),
+        }
     }
 
     /// Compute the root hash of the tree.
     ///
-    /// Returns `([0u8; 32], 0)` if the tree is empty.
-    /// Returns `(hash, hash_call_count)` otherwise.
+    /// Returns `[0u8; 32]` if the tree is empty.
     pub fn root_hash<S: DenseTreeStore>(
         &self,
         store: &S,
-    ) -> Result<([u8; 32], u32), DenseMerkleError> {
+    ) -> CostResult<[u8; 32], DenseMerkleError> {
         self.compute_root_hash(store)
     }
 
@@ -155,13 +178,12 @@ impl DenseFixedSizedMerkleTree {
     /// This is a public wrapper around the internal `hash_node` method,
     /// useful for proof generation where sibling subtree hashes are needed.
     ///
-    /// Returns `([0u8; 32], 0)` for positions beyond count or capacity.
-    /// Returns `(hash, hash_call_count)` otherwise.
+    /// Returns `[0u8; 32]` for positions beyond count or capacity.
     pub(crate) fn hash_position<S: DenseTreeStore>(
         &self,
         position: u16,
         store: &S,
-    ) -> Result<([u8; 32], u32), DenseMerkleError> {
+    ) -> CostResult<[u8; 32], DenseMerkleError> {
         self.hash_node(position, store)
     }
 
@@ -169,58 +191,63 @@ impl DenseFixedSizedMerkleTree {
     fn compute_root_hash<S: DenseTreeStore>(
         &self,
         store: &S,
-    ) -> Result<([u8; 32], u32), DenseMerkleError> {
+    ) -> CostResult<[u8; 32], DenseMerkleError> {
         if self.count == 0 {
-            return Ok(([0u8; 32], 0));
+            return Ok([0u8; 32]).wrap_with_cost(OperationCost::default());
         }
         self.hash_node(0, store)
     }
 
     /// Recursively compute the hash of a node.
     ///
-    /// All nodes use the same scheme: `blake3(H(value) || H(left) || H(right))`.
-    /// Leaf nodes simply have `[0; 32]` for both child hashes.
-    ///
-    /// Returns `(hash, hash_call_count)`.
+    /// All nodes use the same scheme: `blake3(H(value) || H(left) ||
+    /// H(right))`. Leaf nodes simply have `[0; 32]` for both child hashes.
     fn hash_node<S: DenseTreeStore>(
         &self,
         position: u16,
         store: &S,
-    ) -> Result<([u8; 32], u32), DenseMerkleError> {
+    ) -> CostResult<[u8; 32], DenseMerkleError> {
+        let mut cost = OperationCost::default();
         let capacity = self.capacity();
 
-        // Position beyond capacity or unfilled → zero hash
+        // Position beyond capacity or unfilled -> zero hash
         if position >= capacity || position >= self.count {
-            return Ok(([0u8; 32], 0));
+            return Ok([0u8; 32]).wrap_with_cost(cost);
         }
 
-        let value = store.get_value(position)?.ok_or_else(|| {
-            DenseMerkleError::StoreError(format!(
-                "expected value at position {} but found none",
-                position
-            ))
-        })?;
+        let opt = cost_return_on_error!(cost, store.get_value(position));
+        let value = match opt {
+            Some(v) => v,
+            None => {
+                return Err(DenseMerkleError::StoreError(format!(
+                    "expected value at position {} but found none",
+                    position
+                )))
+                .wrap_with_cost(cost)
+            }
+        };
 
         let value_hash = *blake3::hash(&value).as_bytes();
+        cost.hash_node_calls += 1; // value hash
 
         // Use u32 to avoid overflow for leaf positions near capacity.
         let left_child_u32 = 2 * position as u32 + 1;
         let right_child_u32 = 2 * position as u32 + 2;
 
-        let (left_hash, left_calls) = if left_child_u32 < capacity as u32 {
-            self.hash_node(left_child_u32 as u16, store)?
+        let left_hash = if left_child_u32 < capacity as u32 {
+            cost_return_on_error!(cost, self.hash_node(left_child_u32 as u16, store))
         } else {
-            ([0u8; 32], 0)
+            [0u8; 32]
         };
-        let (right_hash, right_calls) = if right_child_u32 < capacity as u32 {
-            self.hash_node(right_child_u32 as u16, store)?
+        let right_hash = if right_child_u32 < capacity as u32 {
+            cost_return_on_error!(cost, self.hash_node(right_child_u32 as u16, store))
         } else {
-            ([0u8; 32], 0)
+            [0u8; 32]
         };
 
         let hash = node_hash(&value_hash, &left_hash, &right_hash);
+        cost.hash_node_calls += 1; // node_hash
 
-        // 1 for value hash + 1 for node_hash + child calls
-        Ok((hash, 2 + left_calls + right_calls))
+        Ok(hash).wrap_with_cost(cost)
     }
 }

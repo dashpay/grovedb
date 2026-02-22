@@ -10,10 +10,6 @@ use std::collections::BTreeMap;
 
 use crate::{hash::node_hash, proof::DenseTreeProof, DenseMerkleError};
 
-/// Maximum number of elements per proof field (entries, node_value_hashes,
-/// node_hashes) to prevent DoS via expensive ancestor set computation.
-const MAX_PROOF_ELEMENTS: usize = 100_000;
-
 impl DenseTreeProof {
     /// Verify the proof against an expected root hash.
     ///
@@ -65,14 +61,18 @@ impl DenseTreeProof {
             )));
         }
 
-        // DoS prevention: limit the number of elements in each proof field
-        if self.entries.len() > MAX_PROOF_ELEMENTS
-            || self.node_value_hashes.len() > MAX_PROOF_ELEMENTS
-            || self.node_hashes.len() > MAX_PROOF_ELEMENTS
+        // DoS prevention: no proof field can exceed the tree's capacity
+        let cap = capacity as usize;
+        if self.entries.len() > cap
+            || self.node_value_hashes.len() > cap
+            || self.node_hashes.len() > cap
         {
             return Err(DenseMerkleError::InvalidProof(format!(
-                "proof contains too many elements (max {} per field)",
-                MAX_PROOF_ELEMENTS
+                "proof field exceeds tree capacity {} (entries={}, value_hashes={}, hashes={})",
+                capacity,
+                self.entries.len(),
+                self.node_value_hashes.len(),
+                self.node_hashes.len()
             )));
         }
 
