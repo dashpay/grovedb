@@ -21,6 +21,7 @@ use crate::{
     BulkAppendTree,
 };
 
+#[cfg(test)]
 mod tests;
 // ── Query → global position helpers ────────────────────────────────────
 
@@ -425,10 +426,8 @@ impl BulkAppendTreeProof {
         C: FromIterator<(u64, Vec<u8>)>,
     {
         let ranges = query_to_ranges(query, total_count)?;
-        if ranges.is_empty() {
-            return Ok(std::iter::empty().collect());
-        }
 
+        // Always verify the proof cryptographically, even for empty queries.
         let (computed_state_root, result) = self.verify_and_compute_root(height, total_count)?;
 
         if &computed_state_root != expected_state_root {
@@ -437,6 +436,10 @@ impl BulkAppendTreeProof {
                 hex::encode(expected_state_root),
                 hex::encode(computed_state_root)
             )));
+        }
+
+        if ranges.is_empty() {
+            return Ok(std::iter::empty().collect());
         }
 
         let chunk_item_count = ((1u32 << height) - 1) as u64 + 1;

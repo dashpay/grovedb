@@ -317,13 +317,15 @@ mod tests {
     }
 
     #[test]
-    fn fixed_overflow_count_times_entry_size() {
-        // count and entry_size whose product overflows usize
+    fn fixed_huge_count_and_entry_size_rejected() {
+        // count=u32::MAX exceeds MAX_CHUNK_ENTRIES, so it's rejected by the
+        // count cap before reaching checked_mul. The checked_mul guard is
+        // defense-in-depth for 32-bit platforms where the cap might not
+        // prevent overflow.
         let mut blob = vec![FORMAT_FIXED];
         blob.extend_from_slice(&u32::MAX.to_be_bytes());
         blob.extend_from_slice(&u32::MAX.to_be_bytes());
-        let err = deserialize_chunk_blob(&blob)
-            .expect_err("should reject overflowing count * entry_size");
+        let err = deserialize_chunk_blob(&blob).expect_err("should reject huge count/entry_size");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
 }
