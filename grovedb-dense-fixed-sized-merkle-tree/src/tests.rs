@@ -1,62 +1,40 @@
-use std::{cell::RefCell, collections::HashMap};
-
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
-
 use super::*;
-use crate::proof::DenseTreeProof;
-
-/// In-memory store for testing.
-struct MemStore {
-    data: RefCell<HashMap<u16, Vec<u8>>>,
-}
-
-impl MemStore {
-    fn new() -> Self {
-        Self {
-            data: RefCell::new(HashMap::new()),
-        }
-    }
-}
-
-impl DenseTreeStore for MemStore {
-    fn get_value(&self, position: u16) -> CostResult<Option<Vec<u8>>, DenseMerkleError> {
-        Ok(self.data.borrow().get(&position).cloned()).wrap_with_cost(OperationCost::default())
-    }
-
-    fn put_value(&self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
-        self.data.borrow_mut().insert(position, value.to_vec());
-        Ok(()).wrap_with_cost(OperationCost::default())
-    }
-}
+use crate::{
+    proof::DenseTreeProof,
+    test_utils::{FailingStorageContext, MemStorageContext},
+    tree::position_key,
+};
 
 // ── DenseFixedSizedMerkleTree tests ──────────────────────────────────
 
 #[test]
 fn test_new_tree_valid_heights() {
-    let tree = DenseFixedSizedMerkleTree::new(1).expect("height 1 should be valid");
+    let tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new())
+        .expect("height 1 should be valid");
     assert_eq!(tree.capacity(), 1); // 2^1 - 1 = 1
     assert_eq!(tree.count(), 0);
 
-    let tree = DenseFixedSizedMerkleTree::new(3).expect("height 3 should be valid");
+    let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+        .expect("height 3 should be valid");
     assert_eq!(tree.capacity(), 7); // 2^3 - 1 = 7
 
-    let tree = DenseFixedSizedMerkleTree::new(16).expect("height 16 should be valid");
+    let tree = DenseFixedSizedMerkleTree::new(16, MemStorageContext::new())
+        .expect("height 16 should be valid");
     assert_eq!(tree.height(), 16);
 }
 
 #[test]
 fn test_new_tree_invalid_heights() {
-    assert!(DenseFixedSizedMerkleTree::new(0).is_err());
-    assert!(DenseFixedSizedMerkleTree::new(17).is_err());
+    assert!(DenseFixedSizedMerkleTree::new(0, MemStorageContext::new()).is_err());
+    assert!(DenseFixedSizedMerkleTree::new(17, MemStorageContext::new()).is_err());
 }
 
 #[test]
 fn test_single_insert() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(1).expect("height 1");
+    let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new()).expect("height 1");
     assert_eq!(tree.capacity(), 1);
 
-    let ctx = tree.insert(b"hello", &store);
+    let ctx = tree.insert(b"hello");
     // Single node: 1 value hash + 1 node_hash = 2
     assert_eq!(ctx.cost.hash_node_calls, 2);
     let (root_hash, pos) = ctx.value.expect("insert should succeed");
@@ -76,21 +54,17 @@ fn test_single_insert() {
 
 #[test]
 fn test_sequential_fill_height_2() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
+    let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
     assert_eq!(tree.capacity(), 3); // 2^2 - 1 = 3
 
     // Insert three values (positions 0, 1, 2)
-    let (_, pos0) = tree.insert(b"root_val", &store).unwrap().expect("insert 0");
+    let (_, pos0) = tree.insert(b"root_val").unwrap().expect("insert 0");
     assert_eq!(pos0, 0);
 
-    let (_, pos1) = tree.insert(b"left_val", &store).unwrap().expect("insert 1");
+    let (_, pos1) = tree.insert(b"left_val").unwrap().expect("insert 1");
     assert_eq!(pos1, 1);
 
-    let (root_hash, pos2) = tree
-        .insert(b"right_val", &store)
-        .unwrap()
-        .expect("insert 2");
+    let (root_hash, pos2) = tree.insert(b"right_val").unwrap().expect("insert 2");
     assert_eq!(pos2, 2);
     assert_eq!(tree.count(), 3);
 
@@ -126,51 +100,41 @@ fn test_sequential_fill_height_2() {
 
 #[test]
 fn test_capacity_error() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(1).expect("height 1");
-    tree.insert(b"only", &store).unwrap().expect("first insert");
-    let result = tree.insert(b"overflow", &store);
+    let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new()).expect("height 1");
+    tree.insert(b"only").unwrap().expect("first insert");
+    let result = tree.insert(b"overflow");
     assert!(result.unwrap().is_err());
 }
 
 #[test]
 fn test_get_by_position() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
-    tree.insert(b"val0", &store).unwrap().expect("insert 0");
-    tree.insert(b"val1", &store).unwrap().expect("insert 1");
+    let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
+    tree.insert(b"val0").unwrap().expect("insert 0");
+    tree.insert(b"val1").unwrap().expect("insert 1");
 
-    assert_eq!(
-        tree.get(0, &store).unwrap().expect("get 0"),
-        Some(b"val0".to_vec())
-    );
-    assert_eq!(
-        tree.get(1, &store).unwrap().expect("get 1"),
-        Some(b"val1".to_vec())
-    );
+    assert_eq!(tree.get(0).unwrap().expect("get 0"), Some(b"val0".to_vec()));
+    assert_eq!(tree.get(1).unwrap().expect("get 1"), Some(b"val1".to_vec()));
     // Position 2 not yet filled
-    assert_eq!(tree.get(2, &store).unwrap().expect("get 2"), None);
+    assert_eq!(tree.get(2).unwrap().expect("get 2"), None);
     // Beyond capacity
-    assert_eq!(tree.get(100, &store).unwrap().expect("get 100"), None);
+    assert_eq!(tree.get(100).unwrap().expect("get 100"), None);
 }
 
 #[test]
 fn test_root_hash_determinism() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3");
-    tree.insert(b"a", &store).unwrap().expect("insert a");
-    tree.insert(b"b", &store).unwrap().expect("insert b");
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
+    tree.insert(b"a").unwrap().expect("insert a");
+    tree.insert(b"b").unwrap().expect("insert b");
 
-    let h1 = tree.root_hash(&store).unwrap().expect("root hash 1");
-    let h2 = tree.root_hash(&store).unwrap().expect("root hash 2");
+    let h1 = tree.root_hash().unwrap().expect("root hash 1");
+    let h2 = tree.root_hash().unwrap().expect("root hash 2");
     assert_eq!(h1, h2);
 }
 
 #[test]
 fn test_empty_tree_root_hash() {
-    let store = MemStore::new();
-    let tree = DenseFixedSizedMerkleTree::new(3).expect("height 3");
-    let ctx = tree.root_hash(&store);
+    let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
+    let ctx = tree.root_hash();
     assert_eq!(ctx.cost.hash_node_calls, 0);
     let hash = ctx.value.expect("empty root hash");
     assert_eq!(hash, [0u8; 32]);
@@ -178,56 +142,60 @@ fn test_empty_tree_root_hash() {
 
 #[test]
 fn test_from_state_roundtrip() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3");
-    tree.insert(b"x", &store).unwrap().expect("insert");
-    tree.insert(b"y", &store).unwrap().expect("insert");
+    let store = MemStorageContext::new();
+    // Manually insert two values into the backing store
+    store
+        .data
+        .borrow_mut()
+        .insert(position_key(0).to_vec(), b"x".to_vec());
+    store
+        .data
+        .borrow_mut()
+        .insert(position_key(1).to_vec(), b"y".to_vec());
+    let tree = DenseFixedSizedMerkleTree::from_state(3, 2, store).expect("from_state");
 
-    let h1 = tree.root_hash(&store).unwrap().expect("hash before");
+    let h1 = tree.root_hash().unwrap().expect("hash from_state");
 
-    // Reconstitute from state
-    let tree2 = DenseFixedSizedMerkleTree::from_state(3, 2).expect("from_state");
-    let h2 = tree2.root_hash(&store).unwrap().expect("hash after");
+    // Build the same tree fresh
+    let mut tree2 = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
+    tree2.insert(b"x").unwrap().expect("insert");
+    tree2.insert(b"y").unwrap().expect("insert");
+    let h2 = tree2.root_hash().unwrap().expect("hash fresh");
 
     assert_eq!(h1, h2);
-    assert_eq!(tree2.count(), 2);
-    assert_eq!(tree2.height(), 3);
+    assert_eq!(tree.count(), 2);
+    assert_eq!(tree.height(), 3);
 }
 
 #[test]
 fn test_root_hash_changes_on_insert() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3");
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
 
-    tree.insert(b"first", &store).unwrap().expect("insert 1");
-    let h1 = tree.root_hash(&store).unwrap().expect("hash 1");
+    tree.insert(b"first").unwrap().expect("insert 1");
+    let h1 = tree.root_hash().unwrap().expect("hash 1");
 
-    tree.insert(b"second", &store).unwrap().expect("insert 2");
-    let h2 = tree.root_hash(&store).unwrap().expect("hash 2");
+    tree.insert(b"second").unwrap().expect("insert 2");
+    let h2 = tree.root_hash().unwrap().expect("hash 2");
 
     assert_ne!(h1, h2);
 }
 
 // ── Vulnerability regression tests ───────────────────────────────────
 
-/// Helper: build a full height-3 tree (7 positions) and return root hash.
-fn make_full_h3_tree() -> (MemStore, [u8; 32]) {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3 should be valid");
-    let mut root = [0u8; 32];
+/// Helper: build a full height-3 tree (7 positions) and return tree.
+fn make_full_h3_tree() -> DenseFixedSizedMerkleTree<MemStorageContext> {
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+        .expect("height 3 should be valid");
     for i in 0..7u8 {
-        let (h, _) = tree
-            .insert(&[i], &store)
-            .unwrap()
-            .expect("insert should succeed");
-        root = h;
+        tree.insert(&[i]).unwrap().expect("insert should succeed");
     }
-    (store, root)
+    tree
 }
 
 #[test]
 fn test_vuln1_node_hashes_root_bypass_rejected() {
-    let (_, real_root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let real_root = tree.root_hash().unwrap().expect("root hash");
 
     // Attacker constructs a forged proof with root hash at position 0 in
     // node_hashes to short-circuit verification.
@@ -246,7 +214,8 @@ fn test_vuln1_node_hashes_root_bypass_rejected() {
 
 #[test]
 fn test_vuln1_node_hashes_ancestor_bypass_rejected() {
-    let (_, real_root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let real_root = tree.root_hash().unwrap().expect("root hash");
 
     // Position 4's ancestors are: 1 (parent of 4), 0 (root).
     // Placing a node_hash at position 1 would bypass verification of
@@ -266,20 +235,15 @@ fn test_vuln1_node_hashes_ancestor_bypass_rejected() {
 
 #[test]
 fn test_vuln2_out_of_range_entries_rejected() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3 should be valid");
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+        .expect("height 3 should be valid");
     for i in 0..3u8 {
-        tree.insert(&[i], &store)
-            .unwrap()
-            .expect("insert should succeed");
+        tree.insert(&[i]).unwrap().expect("insert should succeed");
     }
-    let root = tree
-        .root_hash(&store)
-        .unwrap()
-        .expect("root hash should succeed");
+    let root = tree.root_hash().unwrap().expect("root hash should succeed");
 
     // Generate a legitimate proof for position 0
-    let legit_proof = DenseTreeProof::generate(3, 3, &[0], &store)
+    let legit_proof = DenseTreeProof::generate(&tree, &[0])
         .unwrap()
         .expect("generate should succeed");
 
@@ -297,9 +261,10 @@ fn test_vuln2_out_of_range_entries_rejected() {
 
 #[test]
 fn test_vuln3_duplicate_entries_rejected() {
-    let (store, root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
 
-    let legit_proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let legit_proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -316,9 +281,10 @@ fn test_vuln3_duplicate_entries_rejected() {
 
 #[test]
 fn test_vuln3_duplicate_node_value_hashes_rejected() {
-    let (store, root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
 
-    let mut proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -365,9 +331,10 @@ fn test_vuln4_height_zero_rejected() {
 
 #[test]
 fn test_vuln6_overlapping_entries_and_node_value_hashes_rejected() {
-    let (store, root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
 
-    let mut proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -385,9 +352,10 @@ fn test_vuln6_overlapping_entries_and_node_value_hashes_rejected() {
 
 #[test]
 fn test_vuln6_overlapping_entries_and_node_hashes_rejected() {
-    let (store, root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
 
-    let mut proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -405,11 +373,10 @@ fn test_vuln6_overlapping_entries_and_node_hashes_rejected() {
 
 #[test]
 fn test_try_insert_success() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
+    let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
 
     let result = tree
-        .try_insert(b"first", &store)
+        .try_insert(b"first")
         .unwrap()
         .expect("try_insert should not error");
     assert!(result.is_some(), "should return Some when space available");
@@ -422,16 +389,15 @@ fn test_try_insert_success() {
 
 #[test]
 fn test_try_insert_when_full() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(1).expect("height 1");
+    let mut tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new()).expect("height 1");
 
-    tree.try_insert(b"only", &store)
+    tree.try_insert(b"only")
         .unwrap()
         .expect("first insert should work")
         .expect("should return Some");
 
     let result = tree
-        .try_insert(b"overflow", &store)
+        .try_insert(b"overflow")
         .unwrap()
         .expect("try_insert should return Ok(None), not Err");
     assert!(result.is_none(), "should return None when tree is full");
@@ -440,19 +406,15 @@ fn test_try_insert_when_full() {
 
 #[test]
 fn test_hash_position_root_matches_root_hash() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
-    tree.insert(b"a", &store).unwrap().expect("insert a");
-    tree.insert(b"b", &store).unwrap().expect("insert b");
+    let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
+    tree.insert(b"a").unwrap().expect("insert a");
+    tree.insert(b"b").unwrap().expect("insert b");
 
     let root_via_position = tree
-        .hash_position(0, &store)
+        .hash_position(0)
         .unwrap()
         .expect("hash_position(0) should succeed");
-    let root_via_method = tree
-        .root_hash(&store)
-        .unwrap()
-        .expect("root_hash should succeed");
+    let root_via_method = tree.root_hash().unwrap().expect("root_hash should succeed");
 
     assert_eq!(
         root_via_position, root_via_method,
@@ -462,11 +424,10 @@ fn test_hash_position_root_matches_root_hash() {
 
 #[test]
 fn test_hash_position_beyond_count() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3");
-    tree.insert(b"only", &store).unwrap().expect("insert");
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
+    tree.insert(b"only").unwrap().expect("insert");
 
-    let ctx = tree.hash_position(5, &store);
+    let ctx = tree.hash_position(5);
     assert_eq!(ctx.cost.hash_node_calls, 0);
     let hash = ctx.value.expect("hash_position should succeed");
     assert_eq!(hash, [0u8; 32], "unfilled position should return zero hash");
@@ -474,18 +435,18 @@ fn test_hash_position_beyond_count() {
 
 #[test]
 fn test_from_state_count_exceeds_capacity() {
-    let result = DenseFixedSizedMerkleTree::from_state(2, 100);
+    let result = DenseFixedSizedMerkleTree::from_state(2, 100, MemStorageContext::new());
     assert!(result.is_err(), "count=100 exceeds capacity=3 for height=2");
 }
 
 #[test]
 fn test_from_state_invalid_height() {
     assert!(
-        DenseFixedSizedMerkleTree::from_state(0, 0).is_err(),
+        DenseFixedSizedMerkleTree::from_state(0, 0, MemStorageContext::new()).is_err(),
         "height=0 should be invalid"
     );
     assert!(
-        DenseFixedSizedMerkleTree::from_state(17, 0).is_err(),
+        DenseFixedSizedMerkleTree::from_state(17, 0, MemStorageContext::new()).is_err(),
         "height=17 should be invalid"
     );
 }
@@ -507,8 +468,9 @@ fn test_proof_decode_empty_bytes() {
 
 #[test]
 fn test_vuln3_duplicate_node_hashes_rejected() {
-    let (store, root) = make_full_h3_tree();
-    let mut proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
+    let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -529,8 +491,9 @@ fn test_vuln3_duplicate_node_hashes_rejected() {
 
 #[test]
 fn test_vuln6_overlapping_node_value_hashes_and_node_hashes_rejected() {
-    let (store, root) = make_full_h3_tree();
-    let mut proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
+    let mut proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -567,20 +530,29 @@ fn test_count_exceeds_capacity_rejected_in_verify() {
 #[test]
 fn test_from_state_count_equals_capacity() {
     // Boundary condition: count exactly equals capacity
-    let tree = DenseFixedSizedMerkleTree::from_state(2, 3).expect("count=capacity should be valid");
+    let store = MemStorageContext::new();
+    // Pre-fill store with 3 values
+    for i in 0..3u16 {
+        store
+            .data
+            .borrow_mut()
+            .insert(position_key(i).to_vec(), vec![i as u8]);
+    }
+    let tree =
+        DenseFixedSizedMerkleTree::from_state(2, 3, store).expect("count=capacity should be valid");
     assert_eq!(tree.count(), 3);
     assert_eq!(tree.capacity(), 3);
 }
 
 #[test]
 fn test_height_16_capacity_and_insert() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(16).expect("height 16 should be valid");
+    let mut tree = DenseFixedSizedMerkleTree::new(16, MemStorageContext::new())
+        .expect("height 16 should be valid");
     assert_eq!(tree.capacity(), 65_535);
 
     // Insert and hash
     let (hash, pos) = tree
-        .insert(b"test", &store)
+        .insert(b"test")
         .unwrap()
         .expect("insert should succeed");
     assert_eq!(pos, 0);
@@ -589,8 +561,9 @@ fn test_height_16_capacity_and_insert() {
 
 #[test]
 fn test_proof_verify_one_bit_different_root() {
-    let (store, root) = make_full_h3_tree();
-    let proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
+    let proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -606,8 +579,8 @@ fn test_proof_verify_one_bit_different_root() {
 
 #[test]
 fn test_proof_verify_all_zero_root() {
-    let (store, _) = make_full_h3_tree();
-    let proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let tree = make_full_h3_tree();
+    let proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -635,9 +608,10 @@ fn test_incomplete_proof_missing_node_value_hash() {
 
 #[test]
 fn test_empty_tree_proof_generation() {
-    let store = MemStore::new();
+    let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+        .expect("height 3 should be valid");
     // Empty tree — generate proof with no positions
-    let proof = DenseTreeProof::generate(3, 0, &[], &store)
+    let proof = DenseTreeProof::generate(&tree, &[])
         .unwrap()
         .expect("generating proof for empty tree should succeed");
     assert_eq!(proof.entries.len(), 0);
@@ -649,50 +623,12 @@ fn test_empty_tree_proof_generation() {
     assert_eq!(verified.len(), 0);
 }
 
-/// Store that returns errors on specific positions.
-struct FailingStore {
-    data: RefCell<HashMap<u16, Vec<u8>>>,
-    fail_on_get: Option<u16>,
-    fail_on_put: Option<u16>,
-}
-
-impl FailingStore {
-    fn new() -> Self {
-        Self {
-            data: RefCell::new(HashMap::new()),
-            fail_on_get: None,
-            fail_on_put: None,
-        }
-    }
-}
-
-impl DenseTreeStore for FailingStore {
-    fn get_value(&self, position: u16) -> CostResult<Option<Vec<u8>>, DenseMerkleError> {
-        if self.fail_on_get == Some(position) {
-            return Err(DenseMerkleError::StoreError("simulated get failure".into()))
-                .wrap_with_cost(OperationCost::default());
-        }
-        Ok(self.data.borrow().get(&position).cloned()).wrap_with_cost(OperationCost::default())
-    }
-
-    fn put_value(&self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
-        if self.fail_on_put == Some(position) {
-            return Err(DenseMerkleError::StoreError("simulated put failure".into()))
-                .wrap_with_cost(OperationCost::default());
-        }
-        self.data.borrow_mut().insert(position, value.to_vec());
-        Ok(()).wrap_with_cost(OperationCost::default())
-    }
-}
-
 #[test]
 fn test_insert_store_put_failure() {
-    let store = FailingStore {
-        fail_on_put: Some(0),
-        ..FailingStore::new()
-    };
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
-    let result = tree.insert(b"test", &store);
+    let store = FailingStorageContext::new();
+    store.fail_on_put_key.replace(Some(position_key(0)));
+    let mut tree = DenseFixedSizedMerkleTree::new(2, store).expect("height 2");
+    let result = tree.insert(b"test");
     assert!(
         result.unwrap().is_err(),
         "insert should propagate store put error"
@@ -701,18 +637,20 @@ fn test_insert_store_put_failure() {
 
 #[test]
 fn test_root_hash_store_get_failure() {
-    // Insert with a good store, then compute hash with a failing store
-    let good_store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
-    tree.insert(b"val", &good_store)
-        .unwrap()
-        .expect("insert should succeed");
+    // Build tree via from_state with a failing store.
+    // so root_hash will try to read from storage.
+    let store = FailingStorageContext::new();
+    // Pre-fill the store with a value at position 0
+    store
+        .data
+        .borrow_mut()
+        .insert(position_key(0).to_vec(), b"val".to_vec());
+    let tree = DenseFixedSizedMerkleTree::from_state(2, 1, store).expect("from_state");
 
-    let failing_store = FailingStore {
-        fail_on_get: Some(0),
-        ..FailingStore::new()
-    };
-    let result = tree.root_hash(&failing_store);
+    // Set get failure for position 0
+    tree.storage.fail_on_get_key.replace(Some(position_key(0)));
+
+    let result = tree.root_hash();
     assert!(
         result.unwrap().is_err(),
         "root_hash should propagate store get error"
@@ -722,18 +660,18 @@ fn test_root_hash_store_get_failure() {
 #[test]
 fn test_get_store_inconsistency_errors() {
     // Build a tree with count=2 but an empty store (simulates corruption)
-    let tree = DenseFixedSizedMerkleTree::from_state(3, 2).expect("from_state should succeed");
-    let empty_store = MemStore::new();
+    let tree = DenseFixedSizedMerkleTree::from_state(3, 2, MemStorageContext::new())
+        .expect("from_state should succeed");
 
     // Position 0 is < count but has no value in store
-    let result = tree.get(0, &empty_store);
+    let result = tree.get(0);
     assert!(
         result.unwrap().is_err(),
         "get should error when position < count but store has no value"
     );
 
     // Position 5 is >= count, should return None (not error)
-    let result = tree.get(5, &empty_store);
+    let result = tree.get(5);
     assert_eq!(
         result.unwrap().expect("get beyond count should succeed"),
         None
@@ -742,16 +680,16 @@ fn test_get_store_inconsistency_errors() {
 
 #[test]
 fn test_proof_generate_store_failure() {
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(3).expect("height 3");
-    tree.insert(b"val", &store)
-        .unwrap()
-        .expect("insert should succeed");
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
+    tree.insert(b"val").unwrap().expect("insert should succeed");
 
     // Corrupt the store by removing the value
-    store.data.borrow_mut().remove(&0);
+    tree.storage
+        .data
+        .borrow_mut()
+        .remove(&position_key(0).to_vec());
 
-    let result = DenseTreeProof::generate(3, 1, &[0], &store);
+    let result = DenseTreeProof::generate(&tree, &[0]);
     assert!(
         result.unwrap().is_err(),
         "proof generation should fail when store value is missing"
@@ -829,15 +767,15 @@ fn test_dos_exactly_at_limit_accepted() {
 #[test]
 fn test_large_tree_height_8_proof() {
     // Height 8: capacity = 255 nodes
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(8).expect("height 8 should be valid");
+    let mut tree = DenseFixedSizedMerkleTree::new(8, MemStorageContext::new())
+        .expect("height 8 should be valid");
     assert_eq!(tree.capacity(), 255);
 
     // Fill the tree completely
     let mut root = [0u8; 32];
     for i in 0..255u16 {
         let (h, pos) = tree
-            .insert(&i.to_be_bytes(), &store)
+            .insert(&i.to_be_bytes())
             .unwrap()
             .expect("insert should succeed");
         assert_eq!(pos, i);
@@ -846,7 +784,7 @@ fn test_large_tree_height_8_proof() {
     assert_eq!(tree.count(), 255);
 
     // Prove a leaf deep in the tree
-    let proof = DenseTreeProof::generate(8, 255, &[200], &store)
+    let proof = DenseTreeProof::generate(&tree, &[200])
         .unwrap()
         .expect("generate proof for large tree should succeed");
     let verified = proof
@@ -860,21 +798,18 @@ fn test_large_tree_height_8_proof() {
 #[test]
 fn test_large_tree_multiple_positions_proof() {
     // Height 5: capacity = 31 nodes
-    let store = MemStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(5).expect("height 5 should be valid");
+    let mut tree = DenseFixedSizedMerkleTree::new(5, MemStorageContext::new())
+        .expect("height 5 should be valid");
 
     let mut root = [0u8; 32];
     for i in 0..31u8 {
-        let (h, _) = tree
-            .insert(&[i], &store)
-            .unwrap()
-            .expect("insert should succeed");
+        let (h, _) = tree.insert(&[i]).unwrap().expect("insert should succeed");
         root = h;
     }
 
     // Prove multiple positions at different tree levels
     let positions = vec![0, 1, 7, 15, 30]; // root, internal, mid, leaf, last leaf
-    let proof = DenseTreeProof::generate(5, 31, &positions, &store)
+    let proof = DenseTreeProof::generate(&tree, &positions)
         .unwrap()
         .expect("generate multi-position proof should succeed");
     let verified = proof
@@ -891,10 +826,11 @@ fn test_large_tree_multiple_positions_proof() {
 #[test]
 fn test_proof_complex_with_all_three_fields() {
     // Generate a proof that has entries, node_value_hashes, and node_hashes
-    let (store, root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
 
     // Prove position 4 (leaf): ancestors are 1 and 0
-    let proof = DenseTreeProof::generate(3, 7, &[4], &store)
+    let proof = DenseTreeProof::generate(&tree, &[4])
         .unwrap()
         .expect("generate should succeed");
 
@@ -919,89 +855,78 @@ fn test_proof_complex_with_all_three_fields() {
 
 #[test]
 fn test_generate_invalid_height_returns_error() {
-    let store = MemStore::new();
-
-    // Height 0 should error, not panic
-    let result = DenseTreeProof::generate(0, 0, &[], &store);
-    assert!(result.unwrap().is_err(), "height 0 should return error");
-
-    // Height 17 should error
-    let result = DenseTreeProof::generate(17, 0, &[], &store);
-    assert!(result.unwrap().is_err(), "height 17 should return error");
-
-    // Height 255 should error
-    let result = DenseTreeProof::generate(255, 0, &[], &store);
-    assert!(result.unwrap().is_err(), "height 255 should return error");
+    // Height 0 — can't create a valid tree, so create a tree with height 1
+    // and test generate with that
+    let tree = DenseFixedSizedMerkleTree::new(1, MemStorageContext::new()).expect("height 1");
+    // Can still test that the proof generate detects out-of-range positions
+    let result = DenseTreeProof::generate(&tree, &[0]);
+    // count=0 so position 0 is out of range
+    assert!(
+        result.unwrap().is_err(),
+        "position 0 should be out of range for empty tree"
+    );
 }
 
 #[test]
 fn test_insert_rollback_on_hash_failure() {
-    // Use a store that succeeds on put but fails on get (to make
-    // compute_root_hash fail after count is incremented).
-    let mut store = FailingStore::new();
+    // Test the put failure path: when put fails, count should not increment.
+    let store = FailingStorageContext::new();
+    store.fail_on_put_key.replace(Some(position_key(0)));
+    let mut tree = DenseFixedSizedMerkleTree::new(2, store).expect("height 2");
 
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
-
-    // First insert position 0 — put succeeds, but then root hash computation
-    // calls get_value(0) which will fail.
-    store.fail_on_get = Some(0);
-
-    let result = tree.insert(b"test", &store);
+    let result = tree.insert(b"test");
     assert!(
         result.unwrap().is_err(),
-        "insert should fail when hash computation fails"
+        "insert should fail when put fails"
     );
-    assert_eq!(
-        tree.count(),
-        0,
-        "count should be rolled back to 0 after hash failure"
-    );
+    assert_eq!(tree.count(), 0, "count should remain 0 after put failure");
 
-    // Now the tree should still accept inserts (it's not in a broken state)
-    store.fail_on_get = None;
+    // Now the tree should still accept inserts (clear the failure)
+    tree.storage.fail_on_put_key.replace(None);
     let (_, pos) = tree
-        .insert(b"retry", &store)
+        .insert(b"retry")
         .unwrap()
-        .expect("insert should succeed after rollback");
-    assert_eq!(
-        pos, 0,
-        "should insert at position 0 since rollback happened"
-    );
+        .expect("insert should succeed after clearing failure");
+    assert_eq!(pos, 0, "should insert at position 0");
     assert_eq!(tree.count(), 1);
 }
 
 #[test]
-fn test_try_insert_rollback_on_hash_failure() {
-    let mut store = FailingStore::new();
-    let mut tree = DenseFixedSizedMerkleTree::new(2).expect("height 2");
+fn test_try_insert_put_failure() {
+    let store = FailingStorageContext::new();
+    store.fail_on_put_key.replace(Some(position_key(0)));
+    let mut tree = DenseFixedSizedMerkleTree::new(2, store).expect("height 2");
 
-    store.fail_on_get = Some(0);
-    let result = tree.try_insert(b"test", &store);
+    let result = tree.try_insert(b"test");
     assert!(
         result.unwrap().is_err(),
-        "try_insert should fail when hash computation fails"
+        "try_insert should fail when put fails"
     );
     assert_eq!(
         tree.count(),
         0,
-        "count should be rolled back after try_insert hash failure"
+        "count should remain 0 after try_insert put failure"
     );
 
-    store.fail_on_get = None;
+    tree.storage.fail_on_put_key.replace(None);
     let result = tree
-        .try_insert(b"retry", &store)
+        .try_insert(b"retry")
         .unwrap()
-        .expect("try_insert should succeed after rollback");
-    assert!(result.is_some(), "should return Some after rollback");
+        .expect("try_insert should succeed after clearing failure");
+    assert!(
+        result.is_some(),
+        "should return Some after clearing failure"
+    );
     assert_eq!(tree.count(), 1);
 }
 
 #[test]
 fn test_deduplication_with_mixed_duplicates() {
-    let (store, root) = make_full_h3_tree();
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
 
     // Pass duplicates of multiple positions
-    let proof = DenseTreeProof::generate(3, 7, &[4, 5, 4, 6, 5, 4], &store)
+    let proof = DenseTreeProof::generate(&tree, &[4, 5, 4, 6, 5, 4])
         .unwrap()
         .expect("generate should succeed with duplicates");
 
@@ -1016,4 +941,18 @@ fn test_deduplication_with_mixed_duplicates() {
     assert_eq!(verified[0].0, 4);
     assert_eq!(verified[1].0, 5);
     assert_eq!(verified[2].0, 6);
+}
+
+// ── Reset tests ──────────────────────────────────────────────────────
+
+#[test]
+fn test_reset_clears_count() {
+    let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
+    tree.insert(b"a").unwrap().expect("insert a");
+    tree.insert(b"b").unwrap().expect("insert b");
+    assert_eq!(tree.count(), 2);
+
+    tree.reset();
+    assert_eq!(tree.count(), 0);
+    assert_eq!(tree.root_hash().unwrap().expect("root hash"), [0u8; 32]);
 }

@@ -11,15 +11,14 @@
 use std::collections::BTreeSet;
 
 use bincode::{Decode, Encode};
-use grovedb_dense_fixed_sized_merkle_tree::{DenseTreeProof, DenseTreeStore};
-use grovedb_merkle_mountain_range::{MmrNode, MmrTreeProof};
+use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
+use grovedb_merkle_mountain_range::{MMRStoreReadOps, MmrKeySize, MmrNode, MmrStore, MmrTreeProof};
 use grovedb_query::{Query, QueryItem};
-
-use grovedb_merkle_mountain_range::MMRStoreReadOps;
+use grovedb_storage::StorageContext;
 
 use crate::{
-    compute_state_root, deserialize_chunk_blob, error::BulkAppendError,
-    leaf_count_to_mmr_size,
+    compute_state_root, deserialize_chunk_blob, error::BulkAppendError, leaf_count_to_mmr_size,
+    BulkAppendTree,
 };
 
 mod tests;
@@ -190,22 +189,14 @@ impl BulkAppendTreeProof {
     /// Query items encode global u64 positions as big-endian bytes (1–8 bytes).
     ///
     /// # Arguments
-    /// * `total_count` - Total values ever appended across all chunks and the
-    ///   current buffer: `completed_chunks * chunk_item_count + buffer_count`
-    /// * `height` - Dense tree height (1–16); chunk_item_count = 2^height
     /// * `query` - Query describing the positions to prove
-    /// * `dense_store` - Store for dense tree buffer values
-    /// * `mmr_store` - Store for MMR epoch data
-    pub fn generate<D: DenseTreeStore, M>(
-        total_count: u64,
-        height: u8,
+    /// * `tree` - The BulkAppendTree to prove against
+    pub fn generate<'db, S: StorageContext<'db>>(
         query: &Query,
-        dense_store: &D,
-        mmr_store: &M,
-    ) -> Result<Self, BulkAppendError>
-    where
-        for<'a> &'a M: MMRStoreReadOps,
-    {
+        tree: &BulkAppendTree<S>,
+    ) -> Result<Self, BulkAppendError> {
+        let total_count = tree.total_count;
+        let height = tree.height();
         let chunk_item_count = ((1u32 << height) - 1) as u64 + 1; // capacity + 1 = 2^height
         let completed_chunks = total_count / chunk_item_count;
         let dense_count = (total_count % chunk_item_count) as u16;
@@ -225,8 +216,7 @@ impl BulkAppendTreeProof {
             for &(range_start, range_end) in &ranges {
                 if range_start < chunk_boundary {
                     let first_chunk = range_start / chunk_item_count;
-                    let last_chunk = std::cmp::min(range_end, chunk_boundary)
-                        .saturating_sub(1)
+                    let last_chunk = std::cmp::min(range_end, chunk_boundary).saturating_sub(1)
                         / chunk_item_count;
                     for idx in first_chunk..=last_chunk {
                         chunk_indices_set.insert(idx);
@@ -242,10 +232,9 @@ impl BulkAppendTreeProof {
 
             let chunk_indices: Vec<u64> = chunk_indices_set.into_iter().collect();
 
+            let mmr_store = MmrStore::with_key_size(&tree.dense_tree.storage, MmrKeySize::U32);
             let get_node = |pos: u64| -> grovedb_merkle_mountain_range::Result<Option<MmrNode>> {
-                mmr_store
-                    .element_at_position(pos)
-                    .unwrap() // unwrap CostResult
+                (&mmr_store).element_at_position(pos).unwrap() // unwrap CostResult
             };
 
             MmrTreeProof::generate(mmr_size, &chunk_indices, get_node).map_err(|e| {
@@ -274,7 +263,7 @@ impl BulkAppendTreeProof {
             if buffer_positions.is_empty() {
                 // No buffer positions in query — generate a proof for position
                 // 0 anyway so we can verify the root hash.
-                DenseTreeProof::generate(height, dense_count, &[0], dense_store)
+                DenseTreeProof::generate(&tree.dense_tree, &[0])
                     .unwrap()
                     .map_err(|e| {
                         BulkAppendError::StorageError(format!(
@@ -284,7 +273,7 @@ impl BulkAppendTreeProof {
                     })?
             } else {
                 let positions: Vec<u16> = buffer_positions.into_iter().collect();
-                DenseTreeProof::generate(height, dense_count, &positions, dense_store)
+                DenseTreeProof::generate(&tree.dense_tree, &positions)
                     .unwrap()
                     .map_err(|e| {
                         BulkAppendError::StorageError(format!(
@@ -356,13 +345,9 @@ impl BulkAppendTreeProof {
             // Empty MMR — no chunks exist
             ([0u8; 32], Vec::new())
         } else {
-            let (root, verified_leaves) =
-                self.chunk_proof.verify_and_get_root().map_err(|e| {
-                    BulkAppendError::InvalidProof(format!(
-                        "chunk MMR proof verification failed: {}",
-                        e
-                    ))
-                })?;
+            let (root, verified_leaves) = self.chunk_proof.verify_and_get_root().map_err(|e| {
+                BulkAppendError::InvalidProof(format!("chunk MMR proof verification failed: {}", e))
+            })?;
             (root, verified_leaves)
         };
 
@@ -399,9 +384,9 @@ impl BulkAppendTreeProof {
     /// Combines cryptographic verification with completeness checking.
     /// Query items encode global u64 positions as big-endian bytes (1–8 bytes).
     ///
-    /// Positions below `completed_chunks * chunk_item_count` live in chunk blobs
-    /// (each chunk holds `chunk_item_count` items); positions at or above that
-    /// boundary live in the dense buffer.
+    /// Positions below `completed_chunks * chunk_item_count` live in chunk
+    /// blobs (each chunk holds `chunk_item_count` items); positions at or
+    /// above that boundary live in the dense buffer.
     ///
     /// Returns matched `(global_position, value)` pairs collected into `C`.
     /// `C` can be `Vec<(u64, Vec<u8>)>`, `BTreeMap<u64, Vec<u8>>`,
@@ -436,15 +421,13 @@ impl BulkAppendTreeProof {
         let buffer_start = completed_chunks * chunk_item_count;
 
         // ── Check chunk completeness ───────────────────────────────────
-        let proved_chunks: BTreeSet<u64> =
-            result.chunk_blobs.iter().map(|(idx, _)| *idx).collect();
+        let proved_chunks: BTreeSet<u64> = result.chunk_blobs.iter().map(|(idx, _)| *idx).collect();
 
         for &(range_start, range_end) in &ranges {
             if range_start < buffer_start {
                 let first = range_start / chunk_item_count;
-                let last = std::cmp::min(range_end, buffer_start)
-                    .saturating_sub(1)
-                    / chunk_item_count;
+                let last =
+                    std::cmp::min(range_end, buffer_start).saturating_sub(1) / chunk_item_count;
                 for idx in first..=last {
                     if !proved_chunks.contains(&idx) {
                         return Err(BulkAppendError::InvalidProof(format!(
@@ -589,4 +572,3 @@ impl BulkAppendTreeProofResult {
         Ok(result)
     }
 }
-

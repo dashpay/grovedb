@@ -1,17 +1,50 @@
 //! Append and compaction logic for BulkAppendTree.
 
-use grovedb_dense_fixed_sized_merkle_tree::{DenseFixedSizedMerkleTree, DenseTreeStore};
 use grovedb_merkle_mountain_range::{
-    hash_count_for_push, mmr_size_to_leaf_count, MMRStoreReadOps, MMRStoreWriteOps, MmrNode, MMR,
+    hash_count_for_push, mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR,
 };
+use grovedb_storage::StorageContext;
 
-use super::{hash::compute_state_root, AppendResult, BulkAppendTree};
+use super::{capacity_for_height, hash::compute_state_root, AppendResult, BulkAppendTree};
 use crate::{chunk::serialize_chunk_blob, BulkAppendError};
 
-impl<D: DenseTreeStore, M> BulkAppendTree<D, M>
-where
-    for<'a> &'a M: MMRStoreReadOps + MMRStoreWriteOps,
-{
+impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
+    /// Create a new empty tree.
+    ///
+    /// `height` is the dense tree height (1–16). Capacity = `2^height - 1`.
+    pub fn new(height: u8, storage: S) -> Result<Self, BulkAppendError> {
+        let dense_tree =
+            grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::new(height, storage)
+                .map_err(|e| BulkAppendError::InvalidInput(format!("invalid height: {}", e)))?;
+        Ok(Self {
+            total_count: 0,
+            dense_tree,
+        })
+    }
+
+    /// Restore from persisted state.
+    ///
+    /// `mmr_size` is derived from `total_count` and `epoch_size`.
+    /// Dense tree count is derived from `total_count % epoch_size`.
+    pub fn from_state(total_count: u64, height: u8, storage: S) -> Result<Self, BulkAppendError> {
+        let capacity = capacity_for_height(height)?;
+        let epoch_size = capacity as u64 + 1; // capacity + 1 = 2^height
+        let dense_count = (total_count % epoch_size) as u16;
+        let dense_tree =
+            grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::from_state(
+                height,
+                dense_count,
+                storage,
+            )
+            .map_err(|e| {
+                BulkAppendError::InvalidInput(format!("invalid dense tree state: {}", e))
+            })?;
+        Ok(Self {
+            total_count,
+            dense_tree,
+        })
+    }
+
     /// Append a value to the tree.
     ///
     /// Handles dense tree insert, auto-compaction when the buffer fills, and
@@ -21,13 +54,9 @@ where
         let global_position = self.total_count;
 
         // 1. Try to insert into the dense tree buffer
-        let try_result = self
-            .dense_tree
-            .try_insert(value, &self.dense_store)
-            .unwrap()
-            .map_err(|e| {
-                BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
-            })?;
+        let try_result = self.dense_tree.try_insert(value).unwrap().map_err(|e| {
+            BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
+        })?;
 
         let (compacted, mmr_root, final_dense_root) = match try_result {
             Some((dense_root, _position)) => {
@@ -63,23 +92,16 @@ where
     /// Compute the current state root without modifying the tree.
     pub fn compute_current_state_root(&self) -> Result<[u8; 32], BulkAppendError> {
         let mmr_root = self.get_mmr_root()?;
-        let dense_root = self
-            .dense_tree
-            .root_hash(&self.dense_store)
-            .unwrap()
-            .map_err(|e| {
-                BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
-            })?;
+        let dense_root = self.dense_tree.root_hash().unwrap().map_err(|e| {
+            BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
+        })?;
         Ok(compute_state_root(&mmr_root, &dense_root))
     }
 
     /// Compact all dense tree entries plus a new value into a chunk blob
     /// and append to the chunk MMR. Resets the dense tree.
     /// Returns `(hash_count, mmr_root)`.
-    fn compact_with_value(
-        &mut self,
-        new_value: &[u8],
-    ) -> Result<(u32, [u8; 32]), BulkAppendError> {
+    fn compact_with_value(&mut self, new_value: &[u8]) -> Result<(u32, [u8; 32]), BulkAppendError> {
         let mut hash_count: u32 = 0;
         let count = self.dense_tree.count();
 
@@ -88,13 +110,10 @@ where
         for i in 0..count {
             let value = self
                 .dense_tree
-                .get(i, &self.dense_store)
+                .get(i)
                 .unwrap()
                 .map_err(|e| {
-                    BulkAppendError::StorageError(format!(
-                        "dense tree get at {} failed: {}",
-                        i, e
-                    ))
+                    BulkAppendError::StorageError(format!("dense tree get at {} failed: {}", i, e))
                 })?
                 .ok_or_else(|| {
                     BulkAppendError::CorruptedData(format!(
@@ -117,27 +136,30 @@ where
         let leaf_count = mmr_size_to_leaf_count(mmr_size);
         hash_count += hash_count_for_push(leaf_count);
 
-        let mut mmr = MMR::new(mmr_size, &self.mmr_store);
-        mmr.push(leaf)
-            .unwrap()
-            .map_err(|e| BulkAppendError::MmrError(format!("MMR push failed: {}", e)))?;
+        // Create MmrStore on the fly from the dense tree's storage
+        let mmr_root = {
+            let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+            let mut mmr = MMR::new(mmr_size, &mmr_store);
+            mmr.push(leaf)
+                .unwrap()
+                .map_err(|e| BulkAppendError::MmrError(format!("MMR push failed: {}", e)))?;
 
-        // Get root BEFORE commit — data is still in the MMRBatch overlay
-        let root_node = mmr
-            .get_root()
-            .unwrap()
-            .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
-        let mmr_root = root_node.hash();
+            // Get root BEFORE commit — data is still in the MMRBatch overlay
+            let root_node = mmr
+                .get_root()
+                .unwrap()
+                .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
+            let root = root_node.hash();
 
-        mmr.commit()
-            .unwrap()
-            .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
+            mmr.commit()
+                .unwrap()
+                .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
+
+            root
+        };
 
         // Reset dense tree (old values stay in store, overwritten on next cycle)
-        self.dense_tree =
-            DenseFixedSizedMerkleTree::new(self.dense_tree.height()).map_err(|e| {
-                BulkAppendError::InvalidInput(format!("reset dense tree failed: {}", e))
-            })?;
+        self.dense_tree.reset();
 
         Ok((hash_count, mmr_root))
     }
@@ -148,7 +170,8 @@ where
         if mmr_size == 0 {
             return Ok([0u8; 32]);
         }
-        let mmr = MMR::new(mmr_size, &self.mmr_store);
+        let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+        let mmr = MMR::new(mmr_size, &mmr_store);
         let root_node = mmr
             .get_root()
             .unwrap()

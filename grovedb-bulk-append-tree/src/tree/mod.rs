@@ -1,8 +1,8 @@
 //! BulkAppendTree: two-level authenticated append-only structure.
 //!
 //! - A dense fixed-sized Merkle tree buffer holds incoming values
-//! - When the buffer fills, entries are serialized into an immutable chunk
-//!   blob and appended to a chunk-level MMR
+//! - When the buffer fills, entries are serialized into an immutable chunk blob
+//!   and appended to a chunk-level MMR
 //! - Completed chunk blobs are permanently immutable and CDN-cacheable
 //!
 //! State root = blake3("bulk_state" || mmr_root || dense_tree_root) — changes
@@ -17,7 +17,7 @@ pub use query::{BufferQueryResult, ChunkQueryResult};
 #[cfg(test)]
 mod tests;
 
-use grovedb_dense_fixed_sized_merkle_tree::{DenseFixedSizedMerkleTree, DenseTreeStore};
+use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
 
 use crate::BulkAppendError;
 
@@ -54,54 +54,19 @@ pub fn leaf_count_to_mmr_size(leaf_count: u64) -> u64 {
 ///
 /// The state root is `blake3("bulk_state" || mmr_root || dense_tree_root)` and
 /// changes on every append.
-pub struct BulkAppendTree<D: DenseTreeStore, M> {
-    pub(crate) total_count: u64,
-    pub(crate) dense_tree: DenseFixedSizedMerkleTree,
-    pub dense_store: D,
-    pub mmr_store: M,
+///
+/// Storage is embedded in the dense tree (and shared with the MMR via
+/// `MmrStore` adapter), following the same pattern as Merk.
+pub struct BulkAppendTree<S> {
+    /// Total number of values ever appended across all completed chunks and the
+    /// current buffer. Used to derive chunk_count (`total_count / epoch_size`)
+    /// and buffer_count (`total_count % epoch_size`), which in turn determine
+    /// the MMR size and dense tree state.
+    pub total_count: u64,
+    pub dense_tree: DenseFixedSizedMerkleTree<S>,
 }
 
-impl<D: DenseTreeStore, M> BulkAppendTree<D, M> {
-    /// Create a new empty tree.
-    ///
-    /// `height` is the dense tree height (1–16). Capacity = `2^height - 1`.
-    pub fn new(height: u8, dense_store: D, mmr_store: M) -> Result<Self, BulkAppendError> {
-        let dense_tree = DenseFixedSizedMerkleTree::new(height).map_err(|e| {
-            BulkAppendError::InvalidInput(format!("invalid height: {}", e))
-        })?;
-        Ok(Self {
-            total_count: 0,
-            dense_tree,
-            dense_store,
-            mmr_store,
-        })
-    }
-
-    /// Restore from persisted state.
-    ///
-    /// `mmr_size` is derived from `total_count` and `epoch_size`.
-    /// Dense tree count is derived from `total_count % epoch_size`.
-    pub fn from_state(
-        total_count: u64,
-        height: u8,
-        dense_store: D,
-        mmr_store: M,
-    ) -> Result<Self, BulkAppendError> {
-        let capacity = capacity_for_height(height)?;
-        let epoch_size = capacity as u64 + 1; // capacity + 1 = 2^height
-        let dense_count = (total_count % epoch_size) as u16;
-        let dense_tree =
-            DenseFixedSizedMerkleTree::from_state(height, dense_count).map_err(|e| {
-                BulkAppendError::InvalidInput(format!("invalid dense tree state: {}", e))
-            })?;
-        Ok(Self {
-            total_count,
-            dense_tree,
-            dense_store,
-            mmr_store,
-        })
-    }
-
+impl<S> BulkAppendTree<S> {
     /// The capacity of the dense tree buffer: `2^height - 1`.
     pub fn capacity(&self) -> u16 {
         self.dense_tree.capacity()
@@ -110,25 +75,25 @@ impl<D: DenseTreeStore, M> BulkAppendTree<D, M> {
     /// The number of entries per completed chunk (epoch).
     ///
     /// Each chunk contains all `capacity` entries from a full dense tree
-    /// plus the overflow value that triggered compaction: `capacity + 1 = 2^height`.
+    /// plus the overflow value that triggered compaction: `capacity + 1 =
+    /// 2^height`.
     pub fn epoch_size(&self) -> u64 {
         self.capacity() as u64 + 1
     }
 
     // ── State accessors ─────────────────────────────────────────────────
 
-    pub fn total_count(&self) -> u64 {
-        self.total_count
-    }
-
+    /// Number of completed chunks in the MMR.
     pub fn chunk_count(&self) -> u64 {
         self.total_count / self.epoch_size()
     }
 
+    /// Number of values currently in the buffer.
     pub fn buffer_count(&self) -> u16 {
         self.dense_tree.count()
     }
 
+    /// Height of the dense tree.
     pub fn height(&self) -> u8 {
         self.dense_tree.height()
     }
@@ -138,7 +103,8 @@ impl<D: DenseTreeStore, M> BulkAppendTree<D, M> {
         leaf_count_to_mmr_size(self.chunk_count())
     }
 
-    pub fn dense_tree(&self) -> &DenseFixedSizedMerkleTree {
+    /// Reference to the internal dense tree.
+    pub fn dense_tree(&self) -> &DenseFixedSizedMerkleTree<S> {
         &self.dense_tree
     }
 }

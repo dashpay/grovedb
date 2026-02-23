@@ -130,6 +130,35 @@ pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
 
 // ── Storage and cost helpers ────────────────────────────────────────────
 
+/// Controls the byte width of MMR storage keys.
+///
+/// `U64` (default) uses 8-byte big-endian keys for full u64 positions.
+/// `U32` uses 4-byte big-endian keys, truncating the position to u32 and
+/// saving 4 bytes per key for trees that will never exceed ~4 billion nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MmrKeySize {
+    /// 4-byte keys (position truncated to u32).
+    U32,
+    /// 8-byte keys (full u64 position).
+    #[default]
+    U64,
+}
+
+/// A compact, inline storage key for an MMR node.
+///
+/// Holds up to 8 bytes and exposes only the relevant prefix via
+/// `AsRef<[u8]>`, avoiding heap allocation.
+pub struct MmrKey {
+    bytes: [u8; 8],
+    len: usize,
+}
+
+impl AsRef<[u8]> for MmrKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
 /// Build the storage key for an MMR node at a given position.
 ///
 /// Format: raw u64 big-endian (8 bytes).
@@ -137,6 +166,33 @@ pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
 /// storage context in GroveDB (keyed by the Blake3 hash of the path).
 pub fn mmr_node_key(pos: u64) -> [u8; 8] {
     pos.to_be_bytes()
+}
+
+/// Build the storage key for an MMR node with configurable key width.
+///
+/// With [`MmrKeySize::U64`], produces an 8-byte big-endian key with the
+/// MSB set. With [`MmrKeySize::U32`], produces a 4-byte key (position
+/// truncated to `u32`) with the MSB set.
+///
+/// The MSB is always set so that MMR keys are namespaced away from other
+/// data in the same storage context (e.g. dense tree keys which are
+/// 2-byte `u16` positions and never have the MSB of a 4/8-byte key set).
+pub fn mmr_node_key_sized(pos: u64, key_size: MmrKeySize) -> MmrKey {
+    match key_size {
+        MmrKeySize::U32 => {
+            let tagged = (pos as u32) | 0x8000_0000;
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&tagged.to_be_bytes());
+            MmrKey { bytes, len: 4 }
+        }
+        MmrKeySize::U64 => {
+            let tagged = pos | 0x8000_0000_0000_0000;
+            MmrKey {
+                bytes: tagged.to_be_bytes(),
+                len: 8,
+            }
+        }
+    }
 }
 
 /// Returns the exact number of Blake3 hash calls for pushing one leaf.

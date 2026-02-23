@@ -1,44 +1,13 @@
 //! Unit tests for BulkAppendTree.
 
-use std::{cell::RefCell, collections::HashMap};
-
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_dense_fixed_sized_merkle_tree::{DenseMerkleError, DenseTreeStore};
-use grovedb_merkle_mountain_range::MemStore;
-
 use super::BulkAppendTree;
-use crate::chunk::deserialize_chunk_blob;
-
-/// In-memory DenseTreeStore for buffer data.
-struct MemDenseStore {
-    data: RefCell<HashMap<u16, Vec<u8>>>,
-}
-
-impl MemDenseStore {
-    fn new() -> Self {
-        Self {
-            data: RefCell::new(HashMap::new()),
-        }
-    }
-}
-
-impl DenseTreeStore for MemDenseStore {
-    fn get_value(&self, position: u16) -> CostResult<Option<Vec<u8>>, DenseMerkleError> {
-        Ok(self.data.borrow().get(&position).cloned())
-            .wrap_with_cost(OperationCost::default())
-    }
-
-    fn put_value(&self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
-        self.data.borrow_mut().insert(position, value.to_vec());
-        Ok(()).wrap_with_cost(OperationCost::default())
-    }
-}
+use crate::{chunk::deserialize_chunk_blob, test_utils::MemStorageContext};
 
 #[test]
 fn new_tree() {
     let tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree with height=2");
-    assert_eq!(tree.total_count(), 0);
+        BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree with height=2");
+    assert_eq!(tree.total_count, 0);
     assert_eq!(tree.chunk_count(), 0);
     assert_eq!(tree.buffer_count(), 0);
     assert_eq!(tree.height(), 2);
@@ -49,9 +18,9 @@ fn new_tree() {
 
 #[test]
 fn from_state() {
-    let tree = BulkAppendTree::from_state(10, 2u8, MemDenseStore::new(), MemStore::default())
-        .expect("restore from state");
-    assert_eq!(tree.total_count(), 10);
+    let tree =
+        BulkAppendTree::from_state(10, 2u8, MemStorageContext::new()).expect("restore from state");
+    assert_eq!(tree.total_count, 10);
     assert_eq!(tree.height(), 2);
     assert_eq!(tree.chunk_count(), 2); // 10 / 4 = 2 (epoch_size = 4)
     assert_eq!(tree.buffer_count(), 2); // 10 % 4 = 2
@@ -60,19 +29,18 @@ fn from_state() {
 
 #[test]
 fn new_tree_invalid_height() {
-    assert!(BulkAppendTree::new(0u8, MemDenseStore::new(), MemStore::default()).is_err());
-    assert!(BulkAppendTree::new(17u8, MemDenseStore::new(), MemStore::default()).is_err());
+    assert!(BulkAppendTree::new(0u8, MemStorageContext::new()).is_err());
+    assert!(BulkAppendTree::new(17u8, MemStorageContext::new()).is_err());
 }
 
 #[test]
 fn single_append() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree");
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     let result = tree.append(b"hello").expect("append hello");
     assert_eq!(result.global_position, 0);
     assert!(!result.compacted);
-    assert_eq!(tree.total_count(), 1);
+    assert_eq!(tree.total_count, 1);
     assert_eq!(tree.buffer_count(), 1);
     assert_eq!(tree.chunk_count(), 0);
 
@@ -83,8 +51,7 @@ fn single_append() {
 
 #[test]
 fn multiple_appends_no_compaction() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree");
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     // Height=2, capacity=3. Append 2 values (no compaction).
     for i in 0..2 {
@@ -92,15 +59,14 @@ fn multiple_appends_no_compaction() {
         assert_eq!(result.global_position, i as u64);
         assert!(!result.compacted);
     }
-    assert_eq!(tree.total_count(), 2);
+    assert_eq!(tree.total_count, 2);
     assert_eq!(tree.buffer_count(), 2);
     assert_eq!(tree.chunk_count(), 0);
 }
 
 #[test]
 fn compaction_trigger() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree");
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     // Height=2, capacity=3, epoch_size=4. First 3 appends fill the buffer,
     // 4th triggers compaction (try_insert returns None when buffer is full).
@@ -111,15 +77,15 @@ fn compaction_trigger() {
     let result = tree.append(&[3]).expect("append compacting entry");
     assert!(result.compacted);
     assert_eq!(result.global_position, 3);
-    assert_eq!(tree.total_count(), 4);
+    assert_eq!(tree.total_count, 4);
     assert_eq!(tree.buffer_count(), 0);
     assert_eq!(tree.chunk_count(), 1);
 }
 
 #[test]
 fn multi_chunk() {
-    let mut tree =
-        BulkAppendTree::new(1u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // height=1, capacity=1
+    // height=1, capacity=1
+    let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
 
     // Capacity=1, epoch_size=2. Every 2 appends creates one chunk:
     //   append 0 → buffer (count=1), append 1 → compaction (chunk has [0,1])
@@ -128,15 +94,15 @@ fn multi_chunk() {
     for i in 0..4u8 {
         tree.append(&[i]).expect("append entry");
     }
-    assert_eq!(tree.total_count(), 4);
+    assert_eq!(tree.total_count, 4);
     assert_eq!(tree.chunk_count(), 2);
     assert_eq!(tree.buffer_count(), 0);
 }
 
 #[test]
 fn get_chunk_value_from_mmr() {
-    let mut tree =
-        BulkAppendTree::new(1u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=1, epoch_size=2
+    // capacity=1, epoch_size=2
+    let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
 
     // append a → buffer (count=1=capacity, no compaction)
     // append b → try_insert fails (full), compact [a, b] → chunk 0
@@ -171,8 +137,8 @@ fn get_chunk_value_from_mmr() {
 
 #[test]
 fn get_buffer_value_from_dense_tree() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=3
+    // capacity=3
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     tree.append(b"a").expect("append a");
     tree.append(b"b").expect("append b");
@@ -192,8 +158,8 @@ fn get_buffer_value_from_dense_tree() {
 
 #[test]
 fn get_chunk_blob() {
-    let mut tree =
-        BulkAppendTree::new(1u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=1, epoch_size=2
+    // capacity=1, epoch_size=2
+    let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
 
     // Need 2 appends to trigger compaction (epoch_size=2)
     tree.append(b"x").expect("append x");
@@ -211,8 +177,8 @@ fn get_chunk_blob() {
 
 #[test]
 fn query_buffer_entries() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=3
+    // capacity=3
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     tree.append(b"a").expect("append a");
     tree.append(b"b").expect("append b");
@@ -228,8 +194,8 @@ fn query_buffer_entries() {
 
 #[test]
 fn query_chunks_from_mmr() {
-    let mut tree =
-        BulkAppendTree::new(1u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=1, epoch_size=2
+    // capacity=1, epoch_size=2
+    let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
 
     // 4 appends → 2 chunks: chunk 0 = [a,b], chunk 1 = [c,d]
     tree.append(b"a").expect("append a");
@@ -271,29 +237,23 @@ fn leaf_count_to_mmr_size_formula() {
 #[test]
 fn state_root_determinism() {
     // Two trees with same data should have same state root
-    let mut tree1 =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree1");
-    let mut tree2 =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree2");
+    let mut tree1 = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree1");
+    let mut tree2 = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree2");
 
     for i in 0..5u8 {
         tree1.append(&[i]).expect("append to tree1");
         tree2.append(&[i]).expect("append to tree2");
     }
 
-    let root1 = tree1
-        .compute_current_state_root()
-        .expect("state root 1");
-    let root2 = tree2
-        .compute_current_state_root()
-        .expect("state root 2");
+    let root1 = tree1.compute_current_state_root().expect("state root 1");
+    let root2 = tree2.compute_current_state_root().expect("state root 2");
     assert_eq!(root1, root2);
 }
 
 #[test]
 fn hash_count_accuracy() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=3, epoch_size=4
+    // capacity=3, epoch_size=4
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     // Non-compacting append includes dense tree hashing + state root
     let r = tree.append(b"a").expect("append a");
@@ -302,7 +262,8 @@ fn hash_count_accuracy() {
     tree.append(b"b").expect("append b");
     tree.append(b"c").expect("append c");
 
-    // 4th append triggers compaction: should have more hash calls (dense + mmr + state root)
+    // 4th append triggers compaction: should have more hash calls (dense + mmr +
+    // state root)
     let r = tree.append(b"d").expect("append d (compaction)");
     assert!(r.compacted);
     assert!(r.hash_count > 1);
@@ -310,21 +271,18 @@ fn hash_count_accuracy() {
 
 #[test]
 fn from_state_roundtrip() {
-    let dense_store = MemDenseStore::new();
-    let mmr_store = MemStore::default();
-    let mut tree = BulkAppendTree::new(2u8, dense_store, mmr_store).expect("create tree");
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     tree.append(b"hello").expect("append hello");
     tree.append(b"world").expect("append world");
 
-    let total_count = tree.total_count();
+    let total_count = tree.total_count;
     let mmr_size = tree.mmr_size();
     let buffer_count = tree.buffer_count();
 
     // Restore from state using element fields — reuse the same stores
-    let loaded = BulkAppendTree::from_state(2, 2u8, MemDenseStore::new(), MemStore::default())
-        .expect("from_state");
-    assert_eq!(loaded.total_count(), 2);
+    let loaded = BulkAppendTree::from_state(2, 2u8, MemStorageContext::new()).expect("from_state");
+    assert_eq!(loaded.total_count, 2);
     assert_eq!(loaded.mmr_size(), mmr_size);
     assert_eq!(loaded.buffer_count(), buffer_count);
 
@@ -335,14 +293,14 @@ fn from_state_roundtrip() {
 
 #[test]
 fn compaction_and_continue() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=3, epoch_size=4
+    // capacity=3, epoch_size=4
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     // Fill one epoch and continue
     for i in 0..5u8 {
         tree.append(&[i]).expect("append");
     }
-    assert_eq!(tree.total_count(), 5);
+    assert_eq!(tree.total_count, 5);
     assert_eq!(tree.chunk_count(), 1); // 5/4 = 1 full chunk
     assert_eq!(tree.buffer_count(), 1); // 5%4 = 1
 
@@ -363,14 +321,14 @@ fn compaction_and_continue() {
 
 #[test]
 fn multiple_compaction_cycles() {
-    let mut tree =
-        BulkAppendTree::new(2u8, MemDenseStore::new(), MemStore::default()).expect("create tree"); // capacity=3, epoch_size=4
+    // capacity=3, epoch_size=4
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
     // 8 values = 2 full chunks (8/4 = 2)
     for i in 0..8u8 {
         tree.append(&[i]).expect("append");
     }
-    assert_eq!(tree.total_count(), 8);
+    assert_eq!(tree.total_count, 8);
     assert_eq!(tree.chunk_count(), 2);
     assert_eq!(tree.buffer_count(), 0);
 

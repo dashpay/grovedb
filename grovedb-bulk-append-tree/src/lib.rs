@@ -13,16 +13,15 @@ mod error;
 pub mod proof;
 mod tree;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 // Re-export main types
 pub use chunk::{deserialize_chunk_blob, serialize_chunk_blob};
 pub use error::BulkAppendError;
-pub use grovedb_dense_fixed_sized_merkle_tree::{
-    DenseFixedSizedMerkleTree, DenseTreeProof, DenseTreeStore,
-};
-pub use grovedb_merkle_mountain_range::{MMRStoreReadOps, MMRStoreWriteOps, MemStore};
+pub use grovedb_dense_fixed_sized_merkle_tree::{DenseFixedSizedMerkleTree, DenseTreeProof};
+pub use grovedb_merkle_mountain_range::{MmrKeySize, MmrStore};
 pub use proof::{BulkAppendTreeProof, BulkAppendTreeProofResult};
-#[cfg(feature = "storage")]
-pub use grovedb_merkle_mountain_range::MmrStore;
 pub use tree::{
     hash::compute_state_root, leaf_count_to_mmr_size, AppendResult, BufferQueryResult,
     BulkAppendTree, ChunkQueryResult,

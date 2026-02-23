@@ -39,8 +39,9 @@ mod tests;
 pub use error::{Error, Result};
 pub use grovedb_costs::{CostResult, CostsExt, OperationCost};
 pub use helper::{
-    hash_count_for_push, leaf_index_to_mmr_size, leaf_index_to_mmr_size as leaf_to_mmr_size,
-    leaf_index_to_pos, leaf_index_to_pos as leaf_to_pos, mmr_node_key, mmr_size_to_leaf_count,
+    MmrKey, MmrKeySize, hash_count_for_push, leaf_index_to_mmr_size,
+    leaf_index_to_mmr_size as leaf_to_mmr_size, leaf_index_to_pos,
+    leaf_index_to_pos as leaf_to_pos, mmr_node_key, mmr_node_key_sized, mmr_size_to_leaf_count,
 };
 #[cfg(any(test, feature = "mem_store"))]
 pub use mem_store::MemStore;
