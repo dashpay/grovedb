@@ -13,15 +13,14 @@ use grovedb_storage::{Batch, RawIterator, StorageContext};
 /// Immediate reads and writes backed by a `HashMap`. Only `get` and `put`
 /// (data storage) have real implementations; all other `StorageContext`
 /// methods panic if called.
+#[derive(Default)]
 pub(crate) struct MemStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl MemStorageContext {
     pub fn new() -> Self {
-        Self {
-            data: RefCell::new(HashMap::new()),
-        }
+        Self::default()
     }
 }
 
@@ -143,6 +142,7 @@ impl<'db> StorageContext<'db> for MemStorageContext {
 ///
 /// Uses `RefCell` for fail conditions so they can be set after the storage
 /// is moved into a tree.
+#[derive(Default)]
 pub(crate) struct FailingStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
     pub fail_on_get_key: RefCell<Option<[u8; 2]>>,
@@ -151,11 +151,7 @@ pub(crate) struct FailingStorageContext {
 
 impl FailingStorageContext {
     pub fn new() -> Self {
-        Self {
-            data: RefCell::new(HashMap::new()),
-            fail_on_get_key: RefCell::new(None),
-            fail_on_put_key: RefCell::new(None),
-        }
+        Self::default()
     }
 }
 

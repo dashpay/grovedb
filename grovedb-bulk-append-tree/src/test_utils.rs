@@ -13,15 +13,14 @@ use grovedb_storage::{Batch, RawIterator, StorageContext};
 /// Immediate reads and writes backed by a `HashMap`. Only `get` and `put`
 /// (data storage) have real implementations; all other `StorageContext`
 /// methods panic if called.
+#[derive(Default)]
 pub(crate) struct MemStorageContext {
     pub data: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl MemStorageContext {
     pub fn new() -> Self {
-        Self {
-            data: RefCell::new(HashMap::new()),
-        }
+        Self::default()
     }
 }
 
