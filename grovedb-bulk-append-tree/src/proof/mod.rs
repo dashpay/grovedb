@@ -563,6 +563,12 @@ impl BulkAppendTreeProofResult {
         start: u64,
         end: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, BulkAppendError> {
+        if self.height == 0 || self.height > 16 {
+            return Err(BulkAppendError::InvalidProof(format!(
+                "invalid height {} in proof result (must be 1..=16)",
+                self.height
+            )));
+        }
         let chunk_item_count = ((1u32 << self.height) - 1) as u64 + 1;
         let completed_chunks = self.total_count / chunk_item_count;
         let buffer_start = completed_chunks * chunk_item_count;
