@@ -195,8 +195,7 @@ impl GroveDb {
         // 4. Append item to BulkAppendTree (data namespace)
         let mut tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
-                .map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
         let mut item_value = Vec::with_capacity(32 + payload.len());
@@ -393,8 +392,7 @@ impl GroveDb {
 
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
-                .map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
         let epoch_size = tree.epoch_size();

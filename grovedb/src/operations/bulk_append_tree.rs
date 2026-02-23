@@ -78,12 +78,10 @@ impl GroveDb {
         // 3. Load tree, append
         let mut tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
-                .map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
-        let result =
-            cost_return_on_error_no_add!(cost, tree.append(&value).map_err(map_bulk_err));
+        let result = cost_return_on_error_no_add!(cost, tree.append(&value).map_err(map_bulk_err));
 
         cost.hash_node_calls += result.hash_count;
 
@@ -195,8 +193,7 @@ impl GroveDb {
 
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
-                .map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
         let epoch_size = tree.epoch_size();
@@ -224,8 +221,10 @@ impl GroveDb {
                         chunk_idx
                     ))))
             );
-            let entries =
-                cost_return_on_error_no_add!(cost, deserialize_chunk_blob(&blob).map_err(map_bulk_err));
+            let entries = cost_return_on_error_no_add!(
+                cost,
+                deserialize_chunk_blob(&blob).map_err(map_bulk_err)
+            );
             Ok(entries.get(pos_in_chunk).cloned()).wrap_with_cost(cost)
         }
     }
@@ -274,12 +273,13 @@ impl GroveDb {
 
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
-                .map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
-        let result =
-            cost_return_on_error_no_add!(cost, tree.get_chunk_value(chunk_index).map_err(map_bulk_err));
+        let result = cost_return_on_error_no_add!(
+            cost,
+            tree.get_chunk_value(chunk_index).map_err(map_bulk_err)
+        );
 
         Ok(result).wrap_with_cost(cost)
     }
@@ -326,8 +326,7 @@ impl GroveDb {
 
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
-                .map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
         );
 
         let buffer_count = tree.buffer_count();

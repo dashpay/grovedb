@@ -1293,9 +1293,9 @@ impl GroveDb {
                                 *chunk_power,
                                 storage_ctx,
                             ) {
-                                Ok(tree) => tree
-                                    .compute_current_state_root()
-                                    .unwrap_or(merk_root_hash),
+                                Ok(tree) => {
+                                    tree.compute_current_state_root().unwrap_or(merk_root_hash)
+                                }
                                 Err(_) => merk_root_hash,
                             }
                         }
@@ -1316,9 +1316,9 @@ impl GroveDb {
                                 *chunk_power,
                                 storage_ctx,
                             ) {
-                                Ok(tree) => tree
-                                    .compute_current_state_root()
-                                    .unwrap_or(merk_root_hash),
+                                Ok(tree) => {
+                                    tree.compute_current_state_root().unwrap_or(merk_root_hash)
+                                }
                                 Err(_) => merk_root_hash,
                             }
                         }
