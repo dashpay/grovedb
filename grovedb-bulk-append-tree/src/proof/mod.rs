@@ -338,7 +338,20 @@ impl BulkAppendTreeProof {
         }
 
         let chunk_item_count = ((1u32 << height) - 1) as u64 + 1;
+        let completed_chunks = total_count / chunk_item_count;
         let dense_count = (total_count % chunk_item_count) as u16;
+        let expected_mmr_size = leaf_count_to_mmr_size(completed_chunks);
+
+        // Cross-validate MMR size: the proof's mmr_size must match the
+        // expected size derived from (total_count, height).
+        let proof_mmr_size = self.chunk_proof.mmr_size();
+        if proof_mmr_size != expected_mmr_size {
+            return Err(BulkAppendError::InvalidProof(format!(
+                "chunk proof mmr_size {} does not match expected {} (total_count={}, \
+                 completed_chunks={})",
+                proof_mmr_size, expected_mmr_size, total_count, completed_chunks
+            )));
+        }
 
         // 1. Verify chunk MMR sub-proof
         let (mmr_root, chunk_blobs) = if self.chunk_proof.mmr_size() == 0 {
@@ -362,6 +375,16 @@ impl BulkAppendTreeProof {
                     ))
                 })?
         } else {
+            // When dense_count is 0, the buffer proof must be empty.
+            // Reject proofs that smuggle data in an unused buffer.
+            if !self.buffer_proof.entries.is_empty()
+                || !self.buffer_proof.node_value_hashes.is_empty()
+                || !self.buffer_proof.node_hashes.is_empty()
+            {
+                return Err(BulkAppendError::InvalidProof(
+                    "buffer proof must be empty when dense_count is 0".to_string(),
+                ));
+            }
             ([0u8; 32], Vec::new())
         };
 

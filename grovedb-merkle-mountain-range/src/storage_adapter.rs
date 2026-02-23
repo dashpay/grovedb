@@ -50,7 +50,10 @@ impl<'a, C> MmrStore<'a, C> {
 
 impl<'db, C: StorageContext<'db>> MMRStoreReadOps for &MmrStore<'_, C> {
     fn element_at_position(&self, pos: u64) -> CostResult<Option<MmrNode>, crate::Error> {
-        let key = mmr_node_key_sized(pos, self.key_size);
+        let key = match mmr_node_key_sized(pos, self.key_size) {
+            Ok(k) => k,
+            Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
+        };
         let result = self.ctx.get(key);
         let cost = result.cost;
         match result.value {
@@ -78,7 +81,10 @@ impl<'db, C: StorageContext<'db>> MMRStoreWriteOps for &MmrStore<'_, C> {
         let mut cost = OperationCost::default();
         for (i, elem) in elems.into_iter().enumerate() {
             let node_pos = pos + i as u64;
-            let key = mmr_node_key_sized(node_pos, self.key_size);
+            let key = match mmr_node_key_sized(node_pos, self.key_size) {
+                Ok(k) => k,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
             let serialized = match elem.serialize() {
                 Ok(s) => s,
                 Err(e) => {
@@ -531,7 +537,8 @@ mod tests {
         let ctx = MockStorageContext::new();
 
         // Manually insert corrupted bytes at position 0
-        let key = mmr_node_key_sized(0, MmrKeySize::U64);
+        let key =
+            mmr_node_key_sized(0, MmrKeySize::U64).expect("key for position 0 should succeed");
         ctx.data
             .borrow_mut()
             .insert(key.as_ref().to_vec(), vec![0xFF, 0xFF, 0xFF]);

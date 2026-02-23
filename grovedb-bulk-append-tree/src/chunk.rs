@@ -19,6 +19,13 @@ const FORMAT_VARIABLE: u8 = 0x00;
 /// Format flag: fixed-size entries (count + size in header).
 const FORMAT_FIXED: u8 = 0x01;
 
+/// Maximum number of entries in a single chunk blob.
+///
+/// This prevents memory exhaustion from crafted blobs with huge counts.
+/// Since chunks are produced by epochs (epoch_size = 2^height, height ≤ 16),
+/// no legitimate chunk exceeds 65536 entries. We use 1M as a generous cap.
+const MAX_CHUNK_ENTRIES: usize = 1 << 20;
+
 /// Serialize entries into a chunk blob.
 ///
 /// Auto-selects the most compact format:
@@ -95,7 +102,22 @@ fn deserialize_fixed(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
     ) as usize;
     let payload = &data[8..];
 
-    let expected = count * entry_size;
+    // DoS prevention: cap entry count to prevent huge allocations from
+    // crafted headers (e.g. count=4B, entry_size=0 → 96 GB Vec alloc).
+    if count > MAX_CHUNK_ENTRIES {
+        return Err(BulkAppendError::CorruptedData(format!(
+            "fixed chunk blob count {} exceeds maximum {}",
+            count, MAX_CHUNK_ENTRIES
+        )));
+    }
+
+    // Overflow-safe size check: use checked_mul to prevent wrapping
+    let expected = count.checked_mul(entry_size).ok_or_else(|| {
+        BulkAppendError::CorruptedData(format!(
+            "fixed chunk blob count * entry_size overflows (count={}, entry_size={})",
+            count, entry_size
+        ))
+    })?;
     if payload.len() != expected {
         return Err(BulkAppendError::CorruptedData(format!(
             "fixed chunk blob payload is {} bytes, expected {} (count={}, entry_size={})",
@@ -132,6 +154,12 @@ fn deserialize_variable(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
     let mut entries = Vec::new();
     let mut offset = 0;
     while offset < data.len() {
+        if entries.len() >= MAX_CHUNK_ENTRIES {
+            return Err(BulkAppendError::CorruptedData(format!(
+                "variable chunk blob exceeds maximum {} entries",
+                MAX_CHUNK_ENTRIES
+            )));
+        }
         if offset + 4 > data.len() {
             return Err(BulkAppendError::CorruptedData(
                 "chunk blob truncated at length prefix".to_string(),
@@ -274,6 +302,28 @@ mod tests {
     fn unknown_format_flag() {
         let blob = vec![0xFF, 1, 2, 3];
         let err = deserialize_chunk_blob(&blob).expect_err("should fail for unknown format");
+        assert!(matches!(err, BulkAppendError::CorruptedData(_)));
+    }
+
+    #[test]
+    fn fixed_excessive_count_rejected() {
+        // count exceeds MAX_CHUNK_ENTRIES → rejected before allocation
+        let mut blob = vec![FORMAT_FIXED];
+        blob.extend_from_slice(&((MAX_CHUNK_ENTRIES as u32) + 1).to_be_bytes());
+        blob.extend_from_slice(&0u32.to_be_bytes());
+        let err = deserialize_chunk_blob(&blob)
+            .expect_err("should reject count exceeding MAX_CHUNK_ENTRIES");
+        assert!(matches!(err, BulkAppendError::CorruptedData(_)));
+    }
+
+    #[test]
+    fn fixed_overflow_count_times_entry_size() {
+        // count and entry_size whose product overflows usize
+        let mut blob = vec![FORMAT_FIXED];
+        blob.extend_from_slice(&u32::MAX.to_be_bytes());
+        blob.extend_from_slice(&u32::MAX.to_be_bytes());
+        let err = deserialize_chunk_blob(&blob)
+            .expect_err("should reject overflowing count * entry_size");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
 }

@@ -23,7 +23,23 @@ impl<Store> MMRBatch<Store> {
     }
 
     /// Buffer a contiguous run of elements starting at `pos`.
+    ///
+    /// Entries must be appended with monotonically increasing positions
+    /// (each `pos` must be ≥ the end of the previous entry). This invariant
+    /// is required by the reverse-scan early-break optimization in
+    /// `element_at_position`.
     pub(crate) fn append(&mut self, pos: u64, elems: Vec<MmrNode>) {
+        debug_assert!(
+            self.memory_batch
+                .last()
+                .is_none_or(|(last_pos, last_elems)| { pos >= last_pos + last_elems.len() as u64 }),
+            "MMRBatch::append requires monotonically increasing positions (got pos={}, last entry \
+             ends at {})",
+            pos,
+            self.memory_batch
+                .last()
+                .map_or(0, |(p, e)| p + e.len() as u64)
+        );
         self.memory_batch.push((pos, elems));
     }
 

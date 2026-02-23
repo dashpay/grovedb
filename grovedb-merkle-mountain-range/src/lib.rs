@@ -39,7 +39,7 @@ mod tests;
 pub use error::{Error, Result};
 pub use grovedb_costs::{CostResult, CostsExt, OperationCost};
 pub use helper::{
-    MmrKey, MmrKeySize, hash_count_for_push, leaf_index_to_mmr_size,
+    MAX_U32_MMR_POSITION, MmrKey, MmrKeySize, hash_count_for_push, leaf_index_to_mmr_size,
     leaf_index_to_mmr_size as leaf_to_mmr_size, leaf_index_to_pos,
     leaf_index_to_pos as leaf_to_pos, mmr_node_key, mmr_node_key_sized, mmr_size_to_leaf_count,
 };
