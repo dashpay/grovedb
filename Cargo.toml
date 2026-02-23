@@ -15,5 +15,6 @@ members = [
     "grovedb-element",
     "grovedb-merkle-mountain-range",
     "grovedb-dense-fixed-sized-merkle-tree",
+    "grovedb-bulk-append-tree",
     "grovedb-query",
 ]

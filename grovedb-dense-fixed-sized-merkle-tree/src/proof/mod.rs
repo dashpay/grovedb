@@ -35,6 +35,12 @@ fn bytes_to_position(bytes: &[u8]) -> Result<u16, DenseMerkleError> {
 /// encoded). All bounds are clamped to `[0, count)` — positions at or beyond
 /// `count` are silently excluded.
 pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, DenseMerkleError> {
+    if query.has_subquery() {
+        return Err(DenseMerkleError::InvalidProof(
+            "subqueries are not supported for dense tree queries".into(),
+        ));
+    }
+
     let mut positions = BTreeSet::new();
 
     for item in &query.items {
