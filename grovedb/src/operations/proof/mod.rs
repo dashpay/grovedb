@@ -417,40 +417,32 @@ fn decode_bulk_append_proof(bytes: &[u8]) -> String {
     match BulkAppendTreeProof::decode_from_slice(bytes) {
         Ok(proof) => {
             let mut s = format!(
-                "\n    chunk_power: {}, total_count: {}, chunk_mmr_size: {}, chunks: {}, \
-                 buffer_entries: {}",
-                proof.chunk_power,
-                proof.total_count,
-                proof.chunk_mmr_size,
-                proof.chunk_blobs.len(),
-                proof.buffer_entries.len(),
+                "\n    chunk_proof: mmr_size={}, leaves={}, proof_items={}",
+                proof.chunk_proof.mmr_size(),
+                proof.chunk_proof.leaves().len(),
+                proof.chunk_proof.proof_items().len(),
             );
-            for (i, (idx, blob)) in proof.chunk_blobs.iter().enumerate() {
+            s.push_str(&format!(
+                "\n    buffer_proof: entries={}, node_value_hashes={}, node_hashes={}",
+                proof.buffer_proof.entries.len(),
+                proof.buffer_proof.node_value_hashes.len(),
+                proof.buffer_proof.node_hashes.len(),
+            ));
+            for (i, (pos, data)) in proof.chunk_proof.leaves().iter().enumerate() {
                 s.push_str(&format!(
-                    "\n    chunk[{}]: index={}, blob={} bytes\n      0x{}",
+                    "\n    mmr_leaf[{}]: pos={}, {} bytes",
                     i,
-                    idx,
-                    blob.len(),
-                    hex::encode(blob),
+                    pos,
+                    data.len(),
                 ));
             }
-            for (i, (idx, root)) in proof.chunk_mmr_leaves.iter().enumerate() {
+            for (i, (pos, value)) in proof.buffer_proof.entries.iter().enumerate() {
                 s.push_str(&format!(
-                    "\n    mmr_leaf[{}]: index={}, root=HASH[{}]",
+                    "\n    buffer[{}]: pos={}, {}",
                     i,
-                    idx,
-                    hex::encode(root),
+                    pos,
+                    hex_to_ascii(value),
                 ));
-            }
-            for (i, hash) in proof.chunk_mmr_proof_items.iter().enumerate() {
-                s.push_str(&format!(
-                    "\n    mmr_sibling[{}]: HASH[{}]",
-                    i,
-                    hex::encode(hash),
-                ));
-            }
-            for (i, entry) in proof.buffer_entries.iter().enumerate() {
-                s.push_str(&format!("\n    buffer[{}]: {}", i, hex_to_ascii(entry),));
             }
             s
         }

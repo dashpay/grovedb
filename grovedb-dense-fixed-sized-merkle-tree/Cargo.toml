@@ -14,7 +14,4 @@ bincode = { version = "2.0.1", features = ["derive"] }
 thiserror = "2.0"
 grovedb-costs = { version = "4.0.0", path = "../costs" }
 grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
-grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
-
-[features]
-storage = ["grovedb-storage"]
+grovedb-storage = { version = "4.0.0", path = "../storage" }

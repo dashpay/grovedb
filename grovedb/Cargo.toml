@@ -25,8 +25,8 @@ grovedb-visualize = { version = "4.0.0", path = "../visualize", optional = true 
 grovedb-element = { version = "4.0.0", path = "../grovedb-element" }
 grovedb-commitment-tree = { version = "4.0.0", path = "../grovedb-commitment-tree", optional = true }
 grovedb-merkle-mountain-range = { version = "4.0.0", path = "../grovedb-merkle-mountain-range", optional = true, features = ["storage"] }
-grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-tree", optional = true, features = ["storage"] }
-grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree", optional = true, features = ["storage"] }
+grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-tree", optional = true }
+grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree", optional = true }
 grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
 
 axum = { version = "0.8", features = ["macros"], optional = true }

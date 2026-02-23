@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use grovedb_bulk_append_tree::{BulkAppendTree, CachedBulkStore, DataBulkStore};
+use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
@@ -65,7 +65,7 @@ impl GroveDb {
             }
         };
 
-        // 2. Open aux storage
+        // 2. Open storage
         let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
@@ -75,24 +75,23 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        // 3. Load tree, append, persist
-        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
+        // 3. Load tree, append
         let mut tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::load_from_store(&store, total_count, chunk_power).map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
+                .map_err(map_bulk_err)
         );
 
         let result =
-            cost_return_on_error_no_add!(cost, tree.append(&store, &value).map_err(map_bulk_err));
+            cost_return_on_error_no_add!(cost, tree.append(&value).map_err(map_bulk_err));
 
         cost.hash_node_calls += result.hash_count;
-        cost += store.into_inner().take_cost();
 
         let new_state_root = result.state_root;
-        let new_total_count = tree.total_count();
+        let new_total_count = tree.total_count;
 
-        #[allow(clippy::drop_non_drop)]
-        drop(storage_ctx);
+        // Drop tree (and its embedded storage context) before opening merk
+        drop(tree);
 
         // 4. Update element in parent Merk
         let batch = StorageBatch::new();
@@ -181,6 +180,10 @@ impl GroveDb {
             }
         };
 
+        if global_position >= total_count {
+            return Ok(None).wrap_with_cost(cost);
+        }
+
         let subtree_path_vec = self.build_subtree_path_for_bulk(&path, key);
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
@@ -190,20 +193,41 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, 0, [0u8; 32])
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
                 .map_err(map_bulk_err)
         );
-        let result = cost_return_on_error_no_add!(
-            cost,
-            tree.get_value(&store, global_position)
-                .map_err(map_bulk_err)
-        );
-        cost += store.into_inner().take_cost();
 
-        Ok(result).wrap_with_cost(cost)
+        let epoch_size = tree.epoch_size();
+        let chunk_count = tree.chunk_count();
+        let buffer_start = chunk_count * epoch_size;
+
+        if global_position >= buffer_start {
+            // Value is in the current buffer
+            let buffer_pos = (global_position - buffer_start) as u16;
+            let result = cost_return_on_error_no_add!(
+                cost,
+                tree.get_buffer_value(buffer_pos).map_err(map_bulk_err)
+            );
+            Ok(result).wrap_with_cost(cost)
+        } else {
+            // Value is in a completed chunk
+            let chunk_idx = global_position / epoch_size;
+            let pos_in_chunk = (global_position % epoch_size) as usize;
+            let blob = cost_return_on_error_no_add!(
+                cost,
+                tree.get_chunk_value(chunk_idx)
+                    .map_err(map_bulk_err)
+                    .and_then(|opt| opt.ok_or_else(|| Error::CorruptedData(format!(
+                        "missing chunk blob for index {}",
+                        chunk_idx
+                    ))))
+            );
+            let entries =
+                cost_return_on_error_no_add!(cost, deserialize_chunk_blob(&blob).map_err(map_bulk_err));
+            Ok(entries.get(pos_in_chunk).cloned()).wrap_with_cost(cost)
+        }
     }
 
     /// Get a completed chunk blob from a BulkAppendTree.
@@ -248,17 +272,14 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, 0, [0u8; 32])
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
                 .map_err(map_bulk_err)
         );
-        let result = cost_return_on_error_no_add!(
-            cost,
-            tree.get_chunk(&store, chunk_index).map_err(map_bulk_err)
-        );
-        cost += store.into_inner().take_cost();
+
+        let result =
+            cost_return_on_error_no_add!(cost, tree.get_chunk_value(chunk_index).map_err(map_bulk_err));
 
         Ok(result).wrap_with_cost(cost)
     }
@@ -303,17 +324,28 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, 0, [0u8; 32])
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
                 .map_err(map_bulk_err)
         );
-        let result =
-            cost_return_on_error_no_add!(cost, tree.get_buffer(&store).map_err(map_bulk_err));
-        cost += store.into_inner().take_cost();
 
-        Ok(result).wrap_with_cost(cost)
+        let buffer_count = tree.buffer_count();
+        let mut entries = Vec::with_capacity(buffer_count as usize);
+        for i in 0..buffer_count {
+            let value = cost_return_on_error_no_add!(
+                cost,
+                tree.get_buffer_value(i)
+                    .map_err(map_bulk_err)
+                    .and_then(|opt| opt.ok_or_else(|| Error::CorruptedData(format!(
+                        "missing buffer value at position {}",
+                        i
+                    ))))
+            );
+            entries.push(value);
+        }
+
+        Ok(entries).wrap_with_cost(cost)
     }
 
     /// Get the total count of values in a BulkAppendTree.
@@ -441,7 +473,7 @@ impl GroveDb {
                 }
             };
 
-            // Open transactional storage
+            // Open immediate storage (for read-after-write visibility)
             let mut st_path_vec = path_vec.clone();
             st_path_vec.push(key_bytes.clone());
             let st_path_refs: Vec<&[u8]> = st_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -449,50 +481,34 @@ impl GroveDb {
 
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path, Some(batch), transaction)
+                .get_immediate_storage_context(st_path, transaction)
                 .unwrap_add_cost(&mut cost);
 
-            let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
-
-            // Load tree from store
+            // Load tree with embedded storage
             let mut tree = cost_return_on_error_no_add!(
                 cost,
-                BulkAppendTree::load_from_store(&store, total_count, chunk_power)
+                BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
                     .map_err(map_bulk_err)
             );
 
-            // Load existing buffer entries for in-memory tracking
-            let mut mem_buffer: Vec<Vec<u8>> =
-                cost_return_on_error_no_add!(cost, tree.get_buffer(&store).map_err(map_bulk_err));
-
             // Process each value
             for value in values {
-                let result = cost_return_on_error_no_add!(
-                    cost,
-                    tree.append_with_mem_buffer(&store, value, &mut mem_buffer)
-                        .map_err(map_bulk_err)
-                );
+                let result =
+                    cost_return_on_error_no_add!(cost, tree.append(value).map_err(map_bulk_err));
                 cost.hash_node_calls += result.hash_count;
             }
-
-            // Save final metadata
-            cost_return_on_error_no_add!(cost, tree.save_meta(&store).map_err(map_bulk_err));
 
             // Compute final state root
             let new_state_root = cost_return_on_error_no_add!(
                 cost,
-                tree.compute_current_state_root(&store)
-                    .map_err(map_bulk_err)
+                tree.compute_current_state_root().map_err(map_bulk_err)
             );
             cost.hash_node_calls += 1;
 
-            // Accumulate storage costs
-            cost += store.into_inner().take_cost();
+            let current_total_count = tree.total_count;
 
-            let current_total_count = tree.total_count();
-
-            #[allow(clippy::drop_non_drop)]
-            drop(storage_ctx);
+            // Drop tree (and its embedded storage context)
+            drop(tree);
 
             // Create replacement op
             let replacement = QualifiedGroveDbOp {

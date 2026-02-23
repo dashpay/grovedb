@@ -1,25 +1,25 @@
 //! BulkAppendTree: two-level authenticated append-only structure.
 //!
-//! - A dense Merkle tree buffer (fixed capacity, power of 2) holds incoming
-//!   values
-//! - When the buffer fills, entries are serialized into an immutable chunk
-//!   blob, the dense Merkle root is computed and appended to a chunk-level MMR
+//! - A dense fixed-sized Merkle tree buffer holds incoming values
+//! - When the buffer fills, entries are serialized into an immutable chunk blob
+//!   and appended to a chunk-level MMR
 //! - Completed chunk blobs are permanently immutable and CDN-cacheable
 //!
-//! State root = blake3(mmr_root || buffer_hash) — changes on every append.
+//! State root = blake3("bulk_state" || mmr_root || dense_tree_root) — changes
+//! on every append.
 
 mod append;
 pub mod hash;
-pub mod keys;
-mod mmr_adapter;
+
 mod query;
+pub use query::{BufferQueryResult, ChunkQueryResult};
 
 #[cfg(test)]
 mod tests;
 
-use keys::META_KEY;
+use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
 
-use crate::{BulkAppendError, BulkStore};
+use crate::BulkAppendError;
 
 /// Result returned by `BulkAppendTree::append`.
 #[derive(Debug, Clone)]
@@ -34,146 +34,88 @@ pub struct AppendResult {
     pub compacted: bool,
 }
 
-/// A two-level authenticated append-only data structure.
+/// Compute MMR size from leaf count: `2 * n - popcount(n)`.
 ///
-/// Values are appended to a buffer of fixed size `2^chunk_power`. When the
-/// buffer fills, entries are serialized into an immutable chunk blob, a dense
-/// Merkle root is computed, and that root is appended to a chunk-level MMR.
-///
-/// The state root is `blake3(mmr_root || buffer_hash)` and changes on every
-/// append. The `buffer_hash` is a running chain: `blake3(prev ||
-/// blake3(value))`.
-pub struct BulkAppendTree {
-    pub(crate) total_count: u64,
-    pub(crate) chunk_power: u8,
-    pub(crate) mmr_size: u64,
-    pub(crate) buffer_hash: [u8; 32],
+/// This is a well-known MMR property: the total number of nodes (leaves +
+/// internal) for an MMR with `n` leaves equals `2n - popcount(n)`, where
+/// `popcount` is the number of set bits.
+pub fn leaf_count_to_mmr_size(leaf_count: u64) -> u64 {
+    if leaf_count == 0 {
+        return 0;
+    }
+    2 * leaf_count - leaf_count.count_ones() as u64
 }
 
-impl BulkAppendTree {
-    /// Create a new empty tree.
-    ///
-    /// `chunk_power` is the log2 of the chunk size (e.g. 2 means chunks of 4).
-    /// Returns an error if `chunk_power` is greater than 31.
-    pub fn new(chunk_power: u8) -> Result<Self, BulkAppendError> {
-        if chunk_power > 31 {
-            return Err(BulkAppendError::InvalidInput(
-                "chunk_power must be <= 31".into(),
-            ));
-        }
-        Ok(Self {
-            total_count: 0,
-            chunk_power,
-            mmr_size: 0,
-            buffer_hash: [0u8; 32],
-        })
+/// A two-level authenticated append-only data structure.
+///
+/// Values are appended to a dense fixed-sized Merkle tree buffer. When the
+/// buffer fills, entries are serialized into an immutable chunk blob and the
+/// blob is appended as a leaf to a chunk-level MMR.
+///
+/// The state root is `blake3("bulk_state" || mmr_root || dense_tree_root)` and
+/// changes on every append.
+///
+/// Storage is embedded in the dense tree (and shared with the MMR via
+/// `MmrStore` adapter), following the same pattern as Merk.
+pub struct BulkAppendTree<S> {
+    /// Total number of values ever appended across all completed chunks and the
+    /// current buffer. Used to derive chunk_count (`total_count / epoch_size`)
+    /// and buffer_count (`total_count % epoch_size`), which in turn determine
+    /// the MMR size and dense tree state.
+    pub total_count: u64,
+    pub dense_tree: DenseFixedSizedMerkleTree<S>,
+}
+
+impl<S> BulkAppendTree<S> {
+    /// The capacity of the dense tree buffer: `2^height - 1`.
+    pub fn capacity(&self) -> u16 {
+        self.dense_tree.capacity()
     }
 
-    /// Restore from persisted state.
+    /// The number of entries per completed chunk (epoch).
     ///
-    /// Returns an error if `chunk_power` is greater than 31.
-    pub fn from_state(
-        total_count: u64,
-        chunk_power: u8,
-        mmr_size: u64,
-        buffer_hash: [u8; 32],
-    ) -> Result<Self, BulkAppendError> {
-        if chunk_power > 31 {
-            return Err(BulkAppendError::InvalidInput(
-                "chunk_power must be <= 31".into(),
-            ));
-        }
-        Ok(Self {
-            total_count,
-            chunk_power,
-            mmr_size,
-            buffer_hash,
-        })
-    }
-
-    /// Compute the chunk size from `chunk_power`: `2^chunk_power`.
-    pub fn chunk_size(&self) -> u32 {
-        1u32 << self.chunk_power
+    /// Each chunk contains all `capacity` entries from a full dense tree
+    /// plus the overflow value that triggered compaction: `capacity + 1 =
+    /// 2^height`.
+    pub fn epoch_size(&self) -> u64 {
+        self.capacity() as u64 + 1
     }
 
     // ── State accessors ─────────────────────────────────────────────────
 
-    pub fn total_count(&self) -> u64 {
-        self.total_count
-    }
-
+    /// Number of completed chunks in the MMR.
     pub fn chunk_count(&self) -> u64 {
-        self.total_count / self.chunk_size() as u64
+        self.total_count / self.epoch_size()
     }
 
-    pub fn buffer_count(&self) -> u32 {
-        (self.total_count % self.chunk_size() as u64) as u32
+    /// Number of values currently in the buffer.
+    pub fn buffer_count(&self) -> u16 {
+        self.dense_tree.count()
     }
 
-    pub fn chunk_power(&self) -> u8 {
-        self.chunk_power
+    /// Height of the dense tree.
+    pub fn height(&self) -> u8 {
+        self.dense_tree.height()
     }
 
+    /// The internal MMR size, derived from `chunk_count`.
     pub fn mmr_size(&self) -> u64 {
-        self.mmr_size
+        leaf_count_to_mmr_size(self.chunk_count())
     }
 
-    pub fn buffer_hash(&self) -> [u8; 32] {
-        self.buffer_hash
+    /// Reference to the internal dense tree.
+    pub fn dense_tree(&self) -> &DenseFixedSizedMerkleTree<S> {
+        &self.dense_tree
     }
+}
 
-    // ── Metadata persistence ────────────────────────────────────────────
-
-    /// Serialize internal metadata (mmr_size + buffer_hash) to 40 bytes.
-    pub fn serialize_meta(&self) -> [u8; 40] {
-        let mut buf = [0u8; 40];
-        buf[0..8].copy_from_slice(&self.mmr_size.to_be_bytes());
-        buf[8..40].copy_from_slice(&self.buffer_hash);
-        buf
+/// Compute capacity from height: `2^height - 1`.
+fn capacity_for_height(height: u8) -> Result<u16, BulkAppendError> {
+    if !(1..=16).contains(&height) {
+        return Err(BulkAppendError::InvalidInput(format!(
+            "height must be between 1 and 16, got {}",
+            height
+        )));
     }
-
-    /// Deserialize metadata. Returns `(mmr_size, buffer_hash)`.
-    pub fn deserialize_meta(bytes: &[u8]) -> Result<(u64, [u8; 32]), BulkAppendError> {
-        if bytes.len() != 40 {
-            return Err(BulkAppendError::CorruptedData(format!(
-                "BulkMeta expected 40 bytes, got {}",
-                bytes.len()
-            )));
-        }
-        let mmr_size = u64::from_be_bytes(
-            bytes[0..8]
-                .try_into()
-                .map_err(|_| BulkAppendError::CorruptedData("bad mmr_size bytes".into()))?,
-        );
-        let mut buffer_hash = [0u8; 32];
-        buffer_hash.copy_from_slice(&bytes[8..40]);
-        Ok((mmr_size, buffer_hash))
-    }
-
-    /// Load metadata from store and construct a BulkAppendTree from element
-    /// fields + stored metadata.
-    pub fn load_from_store<S: BulkStore>(
-        store: &S,
-        total_count: u64,
-        chunk_power: u8,
-    ) -> Result<Self, BulkAppendError> {
-        let meta_result = store
-            .get(META_KEY)
-            .map_err(|e| BulkAppendError::StorageError(format!("get meta failed: {}", e)))?;
-        match meta_result {
-            Some(bytes) => {
-                let (mmr_size, buffer_hash) = Self::deserialize_meta(&bytes)?;
-                Self::from_state(total_count, chunk_power, mmr_size, buffer_hash)
-            }
-            None => {
-                if total_count > 0 {
-                    return Err(BulkAppendError::CorruptedData(format!(
-                        "total_count is {} but metadata is missing",
-                        total_count
-                    )));
-                }
-                Self::new(chunk_power)
-            }
-        }
-    }
+    Ok(((1u32 << height) - 1) as u16)
 }

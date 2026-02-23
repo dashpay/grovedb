@@ -707,8 +707,9 @@ impl GroveDb {
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
-        match element {
-            Element::BulkAppendTree(..) | Element::CommitmentTree(..) => {}
+        let (element_total_count, element_height) = match element {
+            Element::BulkAppendTree(total_count, height, _) => (*total_count, *height),
+            Element::CommitmentTree(_, total_count, height, _) => (*total_count, *height),
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),
@@ -722,7 +723,7 @@ impl GroveDb {
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
 
         let (bulk_state_root, proof_result) = bulk_proof
-            .verify_and_compute_root()
+            .verify_and_compute_root(element_height, element_total_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Get the query range from the path query to extract matching values
@@ -805,7 +806,7 @@ impl GroveDb {
         // Height and count are NOT stored in the proof — they come from the
         // authenticated parent Element in Merk.  We pass them from the Element
         // directly into verification.
-        let (computed_root, verified_entries) = dense_proof
+        let (computed_root, verified_entries): ([u8; 32], Vec<(u16, Vec<u8>)>) = dense_proof
             .verify_and_get_root(element_height, element_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 

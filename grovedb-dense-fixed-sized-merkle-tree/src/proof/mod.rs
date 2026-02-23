@@ -12,8 +12,9 @@ use std::collections::BTreeSet;
 use bincode::{Decode, Encode};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_query::{Query, QueryItem};
+use grovedb_storage::StorageContext;
 
-use crate::{DenseMerkleError, DenseTreeStore};
+use crate::{tree::DenseFixedSizedMerkleTree, DenseMerkleError};
 
 /// Decode a byte slice as a big-endian `u16` position.
 ///
@@ -35,6 +36,12 @@ fn bytes_to_position(bytes: &[u8]) -> Result<u16, DenseMerkleError> {
 /// encoded). All bounds are clamped to `[0, count)` — positions at or beyond
 /// `count` are silently excluded.
 pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, DenseMerkleError> {
+    if query.has_subquery() {
+        return Err(DenseMerkleError::InvalidProof(
+            "subqueries are not supported for dense tree queries".into(),
+        ));
+    }
+
     let mut positions = BTreeSet::new();
 
     for item in &query.items {
@@ -147,13 +154,13 @@ impl DenseTreeProof {
     /// Generate a proof for the given positions.
     ///
     /// Positions must be < count. Duplicates are deduplicated.
-    pub fn generate<S: DenseTreeStore>(
-        height: u8,
-        count: u16,
+    pub fn generate<'db, S: StorageContext<'db>>(
+        tree: &DenseFixedSizedMerkleTree<S>,
         positions: &[u16],
-        store: &S,
     ) -> CostResult<Self, DenseMerkleError> {
         let mut cost = OperationCost::default();
+        let height = tree.height();
+        let count = tree.count();
 
         // Validate height before the shift to avoid panic on height >= 16
         if let Err(e) = crate::hash::validate_height(height) {
@@ -190,15 +197,9 @@ impl DenseTreeProof {
         let mut node_value_hashes: Vec<(u16, [u8; 32])> = Vec::new();
         let mut node_hashes: Vec<(u16, [u8; 32])> = Vec::new();
 
-        // Use from_state to get a tree object for hash_position
-        let tree = match crate::tree::DenseFixedSizedMerkleTree::from_state(height, count) {
-            Ok(t) => t,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        };
-
         for &pos in &expanded {
             // Get the value for this position
-            let opt = cost_return_on_error!(cost, store.get_value(pos));
+            let opt = cost_return_on_error!(cost, tree.get_value(pos));
             let value = match opt {
                 Some(v) => v,
                 None => {
@@ -227,14 +228,14 @@ impl DenseTreeProof {
             if left_child_u32 < capacity as u32 {
                 let left_child = left_child_u32 as u16;
                 if !expanded.contains(&left_child) {
-                    let hash = cost_return_on_error!(cost, tree.hash_position(left_child, store));
+                    let hash = cost_return_on_error!(cost, tree.hash_position(left_child));
                     node_hashes.push((left_child, hash));
                 }
             }
             if right_child_u32 < capacity as u32 {
                 let right_child = right_child_u32 as u16;
                 if !expanded.contains(&right_child) {
-                    let hash = cost_return_on_error!(cost, tree.hash_position(right_child, store));
+                    let hash = cost_return_on_error!(cost, tree.hash_position(right_child));
                     node_hashes.push((right_child, hash));
                 }
             }
@@ -253,17 +254,15 @@ impl DenseTreeProof {
     /// Each [`QueryItem`] in the query is interpreted as specifying positions
     /// encoded as big-endian `u16` bytes (1-byte or 2-byte). Unbounded range
     /// ends are clamped to `0` or `count`.
-    pub fn generate_for_query<S: DenseTreeStore>(
-        height: u8,
-        count: u16,
+    pub fn generate_for_query<'db, S: StorageContext<'db>>(
+        tree: &DenseFixedSizedMerkleTree<S>,
         query: &Query,
-        store: &S,
     ) -> CostResult<Self, DenseMerkleError> {
-        let positions = match query_to_positions(query, count) {
+        let positions = match query_to_positions(query, tree.count()) {
             Ok(p) => p,
             Err(e) => return Err(e).wrap_with_cost(OperationCost::default()),
         };
-        Self::generate(height, count, &positions, store)
+        Self::generate(tree, &positions)
     }
 
     /// Encode to bytes using bincode.

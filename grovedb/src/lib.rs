@@ -1277,24 +1277,27 @@ impl GroveDb {
                     let root_hash = if let Element::CommitmentTree(_, total_count, chunk_power, _) =
                         &element
                     {
-                        let storage_ctx = self
-                            .db
-                            .get_transactional_storage_context(
-                                new_path_ref.clone(),
-                                None,
-                                transaction,
-                            )
-                            .unwrap();
-                        let store = grovedb_bulk_append_tree::DataBulkStore::new(&storage_ctx);
-                        match grovedb_bulk_append_tree::BulkAppendTree::load_from_store(
-                            &store,
-                            *total_count,
-                            *chunk_power,
-                        ) {
-                            Ok(tree) => tree
-                                .compute_current_state_root(&store)
-                                .unwrap_or(merk_root_hash),
-                            Err(_) => merk_root_hash,
+                        if *total_count == 0 {
+                            merk_root_hash
+                        } else {
+                            let storage_ctx = self
+                                .db
+                                .get_transactional_storage_context(
+                                    new_path_ref.clone(),
+                                    None,
+                                    transaction,
+                                )
+                                .unwrap();
+                            match grovedb_bulk_append_tree::BulkAppendTree::from_state(
+                                *total_count,
+                                *chunk_power,
+                                storage_ctx,
+                            ) {
+                                Ok(tree) => tree
+                                    .compute_current_state_root()
+                                    .unwrap_or(merk_root_hash),
+                                Err(_) => merk_root_hash,
+                            }
                         }
                     } else if let Element::BulkAppendTree(total_count, chunk_power, _) = &element {
                         if *total_count == 0 {
@@ -1308,14 +1311,13 @@ impl GroveDb {
                                     transaction,
                                 )
                                 .unwrap();
-                            let store = grovedb_bulk_append_tree::DataBulkStore::new(&storage_ctx);
-                            match grovedb_bulk_append_tree::BulkAppendTree::load_from_store(
-                                &store,
+                            match grovedb_bulk_append_tree::BulkAppendTree::from_state(
                                 *total_count,
                                 *chunk_power,
+                                storage_ctx,
                             ) {
                                 Ok(tree) => tree
-                                    .compute_current_state_root(&store)
+                                    .compute_current_state_root()
                                     .unwrap_or(merk_root_hash),
                                 Err(_) => merk_root_hash,
                             }
@@ -1353,20 +1355,16 @@ impl GroveDb {
                                     transaction,
                                 )
                                 .unwrap();
-                            let store =
-                                grovedb_dense_fixed_sized_merkle_tree::DenseTreeStorageContext::new(
-                                    &storage_ctx,
-                                );
                             use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
-                            let tree = DenseFixedSizedMerkleTree::from_state(*height, *count);
-                            match tree {
-                                Ok(t) => {
-                                    let result = t.root_hash(&store);
-                                    match result.unwrap() {
-                                        Ok(hash) => hash,
-                                        Err(_) => merk_root_hash,
-                                    }
-                                }
+                            match DenseFixedSizedMerkleTree::from_state(
+                                *height,
+                                *count,
+                                storage_ctx,
+                            ) {
+                                Ok(t) => match t.root_hash().unwrap() {
+                                    Ok(hash) => hash,
+                                    Err(_) => merk_root_hash,
+                                },
                                 Err(_) => merk_root_hash,
                             }
                         }

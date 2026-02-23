@@ -1237,73 +1237,35 @@ impl GroveDb {
             .get_immediate_storage_context(storage_path, tx)
             .unwrap_add_cost(&mut cost);
 
-        // Load metadata to get mmr_size and buffer_hash
-        let meta_key = grovedb_bulk_append_tree::META_KEY;
-        let meta_result = storage_ctx.get(meta_key).unwrap_add_cost(&mut cost);
+        // Create BulkAppendTree from state with embedded storage
+        let tree = cost_return_on_error_no_add!(
+            cost,
+            grovedb_bulk_append_tree::BulkAppendTree::from_state(
+                total_count,
+                chunk_power,
+                storage_ctx,
+            )
+            .map_err(|e| Error::CorruptedData(format!("failed to create BulkAppendTree: {}", e)))
+        );
 
-        let (mmr_size, buffer_hash) = match meta_result {
-            Ok(Some(bytes)) => {
-                cost_return_on_error_no_add!(
-                    cost,
-                    grovedb_bulk_append_tree::BulkAppendTree::deserialize_meta(&bytes).map_err(
-                        |e| Error::CorruptedData(format!("failed to deserialize bulk meta: {}", e))
-                    )
-                )
-            }
-            Ok(None) => (0u64, [0u8; 32]),
-            Err(e) => return Err(Error::StorageError(e)).wrap_with_cost(cost),
+        // Build a Query from the subquery items for the proof generator
+        let bulk_query = grovedb_query::Query {
+            items: sub_query.items.to_vec(),
+            left_to_right: sub_query.left_to_right,
+            ..grovedb_query::Query::default()
         };
 
         // Generate the BulkAppendTree proof
         let bulk_proof = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTreeProof::generate(
-                total_count,
-                chunk_power,
-                mmr_size,
-                buffer_hash,
-                start,
-                end,
-                |key| {
-                    let result = storage_ctx.get(key);
-                    match result.value {
-                        Ok(v) => Ok(v),
-                        Err(e) => Err(grovedb_bulk_append_tree::BulkAppendError::StorageError(
-                            format!("{}", e),
-                        )),
-                    }
-                }
-            )
-            .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            BulkAppendTreeProof::generate(&bulk_query, &tree)
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))
         );
 
-        // Update limit: count individual values, not whole epochs
+        // Update limit: count individual values in the queried range
         if let Some(limit) = overall_limit.as_mut() {
-            let chunk_size = (1u32 << chunk_power) as u64;
-            let completed_chunks = total_count / chunk_size;
-
-            // Count individual values from chunk blobs within [start, end)
-            let mut chunk_values_in_range: u16 = 0;
-            for (chunk_idx, _) in &bulk_proof.chunk_blobs {
-                let chunk_start = chunk_idx * chunk_size;
-                let chunk_end = chunk_start + chunk_size;
-                let overlap_start = start.max(chunk_start);
-                let overlap_end = end.min(chunk_end);
-                if overlap_start < overlap_end {
-                    chunk_values_in_range += (overlap_end - overlap_start) as u16;
-                }
-            }
-
-            let buffer_in_range = bulk_proof
-                .buffer_entries
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| {
-                    let global_pos = completed_chunks * chunk_size + *i as u64;
-                    global_pos >= start && global_pos < end
-                })
-                .count() as u16;
-            *limit = limit.saturating_sub(chunk_values_in_range + buffer_in_range);
+            let count = (end.min(total_count) - start) as u16;
+            *limit = limit.saturating_sub(count);
         }
 
         let proof_bytes = cost_return_on_error_no_add!(
@@ -1361,14 +1323,21 @@ impl GroveDb {
             .get_immediate_storage_context(storage_path, tx)
             .unwrap_add_cost(&mut cost);
 
-        // Create storage adapter
-        let store =
-            grovedb_dense_fixed_sized_merkle_tree::DenseTreeStorageContext::new(&storage_ctx);
+        // Create dense tree with embedded storage
+        let tree = cost_return_on_error_no_add!(
+            cost,
+            grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree::from_state(
+                dense_height,
+                dense_count,
+                storage_ctx,
+            )
+            .map_err(|e| Error::CorruptedData(format!("{}", e)))
+        );
 
         // Generate the proof
         let dense_proof = cost_return_on_error!(
             &mut cost,
-            DenseTreeProof::generate(dense_height, dense_count, &positions, &store)
+            DenseTreeProof::generate(&tree, &positions)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))
         );
 

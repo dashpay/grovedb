@@ -4,7 +4,7 @@
 //! which store values in a complete binary tree of height h with 2^h - 1
 //! positions, filled sequentially in level-order (BFS).
 //!
-//! Node values are stored in auxiliary storage keyed by position. The root
+//! Node values are stored in the data namespace keyed by position. The root
 //! hash and count are tracked in the Element itself and propagated through
 //! the GroveDB Merk hierarchy.
 
@@ -14,9 +14,7 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
 };
-use grovedb_dense_fixed_sized_merkle_tree::{
-    position_key, DenseFixedSizedMerkleTree, DenseTreeStorageContext,
-};
+use grovedb_dense_fixed_sized_merkle_tree::{position_key, DenseFixedSizedMerkleTree};
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -69,27 +67,28 @@ impl GroveDb {
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
-        // 3. Open storage, create store adapter, insert
+        // 3. Open storage, create tree with embedded storage, insert
         let storage_ctx = self
             .db
             .get_immediate_storage_context(subtree_path.clone(), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = DenseTreeStorageContext::new(&storage_ctx);
         let mut tree = cost_return_on_error_no_add!(
             cost,
-            DenseFixedSizedMerkleTree::from_state(height, existing_count)
+            DenseFixedSizedMerkleTree::from_state(height, existing_count, storage_ctx)
                 .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
         );
 
         let (new_root_hash, position) = cost_return_on_error!(
             &mut cost,
-            tree.insert(&value, &store)
+            tree.insert(&value)
                 .map_err(|e| Error::CorruptedData(format!("dense tree insert failed: {}", e)))
         );
 
-        #[allow(clippy::drop_non_drop)]
-        drop(storage_ctx);
+        let new_count = tree.count();
+
+        // Drop tree (and its embedded storage context) before opening merk
+        drop(tree);
 
         // 4. Update element and propagate
         let batch = StorageBatch::new();
@@ -103,7 +102,7 @@ impl GroveDb {
             )
         );
 
-        let updated_element = Element::new_dense_tree(tree.count(), height, existing_flags);
+        let updated_element = Element::new_dense_tree(new_count, height, existing_flags);
 
         cost_return_on_error_into!(
             &mut cost,
@@ -188,8 +187,9 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
+        // Read directly from storage using position_key (no need to construct tree)
         let pos_key = position_key(position);
-        let result = storage_ctx.get(&pos_key).unwrap_add_cost(&mut cost);
+        let result = storage_ctx.get(pos_key).unwrap_add_cost(&mut cost);
 
         match result {
             Ok(Some(bytes)) => Ok(Some(bytes.to_vec())).wrap_with_cost(cost),
@@ -242,16 +242,15 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = DenseTreeStorageContext::new(&storage_ctx);
         let tree = cost_return_on_error_no_add!(
             cost,
-            DenseFixedSizedMerkleTree::from_state(height, count)
+            DenseFixedSizedMerkleTree::from_state(height, count, storage_ctx)
                 .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
         );
 
         let root_hash = cost_return_on_error!(
             &mut cost,
-            tree.root_hash(&store)
+            tree.root_hash()
                 .map_err(|e| Error::CorruptedData(format!("dense tree root hash error: {}", e)))
         );
 
@@ -362,15 +361,15 @@ impl GroveDb {
             let st_path_refs: Vec<&[u8]> = st_path_vec.iter().map(|v| v.as_slice()).collect();
             let st_path = SubtreePath::from(st_path_refs.as_slice());
 
+            // Use immediate storage for read-after-write visibility
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path.clone(), Some(batch), transaction)
+                .get_immediate_storage_context(st_path.clone(), transaction)
                 .unwrap_add_cost(&mut cost);
 
-            let store = DenseTreeStorageContext::new(&storage_ctx);
             let mut tree = cost_return_on_error_no_add!(
                 cost,
-                DenseFixedSizedMerkleTree::from_state(height, existing_count)
+                DenseFixedSizedMerkleTree::from_state(height, existing_count, storage_ctx)
                     .map_err(|e| Error::CorruptedData(format!("dense tree state error: {}", e)))
             );
 
@@ -378,15 +377,17 @@ impl GroveDb {
             for value in values {
                 let (hash, _pos) = cost_return_on_error!(
                     &mut cost,
-                    tree.insert(value, &store).map_err(|e| {
+                    tree.insert(value).map_err(|e| {
                         Error::CorruptedData(format!("dense tree insert failed: {}", e))
                     })
                 );
                 new_root_hash = hash;
             }
 
-            #[allow(clippy::drop_non_drop)]
-            drop(storage_ctx);
+            let new_count = tree.count();
+
+            // Drop tree (and its embedded storage context)
+            drop(tree);
 
             let replacement = QualifiedGroveDbOp {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
@@ -396,7 +397,7 @@ impl GroveDb {
                     root_key: None,
                     aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
                     custom_root: None,
-                    custom_count: Some(tree.count() as u64),
+                    custom_count: Some(new_count as u64),
                     bulk_state: None,
                 },
             };

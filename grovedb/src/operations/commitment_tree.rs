@@ -15,7 +15,7 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
-use grovedb_bulk_append_tree::{BulkAppendTree, CachedBulkStore, DataBulkStore};
+use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree};
 use grovedb_commitment_tree::{Anchor, CommitmentFrontier};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
@@ -193,30 +193,30 @@ impl GroveDb {
             .unwrap_add_cost(&mut cost);
 
         // 4. Append item to BulkAppendTree (data namespace)
-        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let mut tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::load_from_store(&store, total_count, chunk_power).map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
+                .map_err(map_bulk_err)
         );
 
         let mut item_value = Vec::with_capacity(32 + payload.len());
         item_value.extend_from_slice(&cmx);
         item_value.extend_from_slice(&payload);
 
-        let result = cost_return_on_error_no_add!(
-            cost,
-            tree.append(&store, &item_value).map_err(map_bulk_err)
-        );
+        let result =
+            cost_return_on_error_no_add!(cost, tree.append(&item_value).map_err(map_bulk_err));
         cost.hash_node_calls += result.hash_count;
         let bulk_state_root = result.state_root;
-        cost += store.into_inner().take_cost();
 
         let position = result.global_position;
-        let new_total_count = tree.total_count();
+        let new_total_count = tree.total_count;
 
-        // 5. Load Sinsemilla frontier from aux, append cmx, save back
-        let mut frontier =
-            cost_return_on_error_no_add!(cost, load_frontier_from_aux(&storage_ctx, &mut cost));
+        // 5. Load Sinsemilla frontier from aux (through tree's embedded storage),
+        //    append cmx, save back
+        let mut frontier = cost_return_on_error_no_add!(
+            cost,
+            load_frontier_from_aux(&tree.dense_tree.storage, &mut cost)
+        );
 
         // Track Sinsemilla hash count
         let ommer_hashes = frontier.position().map(|p| p.trailing_ones()).unwrap_or(0);
@@ -232,13 +232,14 @@ impl GroveDb {
         let serialized = frontier.serialize();
         cost_return_on_error!(
             &mut cost,
-            storage_ctx
+            tree.dense_tree
+                .storage
                 .put_aux(COMMITMENT_TREE_DATA_KEY, &serialized, None)
                 .map_err(|e| e.into())
         );
 
-        #[allow(clippy::drop_non_drop)]
-        drop(storage_ctx);
+        // Drop tree (and its embedded storage context) before opening merk
+        drop(tree);
 
         // 6. Update element in parent Merk
         let batch = StorageBatch::new();
@@ -377,6 +378,10 @@ impl GroveDb {
             }
         };
 
+        if global_position >= total_count {
+            return Ok(None).wrap_with_cost(cost);
+        }
+
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
@@ -386,20 +391,43 @@ impl GroveDb {
             .get_immediate_storage_context(ct_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
         let tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, 0, [0u8; 32])
+            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
                 .map_err(map_bulk_err)
         );
-        let result = cost_return_on_error_no_add!(
-            cost,
-            tree.get_value(&store, global_position)
-                .map_err(map_bulk_err)
-        );
-        cost += store.into_inner().take_cost();
 
-        Ok(result).wrap_with_cost(cost)
+        let epoch_size = tree.epoch_size();
+        let chunk_count = tree.chunk_count();
+        let buffer_start = chunk_count * epoch_size;
+
+        if global_position >= buffer_start {
+            // Value is in the current buffer
+            let buffer_pos = (global_position - buffer_start) as u16;
+            let result = cost_return_on_error_no_add!(
+                cost,
+                tree.get_buffer_value(buffer_pos).map_err(map_bulk_err)
+            );
+            Ok(result).wrap_with_cost(cost)
+        } else {
+            // Value is in a completed chunk
+            let chunk_idx = global_position / epoch_size;
+            let pos_in_chunk = (global_position % epoch_size) as usize;
+            let blob = cost_return_on_error_no_add!(
+                cost,
+                tree.get_chunk_value(chunk_idx)
+                    .map_err(map_bulk_err)
+                    .and_then(|opt| opt.ok_or_else(|| Error::CorruptedData(format!(
+                        "missing chunk blob for index {}",
+                        chunk_idx
+                    ))))
+            );
+            let entries = cost_return_on_error_no_add!(
+                cost,
+                deserialize_chunk_blob(&blob).map_err(map_bulk_err)
+            );
+            Ok(entries.get(pos_in_chunk).cloned()).wrap_with_cost(cost)
+        }
     }
 
     /// Get the total count of items in a CommitmentTree.
@@ -531,26 +559,28 @@ impl GroveDb {
             let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
             let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
-            // Open transactional storage context
+            // Open two storage contexts at the same path: one for the BulkAppendTree
+            // (data namespace) and one for aux operations (Sinsemilla frontier).
+            // This avoids a borrow conflict between tree.append() (mutable) and
+            // CachedAuxContext (immutable borrow of storage).
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(ct_path.clone(), Some(batch), transaction)
+                .get_immediate_storage_context(ct_path.clone(), transaction)
+                .unwrap_add_cost(&mut cost);
+            let aux_storage_ctx = self
+                .db
+                .get_immediate_storage_context(ct_path.clone(), transaction)
                 .unwrap_add_cost(&mut cost);
 
-            // Load BulkAppendTree from data namespace
-            let store = CachedBulkStore::new(DataBulkStore::new(&storage_ctx));
+            // Load BulkAppendTree with embedded storage
             let mut tree = cost_return_on_error_no_add!(
                 cost,
-                BulkAppendTree::load_from_store(&store, total_count, chunk_power)
+                BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
                     .map_err(map_bulk_err)
             );
 
-            // Load existing buffer entries for in-memory tracking
-            let mut mem_buffer: Vec<Vec<u8>> =
-                cost_return_on_error_no_add!(cost, tree.get_buffer(&store).map_err(map_bulk_err));
-
-            // Load Sinsemilla frontier from aux namespace
-            let cached_aux = CachedAuxContext::new(&storage_ctx);
+            // Load Sinsemilla frontier from aux namespace (separate storage context)
+            let cached_aux = CachedAuxContext::new(&aux_storage_ctx);
             let mut frontier =
                 cost_return_on_error_no_add!(cost, load_frontier_from_cached_aux(&cached_aux));
 
@@ -563,8 +593,7 @@ impl GroveDb {
 
                 let result = cost_return_on_error_no_add!(
                     cost,
-                    tree.append_with_mem_buffer(&store, &item_value, &mut mem_buffer)
-                        .map_err(map_bulk_err)
+                    tree.append(&item_value).map_err(map_bulk_err)
                 );
                 cost.hash_node_calls += result.hash_count;
 
@@ -580,14 +609,11 @@ impl GroveDb {
                 );
             }
 
-            // Save BulkAppendTree metadata and compute state root
-            cost_return_on_error_no_add!(cost, tree.save_meta(&store).map_err(map_bulk_err));
+            // Compute BulkAppendTree state root
             let bulk_state_root = cost_return_on_error_no_add!(
                 cost,
-                tree.compute_current_state_root(&store)
-                    .map_err(map_bulk_err)
+                tree.compute_current_state_root().map_err(map_bulk_err)
             );
-            cost += store.into_inner().take_cost();
 
             // Save Sinsemilla frontier back to aux
             let serialized = frontier.serialize();
@@ -598,10 +624,10 @@ impl GroveDb {
             cost += cached_aux.take_cost();
 
             let new_sinsemilla_root = frontier.root_hash();
-            let current_total_count = tree.total_count();
+            let current_total_count = tree.total_count;
 
-            #[allow(clippy::drop_non_drop)]
-            drop(storage_ctx);
+            // Drop tree (and its embedded storage context)
+            drop(tree);
 
             // Create a ReplaceTreeRootKey with sinsemilla_root + bulk_state
             let replacement = QualifiedGroveDbOp {
