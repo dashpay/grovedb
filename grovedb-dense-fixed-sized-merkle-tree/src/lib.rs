@@ -14,18 +14,14 @@
 mod error;
 pub(crate) mod hash;
 pub(crate) mod proof;
-#[cfg(feature = "storage")]
-mod storage_adapter;
-mod store;
 pub(crate) mod tree;
 mod verify;
 
+#[cfg(test)]
+pub(crate) mod test_utils;
 #[cfg(test)]
 mod tests;
 
 pub use error::DenseMerkleError;
 pub use proof::DenseTreeProof;
-#[cfg(feature = "storage")]
-pub use storage_adapter::{position_key, DenseTreeStorageContext};
-pub use store::DenseTreeStore;
-pub use tree::DenseFixedSizedMerkleTree;
+pub use tree::{position_key, DenseFixedSizedMerkleTree};

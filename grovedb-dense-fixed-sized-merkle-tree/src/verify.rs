@@ -12,24 +12,25 @@ use grovedb_query::Query;
 
 use crate::{hash::node_hash, proof::DenseTreeProof, DenseMerkleError};
 
-/// Result of proof verification: computed root hash and proved (position,
-/// value) pairs.
-type VerifyResult = Result<([u8; 32], Vec<(u16, Vec<u8>)>), DenseMerkleError>;
-
 impl DenseTreeProof {
     /// Verify the proof against an expected root hash.
     ///
     /// `height` and `count` are trusted values obtained from an authenticated
     /// source (e.g. the parent `Element` in Merk).
     ///
-    /// Returns the proved `(position, value)` pairs on success.
-    pub fn verify_against_expected_root(
+    /// Returns the proved `(position, value)` pairs collected into `C`.
+    /// `C` can be `Vec<(u16, Vec<u8>)>`, `BTreeMap<u16, Vec<u8>>`,
+    /// `HashMap<u16, Vec<u8>>`, or any `FromIterator<(u16, Vec<u8>)>`.
+    pub fn verify_against_expected_root<C>(
         &self,
         expected_root: &[u8; 32],
         height: u8,
         count: u16,
-    ) -> Result<Vec<(u16, Vec<u8>)>, DenseMerkleError> {
-        let (computed_root, entries) = self.verify_inner(height, count)?;
+    ) -> Result<C, DenseMerkleError>
+    where
+        C: FromIterator<(u16, Vec<u8>)>,
+    {
+        let (computed_root, entries) = self.verify_inner::<C>(height, count)?;
 
         if &computed_root != expected_root {
             return Err(DenseMerkleError::InvalidProof(format!(
@@ -50,8 +51,18 @@ impl DenseTreeProof {
     ///
     /// This is used when the root hash flows through the Merk child hash
     /// mechanism rather than being stored in the Element.
-    pub fn verify_and_get_root(&self, height: u8, count: u16) -> VerifyResult {
-        self.verify_inner(height, count)
+    ///
+    /// `C` can be `Vec<(u16, Vec<u8>)>`, `BTreeMap<u16, Vec<u8>>`,
+    /// `HashMap<u16, Vec<u8>>`, or any `FromIterator<(u16, Vec<u8>)>`.
+    pub fn verify_and_get_root<C>(
+        &self,
+        height: u8,
+        count: u16,
+    ) -> Result<([u8; 32], C), DenseMerkleError>
+    where
+        C: FromIterator<(u16, Vec<u8>)>,
+    {
+        self.verify_inner::<C>(height, count)
     }
 
     /// Verify the proof against a [`Query`], returning the computed root hash
@@ -69,8 +80,19 @@ impl DenseTreeProof {
     ///   corresponding entry in the proof.
     /// - **Sound**: the proof contains no entries for positions that were not
     ///   requested by the query.
-    pub fn verify_for_query(&self, query: &Query, height: u8, count: u16) -> VerifyResult {
-        let (root, entries) = self.verify_inner(height, count)?;
+    ///
+    /// `C` can be `Vec<(u16, Vec<u8>)>`, `BTreeMap<u16, Vec<u8>>`,
+    /// `HashMap<u16, Vec<u8>>`, or any `FromIterator<(u16, Vec<u8>)>`.
+    pub fn verify_for_query<C>(
+        &self,
+        query: &Query,
+        height: u8,
+        count: u16,
+    ) -> Result<([u8; 32], C), DenseMerkleError>
+    where
+        C: FromIterator<(u16, Vec<u8>)>,
+    {
+        let (root, entries) = self.verify_inner::<Vec<(u16, Vec<u8>)>>(height, count)?;
 
         let expected_positions: BTreeSet<u16> = match crate::proof::query_to_positions(query, count)
         {
@@ -104,12 +126,15 @@ impl DenseTreeProof {
             )));
         }
 
-        Ok((root, entries))
+        Ok((root, entries.into_iter().collect()))
     }
 
     /// Shared verification logic: validates the proof structure, recomputes
     /// the root hash, and returns `(computed_root, proved_entries)`.
-    fn verify_inner(&self, height: u8, count: u16) -> VerifyResult {
+    fn verify_inner<C>(&self, height: u8, count: u16) -> Result<([u8; 32], C), DenseMerkleError>
+    where
+        C: FromIterator<(u16, Vec<u8>)>,
+    {
         // Validate height to prevent shift overflow
         if !(1..=16).contains(&height) {
             return Err(DenseMerkleError::InvalidProof(format!(
@@ -254,8 +279,8 @@ impl DenseTreeProof {
         let computed_root =
             recompute_hash(0, capacity, count, &entry_map, &value_hash_map, &hash_map)?;
 
-        // All entry positions validated in-range above; return them directly
-        let entries: Vec<(u16, Vec<u8>)> = self.entries.to_vec();
+        // All entry positions validated in-range above; collect into C
+        let entries: C = self.entries.iter().cloned().collect();
 
         Ok((computed_root, entries))
     }

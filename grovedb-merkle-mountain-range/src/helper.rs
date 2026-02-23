@@ -130,6 +130,36 @@ pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
 
 // ── Storage and cost helpers ────────────────────────────────────────────
 
+/// Controls the byte width of MMR storage keys.
+///
+/// `U64` (default) uses 8-byte big-endian keys for full u64 positions.
+/// `U32` uses 4-byte big-endian keys, truncating the position to u32 and
+/// saving 4 bytes per key for trees that will never exceed ~4 billion nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MmrKeySize {
+    /// 4-byte keys (position truncated to u32).
+    U32,
+    /// 8-byte keys (full u64 position).
+    #[default]
+    U64,
+}
+
+/// A compact, inline storage key for an MMR node.
+///
+/// Holds up to 8 bytes and exposes only the relevant prefix via
+/// `AsRef<[u8]>`, avoiding heap allocation.
+#[derive(Debug)]
+pub struct MmrKey {
+    bytes: [u8; 8],
+    len: usize,
+}
+
+impl AsRef<[u8]> for MmrKey {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
 /// Build the storage key for an MMR node at a given position.
 ///
 /// Format: raw u64 big-endian (8 bytes).
@@ -137,6 +167,52 @@ pub fn get_peaks(mmr_size: u64) -> Vec<u64> {
 /// storage context in GroveDB (keyed by the Blake3 hash of the path).
 pub fn mmr_node_key(pos: u64) -> [u8; 8] {
     pos.to_be_bytes()
+}
+
+/// Maximum MMR position allowed with [`MmrKeySize::U32`].
+///
+/// Since we set the MSB for namespace separation (`pos | 0x8000_0000`),
+/// positions at or above `2^31` would alias lower positions. This constant
+/// is the exclusive upper bound.
+pub const MAX_U32_MMR_POSITION: u64 = 1u64 << 31;
+
+/// Build the storage key for an MMR node with configurable key width.
+///
+/// With [`MmrKeySize::U64`], produces an 8-byte big-endian key with the
+/// MSB set. With [`MmrKeySize::U32`], produces a 4-byte key (position
+/// truncated to `u32`) with the MSB set.
+///
+/// The MSB is always set so that MMR keys are namespaced away from other
+/// data in the same storage context (e.g. dense tree keys which are
+/// 2-byte `u16` positions and never have the MSB of a 4/8-byte key set).
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidInput`] if `key_size` is `U32` and
+/// `pos >= 2^31`, since the MSB tagging would cause position aliasing.
+pub fn mmr_node_key_sized(pos: u64, key_size: MmrKeySize) -> crate::Result<MmrKey> {
+    match key_size {
+        MmrKeySize::U32 => {
+            if pos >= MAX_U32_MMR_POSITION {
+                return Err(crate::Error::InvalidInput(format!(
+                    "MMR position {} exceeds U32 key limit (max {})",
+                    pos,
+                    MAX_U32_MMR_POSITION - 1
+                )));
+            }
+            let tagged = (pos as u32) | 0x8000_0000;
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&tagged.to_be_bytes());
+            Ok(MmrKey { bytes, len: 4 })
+        }
+        MmrKeySize::U64 => {
+            let tagged = pos | 0x8000_0000_0000_0000;
+            Ok(MmrKey {
+                bytes: tagged.to_be_bytes(),
+                len: 8,
+            })
+        }
+    }
 }
 
 /// Returns the exact number of Blake3 hash calls for pushing one leaf.
@@ -177,5 +253,37 @@ mod grove_util_tests {
         assert_eq!(mmr_size_to_leaf_count(3), 2);
         assert_eq!(mmr_size_to_leaf_count(4), 3);
         assert_eq!(mmr_size_to_leaf_count(7), 4);
+    }
+
+    #[test]
+    fn test_u32_key_at_max_valid_position() {
+        // Position 2^31 - 1 is the last valid U32 position
+        let key = mmr_node_key_sized(MAX_U32_MMR_POSITION - 1, MmrKeySize::U32)
+            .expect("max valid position should succeed");
+        assert_eq!(key.as_ref().len(), 4);
+        // MSB should be set: 0x7FFF_FFFF | 0x8000_0000 = 0xFFFF_FFFF
+        assert_eq!(key.as_ref(), &[0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_u32_key_at_overflow_position() {
+        // Position 2^31 would alias position 0 after MSB tagging
+        let err = mmr_node_key_sized(MAX_U32_MMR_POSITION, MmrKeySize::U32)
+            .expect_err("should reject position >= 2^31");
+        assert!(
+            matches!(err, crate::Error::InvalidInput(_)),
+            "expected InvalidInput, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_u64_key_allows_large_positions() {
+        // U64 keys should work with very large positions
+        let key = mmr_node_key_sized(u64::MAX >> 1, MmrKeySize::U64)
+            .expect("large U64 position should succeed");
+        assert_eq!(key.as_ref().len(), 8);
+        // MSB should be set
+        assert!(key.as_ref()[0] >= 0x80);
     }
 }
