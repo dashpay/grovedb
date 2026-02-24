@@ -1713,7 +1713,10 @@ mod test {
             .unwrap()
             .expect("trunk_query should succeed on empty tree");
         assert!(result.proof.is_empty(), "proof should be empty");
-        assert!(result.chunk_depths.is_empty(), "chunk_depths should be empty");
+        assert!(
+            result.chunk_depths.is_empty(),
+            "chunk_depths should be empty"
+        );
         assert_eq!(result.tree_depth, 0, "tree_depth should be 0");
     }
 

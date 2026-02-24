@@ -419,15 +419,11 @@ mod tests {
             .expect("prove should succeed on empty tree");
 
         // Verify the proof
-        let (root_hash, result) =
-            GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
-                .expect("verify should succeed on empty tree proof");
+        let (root_hash, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("verify should succeed on empty tree proof");
 
         // Root hash should be valid (non-zero — the root merk has the tree key)
-        assert_ne!(
-            root_hash, [0u8; 32],
-            "root hash should not be all zeros"
-        );
+        assert_ne!(root_hash, [0u8; 32], "root hash should not be all zeros");
 
         // Result should be empty
         assert!(
@@ -442,9 +438,6 @@ mod tests {
             result.chunk_depths.is_empty(),
             "empty tree should have no chunk depths"
         );
-        assert_eq!(
-            result.max_tree_depth, 0,
-            "empty tree should have depth 0"
-        );
+        assert_eq!(result.max_tree_depth, 0, "empty tree should have depth 0");
     }
 }
