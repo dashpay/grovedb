@@ -288,7 +288,10 @@ impl GroveDb {
                     );
                 }
             }
-            _ => {
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::ItemWithSumItem(..)
+            | Element::Reference(..) => {
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert(

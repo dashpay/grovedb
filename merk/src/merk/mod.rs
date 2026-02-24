@@ -799,6 +799,12 @@ where
         let count = aggregate_data.as_count_u64();
 
         if count == 0 {
+            if self.has_root_key() {
+                return Err(Error::CorruptedState(
+                    "count tree has root node but aggregate count is 0",
+                ))
+                .wrap_with_cost(cost);
+            }
             return Ok(TrunkQueryResult {
                 proof: vec![],
                 chunk_depths: vec![],
