@@ -394,4 +394,52 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_trunk_proof_with_empty_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // Insert an empty CountSumTree (no items inside)
+        db.insert(
+            EMPTY_PATH,
+            b"empty_tree",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful empty_tree insert");
+
+        let query = PathTrunkChunkQuery::new(vec![b"empty_tree".to_vec()], 4);
+
+        // Should succeed, not error
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove should succeed on empty tree");
+
+        // Verify the proof
+        let (root_hash, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("verify should succeed on empty tree proof");
+
+        // Root hash should be valid (non-zero — the root merk has the tree key)
+        assert_ne!(root_hash, [0u8; 32], "root hash should not be all zeros");
+
+        // Result should be empty
+        assert!(
+            result.elements.is_empty(),
+            "empty tree should have no elements"
+        );
+        assert!(
+            result.leaf_keys.is_empty(),
+            "empty tree should have no leaf keys"
+        );
+        assert!(
+            result.chunk_depths.is_empty(),
+            "empty tree should have no chunk depths"
+        );
+        assert_eq!(result.max_tree_depth, 0, "empty tree should have depth 0");
+    }
 }

@@ -824,9 +824,17 @@ where
         let count = aggregate_data.as_count_u64();
 
         if count == 0 {
-            return Err(Error::InvalidOperation(
-                "trunk_query cannot be performed on an empty tree",
-            ))
+            if self.has_root_key() {
+                return Err(Error::CorruptedState(
+                    "count tree has root node but aggregate count is 0",
+                ))
+                .wrap_with_cost(cost);
+            }
+            return Ok(TrunkQueryResult {
+                proof: vec![],
+                chunk_depths: vec![],
+                tree_depth: 0,
+            })
             .wrap_with_cost(cost);
         }
 
@@ -853,8 +861,8 @@ where
         // Generate proof using create_chunk
         let tree_type = self.tree_type;
         let proof_cost_result = self.walk(|maybe_walker| match maybe_walker {
-            None => Err(Error::InvalidOperation(
-                "trunk_query cannot be performed on an empty tree",
+            None => Err(Error::CorruptedState(
+                "tree has non-zero count but no root node",
             ))
             .wrap_with_cost(OperationCost::default()),
             Some(mut walker) => {
@@ -1726,13 +1734,21 @@ mod test {
     }
 
     #[test]
-    fn test_trunk_query_empty_tree_fails() {
+    fn test_trunk_query_empty_tree_returns_empty() {
         let grove_version = GroveVersion::latest();
         let merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountTree);
 
-        // Trunk query should fail on empty tree
-        let result = merk.trunk_query(8, None, grove_version).unwrap();
-        assert!(result.is_err(), "trunk_query should fail on empty tree");
+        // Trunk query on empty tree should return an empty result
+        let result = merk
+            .trunk_query(8, None, grove_version)
+            .unwrap()
+            .expect("trunk_query should succeed on empty tree");
+        assert!(result.proof.is_empty(), "proof should be empty");
+        assert!(
+            result.chunk_depths.is_empty(),
+            "chunk_depths should be empty"
+        );
+        assert_eq!(result.tree_depth, 0, "tree_depth should be 0");
     }
 
     #[test]

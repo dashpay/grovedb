@@ -8,7 +8,7 @@ use grovedb_merk::{
         query::{PathKey, QueryProofVerify, VerifyOptions},
         Decoder, Node, Op, Query,
     },
-    tree::{combine_hash, value_hash},
+    tree::{combine_hash, value_hash, NULL_HASH},
     CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
@@ -1618,6 +1618,30 @@ impl GroveDb {
                     .to_string(),
             )
         })?;
+
+        // Empty tree — return an empty result.
+        // The parent layers' merk proofs already verified the hash chain integrity,
+        // including the element's value_hash. The count is authenticated by the
+        // parent proof. With count==0 there is no child data to verify against.
+        if count == 0 {
+            let grovedb_root_hash = grovedb_root_hash.ok_or_else(|| {
+                Error::InvalidProof(
+                    PathQuery::new_unsized(Vec::new(), Query::default()),
+                    "Empty path - no root hash computed".to_string(),
+                )
+            })?;
+
+            return Ok((
+                grovedb_root_hash,
+                GroveTrunkQueryResult {
+                    elements: BTreeMap::new(),
+                    leaf_keys: BTreeMap::new(),
+                    chunk_depths: vec![],
+                    max_tree_depth: 0,
+                    tree: grovedb_merk::proofs::tree::Tree::from(Node::Hash(NULL_HASH)),
+                },
+            ));
+        }
 
         let tree_depth = calculate_max_tree_depth_from_count(count);
         let chunk_depths = calculate_chunk_depths(tree_depth, query.max_depth);

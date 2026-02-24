@@ -306,8 +306,7 @@ impl GroveDb {
                 );
             }
             // MmrTree, BulkAppendTree, DenseAppendOnlyFixedSizeTree: initial
-            // insert uses NULL_HASH since these trees start empty. For MmrTree,
-            // the MMR root becomes the child hash after the first append.
+            // insert uses NULL_HASH since these trees start empty.
             Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -322,7 +321,7 @@ impl GroveDb {
                     )
                 );
             }
-            _ => {
+            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert(
