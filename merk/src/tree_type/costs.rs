@@ -60,10 +60,10 @@ impl CostSize for TreeType {
             TreeType::CountSumTree => COUNT_SUM_TREE_COST_SIZE,
             TreeType::ProvableCountTree => COUNT_TREE_COST_SIZE,
             TreeType::ProvableCountSumTree => COUNT_SUM_TREE_COST_SIZE,
-            TreeType::CommitmentTree => COMMITMENT_TREE_COST_SIZE,
+            TreeType::CommitmentTree(_) => COMMITMENT_TREE_COST_SIZE,
             TreeType::MmrTree => MMR_TREE_COST_SIZE,
-            TreeType::BulkAppendTree => BULK_APPEND_TREE_COST_SIZE,
-            TreeType::DenseAppendOnlyFixedSizeTree => DENSE_TREE_COST_SIZE,
+            TreeType::BulkAppendTree(_) => BULK_APPEND_TREE_COST_SIZE,
+            TreeType::DenseAppendOnlyFixedSizeTree(_) => DENSE_TREE_COST_SIZE,
         }
     }
 }

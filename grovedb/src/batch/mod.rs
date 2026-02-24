@@ -1738,17 +1738,17 @@ where
                     // Use explicit tree type when available to avoid
                     // ambiguity between non-Merk tree types.
                     let element = match non_merk_tree_type {
-                        Some(TreeType::CommitmentTree) => {
+                        Some(TreeType::CommitmentTree(_)) => {
                             let sr = custom_root.unwrap_or([0u8; 32]);
                             let (tc, cp) = bulk_state.unwrap_or((0, 0));
                             Element::new_commitment_tree_with_all(sr, tc, cp, flags)
                         }
                         Some(TreeType::MmrTree) => Element::MmrTree(0, flags),
-                        Some(TreeType::BulkAppendTree) => {
+                        Some(TreeType::BulkAppendTree(_)) => {
                             let (tc, cp) = bulk_state.unwrap_or((0, 0));
                             Element::BulkAppendTree(tc, cp, flags)
                         }
-                        Some(TreeType::DenseAppendOnlyFixedSizeTree) => {
+                        Some(TreeType::DenseAppendOnlyFixedSizeTree(_)) => {
                             let (count, height) = bulk_state.unwrap_or((0, 0));
                             Element::new_dense_tree(count as u16, height, flags)
                         }
@@ -2237,7 +2237,9 @@ impl GroveDb {
                                                                     *chunk_power,
                                                                 )),
                                                                 non_merk_tree_type: Some(
-                                                                    TreeType::CommitmentTree,
+                                                                    TreeType::CommitmentTree(
+                                                                        *chunk_power,
+                                                                    ),
                                                                 ),
                                                             }
                                                     } else if let Element::MmrTree(
@@ -2275,7 +2277,9 @@ impl GroveDb {
                                                                     *chunk_power,
                                                                 )),
                                                                 non_merk_tree_type: Some(
-                                                                    TreeType::BulkAppendTree,
+                                                                    TreeType::BulkAppendTree(
+                                                                        *chunk_power,
+                                                                    ),
                                                                 ),
                                                             }
                                                     } else if let
@@ -2297,7 +2301,7 @@ impl GroveDb {
                                                                     *height,
                                                                 )),
                                                                 non_merk_tree_type: Some(
-                                                                    DenseTreeType,
+                                                                    DenseTreeType(*height),
                                                                 ),
                                                             }
                                                     } else {
@@ -2900,7 +2904,7 @@ impl GroveDb {
         for (child_path, tree_type) in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
             // CommitmentTree stores Sinsemilla frontier in aux storage
-            if *tree_type == TreeType::CommitmentTree {
+            if matches!(tree_type, TreeType::CommitmentTree(_)) {
                 let ct_storage = self
                     .db
                     .get_transactional_storage_context(
@@ -3158,7 +3162,7 @@ impl GroveDb {
         // Clean up data/aux storage for deleted non-Merk trees.
         for (child_path, tree_type) in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
-            if *tree_type == TreeType::CommitmentTree {
+            if matches!(tree_type, TreeType::CommitmentTree(_)) {
                 let ct_storage = self
                     .db
                     .get_transactional_storage_context(

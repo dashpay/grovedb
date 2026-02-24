@@ -192,7 +192,7 @@ impl GroveOp {
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
-                    TreeType::BulkAppendTree,
+                    TreeType::BulkAppendTree(0),
                     propagate,
                     grove_version,
                 );
@@ -218,7 +218,7 @@ impl GroveOp {
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
-                    TreeType::DenseAppendOnlyFixedSizeTree,
+                    TreeType::DenseAppendOnlyFixedSizeTree(0),
                     propagate,
                     grove_version,
                 );

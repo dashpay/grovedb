@@ -189,7 +189,7 @@ impl GroveOp {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::worst_case_merk_replace_tree(
                     key,
-                    TreeType::BulkAppendTree,
+                    TreeType::BulkAppendTree(0),
                     in_parent_tree_type,
                     worst_case_layer_element_estimates,
                     propagate,
@@ -216,7 +216,7 @@ impl GroveOp {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::worst_case_merk_replace_tree(
                     key,
-                    TreeType::DenseAppendOnlyFixedSizeTree,
+                    TreeType::DenseAppendOnlyFixedSizeTree(0),
                     in_parent_tree_type,
                     worst_case_layer_element_estimates,
                     propagate,

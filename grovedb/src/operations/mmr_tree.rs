@@ -14,7 +14,7 @@ use grovedb_costs::{
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_merkle_mountain_range::{
-    hash_count_for_push, mmr_node_key, mmr_size_to_leaf_count, MmrNode, MmrStore, MMR,
+    hash_count_for_push, mmr_size_to_leaf_count, MmrNode, MmrStore, MMR,
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -266,22 +266,22 @@ impl GroveDb {
             .get_immediate_storage_context(subtree_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
+        let store = MmrStore::new(&storage_ctx);
         let pos = grovedb_merkle_mountain_range::leaf_to_pos(leaf_index);
-        let node_key = mmr_node_key(pos);
-        let result = storage_ctx.get(&node_key).unwrap_add_cost(&mut cost);
 
-        match result {
-            Ok(Some(bytes)) => {
-                let node = cost_return_on_error_no_add!(
-                    cost,
-                    MmrNode::deserialize(&bytes).map_err(|e| {
-                        Error::CorruptedData(format!("failed to deserialize MMR node: {}", e))
-                    })
-                );
-                Ok(node.into_value()).wrap_with_cost(cost)
-            }
+        use grovedb_merkle_mountain_range::MMRStoreReadOps;
+        let store_ref: &MmrStore<_> = &store;
+        let read_result = store_ref.element_at_position(pos);
+        cost += read_result.cost;
+
+        match read_result.value {
+            Ok(Some(node)) => Ok(node.into_value()).wrap_with_cost(cost),
             Ok(None) => Ok(None).wrap_with_cost(cost),
-            Err(e) => Err(e.into()).wrap_with_cost(cost),
+            Err(e) => Err(Error::CorruptedData(format!(
+                "failed to read MMR node: {}",
+                e
+            )))
+            .wrap_with_cost(cost),
         }
     }
 

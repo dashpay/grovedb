@@ -1155,22 +1155,20 @@ impl GroveDb {
             .get_immediate_storage_context(storage_path, tx)
             .unwrap_add_cost(&mut cost);
 
-        // Generate the MMR proof
+        // Generate the MMR proof using MmrStore for correct key format
+        let store = grovedb_merkle_mountain_range::MmrStore::new(&storage_ctx);
         let mmr_proof = cost_return_on_error_no_add!(
             cost,
             MmrTreeProof::generate(mmr_size, &leaf_indices, |pos| {
-                let key = grovedb_merkle_mountain_range::mmr_node_key(pos);
-                let result = storage_ctx.get(&key);
-                match result.value {
-                    Ok(Some(bytes)) => {
-                        let node = grovedb_merkle_mountain_range::MmrNode::deserialize(&bytes)?;
-                        Ok(Some(node))
-                    }
-                    Ok(None) => Ok(None),
-                    Err(e) => Err(grovedb_merkle_mountain_range::Error::OperationFailed(
-                        format!("storage error: {}", e),
-                    )),
-                }
+                use grovedb_merkle_mountain_range::MMRStoreReadOps;
+                let store_ref: &grovedb_merkle_mountain_range::MmrStore<_> = &store;
+                let result = store_ref.element_at_position(pos);
+                result.value.map_err(|e| {
+                    grovedb_merkle_mountain_range::Error::OperationFailed(format!(
+                        "storage error: {}",
+                        e
+                    ))
+                })
             })
             .map_err(|e| Error::CorruptedData(format!("{}", e)))
         );
