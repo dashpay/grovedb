@@ -266,7 +266,10 @@ impl GroveDb {
             Element::Tree(ref value, _)
             | Element::SumTree(ref value, ..)
             | Element::BigSumTree(ref value, ..)
-            | Element::CountTree(ref value, ..) => {
+            | Element::CountTree(ref value, ..)
+            | Element::CountSumTree(ref value, ..)
+            | Element::ProvableCountTree(ref value, ..)
+            | Element::ProvableCountSumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
