@@ -6,17 +6,10 @@ mod tests {
         NOTE_COMMITMENT_TREE_DEPTH,
     };
 
-    use crate::commitment_frontier::{
-        empty_sinsemilla_root, CommitmentFrontier, EMPTY_SINSEMILLA_ROOT,
+    use crate::{
+        commitment_frontier::{empty_sinsemilla_root, CommitmentFrontier, EMPTY_SINSEMILLA_ROOT},
+        test_utils::test_leaf,
     };
-
-    /// Create a deterministic test leaf from an index.
-    fn test_leaf(index: u64) -> [u8; 32] {
-        let empty = MerkleHashOrchard::empty_leaf();
-        let varied =
-            MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty);
-        MerkleHashOrchard::combine(Level::from(0), &empty, &varied).to_bytes()
-    }
 
     #[test]
     fn test_empty_frontier() {
@@ -88,7 +81,7 @@ mod tests {
     fn test_serialize_empty() {
         let f = CommitmentFrontier::new();
         let data = f.serialize();
-        let f2 = CommitmentFrontier::deserialize(&data).unwrap();
+        let f2 = CommitmentFrontier::deserialize(&data).expect("deserialize empty frontier");
 
         assert_eq!(f.root_hash(), f2.root_hash());
         assert_eq!(f.position(), f2.position());
@@ -102,7 +95,7 @@ mod tests {
         }
 
         let data = f.serialize();
-        let f2 = CommitmentFrontier::deserialize(&data).unwrap();
+        let f2 = CommitmentFrontier::deserialize(&data).expect("deserialize frontier");
 
         assert_eq!(f.root_hash(), f2.root_hash());
         assert_eq!(f.position(), f2.position());
@@ -126,7 +119,8 @@ mod tests {
             data.len()
         );
 
-        let f2 = CommitmentFrontier::deserialize(&data).unwrap();
+        let f2 =
+            CommitmentFrontier::deserialize(&data).expect("deserialize frontier with many leaves");
         assert_eq!(f.root_hash(), f2.root_hash());
         assert_eq!(f.tree_size(), f2.tree_size());
     }
@@ -201,7 +195,7 @@ mod tests {
         let truncated = &data[..43];
         let err = CommitmentFrontier::deserialize(truncated);
         assert!(err.is_err(), "should fail on truncated ommers");
-        let msg = format!("{}", err.unwrap_err());
+        let msg = format!("{}", err.expect_err("should be an error"));
         assert!(
             msg.contains("truncated ommers"),
             "expected 'truncated ommers' error, got: {msg}"
@@ -219,7 +213,7 @@ mod tests {
 
         let err = CommitmentFrontier::deserialize(&data);
         assert!(err.is_err(), "should fail on invalid leaf field element");
-        let msg = format!("{}", err.unwrap_err());
+        let msg = format!("{}", err.expect_err("should be an error"));
         assert!(
             msg.contains("invalid Pallas field element"),
             "expected InvalidFieldElement error, got: {msg}"
@@ -242,7 +236,7 @@ mod tests {
         }
         let err = CommitmentFrontier::deserialize(&data);
         assert!(err.is_err(), "should fail on invalid ommer field element");
-        let msg = format!("{}", err.unwrap_err());
+        let msg = format!("{}", err.expect_err("should be an error"));
         assert!(
             msg.contains("invalid Pallas field element"),
             "expected InvalidFieldElement error, got: {msg}"
@@ -266,7 +260,7 @@ mod tests {
 
         let err = CommitmentFrontier::deserialize(&data);
         assert!(err.is_err(), "should fail on inconsistent from_parts");
-        let msg = format!("{}", err.unwrap_err());
+        let msg = format!("{}", err.expect_err("should be an error"));
         assert!(
             msg.contains("frontier reconstruction"),
             "expected 'frontier reconstruction' error, got: {msg}"
@@ -309,7 +303,7 @@ mod tests {
         // Test with a frontier flag value that is neither 0x00 nor 0x01
         let err = CommitmentFrontier::deserialize(&[0x42]);
         assert!(err.is_err());
-        let msg = format!("{}", err.unwrap_err());
+        let msg = format!("{}", err.expect_err("should be an error"));
         assert!(
             msg.contains("invalid frontier flag: 0x42"),
             "expected 'invalid frontier flag' error, got: {msg}"

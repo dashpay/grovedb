@@ -15,7 +15,7 @@ default = []
 server = []
 storage = ["grovedb-storage", "grovedb-bulk-append-tree", "server"]
 client = ["shardtree"]
-sqlite = ["shardtree", "rusqlite"]
+sqlite = ["client", "rusqlite"]
 
 [dependencies]
 orchard = { git = "https://github.com/dashpay/orchard.git", rev = "41c8f7169f2683c99cf0e0c63e8d25ec12c47a79", features = ["circuit"] }

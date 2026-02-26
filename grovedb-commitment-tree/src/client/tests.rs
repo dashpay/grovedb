@@ -1,46 +1,49 @@
 #[cfg(test)]
 mod tests {
-    use incrementalmerkletree::{Hashable, Level, Position, Retention};
-    use orchard::tree::{Anchor, MerkleHashOrchard};
+    use incrementalmerkletree::{Position, Retention};
+    use orchard::tree::Anchor;
 
-    use crate::ClientMemoryCommitmentTree;
-
-    fn test_leaf(index: u64) -> [u8; 32] {
-        let empty = MerkleHashOrchard::empty_leaf();
-        let varied =
-            MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty);
-        MerkleHashOrchard::combine(Level::from(0), &empty, &varied).to_bytes()
-    }
+    use crate::{test_utils::test_leaf, ClientMemoryCommitmentTree};
 
     #[test]
     fn test_empty_tree() {
         let tree = ClientMemoryCommitmentTree::new(10);
-        assert_eq!(tree.max_leaf_position().unwrap(), None);
-        assert_eq!(tree.anchor().unwrap(), Anchor::empty_tree());
+        assert_eq!(tree.max_leaf_position().expect("max_leaf_position"), None);
+        assert_eq!(tree.anchor().expect("anchor"), Anchor::empty_tree());
     }
 
     #[test]
     fn test_append_and_position() {
         let mut tree = ClientMemoryCommitmentTree::new(10);
 
-        tree.append(test_leaf(0), Retention::Marked).unwrap();
-        assert_eq!(tree.max_leaf_position().unwrap(), Some(Position::from(0)));
+        tree.append(test_leaf(0), Retention::Marked)
+            .expect("append 0");
+        assert_eq!(
+            tree.max_leaf_position().expect("max_leaf_position"),
+            Some(Position::from(0))
+        );
 
-        tree.append(test_leaf(1), Retention::Ephemeral).unwrap();
-        assert_eq!(tree.max_leaf_position().unwrap(), Some(Position::from(1)));
+        tree.append(test_leaf(1), Retention::Ephemeral)
+            .expect("append 1");
+        assert_eq!(
+            tree.max_leaf_position().expect("max_leaf_position"),
+            Some(Position::from(1))
+        );
     }
 
     #[test]
     fn test_anchor_changes() {
         let mut tree = ClientMemoryCommitmentTree::new(10);
-        let empty_anchor = tree.anchor().unwrap();
+        let empty_anchor = tree.anchor().expect("anchor");
 
-        tree.append(test_leaf(0), Retention::Marked).unwrap();
-        let anchor1 = tree.anchor().unwrap();
+        tree.append(test_leaf(0), Retention::Marked)
+            .expect("append 0");
+        let anchor1 = tree.anchor().expect("anchor");
         assert_ne!(empty_anchor, anchor1);
 
-        tree.append(test_leaf(1), Retention::Marked).unwrap();
-        let anchor2 = tree.anchor().unwrap();
+        tree.append(test_leaf(1), Retention::Marked)
+            .expect("append 1");
+        let anchor2 = tree.anchor().expect("anchor");
         assert_ne!(anchor1, anchor2);
     }
 
@@ -49,12 +52,14 @@ mod tests {
         let mut tree = ClientMemoryCommitmentTree::new(10);
 
         // Append a marked leaf so we can witness it
-        tree.append(test_leaf(0), Retention::Marked).unwrap();
-        tree.append(test_leaf(1), Retention::Ephemeral).unwrap();
-        tree.checkpoint(1).unwrap();
+        tree.append(test_leaf(0), Retention::Marked)
+            .expect("append 0");
+        tree.append(test_leaf(1), Retention::Ephemeral)
+            .expect("append 1");
+        tree.checkpoint(1).expect("checkpoint");
 
         // Witness for position 0 at current state
-        let path = tree.witness(Position::from(0), 0).unwrap();
+        let path = tree.witness(Position::from(0), 0).expect("witness");
         assert!(path.is_some(), "should produce witness for marked leaf");
     }
 
@@ -71,10 +76,12 @@ mod tests {
                 .append(test_leaf(i))
                 .value
                 .expect("frontier append");
-            client.append(test_leaf(i), Retention::Ephemeral).unwrap();
+            client
+                .append(test_leaf(i), Retention::Ephemeral)
+                .expect("client append");
         }
 
-        assert_eq!(frontier.anchor(), client.anchor().unwrap());
+        assert_eq!(frontier.anchor(), client.anchor().expect("client anchor"));
     }
 
     /// Demonstrates that `checkpoint()` with a duplicate ID silently returns

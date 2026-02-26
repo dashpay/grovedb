@@ -5,10 +5,8 @@ use orchard::{
 };
 use shardtree::{store::memory::MemoryShardStore, ShardTree};
 
+use super::SHARD_HEIGHT;
 use crate::commitment_frontier::{merkle_hash_from_bytes, CommitmentTreeError};
-
-/// Shard height for the ShardTree. Each shard covers 16 levels.
-const SHARD_HEIGHT: u8 = 4;
 
 /// Client-side Orchard commitment tree with full Merkle witness support.
 ///

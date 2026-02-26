@@ -332,6 +332,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 65791,
                 hash_node_calls: 8, // todo: verify why
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -387,6 +388,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -442,6 +444,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 4,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -508,6 +511,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 2236894,
                 hash_node_calls: 74,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -572,6 +576,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 65964,
                 hash_node_calls: 266,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

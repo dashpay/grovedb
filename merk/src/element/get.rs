@@ -640,6 +640,7 @@ mod tests {
                 storage_cost: Default::default(),
                 storage_loaded_bytes: 0,
                 hash_node_calls: 0,
+                sinsemilla_hash_calls: 0,
             }
         );
 
@@ -650,6 +651,7 @@ mod tests {
                 storage_cost: Default::default(),
                 storage_loaded_bytes: 75,
                 hash_node_calls: 0,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

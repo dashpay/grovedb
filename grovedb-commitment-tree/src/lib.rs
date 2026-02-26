@@ -22,6 +22,8 @@ mod commitment_frontier;
 #[cfg(feature = "storage")]
 mod commitment_tree;
 mod error;
+#[cfg(test)]
+pub(crate) mod test_utils;
 // Trial decryption functions and traits
 #[cfg(feature = "sqlite")]
 pub use client::ClientPersistentCommitmentTree;

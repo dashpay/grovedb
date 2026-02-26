@@ -2,18 +2,11 @@
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use incrementalmerkletree::{Hashable, Level, Position, Retention};
-    use orchard::tree::{Anchor, MerkleHashOrchard};
+    use incrementalmerkletree::{Position, Retention};
+    use orchard::tree::Anchor;
     use rusqlite::Connection;
 
-    use crate::ClientPersistentCommitmentTree;
-
-    fn test_leaf(index: u64) -> [u8; 32] {
-        let empty = MerkleHashOrchard::empty_leaf();
-        let varied =
-            MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty);
-        MerkleHashOrchard::combine(Level::from(0), &empty, &varied).to_bytes()
-    }
+    use crate::{test_utils::test_leaf, ClientPersistentCommitmentTree};
 
     fn memory_tree() -> ClientPersistentCommitmentTree {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -128,12 +121,23 @@ mod tests {
         )
         .expect("insert app data");
 
-        let mut tree = ClientPersistentCommitmentTree::open(conn, 100).expect("open tree");
+        // Use shared connection so we can verify app data after tree writes
+        let arc = Arc::new(Mutex::new(conn));
+        let mut tree = ClientPersistentCommitmentTree::open_on_shared_connection(arc.clone(), 100)
+            .expect("open tree");
         tree.append(test_leaf(0), Retention::Marked)
             .expect("append");
 
-        // We can't directly query the connection since it's owned by the tree,
-        // but the fact that open() succeeded proves coexistence works.
+        // Verify app table is still readable after commitment tree writes
+        let guard = arc.lock().expect("lock");
+        let value: String = guard
+            .query_row(
+                "SELECT value FROM my_app_data WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query app data");
+        assert_eq!(value, "hello", "app data should survive commitment tree writes");
     }
 
     #[test]

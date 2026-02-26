@@ -2,8 +2,8 @@ use grovedb_merk::proofs::Query;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    tests::{make_test_grovedb, TempGroveDb},
-    Element, Error, GroveDb, PathQuery,
+    tests::make_test_grovedb,
+    Element, GroveDb, PathQuery,
 };
 
 #[test]

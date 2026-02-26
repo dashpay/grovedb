@@ -10,6 +10,12 @@
 //! grovedb-commitment-tree = { version = "4", features = ["client"] }
 //! ```
 
+/// Shard height for the ShardTree. Each shard covers 2^SHARD_HEIGHT levels.
+///
+/// This value is used by all client tree implementations (memory, persistent)
+/// and the SQLite store to ensure consistent shard addressing.
+pub(crate) const SHARD_HEIGHT: u8 = 4;
+
 mod client_memory_commitment_tree;
 pub use client_memory_commitment_tree::ClientMemoryCommitmentTree;
 
