@@ -6,24 +6,23 @@
 //! Orchard anchor computation).
 //!
 //! Items are stored as `cmx (32 bytes) || payload` in the BulkAppendTree data
-//! namespace. The Sinsemilla frontier is stored in aux storage (~1KB, O(1)
-//! append). Both share the same subtree path but use different storage
-//! namespaces (data vs aux), so there is no key collision.
+//! namespace. The Sinsemilla frontier is also stored in data storage (~1KB,
+//! O(1) append) under a reserved key (`COMMITMENT_TREE_DATA_KEY`).
 //!
 //! Historical anchors for spend authorization are managed by Platform in a
 //! separate provable tree — GroveDB only tracks the current frontier state.
 
-use std::{cell::RefCell, collections::HashMap};
+use std::collections::HashMap;
 
 use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree};
-use grovedb_commitment_tree::{Anchor, CommitmentFrontier};
+use grovedb_commitment_tree::{Anchor, CommitmentTree};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
 };
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch, StorageContext};
+use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -32,105 +31,16 @@ use crate::{
     Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
-// ── Constants ───────────────────────────────────────────────────────────
-
-/// Key used to store the serialized commitment frontier data in aux storage.
-pub(crate) const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
-
-/// Write-through caching wrapper for `StorageContext` aux operations.
-///
-/// Caches `get_aux` results at the raw byte level. `put_aux` writes through
-/// to the underlying context and updates the cache, ensuring read-after-write
-/// visibility even when the context defers writes to a batch.
-struct CachedAuxContext<'a, 'db, C: StorageContext<'db>> {
-    ctx: &'a C,
-    cache: RefCell<HashMap<Vec<u8>, Option<Vec<u8>>>>,
-    cost: RefCell<OperationCost>,
-    _marker: std::marker::PhantomData<&'db ()>,
-}
-
-impl<'a, 'db, C: StorageContext<'db>> CachedAuxContext<'a, 'db, C> {
-    fn new(ctx: &'a C) -> Self {
-        Self {
-            ctx,
-            cache: RefCell::new(HashMap::new()),
-            cost: RefCell::new(OperationCost::default()),
-            _marker: std::marker::PhantomData,
-        }
-    }
-
-    fn get_aux(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(cached) = self.cache.borrow().get(key) {
-            return Ok(cached.clone());
-        }
-        let result = self
-            .ctx
-            .get_aux(key)
-            .unwrap_add_cost(&mut self.cost.borrow_mut());
-        match result {
-            Ok(data) => {
-                self.cache.borrow_mut().insert(key.to_vec(), data.clone());
-                Ok(data)
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn put_aux(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let result = self
-            .ctx
-            .put_aux(key, value, None)
-            .unwrap_add_cost(&mut self.cost.borrow_mut());
-        match result {
-            Ok(()) => {
-                self.cache
-                    .borrow_mut()
-                    .insert(key.to_vec(), Some(value.to_vec()));
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn take_cost(&self) -> OperationCost {
-        self.cost.take()
-    }
-}
-
-// ── Frontier helpers ────────────────────────────────────────────────────
-
-/// Load a `CommitmentFrontier` from aux storage, returning a new empty frontier
-/// if no data exists.
-pub(crate) fn load_frontier_from_aux<'db, C: StorageContext<'db>>(
-    ctx: &C,
-    cost: &mut OperationCost,
-) -> Result<CommitmentFrontier, Error> {
-    let aux_data = ctx.get_aux(COMMITMENT_TREE_DATA_KEY).unwrap_add_cost(cost);
-    match aux_data {
-        Ok(Some(bytes)) => CommitmentFrontier::deserialize(&bytes).map_err(|e| {
-            Error::CorruptedData(format!("failed to deserialize commitment frontier: {}", e))
-        }),
-        Ok(None) => Ok(CommitmentFrontier::new()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Load a `CommitmentFrontier` from a `CachedAuxContext`, returning a new empty
-/// frontier if no data exists.
-fn load_frontier_from_cached_aux<'db, C: StorageContext<'db>>(
-    ctx: &CachedAuxContext<'_, 'db, C>,
-) -> Result<CommitmentFrontier, Error> {
-    match ctx.get_aux(COMMITMENT_TREE_DATA_KEY)? {
-        Some(bytes) => CommitmentFrontier::deserialize(&bytes).map_err(|e| {
-            Error::CorruptedData(format!("failed to deserialize commitment frontier: {}", e))
-        }),
-        None => Ok(CommitmentFrontier::new()),
-    }
-}
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 /// Map a `BulkAppendError` to a GroveDB `Error`.
 fn map_bulk_err(e: grovedb_bulk_append_tree::BulkAppendError) -> Error {
     Error::CorruptedData(format!("{}", e))
+}
+
+/// Map a `CommitmentTreeError` to a GroveDB `Error`.
+fn map_ct_err(e: grovedb_commitment_tree::CommitmentTreeError) -> Error {
+    Error::CommitmentTreeError(format!("{}", e))
 }
 
 // ── Operations ──────────────────────────────────────────────────────────
@@ -139,8 +49,8 @@ impl GroveDb {
     /// Insert a note commitment into a CommitmentTree subtree.
     ///
     /// This is the primary write operation for CommitmentTree. It:
-    /// 1. Appends `cmx || payload` to the BulkAppendTree (data namespace)
-    /// 2. Appends the cmx to the Sinsemilla frontier (aux namespace)
+    /// 1. Appends `cmx || payload` to the BulkAppendTree (data storage)
+    /// 2. Appends the cmx to the Sinsemilla frontier (data storage)
     /// 3. Updates the CommitmentTree element with new sinsemilla_root +
     ///    total_count
     /// 4. Propagates changes through the GroveDB Merk hierarchy
@@ -186,8 +96,13 @@ impl GroveDb {
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
-        // 3. Open storage context (data + aux namespaces)
-        let storage_ctx = self
+        // 3. Open two storage contexts: one for BulkAppendTree, one for CommitmentTree
+        //    (both use data storage at the same path)
+        let bulk_ctx = self
+            .db
+            .get_immediate_storage_context(ct_path.clone(), tx.as_ref())
+            .unwrap_add_cost(&mut cost);
+        let ct_ctx = self
             .db
             .get_immediate_storage_context(ct_path.clone(), tx.as_ref())
             .unwrap_add_cost(&mut cost);
@@ -195,7 +110,7 @@ impl GroveDb {
         // 4. Append item to BulkAppendTree (data namespace)
         let mut tree = cost_return_on_error_no_add!(
             cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
+            BulkAppendTree::from_state(total_count, chunk_power, bulk_ctx).map_err(map_bulk_err)
         );
 
         let mut item_value = Vec::with_capacity(32 + payload.len());
@@ -210,35 +125,20 @@ impl GroveDb {
         let position = result.global_position;
         let new_total_count = tree.total_count;
 
-        // 5. Load Sinsemilla frontier from aux (through tree's embedded storage),
-        //    append cmx, save back
-        let mut frontier = cost_return_on_error_no_add!(
-            cost,
-            load_frontier_from_aux(&tree.dense_tree.storage, &mut cost)
-        );
-
-        // Track Sinsemilla hash count
-        let ommer_hashes = frontier.position().map(|p| p.trailing_ones()).unwrap_or(0);
-        cost.sinsemilla_hash_calls += 32 + ommer_hashes;
-
-        let new_sinsemilla_root = cost_return_on_error_no_add!(
-            cost,
-            frontier
-                .append(cmx)
-                .map_err(|e| Error::CommitmentTreeError(format!("append failed: {}", e)))
-        );
-
-        let serialized = frontier.serialize();
-        cost_return_on_error!(
+        // 5. Open Sinsemilla commitment tree, append cmx, save back
+        let mut ct = cost_return_on_error!(
             &mut cost,
-            tree.dense_tree
-                .storage
-                .put_aux(COMMITMENT_TREE_DATA_KEY, &serialized, None)
-                .map_err(|e| e.into())
+            CommitmentTree::open(ct_ctx).map(|r| r.map_err(map_ct_err))
         );
 
-        // Drop tree (and its embedded storage context) before opening merk
+        let new_sinsemilla_root =
+            cost_return_on_error!(&mut cost, ct.append(cmx).map(|r| r.map_err(map_ct_err)));
+
+        cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
+
+        // Drop tree and ct (and their storage contexts) before opening merk
         drop(tree);
+        drop(ct);
 
         // 6. Update element in parent Merk
         let batch = StorageBatch::new();
@@ -338,10 +238,12 @@ impl GroveDb {
             .get_immediate_storage_context(ct_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let frontier =
-            cost_return_on_error_no_add!(cost, load_frontier_from_aux(&storage_ctx, &mut cost));
+        let ct = cost_return_on_error!(
+            &mut cost,
+            CommitmentTree::open(storage_ctx).map(|r| r.map_err(map_ct_err))
+        );
 
-        Ok(frontier.anchor()).wrap_with_cost(cost)
+        Ok(ct.anchor()).wrap_with_cost(cost)
     }
 
     /// Get a value from a CommitmentTree by its global 0-based position.
@@ -482,9 +384,9 @@ impl GroveDb {
     /// Preprocess `CommitmentTreeInsert` ops in a batch.
     ///
     /// For each group of insert ops targeting the same (path, key):
-    /// 1. Loads the Sinsemilla frontier from aux storage
-    /// 2. Appends all items to the BulkAppendTree (data namespace)
-    /// 3. Saves the updated frontier to aux storage
+    /// 1. Loads the Sinsemilla frontier from data storage
+    /// 2. Appends all items to the BulkAppendTree (data storage)
+    /// 3. Saves the updated frontier to data storage
     /// 4. Replaces the ops with a single `ReplaceTreeRootKey` carrying the new
     ///    sinsemilla_root and total_count
     ///
@@ -551,21 +453,21 @@ impl GroveDb {
                 }
             };
 
-            // Build subtree path (shared by data + aux)
+            // Build subtree path
             let mut ct_path_vec = path_vec.clone();
             ct_path_vec.push(key_bytes.clone());
             let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
             let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
             // Open two storage contexts at the same path: one for the BulkAppendTree
-            // (data namespace) and one for aux operations (Sinsemilla frontier).
+            // and one for the Sinsemilla frontier (both use data storage).
             // This avoids a borrow conflict between tree.append() (mutable) and
-            // CachedAuxContext (immutable borrow of storage).
+            // CommitmentTree (immutable borrow of storage).
             let storage_ctx = self
                 .db
                 .get_immediate_storage_context(ct_path.clone(), transaction)
                 .unwrap_add_cost(&mut cost);
-            let aux_storage_ctx = self
+            let frontier_storage_ctx = self
                 .db
                 .get_immediate_storage_context(ct_path.clone(), transaction)
                 .unwrap_add_cost(&mut cost);
@@ -577,10 +479,11 @@ impl GroveDb {
                     .map_err(map_bulk_err)
             );
 
-            // Load Sinsemilla frontier from aux namespace (separate storage context)
-            let cached_aux = CachedAuxContext::new(&aux_storage_ctx);
-            let mut frontier =
-                cost_return_on_error_no_add!(cost, load_frontier_from_cached_aux(&cached_aux));
+            // Open Sinsemilla commitment tree from separate storage context
+            let mut ct = cost_return_on_error!(
+                &mut cost,
+                CommitmentTree::open(frontier_storage_ctx).map(|r| r.map_err(map_ct_err))
+            );
 
             // Execute all inserts in order
             for (cmx, payload) in inserts {
@@ -595,16 +498,8 @@ impl GroveDb {
                 );
                 cost.hash_node_calls += result.hash_count;
 
-                // Append to Sinsemilla frontier
-                let ommer_hashes = frontier.position().map(|p| p.trailing_ones()).unwrap_or(0);
-                cost.sinsemilla_hash_calls += 32 + ommer_hashes;
-
-                cost_return_on_error_no_add!(
-                    cost,
-                    frontier
-                        .append(*cmx)
-                        .map_err(|e| Error::CommitmentTreeError(format!("append failed: {}", e)))
-                );
+                // Append to Sinsemilla commitment tree (cost tracks sinsemilla_hash_calls)
+                cost_return_on_error!(&mut cost, ct.append(*cmx).map(|r| r.map_err(map_ct_err)));
             }
 
             // Compute BulkAppendTree state root
@@ -613,15 +508,10 @@ impl GroveDb {
                 tree.compute_current_state_root().map_err(map_bulk_err)
             );
 
-            // Save Sinsemilla frontier back to aux
-            let serialized = frontier.serialize();
-            cost_return_on_error_no_add!(
-                cost,
-                cached_aux.put_aux(COMMITMENT_TREE_DATA_KEY, &serialized)
-            );
-            cost += cached_aux.take_cost();
+            // Save Sinsemilla commitment tree back to data storage
+            cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
 
-            let new_sinsemilla_root = frontier.root_hash();
+            let new_sinsemilla_root = ct.root_hash();
             let current_total_count = tree.total_count;
 
             // Drop tree (and its embedded storage context)

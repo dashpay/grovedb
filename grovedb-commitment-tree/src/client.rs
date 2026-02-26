@@ -201,7 +201,10 @@ mod tests {
         let mut client = ClientMemoryCommitmentTree::new(10);
 
         for i in 0..20u64 {
-            frontier.append(test_leaf(i)).unwrap();
+            frontier
+                .append(test_leaf(i))
+                .value
+                .expect("frontier append");
             client.append(test_leaf(i), Retention::Ephemeral).unwrap();
         }
 
@@ -367,6 +370,7 @@ mod tests {
         assert!(path_depth1.is_some());
 
         // Both witnesses exist at their respective checkpoint depths
-        // (MerklePath doesn't implement PartialEq so we just verify both are Some)
+        // (MerklePath doesn't implement PartialEq so we just verify both are
+        // Some)
     }
 }

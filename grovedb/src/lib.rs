@@ -1383,7 +1383,7 @@ impl GroveDb {
                     }
 
                     // For CommitmentTree elements, verify the sinsemilla_root
-                    // matches the actual frontier state in aux storage
+                    // matches the actual frontier state in data storage
                     if let Element::CommitmentTree(sinsemilla_root, ..) = &element {
                         let frontier_ctx = self
                             .db
@@ -1393,13 +1393,11 @@ impl GroveDb {
                                 transaction,
                             )
                             .unwrap();
-                        let mut frontier_cost = OperationCost::default();
-                        match operations::commitment_tree::load_frontier_from_aux(
-                            &frontier_ctx,
-                            &mut frontier_cost,
-                        ) {
-                            Ok(frontier) => {
-                                let actual_root = frontier.root_hash();
+                        let open_result =
+                            grovedb_commitment_tree::CommitmentTree::open(frontier_ctx);
+                        match open_result.value {
+                            Ok(ct) => {
+                                let actual_root = ct.root_hash();
                                 if actual_root != *sinsemilla_root {
                                     issues.insert(
                                         new_path.to_vec(),

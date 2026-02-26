@@ -740,33 +740,6 @@ impl GroveDb {
                 };
             }
 
-            // Clean up commitment tree aux storage if applicable.
-            // CommitmentTree stores Sinsemilla frontier data in aux storage
-            // which is not cleared by the normal Merk subtree cleanup.
-            if element.is_commitment_tree() {
-                let ct_storage = self
-                    .db
-                    .get_transactional_storage_context(
-                        subtree_merk_path_ref.clone(),
-                        Some(batch),
-                        transaction,
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    ct_storage
-                        .delete_aux(
-                            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
-                            None,
-                        )
-                        .map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to clean up commitment tree aux storage: {e}",
-                            ))
-                        })
-                );
-            }
-
             if !is_empty {
                 if non_merk_data {
                     // Non-Merk data trees: clear the subtree storage directly.

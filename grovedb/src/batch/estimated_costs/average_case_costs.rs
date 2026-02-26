@@ -141,7 +141,7 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 );
-                // Add cost of frontier aux I/O (load + save).
+                // Add cost of frontier data I/O (load + save).
                 // Average frontier size with ~16 ommers:
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 (ommers) = 554
                 const AVG_FRONTIER_SIZE: u32 = 554;

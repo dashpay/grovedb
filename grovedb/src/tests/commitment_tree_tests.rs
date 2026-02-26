@@ -37,7 +37,7 @@ fn test_cmx(index: u8) -> [u8; 32] {
 fn expected_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     let mut frontier = CommitmentFrontier::new();
     for leaf in leaves {
-        frontier.append(*leaf).expect("valid leaf");
+        frontier.append(*leaf).value.expect("valid leaf");
     }
     frontier.root_hash()
 }

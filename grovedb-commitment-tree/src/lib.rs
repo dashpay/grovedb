@@ -22,6 +22,11 @@ pub use client::ClientMemoryCommitmentTree;
 mod sqlite_client;
 #[cfg(feature = "sqlite")]
 mod sqlite_store;
+#[cfg(feature = "storage")]
+mod storage_adapter;
+pub use grovedb_costs::{self};
+#[cfg(feature = "server")]
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 #[cfg(feature = "server")]
 use incrementalmerkletree::frontier::Frontier;
 pub use incrementalmerkletree::{Hashable, Level, Position, Retention};
@@ -95,6 +100,8 @@ pub use rusqlite;
 pub use sqlite_client::ClientPersistentCommitmentTree;
 #[cfg(feature = "sqlite")]
 pub use sqlite_store::{SqliteShardStore, SqliteShardStoreError};
+#[cfg(feature = "storage")]
+pub use storage_adapter::{CommitmentTree, COMMITMENT_TREE_DATA_KEY};
 use thiserror::Error;
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
@@ -141,13 +148,31 @@ impl CommitmentFrontier {
 
     /// Append a commitment (cmx) to the frontier.
     ///
-    /// Returns the new Sinsemilla root hash after the append.
-    pub fn append(&mut self, cmx: [u8; 32]) -> Result<[u8; 32], CommitmentTreeError> {
-        let leaf = merkle_hash_from_bytes(&cmx).ok_or(CommitmentTreeError::InvalidFieldElement)?;
+    /// Returns the new Sinsemilla root hash after the append. The returned
+    /// [`OperationCost`] tracks `sinsemilla_hash_calls`: 32 hashes for the
+    /// leaf-to-root path plus `trailing_ones(position)` ommer hashes.
+    pub fn append(&mut self, cmx: [u8; 32]) -> CostResult<[u8; 32], CommitmentTreeError> {
+        let mut cost = OperationCost::default();
+        let leaf = match merkle_hash_from_bytes(&cmx) {
+            Some(l) => l,
+            None => {
+                return Err(CommitmentTreeError::InvalidFieldElement).wrap_with_cost(cost);
+            }
+        };
+
+        // Count Sinsemilla hashes: 32 levels for the leaf path + trailing_ones
+        // for ommer merges
+        let ommer_hashes = self
+            .frontier
+            .value()
+            .map(|f| u64::from(f.position()).trailing_ones())
+            .unwrap_or(0);
+        cost.sinsemilla_hash_calls += 32 + ommer_hashes;
+
         if !self.frontier.append(leaf) {
-            return Err(CommitmentTreeError::TreeFull);
+            return Err(CommitmentTreeError::TreeFull).wrap_with_cost(cost);
         }
-        Ok(self.root_hash())
+        Ok(self.root_hash()).wrap_with_cost(cost)
     }
 
     /// Get the current Sinsemilla root hash as 32 bytes.
@@ -340,7 +365,8 @@ mod tests {
         let mut f = CommitmentFrontier::new();
         let empty_root = f.root_hash();
 
-        let new_root = f.append(test_leaf(0)).unwrap();
+        let result = f.append(test_leaf(0));
+        let new_root = result.value.expect("append should succeed");
         assert_ne!(empty_root, new_root);
         assert_eq!(f.root_hash(), new_root);
     }
@@ -351,16 +377,16 @@ mod tests {
         assert_eq!(f.position(), None);
         assert_eq!(f.tree_size(), 0);
 
-        f.append(test_leaf(0)).unwrap();
+        f.append(test_leaf(0)).value.expect("append 0");
         assert_eq!(f.position(), Some(0));
         assert_eq!(f.tree_size(), 1);
 
-        f.append(test_leaf(1)).unwrap();
+        f.append(test_leaf(1)).value.expect("append 1");
         assert_eq!(f.position(), Some(1));
         assert_eq!(f.tree_size(), 2);
 
         for i in 2..100u64 {
-            f.append(test_leaf(i)).unwrap();
+            f.append(test_leaf(i)).value.expect("append loop");
         }
         assert_eq!(f.position(), Some(99));
         assert_eq!(f.tree_size(), 100);
@@ -372,8 +398,8 @@ mod tests {
         let mut f2 = CommitmentFrontier::new();
 
         for i in 0..10u64 {
-            f1.append(test_leaf(i)).unwrap();
-            f2.append(test_leaf(i)).unwrap();
+            f1.append(test_leaf(i)).value.expect("append f1");
+            f2.append(test_leaf(i)).value.expect("append f2");
         }
 
         assert_eq!(f1.root_hash(), f2.root_hash());
@@ -384,8 +410,8 @@ mod tests {
         let mut f1 = CommitmentFrontier::new();
         let mut f2 = CommitmentFrontier::new();
 
-        f1.append(test_leaf(0)).unwrap();
-        f2.append(test_leaf(1)).unwrap();
+        f1.append(test_leaf(0)).value.expect("append f1");
+        f2.append(test_leaf(1)).value.expect("append f2");
 
         assert_ne!(f1.root_hash(), f2.root_hash());
     }
@@ -404,7 +430,7 @@ mod tests {
     fn test_serialize_roundtrip() {
         let mut f = CommitmentFrontier::new();
         for i in 0..100u64 {
-            f.append(test_leaf(i)).unwrap();
+            f.append(test_leaf(i)).value.expect("append");
         }
 
         let data = f.serialize();
@@ -419,7 +445,7 @@ mod tests {
     fn test_serialize_roundtrip_with_many_leaves() {
         let mut f = CommitmentFrontier::new();
         for i in 0..1000u64 {
-            f.append(test_leaf(i)).unwrap();
+            f.append(test_leaf(i)).value.expect("append");
         }
 
         let data = f.serialize();
@@ -441,7 +467,7 @@ mod tests {
     fn test_invalid_field_element() {
         // All 0xFF bytes is not a valid Pallas field element
         let result = CommitmentFrontier::new().append([0xff; 32]);
-        assert!(result.is_err());
+        assert!(result.value.is_err());
     }
 
     #[test]
@@ -474,6 +500,151 @@ mod tests {
             computed, EMPTY_SINSEMILLA_ROOT,
             "EMPTY_SINSEMILLA_ROOT constant is stale. Update it to: {:?}",
             computed
+        );
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let f = CommitmentFrontier::default();
+        assert_eq!(f.position(), None);
+        assert_eq!(f.tree_size(), 0);
+        assert_eq!(f.root_hash(), CommitmentFrontier::new().root_hash());
+    }
+
+    #[test]
+    fn test_deserialize_truncated_ommers() {
+        // Build a valid serialized frontier with 1 leaf so we know the ommer
+        // count byte, then truncate the ommer data.
+        let mut f = CommitmentFrontier::new();
+        // Append enough leaves to generate ommers. After 3 appends (positions
+        // 0,1,2), position=2 has trailing_ones=0 so ommer_count may be 1.
+        // After 4 appends position=3 has trailing_ones=2, generating ommers.
+        for i in 0..4u64 {
+            f.append(test_leaf(i)).value.expect("append");
+        }
+        let data = f.serialize();
+        // data layout: 1 (flag) + 8 (position) + 32 (leaf) + 1 (ommer_count) + N*32
+        let ommer_count = data[42] as usize;
+        assert!(
+            ommer_count > 0,
+            "need at least one ommer to test truncation"
+        );
+        // Truncate: keep header + ommer_count byte but chop the ommer data
+        let truncated = &data[..43];
+        let err = CommitmentFrontier::deserialize(truncated);
+        assert!(err.is_err(), "should fail on truncated ommers");
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("truncated ommers"),
+            "expected 'truncated ommers' error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_invalid_leaf_field_element() {
+        // Construct bytes with valid header but an invalid Pallas field element
+        // as the leaf (all 0xFF is not a valid point).
+        let mut data = vec![0x01]; // has_frontier = true
+        data.extend_from_slice(&0u64.to_be_bytes()); // position = 0
+        data.extend_from_slice(&[0xFF; 32]); // invalid leaf
+        data.push(0); // ommer_count = 0
+
+        let err = CommitmentFrontier::deserialize(&data);
+        assert!(err.is_err(), "should fail on invalid leaf field element");
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("invalid Pallas field element"),
+            "expected InvalidFieldElement error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_invalid_ommer_field_element() {
+        // Build a valid frontier, then replace one ommer with 0xFF bytes.
+        let mut f = CommitmentFrontier::new();
+        for i in 0..4u64 {
+            f.append(test_leaf(i)).value.expect("append");
+        }
+        let mut data = f.serialize();
+        let ommer_count = data[42] as usize;
+        assert!(ommer_count > 0, "need at least one ommer");
+        // First ommer starts at byte 43, replace it with all 0xFF
+        for b in &mut data[43..43 + 32] {
+            *b = 0xFF;
+        }
+        let err = CommitmentFrontier::deserialize(&data);
+        assert!(err.is_err(), "should fail on invalid ommer field element");
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("invalid Pallas field element"),
+            "expected InvalidFieldElement error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_from_parts_failure() {
+        // Construct technically valid field elements but with an inconsistent
+        // position/ommer combination that `Frontier::from_parts` rejects.
+        // Position 0 should have 0 ommers; providing 1 ommer triggers the
+        // from_parts validation error.
+        let valid_leaf = test_leaf(0);
+        let valid_ommer = test_leaf(1);
+
+        let mut data = vec![0x01]; // has_frontier
+        data.extend_from_slice(&0u64.to_be_bytes()); // position = 0
+        data.extend_from_slice(&valid_leaf); // leaf
+        data.push(1); // ommer_count = 1 (wrong for position 0)
+        data.extend_from_slice(&valid_ommer); // ommer
+
+        let err = CommitmentFrontier::deserialize(&data);
+        assert!(err.is_err(), "should fail on inconsistent from_parts");
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("frontier reconstruction"),
+            "expected 'frontier reconstruction' error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_append_cost_sinsemilla_hash_calls() {
+        let mut f = CommitmentFrontier::new();
+
+        // First append (position 0): 32 hashes + 0 trailing_ones(empty) = 32
+        let r0 = f.append(test_leaf(0));
+        r0.value.expect("append 0");
+        assert_eq!(r0.cost.sinsemilla_hash_calls, 32);
+
+        // Second append (position 0 in frontier before append): trailing_ones(0)
+        // = 0 0 in binary is ...0, trailing_ones = 0, so 32 + 0 = 32
+        let r1 = f.append(test_leaf(1));
+        r1.value.expect("append 1");
+        assert_eq!(r1.cost.sinsemilla_hash_calls, 32);
+
+        // Third append (position 1): trailing_ones(1) = 1, so 32 + 1 = 33
+        let r2 = f.append(test_leaf(2));
+        r2.value.expect("append 2");
+        assert_eq!(r2.cost.sinsemilla_hash_calls, 33);
+
+        // Fourth append (position 2): trailing_ones(2=0b10) = 0, so 32
+        let r3 = f.append(test_leaf(3));
+        r3.value.expect("append 3");
+        assert_eq!(r3.cost.sinsemilla_hash_calls, 32);
+
+        // Fifth append (position 3): trailing_ones(3=0b11) = 2, so 34
+        let r4 = f.append(test_leaf(4));
+        r4.value.expect("append 4");
+        assert_eq!(r4.cost.sinsemilla_hash_calls, 34);
+    }
+
+    #[test]
+    fn test_deserialize_invalid_frontier_flag() {
+        // Test with a frontier flag value that is neither 0x00 nor 0x01
+        let err = CommitmentFrontier::deserialize(&[0x42]);
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("invalid frontier flag: 0x42"),
+            "expected 'invalid frontier flag' error, got: {msg}"
         );
     }
 }

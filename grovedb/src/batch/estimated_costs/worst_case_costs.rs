@@ -138,7 +138,7 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 );
-                // Add cost of frontier aux I/O (load + save).
+                // Add cost of frontier data I/O (load + save).
                 // Worst-case frontier size with 32 ommers (max depth):
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 (ommers) = 1066
                 const MAX_FRONTIER_SIZE: u32 = 1066;

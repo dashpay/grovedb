@@ -2900,33 +2900,9 @@ impl GroveDb {
             )
         );
 
-        // Clean up data/aux storage for deleted non-Merk trees.
-        for (child_path, tree_type) in &non_merk_delete_paths {
+        // Clean up data storage for deleted non-Merk trees.
+        for (child_path, _tree_type) in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
-            // CommitmentTree stores Sinsemilla frontier in aux storage
-            if matches!(tree_type, TreeType::CommitmentTree(_)) {
-                let ct_storage = self
-                    .db
-                    .get_transactional_storage_context(
-                        child_subtree_path.clone(),
-                        Some(&storage_batch),
-                        tx.as_ref(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    ct_storage
-                        .delete_aux(
-                            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
-                            None,
-                        )
-                        .map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to clean up commitment tree aux in batch delete: {e}",
-                            ))
-                        })
-                );
-            }
             // Clear data namespace for all non-Merk tree types
             let mut storage = self
                 .db
@@ -3159,32 +3135,9 @@ impl GroveDb {
             )
         );
 
-        // Clean up data/aux storage for deleted non-Merk trees.
-        for (child_path, tree_type) in &non_merk_delete_paths {
+        // Clean up data storage for deleted non-Merk trees.
+        for (child_path, _tree_type) in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
-            if matches!(tree_type, TreeType::CommitmentTree(_)) {
-                let ct_storage = self
-                    .db
-                    .get_transactional_storage_context(
-                        child_subtree_path.clone(),
-                        Some(&continue_storage_batch),
-                        tx.as_ref(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    ct_storage
-                        .delete_aux(
-                            crate::operations::commitment_tree::COMMITMENT_TREE_DATA_KEY,
-                            None,
-                        )
-                        .map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to clean up commitment tree aux in batch delete: {e}",
-                            ))
-                        })
-                );
-            }
             let mut storage = self
                 .db
                 .get_transactional_storage_context(
