@@ -285,14 +285,14 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
                 value: Ok(root),
                 cost: frontier_cost,
             } => {
-                cost = cost + frontier_cost;
+                cost += frontier_cost;
                 root
             }
             grovedb_costs::CostContext {
                 value: Err(e),
                 cost: frontier_cost,
             } => {
-                cost = cost + frontier_cost;
+                cost += frontier_cost;
                 return Err(e).wrap_with_cost(cost);
             }
         };

@@ -4,6 +4,7 @@ use orchard::{tree::MerkleHashOrchard, Anchor, NOTE_COMMITMENT_TREE_DEPTH};
 
 pub use crate::error::CommitmentTreeError;
 
+#[cfg(all(test, feature = "server"))]
 mod tests;
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
