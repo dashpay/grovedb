@@ -317,21 +317,34 @@ impl GroveDb {
             return Ok(ops).wrap_with_cost(cost);
         }
 
-        type PathKey = (Vec<Vec<u8>>, Vec<u8>);
+        type TreePath = Vec<Vec<u8>>;
 
-        let mut groups: HashMap<PathKey, Vec<Vec<u8>>> = HashMap::new();
+        let mut groups: HashMap<TreePath, Vec<Vec<u8>>> = HashMap::new();
 
         for op in ops.iter() {
             if let GroveOp::DenseTreeInsert { value } = &op.op {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
-                groups.entry(path_key).or_default().push(value.clone());
+                let tree_path = op.path.to_path();
+                groups.entry(tree_path).or_default().push(value.clone());
             }
         }
 
-        let mut replacements: HashMap<PathKey, QualifiedGroveDbOp> = HashMap::new();
+        let mut replacements: HashMap<TreePath, QualifiedGroveDbOp> = HashMap::new();
 
-        for (path_key, values) in groups.iter() {
-            let (path_vec, key_bytes) = path_key;
+        for (tree_path, values) in groups.iter() {
+            // Extract parent path and tree key from the full path
+            let (path_vec, key_bytes) = {
+                let mut p = tree_path.clone();
+                let k = match p.pop() {
+                    Some(k) => k,
+                    None => {
+                        return Err(Error::InvalidBatchOperation(
+                            "append op path must have at least one segment",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                (p, k)
+            };
 
             let path_slices: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
             let subtree_path = SubtreePath::from(path_slices.as_slice());
@@ -389,9 +402,10 @@ impl GroveDb {
             // Drop tree (and its embedded storage context)
             drop(tree);
 
+            // Key is restored for downstream (from_ops, execute_ops_on_path)
             let replacement = QualifiedGroveDbOp {
-                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
-                key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
+                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec),
+                key: Some(crate::batch::key_info::KeyInfo::KnownKey(key_bytes)),
                 op: GroveOp::ReplaceTreeRootKey {
                     hash: new_root_hash,
                     root_key: None,
@@ -401,19 +415,19 @@ impl GroveDb {
                     bulk_state: None,
                 },
             };
-            replacements.insert(path_key.clone(), replacement);
+            replacements.insert(tree_path.clone(), replacement);
         }
 
         // Build new ops list
-        let mut first_seen: HashMap<PathKey, bool> = HashMap::new();
+        let mut first_seen: HashMap<TreePath, bool> = HashMap::new();
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops.into_iter() {
             if matches!(op.op, GroveOp::DenseTreeInsert { .. }) {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
-                if !first_seen.contains_key(&path_key) {
-                    first_seen.insert(path_key.clone(), true);
-                    if let Some(replacement) = replacements.remove(&path_key) {
+                let tree_path = op.path.to_path();
+                if !first_seen.contains_key(&tree_path) {
+                    first_seen.insert(tree_path.clone(), true);
+                    if let Some(replacement) = replacements.remove(&tree_path) {
                         result.push(replacement);
                     }
                 }

@@ -78,7 +78,7 @@ pub enum Element {
     /// append-only storage of cmx||encrypted_note payloads with epoch
     /// compaction) and a Sinsemilla Frontier (for anchor computation).
     /// Items are stored in the data namespace via BulkAppendTree;
-    /// the frontier is stored in aux storage.
+    /// the frontier is stored in data storage.
     ///
     /// Fields: `(sinsemilla_root, total_count, chunk_power, flags)`
     /// - `sinsemilla_root`: The Sinsemilla frontier root hash, authenticated

@@ -1,132 +1,17 @@
-//! Storage adapter bridging GroveDB's `StorageContext` to commitment tree
-//! frontier persistence.
-//!
-//! Provides [`CommitmentTree`], which owns both the in-memory
-//! [`CommitmentFrontier`] and a `StorageContext`, combining state and storage
-//! into a single struct. All operations return [`CostResult`] to propagate
-//! storage costs.
-
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_storage::StorageContext;
-
-use crate::{CommitmentFrontier, CommitmentTreeError};
-
-/// Key used to store the serialized commitment frontier in data storage.
-pub const COMMITMENT_TREE_DATA_KEY: &[u8] = b"__ct_data__";
-
-/// Commitment tree combining in-memory frontier state with a storage context.
-///
-/// Owns both the [`CommitmentFrontier`] and the storage backend `S`. Follows
-/// the same open→mutate→save pattern as `BulkAppendTree<S>` and `MMR`.
-///
-/// - [`open`](CommitmentTree::open) loads the frontier from storage (or starts
-///   empty)
-/// - [`append`](CommitmentTree::append) mutates the in-memory frontier only
-/// - [`save`](CommitmentTree::save) persists the frontier back to storage
-pub struct CommitmentTree<S> {
-    frontier: CommitmentFrontier,
-    storage: S,
-}
-
-impl<S> std::fmt::Debug for CommitmentTree<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CommitmentTree")
-            .field("frontier", &self.frontier)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<'db, S: StorageContext<'db>> CommitmentTree<S> {
-    /// Load a commitment tree from storage, or start with an empty frontier if
-    /// no data exists yet.
-    ///
-    /// Takes ownership of the storage context.
-    pub fn open(storage: S) -> CostResult<Self, CommitmentTreeError> {
-        let mut cost = OperationCost::default();
-        let data = storage
-            .get(COMMITMENT_TREE_DATA_KEY)
-            .unwrap_add_cost(&mut cost);
-        let frontier = match data {
-            Ok(Some(bytes)) => match CommitmentFrontier::deserialize(&bytes) {
-                Ok(f) => f,
-                Err(e) => return Err(e).wrap_with_cost(cost),
-            },
-            Ok(None) => CommitmentFrontier::new(),
-            Err(e) => {
-                return Err(CommitmentTreeError::InvalidData(format!(
-                    "storage error loading frontier: {}",
-                    e
-                )))
-                .wrap_with_cost(cost);
-            }
-        };
-        Ok(Self { frontier, storage }).wrap_with_cost(cost)
-    }
-
-    /// Append a commitment (cmx) to the in-memory frontier.
-    ///
-    /// Returns the new Sinsemilla root hash. Call [`save`](Self::save) to
-    /// persist the updated state.
-    pub fn append(&mut self, cmx: [u8; 32]) -> CostResult<[u8; 32], CommitmentTreeError> {
-        self.frontier.append(cmx)
-    }
-
-    /// Persist the current frontier state to storage.
-    pub fn save(&self) -> CostResult<(), CommitmentTreeError> {
-        let mut cost = OperationCost::default();
-        let serialized = self.frontier.serialize();
-        let result = self
-            .storage
-            .put(COMMITMENT_TREE_DATA_KEY, &serialized, None, None)
-            .unwrap_add_cost(&mut cost);
-        match result {
-            Ok(()) => Ok(()).wrap_with_cost(cost),
-            Err(e) => Err(CommitmentTreeError::InvalidData(format!(
-                "storage error saving frontier: {}",
-                e
-            )))
-            .wrap_with_cost(cost),
-        }
-    }
-
-    /// Get the current Sinsemilla root hash as 32 bytes.
-    pub fn root_hash(&self) -> [u8; 32] {
-        self.frontier.root_hash()
-    }
-
-    /// Get the current root as an Orchard `Anchor`.
-    pub fn anchor(&self) -> crate::Anchor {
-        self.frontier.anchor()
-    }
-
-    /// Get the position of the most recently appended leaf, or `None` if empty.
-    pub fn position(&self) -> Option<u64> {
-        self.frontier.position()
-    }
-
-    /// Get the number of leaves that have been appended.
-    pub fn tree_size(&self) -> u64 {
-        self.frontier.tree_size()
-    }
-
-    /// Borrow the underlying storage context.
-    pub fn storage(&self) -> &S {
-        &self.storage
-    }
-}
-
 #[cfg(test)]
-mod tests {
+mod storage_tests {
     use std::collections::BTreeMap;
+    use std::marker::PhantomData;
 
+    use grovedb_bulk_append_tree::BulkAppendTree;
     use grovedb_costs::{
         storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
         CostResult, CostsExt, OperationCost,
     };
     use grovedb_storage::StorageContext;
 
-    use super::*;
-    use crate::CommitmentFrontier;
+    use crate::commitment_tree::*;
+    use crate::{CommitmentFrontier, DashMemo, MemoSize, NoteBytesData, TransmittedNoteCiphertext};
 
     // ── Mock StorageContext with working data storage ─────────────────────
 
@@ -514,7 +399,7 @@ mod tests {
         }
     }
 
-    // ── Helper ──────────────────────────────────────────────────────────
+    // ── Helpers ─────────────────────────────────────────────────────────
 
     /// Create a deterministic test leaf from an index.
     fn test_leaf(index: u64) -> [u8; 32] {
@@ -527,12 +412,36 @@ mod tests {
         MerkleHashOrchard::combine(Level::from(0), &empty, &varied).to_bytes()
     }
 
+    /// Create a deterministic test ciphertext for DashMemo from an index.
+    ///
+    /// Layout: `epk_bytes (32) || enc_ciphertext (104) || out_ciphertext (80)` = 216 bytes.
+    fn test_ciphertext(index: u8) -> TransmittedNoteCiphertext<DashMemo> {
+        let mut epk_bytes = [0u8; 32];
+        epk_bytes[0] = index;
+        epk_bytes[31] = 0xEE;
+        epk_bytes[1] = index.wrapping_add(1);
+
+        let mut enc_data = [0u8; 104];
+        enc_data[0] = index;
+        enc_data[1] = 0xEC;
+        let enc_ciphertext = NoteBytesData(enc_data);
+
+        let mut out_ciphertext = [0u8; 80];
+        out_ciphertext[0] = index;
+        out_ciphertext[1] = 0x0C;
+
+        TransmittedNoteCiphertext::from_parts(epk_bytes, enc_ciphertext, out_ciphertext)
+    }
+
+    /// Default chunk_power for tests (height=1 → capacity=1, epoch_size=2).
+    const TEST_CHUNK_POWER: u8 = 1;
+
     // ── Tests ───────────────────────────────────────────────────────────
 
     #[test]
     fn test_open_empty_store() {
         let ctx = MockDataStorageContext::new();
-        let result = CommitmentTree::open(ctx);
+        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
         let ct = result.value.expect("open should succeed on empty store");
 
         assert_eq!(
@@ -541,6 +450,7 @@ mod tests {
             "empty frontier should have no position"
         );
         assert_eq!(ct.tree_size(), 0, "empty frontier should have size 0");
+        assert_eq!(ct.total_count(), 0, "total_count should be 0");
         assert!(
             result.cost.seek_count > 0,
             "open should report non-zero seek_count"
@@ -552,14 +462,17 @@ mod tests {
         let ctx = MockDataStorageContext::new();
 
         // Build a frontier with several leaves, save, then re-open
-        let result = CommitmentTree::open(ctx);
+        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
         let mut ct = result.value.expect("open should succeed");
         for i in 0..20u64 {
-            ct.append(test_leaf(i)).value.expect("append");
+            ct.append(test_leaf(i), &test_ciphertext(i as u8))
+                .value
+                .expect("append should succeed");
         }
         let expected_root = ct.root_hash();
         let expected_position = ct.position();
         let expected_size = ct.tree_size();
+        let expected_total_count = ct.total_count();
 
         // Save
         let save_result = ct.save();
@@ -569,9 +482,10 @@ mod tests {
             "save should report non-zero seek_count"
         );
 
-        // Re-open from the same storage
-        let storage = ct.storage;
-        let load_result = CommitmentTree::open(storage);
+        // Re-open from the same storage (extract from bulk tree)
+        let storage = ct.bulk_tree.dense_tree.storage;
+        let load_result =
+            CommitmentTree::<_, DashMemo>::open(expected_total_count, TEST_CHUNK_POWER, storage);
         let loaded = load_result.value.expect("open should succeed");
 
         assert_eq!(loaded.root_hash(), expected_root, "root hash should match");
@@ -590,7 +504,7 @@ mod tests {
     #[test]
     fn test_save_overwrite_and_load() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::open(ctx)
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
             .value
             .expect("open should succeed");
 
@@ -598,13 +512,16 @@ mod tests {
         ct.save().value.expect("save empty should succeed");
 
         // Append and save again (overwrites)
-        ct.append(test_leaf(0)).value.expect("append");
+        ct.append(test_leaf(0), &test_ciphertext(0))
+            .value
+            .expect("append should succeed");
         let expected_root = ct.root_hash();
+        let total_count = ct.total_count();
         ct.save().value.expect("save non-empty should succeed");
 
         // Re-open should return the latest (non-empty) frontier
-        let storage = ct.storage;
-        let loaded = CommitmentTree::open(storage)
+        let storage = ct.bulk_tree.dense_tree.storage;
+        let loaded = CommitmentTree::<_, DashMemo>::open(total_count, TEST_CHUNK_POWER, storage)
             .value
             .expect("open should succeed");
         assert_eq!(
@@ -618,7 +535,7 @@ mod tests {
     fn test_open_corrupted_data_returns_error() {
         let ctx =
             MockDataStorageContext::with_raw_data(COMMITMENT_TREE_DATA_KEY, vec![0x01, 0x02, 0x03]);
-        let result = CommitmentTree::open(ctx);
+        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
         assert!(
             result.value.is_err(),
             "should return error for corrupted data"
@@ -628,7 +545,7 @@ mod tests {
     #[test]
     fn test_open_storage_error_surfaces() {
         let ctx = FailingDataStorageContext;
-        let result = CommitmentTree::open(ctx);
+        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
         assert!(result.value.is_err(), "should surface storage get error");
         let err_msg = format!("{}", result.value.expect_err("should be storage error"));
         assert!(
@@ -642,9 +559,12 @@ mod tests {
     fn test_save_storage_error_surfaces() {
         // FailingDataStorageContext.get fails, so open() would fail.
         // Construct directly to test save() error path.
-        let ct = CommitmentTree {
+        let bulk_tree = BulkAppendTree::new(TEST_CHUNK_POWER, FailingDataStorageContext)
+            .expect("bulk tree new should succeed");
+        let ct: CommitmentTree<_, DashMemo> = CommitmentTree {
             frontier: CommitmentFrontier::new(),
-            storage: FailingDataStorageContext,
+            bulk_tree,
+            _memo: PhantomData,
         };
         let result = ct.save();
         assert!(result.value.is_err(), "should surface storage put error");
@@ -659,14 +579,14 @@ mod tests {
     #[test]
     fn test_save_empty_and_reopen() {
         let ctx = MockDataStorageContext::new();
-        let ct = CommitmentTree::open(ctx)
+        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
             .value
             .expect("open should succeed");
 
         ct.save().value.expect("save empty should succeed");
 
-        let storage = ct.storage;
-        let loaded = CommitmentTree::open(storage)
+        let storage = ct.bulk_tree.dense_tree.storage;
+        let loaded = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, storage)
             .value
             .expect("open should succeed");
         assert_eq!(
@@ -684,28 +604,126 @@ mod tests {
     #[test]
     fn test_roundtrip_with_many_leaves() {
         let ctx = MockDataStorageContext::new();
-        let mut ct = CommitmentTree::open(ctx)
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
             .value
             .expect("open should succeed");
 
         for i in 0..500u64 {
-            ct.append(test_leaf(i)).value.expect("append");
+            ct.append(test_leaf(i), &test_ciphertext(i as u8))
+                .value
+                .expect("append should succeed");
         }
 
+        let total_count = ct.total_count();
         ct.save().value.expect("save should succeed");
 
-        let storage = ct.storage;
-        let loaded = CommitmentTree::open(storage)
-            .value
-            .expect("open should succeed");
+        let storage = ct.bulk_tree.dense_tree.storage;
+        let loaded =
+            CommitmentTree::<_, DashMemo>::open(total_count, TEST_CHUNK_POWER, storage)
+                .value
+                .expect("open should succeed");
 
         // Build an identical frontier to compare root hashes
         let mut expected = CommitmentFrontier::new();
         for i in 0..500u64 {
-            expected.append(test_leaf(i)).value.expect("append");
+            expected
+                .append(test_leaf(i))
+                .value
+                .expect("append should succeed");
         }
         assert_eq!(loaded.root_hash(), expected.root_hash());
         assert_eq!(loaded.tree_size(), 500);
         assert_eq!(loaded.position(), Some(499));
+    }
+
+    #[test]
+    fn test_append_returns_result_with_position() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        let r0 = ct
+            .append(test_leaf(0), &test_ciphertext(0))
+            .value
+            .expect("first append");
+        assert_eq!(r0.global_position, 0, "first append should be position 0");
+        assert_ne!(r0.sinsemilla_root, [0u8; 32], "root should be non-zero");
+        assert_ne!(
+            r0.bulk_state_root,
+            [0u8; 32],
+            "state root should be non-zero"
+        );
+
+        let r1 = ct
+            .append(test_leaf(1), &test_ciphertext(1))
+            .value
+            .expect("second append");
+        assert_eq!(r1.global_position, 1, "second append should be position 1");
+        assert_ne!(
+            r1.sinsemilla_root, r0.sinsemilla_root,
+            "roots should differ"
+        );
+    }
+
+    #[test]
+    fn test_new_creates_empty_tree() {
+        let ctx = MockDataStorageContext::new();
+        let ct = CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx)
+            .expect("new should succeed");
+
+        assert_eq!(ct.position(), None);
+        assert_eq!(ct.tree_size(), 0);
+        assert_eq!(ct.total_count(), 0);
+    }
+
+    #[test]
+    fn test_append_raw_rejects_wrong_payload_size() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        // Too small
+        let result = ct.append_raw(test_leaf(0), &[0u8; 10]);
+        let err = result.value.expect_err("should reject wrong size");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("invalid payload size"),
+            "error message should mention payload size: {}",
+            msg
+        );
+
+        // Too large
+        let result = ct.append_raw(test_leaf(0), &[0u8; 300]);
+        assert!(
+            result.value.is_err(),
+            "should reject payload that is too large"
+        );
+
+        // Exact correct size should succeed
+        let expected_size = ciphertext_payload_size::<DashMemo>();
+        let result = ct.append_raw(test_leaf(0), &vec![0u8; expected_size]);
+        assert!(result.value.is_ok(), "correct size should succeed");
+    }
+
+    #[test]
+    fn test_serialize_deserialize_ciphertext_roundtrip() {
+        let ct = test_ciphertext(42);
+        let bytes = serialize_ciphertext(&ct);
+        assert_eq!(
+            bytes.len(),
+            ciphertext_payload_size::<DashMemo>(),
+            "serialized size should match expected"
+        );
+
+        let deserialized: TransmittedNoteCiphertext<DashMemo> =
+            deserialize_ciphertext(&bytes).expect("deserialization should succeed");
+        assert_eq!(deserialized.epk_bytes, ct.epk_bytes);
+        assert_eq!(
+            deserialized.enc_ciphertext.as_ref(),
+            ct.enc_ciphertext.as_ref()
+        );
+        assert_eq!(deserialized.out_ciphertext, ct.out_ciphertext);
     }
 }

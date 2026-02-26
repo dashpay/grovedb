@@ -584,8 +584,7 @@ fn test_bulk_batch_single_append() {
     .expect("insert");
 
     let ops = vec![QualifiedGroveDbOp::bulk_append_op(
-        vec![],
-        b"bulk".to_vec(),
+        vec![b"bulk".to_vec()],
         b"batch_value".to_vec(),
     )];
 
@@ -623,7 +622,7 @@ fn test_bulk_batch_multiple_appends() {
     .expect("insert");
 
     let ops: Vec<QualifiedGroveDbOp> = (0u8..3)
-        .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![], b"bulk".to_vec(), vec![i]))
+        .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], vec![i]))
         .collect();
 
     db.apply_batch(ops, None, None, grove_version)
@@ -664,7 +663,7 @@ fn test_bulk_batch_spanning_compaction() {
     // Batch with 6 appends — should trigger 1 compaction (chunk_size=4)
     // and leave 2 in buffer
     let ops: Vec<QualifiedGroveDbOp> = (0u8..6)
-        .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![], b"bulk".to_vec(), vec![i]))
+        .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], vec![i]))
         .collect();
 
     db.apply_batch(ops, None, None, grove_version)
@@ -738,7 +737,7 @@ fn test_bulk_batch_matches_direct_ops() {
     .expect("insert");
 
     let ops: Vec<QualifiedGroveDbOp> = (0u8..6)
-        .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![], b"bulk".to_vec(), vec![i]))
+        .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], vec![i]))
         .collect();
 
     db2.apply_batch(ops, None, None, grove_version)
@@ -802,13 +801,11 @@ fn test_bulk_batch_with_mixed_ops() {
             Element::new_item(b"hello".to_vec()),
         ),
         QualifiedGroveDbOp::bulk_append_op(
-            vec![b"parent".to_vec()],
-            b"bulk".to_vec(),
+            vec![b"parent".to_vec(), b"bulk".to_vec()],
             b"note1".to_vec(),
         ),
         QualifiedGroveDbOp::bulk_append_op(
-            vec![b"parent".to_vec()],
-            b"bulk".to_vec(),
+            vec![b"parent".to_vec(), b"bulk".to_vec()],
             b"note2".to_vec(),
         ),
     ];

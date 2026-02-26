@@ -353,23 +353,36 @@ impl GroveDb {
             return Ok(ops).wrap_with_cost(cost);
         }
 
-        type PathKey = (Vec<Vec<u8>>, Vec<u8>);
+        type TreePath = Vec<Vec<u8>>;
 
-        // Group MMR tree append ops by (path, key), preserving order.
-        let mut mmr_groups: HashMap<PathKey, Vec<Vec<u8>>> = HashMap::new();
+        // Group MMR tree append ops by path (which includes tree key).
+        let mut mmr_groups: HashMap<TreePath, Vec<Vec<u8>>> = HashMap::new();
 
         for op in ops.iter() {
             if let GroveOp::MmrTreeAppend { value } = &op.op {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
-                mmr_groups.entry(path_key).or_default().push(value.clone());
+                let tree_path = op.path.to_path();
+                mmr_groups.entry(tree_path).or_default().push(value.clone());
             }
         }
 
         // Process each group
-        let mut replacements: HashMap<PathKey, QualifiedGroveDbOp> = HashMap::new();
+        let mut replacements: HashMap<TreePath, QualifiedGroveDbOp> = HashMap::new();
 
-        for (path_key, values) in mmr_groups.iter() {
-            let (path_vec, key_bytes) = path_key;
+        for (tree_path, values) in mmr_groups.iter() {
+            // Extract parent path and tree key from the full path
+            let (path_vec, key_bytes) = {
+                let mut p = tree_path.clone();
+                let k = match p.pop() {
+                    Some(k) => k,
+                    None => {
+                        return Err(Error::InvalidBatchOperation(
+                            "append op path must have at least one segment",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                (p, k)
+            };
 
             // Read existing element to get mmr_size
             let path_slices: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
@@ -441,9 +454,10 @@ impl GroveDb {
             drop(storage_ctx);
 
             // Create a ReplaceTreeRootKey — MMR root flows as child hash
+            // Key is restored for downstream (from_ops, execute_ops_on_path)
             let replacement = QualifiedGroveDbOp {
-                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
-                key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
+                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec),
+                key: Some(crate::batch::key_info::KeyInfo::KnownKey(key_bytes)),
                 op: GroveOp::ReplaceTreeRootKey {
                     hash: new_mmr_root,
                     root_key: None,
@@ -453,20 +467,20 @@ impl GroveDb {
                     bulk_state: None,
                 },
             };
-            replacements.insert(path_key.clone(), replacement);
+            replacements.insert(tree_path.clone(), replacement);
         }
 
         // Build the new ops list: keep non-MMR ops, replace first MMR append op
         // per group with ReplaceTreeRootKey, skip the rest
-        let mut first_seen: HashMap<PathKey, bool> = HashMap::new();
+        let mut first_seen: HashMap<TreePath, bool> = HashMap::new();
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops.into_iter() {
             if matches!(op.op, GroveOp::MmrTreeAppend { .. }) {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
-                if !first_seen.contains_key(&path_key) {
-                    first_seen.insert(path_key.clone(), true);
-                    if let Some(replacement) = replacements.remove(&path_key) {
+                let tree_path = op.path.to_path();
+                if !first_seen.contains_key(&tree_path) {
+                    first_seen.insert(tree_path.clone(), true);
+                    if let Some(replacement) = replacements.remove(&tree_path) {
                         result.push(replacement);
                     }
                 }

@@ -275,7 +275,13 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
-        inserted_path.push(op.key.clone());
+        let key = cost_return_on_error_no_add!(
+            average_case_cost,
+            op.key
+                .clone()
+                .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
+        );
+        inserted_path.push(key);
         // There is no need to pay for getting a merk, because we know the merk to be
         // empty at this point.
         // There is however a hash call that creates the prefix

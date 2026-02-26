@@ -534,8 +534,7 @@ fn test_mmr_tree_batch_single_append() {
     .expect("insert mmr tree");
 
     let ops = vec![QualifiedGroveDbOp::mmr_tree_append_op(
-        vec![],
-        b"log".to_vec(),
+        vec![b"log".to_vec()],
         b"batch_value".to_vec(),
     )];
 
@@ -581,7 +580,7 @@ fn test_mmr_tree_batch_multiple_appends() {
 
     let ops: Vec<QualifiedGroveDbOp> = values
         .iter()
-        .map(|v| QualifiedGroveDbOp::mmr_tree_append_op(vec![], b"log".to_vec(), v.clone()))
+        .map(|v| QualifiedGroveDbOp::mmr_tree_append_op(vec![b"log".to_vec()], v.clone()))
         .collect();
 
     db.apply_batch(ops, None, None, grove_version)
@@ -658,7 +657,7 @@ fn test_mmr_tree_batch_matches_direct_ops() {
 
     let ops: Vec<QualifiedGroveDbOp> = values
         .iter()
-        .map(|v| QualifiedGroveDbOp::mmr_tree_append_op(vec![], b"log".to_vec(), v.clone()))
+        .map(|v| QualifiedGroveDbOp::mmr_tree_append_op(vec![b"log".to_vec()], v.clone()))
         .collect();
 
     db_batch
@@ -714,8 +713,7 @@ fn test_mmr_tree_batch_mixed_ops() {
             Element::new_item(b"some data".to_vec()),
         ),
         QualifiedGroveDbOp::mmr_tree_append_op(
-            vec![b"parent".to_vec()],
-            b"log".to_vec(),
+            vec![b"parent".to_vec(), b"log".to_vec()],
             b"log_entry".to_vec(),
         ),
     ];
@@ -769,9 +767,9 @@ fn test_mmr_tree_batch_multiple_trees() {
     .expect("insert log_b");
 
     let ops = vec![
-        QualifiedGroveDbOp::mmr_tree_append_op(vec![], b"log_a".to_vec(), b"a1".to_vec()),
-        QualifiedGroveDbOp::mmr_tree_append_op(vec![], b"log_a".to_vec(), b"a2".to_vec()),
-        QualifiedGroveDbOp::mmr_tree_append_op(vec![], b"log_b".to_vec(), b"b1".to_vec()),
+        QualifiedGroveDbOp::mmr_tree_append_op(vec![b"log_a".to_vec()], b"a1".to_vec()),
+        QualifiedGroveDbOp::mmr_tree_append_op(vec![b"log_a".to_vec()], b"a2".to_vec()),
+        QualifiedGroveDbOp::mmr_tree_append_op(vec![b"log_b".to_vec()], b"b1".to_vec()),
     ];
 
     db.apply_batch(ops, None, None, grove_version)

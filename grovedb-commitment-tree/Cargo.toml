@@ -13,7 +13,7 @@ documentation = "https://docs.rs/grovedb"
 [features]
 default = []
 server = []
-storage = ["grovedb-storage"]
+storage = ["grovedb-storage", "grovedb-bulk-append-tree", "server"]
 client = ["shardtree"]
 sqlite = ["shardtree", "rusqlite"]
 
@@ -24,6 +24,7 @@ shardtree = { version = "0.6", optional = true }
 rusqlite = { version = "0.38", features = ["bundled"], optional = true }
 grovedb-costs = { version = "4.0.0", path = "../costs" }
 grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
+grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-tree", optional = true }
 thiserror = "2.0"
 
 [dev-dependencies]

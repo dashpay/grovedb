@@ -410,8 +410,11 @@ impl KeyInfoPath {
 pub struct QualifiedGroveDbOp {
     /// Path to a subtree - subject to an operation
     pub path: KeyInfoPath,
-    /// Key of an element in the subtree
-    pub key: KeyInfo,
+    /// Key of an element in the subtree.
+    /// `None` for append-only tree ops (CommitmentTreeInsert, MmrTreeAppend,
+    /// BulkAppend, DenseTreeInsert) where the tree key is the last segment
+    /// of `path` instead.
+    pub key: Option<KeyInfo>,
     /// Operation to perform on the key
     pub op: GroveOp,
 }
@@ -421,9 +424,14 @@ impl fmt::Debug for QualifiedGroveDbOp {
         let mut path_out = Vec::new();
         let path_drawer = Drawer::new(&mut path_out);
         self.path.visualize(path_drawer).unwrap();
-        let mut key_out = Vec::new();
-        let key_drawer = Drawer::new(&mut key_out);
-        self.key.visualize(key_drawer).unwrap();
+        let key_display = if let Some(ref key) = self.key {
+            let mut key_out = Vec::new();
+            let key_drawer = Drawer::new(&mut key_out);
+            key.visualize(key_drawer).unwrap();
+            String::from_utf8_lossy(&key_out).into_owned()
+        } else {
+            "(keyless)".to_string()
+        };
 
         let op_dbg = match &self.op {
             GroveOp::InsertOrReplace { element } => format!("Insert Or Replace {:?}", element),
@@ -453,7 +461,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
 
         f.debug_struct("GroveDbOp")
             .field("path", &String::from_utf8_lossy(&path_out))
-            .field("key", &String::from_utf8_lossy(&key_out))
+            .field("key", &key_display)
             .field("op", &op_dbg)
             .finish()
     }
@@ -465,7 +473,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::InsertOnly { element },
         }
     }
@@ -475,7 +483,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::InsertOrReplace { element },
         }
     }
@@ -484,7 +492,7 @@ impl QualifiedGroveDbOp {
     pub fn insert_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::InsertOrReplace { element },
         }
     }
@@ -494,7 +502,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::Replace { element },
         }
     }
@@ -503,7 +511,7 @@ impl QualifiedGroveDbOp {
     pub fn replace_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::Replace { element },
         }
     }
@@ -518,7 +526,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::Patch {
                 element,
                 change_in_bytes,
@@ -535,7 +543,7 @@ impl QualifiedGroveDbOp {
     ) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::Patch {
                 element,
                 change_in_bytes,
@@ -555,7 +563,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
@@ -570,7 +578,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::Delete,
         }
     }
@@ -580,7 +588,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::DeleteTree(tree_type),
         }
     }
@@ -589,7 +597,7 @@ impl QualifiedGroveDbOp {
     pub fn delete_estimated_op(path: KeyInfoPath, key: KeyInfo) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::Delete,
         }
     }
@@ -598,52 +606,62 @@ impl QualifiedGroveDbOp {
     pub fn delete_estimated_tree_op(path: KeyInfoPath, key: KeyInfo, tree_type: TreeType) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::DeleteTree(tree_type),
         }
     }
 
-    /// A commitment tree insert op using a known owned path and known key
-    pub fn commitment_tree_insert_op(
-        path: Vec<Vec<u8>>,
-        key: Vec<u8>,
-        cmx: [u8; 32],
-        payload: Vec<u8>,
-    ) -> Self {
+    /// A commitment tree insert op. `path` includes the tree key as its last
+    /// segment (e.g. `vec![b"pool".to_vec()]` for a tree at key `b"pool"` in
+    /// the root subtree).
+    pub fn commitment_tree_insert_op(path: Vec<Vec<u8>>, cmx: [u8; 32], payload: Vec<u8>) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: None,
             op: GroveOp::CommitmentTreeInsert { cmx, payload },
         }
     }
 
-    /// An MMR tree append op using a known owned path and known key
-    pub fn mmr_tree_append_op(path: Vec<Vec<u8>>, key: Vec<u8>, value: Vec<u8>) -> Self {
+    /// A typed commitment tree insert op. Serializes the ciphertext and
+    /// delegates to
+    /// [`commitment_tree_insert_op`](Self::commitment_tree_insert_op).
+    pub fn commitment_tree_insert_op_typed<M: grovedb_commitment_tree::MemoSize>(
+        path: Vec<Vec<u8>>,
+        cmx: [u8; 32],
+        ciphertext: &grovedb_commitment_tree::TransmittedNoteCiphertext<M>,
+    ) -> Self {
+        let payload = grovedb_commitment_tree::serialize_ciphertext(ciphertext);
+        Self::commitment_tree_insert_op(path, cmx, payload)
+    }
+
+    /// An MMR tree append op. `path` includes the tree key as its last segment.
+    pub fn mmr_tree_append_op(path: Vec<Vec<u8>>, value: Vec<u8>) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: None,
             op: GroveOp::MmrTreeAppend { value },
         }
     }
 
-    /// A bulk append op using a known owned path and known key
-    pub fn bulk_append_op(path: Vec<Vec<u8>>, key: Vec<u8>, value: Vec<u8>) -> Self {
+    /// A bulk append op. `path` includes the tree key as its last segment.
+    pub fn bulk_append_op(path: Vec<Vec<u8>>, value: Vec<u8>) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: None,
             op: GroveOp::BulkAppend { value },
         }
     }
 
-    /// A dense tree insert op using a known owned path and known key
-    pub fn dense_tree_insert_op(path: Vec<Vec<u8>>, key: Vec<u8>, value: Vec<u8>) -> Self {
+    /// A dense tree insert op. `path` includes the tree key as its last
+    /// segment.
+    pub fn dense_tree_insert_op(path: Vec<Vec<u8>>, value: Vec<u8>) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: None,
             op: GroveOp::DenseTreeInsert { value },
         }
     }
@@ -673,33 +691,24 @@ impl QualifiedGroveDbOp {
         let mut same_path_key_ops = vec![];
 
         // No double insert or delete of same key in same path.
-        // Multiple CommitmentTreeInsert ops on the same path/key are allowed
-        // (appending multiple notes to the same commitment tree in one batch).
+        // Keyless ops (append-only tree ops) can't conflict — skip them.
         for (i, op) in ops.iter().enumerate() {
             if i == ops_len {
                 continue;
             } // Don't do last one
+            if op.key.is_none() {
+                continue;
+            } // Keyless ops can't conflict
             let mut doubled_ops = ops
                 .split_at(i + 1)
                 .1
                 .iter()
                 .filter_map(|current_op| {
-                    if current_op.path == op.path && current_op.key == op.key {
-                        // Allow multiple CommitmentTreeInsert, MmrTreeAppend, or BulkAppend ops on
-                        // same tree
-                        if (matches!(op.op, GroveOp::CommitmentTreeInsert { .. })
-                            && matches!(current_op.op, GroveOp::CommitmentTreeInsert { .. }))
-                            || (matches!(op.op, GroveOp::MmrTreeAppend { .. })
-                                && matches!(current_op.op, GroveOp::MmrTreeAppend { .. }))
-                            || (matches!(op.op, GroveOp::BulkAppend { .. })
-                                && matches!(current_op.op, GroveOp::BulkAppend { .. }))
-                            || (matches!(op.op, GroveOp::DenseTreeInsert { .. })
-                                && matches!(current_op.op, GroveOp::DenseTreeInsert { .. }))
-                        {
-                            None
-                        } else {
-                            Some(current_op.op.clone())
-                        }
+                    if current_op.key.is_some()
+                        && current_op.path == op.path
+                        && current_op.key == op.key
+                    {
+                        Some(current_op.op.clone())
                     } else {
                         None
                     }
@@ -736,8 +745,11 @@ impl QualifiedGroveDbOp {
 
         // No inserts under a deleted path
         for deleted_op in deletes.iter() {
+            let Some(ref deleted_key) = deleted_op.key else {
+                continue;
+            };
             let mut deleted_qualified_path = deleted_op.path.clone();
-            deleted_qualified_path.push(deleted_op.key.clone());
+            deleted_qualified_path.push(deleted_key.clone());
             let inserts_with_deleted_ops_above = inserts
                 .iter()
                 .filter_map(|inserted_op| {
@@ -773,7 +785,7 @@ pub struct GroveDbOpConsistencyResults {
     /// Repeated Ops, the second u16 element represents the count
     repeated_ops: Vec<(QualifiedGroveDbOp, u16)>,
     /// The same path key ops
-    same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<GroveOp>)>,
+    same_path_key_ops: Vec<(KeyInfoPath, Option<KeyInfo>, Vec<GroveOp>)>,
     /// This shows issues when we delete a tree but insert under the deleted
     /// tree Deleted ops are first, with inserts under them in a tree
     insert_ops_below_deleted_ops: Vec<(QualifiedGroveDbOp, Vec<QualifiedGroveDbOp>)>,
@@ -1392,7 +1404,13 @@ where
         let mut cost = OperationCost::default();
 
         let mut inserted_path = op.path.to_path();
-        inserted_path.push(op.key.get_key_clone());
+        let key = cost_return_on_error_no_add!(
+            cost,
+            op.key
+                .as_ref()
+                .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
+        );
+        inserted_path.push(key.get_key_clone());
         if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
             let mut merk =
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
@@ -2521,11 +2539,17 @@ impl GroveDb {
                     // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key
+                            .as_ref()
+                            .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
+                    );
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            key.as_slice(),
                             element.to_owned(),
                             options.clone().map(|o| o.as_insert_options()),
                             transaction,
@@ -2536,11 +2560,17 @@ impl GroveDb {
                 GroveOp::Delete => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key
+                            .as_ref()
+                            .ok_or(Error::InvalidBatchOperation("delete op is missing a key"))
+                    );
                     cost_return_on_error!(
                         &mut cost,
                         self.delete(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            key.as_slice(),
                             options.clone().map(|o| o.as_delete_options()),
                             transaction,
                             grove_version
@@ -2548,13 +2578,19 @@ impl GroveDb {
                     );
                 }
                 GroveOp::CommitmentTreeInsert { cmx, payload } => {
-                    let path_slices: Vec<&[u8]> =
-                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
-                        self.commitment_tree_insert(
+                        self.commitment_tree_insert_raw(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            &key,
                             cmx,
                             payload.clone(),
                             transaction,
@@ -2563,13 +2599,19 @@ impl GroveDb {
                     );
                 }
                 GroveOp::MmrTreeAppend { value } => {
-                    let path_slices: Vec<&[u8]> =
-                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.mmr_tree_append(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            &key,
                             value.clone(),
                             transaction,
                             grove_version,
@@ -2577,13 +2619,19 @@ impl GroveDb {
                     );
                 }
                 GroveOp::BulkAppend { value } => {
-                    let path_slices: Vec<&[u8]> =
-                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.bulk_append(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            &key,
                             value.clone(),
                             transaction,
                             grove_version,
@@ -2591,13 +2639,19 @@ impl GroveDb {
                     );
                 }
                 GroveOp::DenseTreeInsert { value } => {
-                    let path_slices: Vec<&[u8]> =
-                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
                     cost_return_on_error!(
                         &mut cost,
                         self.dense_tree_insert(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            &key,
                             value.clone(),
                             transaction,
                             grove_version,
@@ -2862,7 +2916,7 @@ impl GroveDb {
                 if let GroveOp::DeleteTree(tree_type) = &op.op {
                     if tree_type.uses_non_merk_data_storage() {
                         let mut child_path = op.path.to_path();
-                        child_path.push(op.key.as_slice().to_vec());
+                        child_path.push(op.key.as_ref()?.as_slice().to_vec());
                         return Some((child_path, *tree_type));
                     }
                 }
@@ -3043,7 +3097,7 @@ impl GroveDb {
                 if let GroveOp::DeleteTree(tree_type) = &op.op {
                     if tree_type.uses_non_merk_data_storage() {
                         let mut child_path = op.path.to_path();
-                        child_path.push(op.key.as_slice().to_vec());
+                        child_path.push(op.key.as_ref()?.as_slice().to_vec());
                         return Some((child_path, *tree_type));
                     }
                 }

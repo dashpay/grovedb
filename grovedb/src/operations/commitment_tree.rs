@@ -3,7 +3,7 @@
 //! Provides methods to interact with CommitmentTree subtrees, which combine a
 //! BulkAppendTree (for efficient append-only storage of cmx||encrypted_note
 //! payloads with chunk compaction) and a lightweight Sinsemilla frontier (for
-//! Orchard anchor computation).
+//! Orchard anchor computation) in a single composite type.
 //!
 //! Items are stored as `cmx (32 bytes) || payload` in the BulkAppendTree data
 //! namespace. The Sinsemilla frontier is also stored in data storage (~1KB,
@@ -14,8 +14,10 @@
 
 use std::collections::HashMap;
 
-use grovedb_bulk_append_tree::{deserialize_chunk_blob, BulkAppendTree};
-use grovedb_commitment_tree::{Anchor, CommitmentTree};
+use grovedb_commitment_tree::{
+    deserialize_chunk_blob, serialize_ciphertext, Anchor, CommitmentTree, DashMemo, MemoSize,
+    TransmittedNoteCiphertext,
+};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
     CostsExt, OperationCost,
@@ -33,11 +35,6 @@ use crate::{
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-/// Map a `BulkAppendError` to a GroveDB `Error`.
-fn map_bulk_err(e: grovedb_bulk_append_tree::BulkAppendError) -> Error {
-    Error::CorruptedData(format!("{}", e))
-}
-
 /// Map a `CommitmentTreeError` to a GroveDB `Error`.
 fn map_ct_err(e: grovedb_commitment_tree::CommitmentTreeError) -> Error {
     Error::CommitmentTreeError(format!("{}", e))
@@ -48,19 +45,43 @@ fn map_ct_err(e: grovedb_commitment_tree::CommitmentTreeError) -> Error {
 impl GroveDb {
     /// Insert a note commitment into a CommitmentTree subtree.
     ///
-    /// This is the primary write operation for CommitmentTree. It:
-    /// 1. Appends `cmx || payload` to the BulkAppendTree (data storage)
-    /// 2. Appends the cmx to the Sinsemilla frontier (data storage)
-    /// 3. Updates the CommitmentTree element with new sinsemilla_root +
+    /// This is the primary typed write operation for CommitmentTree. It:
+    /// 1. Opens the composite CommitmentTree (BulkAppendTree + frontier)
+    /// 2. Serializes the ciphertext and appends `cmx || ciphertext` to the bulk
+    ///    tree and `cmx` to the frontier
+    /// 3. Saves the updated frontier to storage
+    /// 4. Updates the CommitmentTree element with new sinsemilla_root +
     ///    total_count
-    /// 4. Propagates changes through the GroveDB Merk hierarchy
+    /// 5. Propagates changes through the GroveDB Merk hierarchy
     ///
     /// The `path` must point to the parent of the commitment tree key,
     /// and `key` must identify a CommitmentTree element.
     ///
     /// Returns `(sinsemilla_root, position)`: the new anchor hash and the
     /// 0-indexed position of the inserted note.
-    pub fn commitment_tree_insert<'b, B, P>(
+    pub fn commitment_tree_insert<'b, B, P, M: MemoSize>(
+        &self,
+        path: P,
+        key: &[u8],
+        cmx: [u8; 32],
+        ciphertext: TransmittedNoteCiphertext<M>,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<([u8; 32], u64), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let payload = serialize_ciphertext(&ciphertext);
+        self.commitment_tree_insert_raw(path, key, cmx, payload, transaction, grove_version)
+    }
+
+    /// Insert a note commitment into a CommitmentTree subtree using raw payload
+    /// bytes.
+    ///
+    /// This is the raw write operation used by batch preprocessing. The payload
+    /// is validated against `DashMemo`'s expected size by `append_raw`.
+    pub(crate) fn commitment_tree_insert_raw<'b, B, P>(
         &self,
         path: P,
         key: &[u8],
@@ -84,63 +105,50 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power, existing_flags) = match &element {
-            Element::CommitmentTree(_, tc, cp, flags) => (*tc, *cp, flags.clone()),
+            Element::CommitmentTree(_, total_count, chunk_power, flags) => {
+                (*total_count, *chunk_power, flags.clone())
+            }
             _ => {
                 return Err(Error::InvalidInput("element is not a commitment tree"))
                     .wrap_with_cost(cost);
             }
         };
 
-        // 2. Build subtree path (shared by BulkAppendTree data + Sinsemilla aux)
+        // 2. Build subtree path and open storage context
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
-        // 3. Open two storage contexts: one for BulkAppendTree, one for CommitmentTree
-        //    (both use data storage at the same path)
-        let bulk_ctx = self
+        let storage_ctx = self
             .db
-            .get_immediate_storage_context(ct_path.clone(), tx.as_ref())
-            .unwrap_add_cost(&mut cost);
-        let ct_ctx = self
-            .db
-            .get_immediate_storage_context(ct_path.clone(), tx.as_ref())
+            .get_immediate_storage_context(ct_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        // 4. Append item to BulkAppendTree (data namespace)
-        let mut tree = cost_return_on_error_no_add!(
-            cost,
-            BulkAppendTree::from_state(total_count, chunk_power, bulk_ctx).map_err(map_bulk_err)
-        );
-
-        let mut item_value = Vec::with_capacity(32 + payload.len());
-        item_value.extend_from_slice(&cmx);
-        item_value.extend_from_slice(&payload);
-
-        let result =
-            cost_return_on_error_no_add!(cost, tree.append(&item_value).map_err(map_bulk_err));
-        cost.hash_node_calls += result.hash_count;
-        let bulk_state_root = result.state_root;
-
-        let position = result.global_position;
-        let new_total_count = tree.total_count;
-
-        // 5. Open Sinsemilla commitment tree, append cmx, save back
+        // 3. Open composite CommitmentTree and append (uses default DashMemo for
+        //    payload validation in append_raw)
         let mut ct = cost_return_on_error!(
             &mut cost,
-            CommitmentTree::open(ct_ctx).map(|r| r.map_err(map_ct_err))
+            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
+                .map(|r| r.map_err(map_ct_err))
         );
 
-        let new_sinsemilla_root =
-            cost_return_on_error!(&mut cost, ct.append(cmx).map(|r| r.map_err(map_ct_err)));
+        let append_result = cost_return_on_error!(
+            &mut cost,
+            ct.append_raw(cmx, &payload).map(|r| r.map_err(map_ct_err))
+        );
 
+        // 4. Save frontier to storage
         cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
 
-        // Drop tree and ct (and their storage contexts) before opening merk
-        drop(tree);
+        let new_sinsemilla_root = append_result.sinsemilla_root;
+        let bulk_state_root = append_result.bulk_state_root;
+        let position = append_result.global_position;
+        let new_total_count = ct.total_count();
+
+        // Drop ct (and its storage context) before opening merk
         drop(ct);
 
-        // 6. Update element in parent Merk
+        // 5. Update element in parent Merk
         let batch = StorageBatch::new();
         let mut parent_merk = cost_return_on_error!(
             &mut cost,
@@ -170,7 +178,7 @@ impl GroveDb {
             )
         );
 
-        // 7. Propagate changes from parent upward
+        // 6. Propagate changes from parent upward
         let mut merk_cache = HashMap::new();
         merk_cache.insert(path.clone(), parent_merk);
 
@@ -185,7 +193,7 @@ impl GroveDb {
             )
         );
 
-        // 8. Commit batch and transaction
+        // 7. Commit batch and transaction
         cost_return_on_error!(
             &mut cost,
             self.db
@@ -207,7 +215,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         transaction: TransactionArg,
-        _grove_version: &GroveVersion,
+        grove_version: &GroveVersion,
     ) -> CostResult<Anchor, Error>
     where
         B: AsRef<[u8]> + 'b,
@@ -217,17 +225,19 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
-        // Validate element type
-        cost_return_on_error_no_add!(
-            cost,
-            self.validate_is_commitment_tree(
-                path.clone(),
-                key,
-                transaction,
-                _grove_version,
-                &mut cost
-            )
+        // Read element to get total_count and chunk_power
+        let element = cost_return_on_error!(
+            &mut cost,
+            self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
+
+        let (total_count, chunk_power) = match &element {
+            Element::CommitmentTree(_, tc, cp, _) => (*tc, *cp),
+            _ => {
+                return Err(Error::InvalidInput("element is not a commitment tree"))
+                    .wrap_with_cost(cost);
+            }
+        };
 
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -240,7 +250,8 @@ impl GroveDb {
 
         let ct = cost_return_on_error!(
             &mut cost,
-            CommitmentTree::open(storage_ctx).map(|r| r.map_err(map_ct_err))
+            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
+                .map(|r| r.map_err(map_ct_err))
         );
 
         Ok(ct.anchor()).wrap_with_cost(cost)
@@ -292,13 +303,14 @@ impl GroveDb {
             .get_immediate_storage_context(ct_path, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
-        let tree = cost_return_on_error_no_add!(
-            cost,
-            BulkAppendTree::from_state(total_count, chunk_power, storage_ctx).map_err(map_bulk_err)
+        let ct = cost_return_on_error!(
+            &mut cost,
+            CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
+                .map(|r| r.map_err(map_ct_err))
         );
 
-        let epoch_size = tree.epoch_size();
-        let chunk_count = tree.chunk_count();
+        let epoch_size = ct.epoch_size();
+        let chunk_count = ct.chunk_count();
         let buffer_start = chunk_count * epoch_size;
 
         if global_position >= buffer_start {
@@ -306,7 +318,7 @@ impl GroveDb {
             let buffer_pos = (global_position - buffer_start) as u16;
             let result = cost_return_on_error_no_add!(
                 cost,
-                tree.get_buffer_value(buffer_pos).map_err(map_bulk_err)
+                ct.get_buffer_value(buffer_pos).map_err(map_ct_err)
             );
             Ok(result).wrap_with_cost(cost)
         } else {
@@ -315,8 +327,8 @@ impl GroveDb {
             let pos_in_chunk = (global_position % epoch_size) as usize;
             let blob = cost_return_on_error_no_add!(
                 cost,
-                tree.get_chunk_value(chunk_idx)
-                    .map_err(map_bulk_err)
+                ct.get_chunk_value(chunk_idx)
+                    .map_err(map_ct_err)
                     .and_then(|opt| opt.ok_or_else(|| Error::CorruptedData(format!(
                         "missing chunk blob for index {}",
                         chunk_idx
@@ -324,7 +336,7 @@ impl GroveDb {
             );
             let entries = cost_return_on_error_no_add!(
                 cost,
-                deserialize_chunk_blob(&blob).map_err(map_bulk_err)
+                deserialize_chunk_blob(&blob).map_err(|e| Error::CorruptedData(format!("{}", e)))
             );
             Ok(entries.get(pos_in_chunk).cloned()).wrap_with_cost(cost)
         }
@@ -363,30 +375,12 @@ impl GroveDb {
         v
     }
 
-    /// Verify that the element at `path/key` is a CommitmentTree.
-    fn validate_is_commitment_tree<'b, B: AsRef<[u8]>>(
-        &self,
-        path: SubtreePath<'b, B>,
-        key: &[u8],
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-        cost: &mut OperationCost,
-    ) -> Result<(), Error> {
-        let element = self
-            .get_raw_caching_optional(path, key, true, transaction, grove_version)
-            .unwrap_add_cost(cost)?;
-        if !element.is_commitment_tree() {
-            return Err(Error::InvalidInput("element is not a commitment tree"));
-        }
-        Ok(())
-    }
-
     /// Preprocess `CommitmentTreeInsert` ops in a batch.
     ///
-    /// For each group of insert ops targeting the same (path, key):
-    /// 1. Loads the Sinsemilla frontier from data storage
-    /// 2. Appends all items to the BulkAppendTree (data storage)
-    /// 3. Saves the updated frontier to data storage
+    /// For each group of insert ops targeting the same path:
+    /// 1. Opens the composite CommitmentTree (BulkAppendTree + frontier)
+    /// 2. Appends all items
+    /// 3. Saves the updated frontier
     /// 4. Replaces the ops with a single `ReplaceTreeRootKey` carrying the new
     ///    sinsemilla_root and total_count
     ///
@@ -395,7 +389,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
-        batch: &StorageBatch,
+        _batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -408,27 +402,41 @@ impl GroveDb {
             return Ok(ops).wrap_with_cost(cost);
         }
 
-        /// Path + key pair identifying a commitment tree in a batch.
-        type PathKey = (Vec<Vec<u8>>, Vec<u8>);
+        /// Tree path identifying a commitment tree in a batch (includes tree
+        /// key as last segment).
+        type TreePath = Vec<Vec<u8>>;
 
-        // Group commitment tree insert ops by (path, key), preserving order.
-        let mut ct_groups: HashMap<PathKey, Vec<([u8; 32], Vec<u8>)>> = HashMap::new();
+        // Group commitment tree insert ops by path (which includes tree key).
+        let mut ct_groups: HashMap<TreePath, Vec<([u8; 32], Vec<u8>)>> = HashMap::new();
 
         for op in ops.iter() {
             if let GroveOp::CommitmentTreeInsert { cmx, payload } = &op.op {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
+                let tree_path = op.path.to_path();
                 ct_groups
-                    .entry(path_key)
+                    .entry(tree_path)
                     .or_default()
                     .push((*cmx, payload.clone()));
             }
         }
 
         // Process each group
-        let mut replacements: HashMap<PathKey, QualifiedGroveDbOp> = HashMap::new();
+        let mut replacements: HashMap<TreePath, QualifiedGroveDbOp> = HashMap::new();
 
-        for (path_key, inserts) in ct_groups.iter() {
-            let (path_vec, key_bytes) = path_key;
+        for (tree_path, inserts) in ct_groups.iter() {
+            // Extract parent path and tree key from the full path
+            let (path_vec, key_bytes) = {
+                let mut p = tree_path.clone();
+                let k = match p.pop() {
+                    Some(k) => k,
+                    None => {
+                        return Err(Error::InvalidBatchOperation(
+                            "append op path must have at least one segment",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                (p, k)
+            };
 
             // Read existing element to verify it's a CommitmentTree
             let path_slices: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
@@ -453,74 +461,51 @@ impl GroveDb {
                 }
             };
 
-            // Build subtree path
+            // Build subtree path and open single storage context
             let mut ct_path_vec = path_vec.clone();
             ct_path_vec.push(key_bytes.clone());
             let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
             let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
-            // Open two storage contexts at the same path: one for the BulkAppendTree
-            // and one for the Sinsemilla frontier (both use data storage).
-            // This avoids a borrow conflict between tree.append() (mutable) and
-            // CommitmentTree (immutable borrow of storage).
             let storage_ctx = self
                 .db
-                .get_immediate_storage_context(ct_path.clone(), transaction)
-                .unwrap_add_cost(&mut cost);
-            let frontier_storage_ctx = self
-                .db
-                .get_immediate_storage_context(ct_path.clone(), transaction)
+                .get_immediate_storage_context(ct_path, transaction)
                 .unwrap_add_cost(&mut cost);
 
-            // Load BulkAppendTree with embedded storage
-            let mut tree = cost_return_on_error_no_add!(
-                cost,
-                BulkAppendTree::from_state(total_count, chunk_power, storage_ctx)
-                    .map_err(map_bulk_err)
-            );
-
-            // Open Sinsemilla commitment tree from separate storage context
+            // Open composite CommitmentTree
             let mut ct = cost_return_on_error!(
                 &mut cost,
-                CommitmentTree::open(frontier_storage_ctx).map(|r| r.map_err(map_ct_err))
+                CommitmentTree::<_, DashMemo>::open(total_count, chunk_power, storage_ctx)
+                    .map(|r| r.map_err(map_ct_err))
             );
 
             // Execute all inserts in order
             for (cmx, payload) in inserts {
-                // Append to BulkAppendTree
-                let mut item_value = Vec::with_capacity(32 + payload.len());
-                item_value.extend_from_slice(cmx);
-                item_value.extend_from_slice(payload);
-
-                let result = cost_return_on_error_no_add!(
-                    cost,
-                    tree.append(&item_value).map_err(map_bulk_err)
+                cost_return_on_error!(
+                    &mut cost,
+                    ct.append_raw(*cmx, payload).map(|r| r.map_err(map_ct_err))
                 );
-                cost.hash_node_calls += result.hash_count;
-
-                // Append to Sinsemilla commitment tree (cost tracks sinsemilla_hash_calls)
-                cost_return_on_error!(&mut cost, ct.append(*cmx).map(|r| r.map_err(map_ct_err)));
             }
 
-            // Compute BulkAppendTree state root
-            let bulk_state_root = cost_return_on_error_no_add!(
-                cost,
-                tree.compute_current_state_root().map_err(map_bulk_err)
-            );
-
-            // Save Sinsemilla commitment tree back to data storage
+            // Save frontier to storage
             cost_return_on_error!(&mut cost, ct.save().map(|r| r.map_err(map_ct_err)));
 
+            // Read state for the replacement op
+            let bulk_state_root = cost_return_on_error_no_add!(
+                cost,
+                ct.compute_current_state_root().map_err(map_ct_err)
+            );
             let new_sinsemilla_root = ct.root_hash();
-            let current_total_count = tree.total_count;
+            let current_total_count = ct.total_count();
 
-            // Drop tree (and its embedded storage context)
-            drop(tree);
+            // Drop ct (and its storage context)
+            drop(ct);
 
             // Create a ReplaceTreeRootKey with sinsemilla_root + bulk_state
+            // Key is restored for downstream (from_ops, execute_ops_on_path)
             let replacement = QualifiedGroveDbOp {
-                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec.clone()),
-                key: crate::batch::key_info::KeyInfo::KnownKey(key_bytes.clone()),
+                path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec),
+                key: Some(crate::batch::key_info::KeyInfo::KnownKey(key_bytes)),
                 op: GroveOp::ReplaceTreeRootKey {
                     hash: bulk_state_root,
                     root_key: None,
@@ -530,24 +515,24 @@ impl GroveDb {
                     bulk_state: Some((current_total_count, chunk_power)),
                 },
             };
-            replacements.insert(path_key.clone(), replacement);
+            replacements.insert(tree_path.clone(), replacement);
         }
 
         // Build the new ops list: keep non-CT ops, replace first CT insert op
         // per group with ReplaceTreeRootKey, skip the rest
-        let mut first_seen: HashMap<PathKey, bool> = HashMap::new();
+        let mut first_seen: HashMap<TreePath, bool> = HashMap::new();
         let mut result = Vec::with_capacity(ops.len());
 
         for op in ops.into_iter() {
             if matches!(op.op, GroveOp::CommitmentTreeInsert { .. }) {
-                let path_key = (op.path.to_path(), op.key.get_key_clone());
-                if !first_seen.contains_key(&path_key) {
-                    first_seen.insert(path_key.clone(), true);
-                    if let Some(replacement) = replacements.remove(&path_key) {
+                let tree_path = op.path.to_path();
+                if !first_seen.contains_key(&tree_path) {
+                    first_seen.insert(tree_path.clone(), true);
+                    if let Some(replacement) = replacements.remove(&tree_path) {
                         result.push(replacement);
                     }
                 }
-                // Skip subsequent CT ops for the same key
+                // Skip subsequent CT ops for the same tree
             } else {
                 result.push(op);
             }

@@ -1384,7 +1384,9 @@ impl GroveDb {
 
                     // For CommitmentTree elements, verify the sinsemilla_root
                     // matches the actual frontier state in data storage
-                    if let Element::CommitmentTree(sinsemilla_root, ..) = &element {
+                    if let Element::CommitmentTree(sinsemilla_root, total_count, chunk_power, ..) =
+                        &element
+                    {
                         let frontier_ctx = self
                             .db
                             .get_transactional_storage_context(
@@ -1393,8 +1395,12 @@ impl GroveDb {
                                 transaction,
                             )
                             .unwrap();
-                        let open_result =
-                            grovedb_commitment_tree::CommitmentTree::open(frontier_ctx);
+                        let open_result = grovedb_commitment_tree::CommitmentTree::<
+                            _,
+                            grovedb_commitment_tree::DashMemo,
+                        >::open(
+                            *total_count, *chunk_power, frontier_ctx
+                        );
                         match open_result.value {
                             Ok(ct) => {
                                 let actual_root = ct.root_hash();

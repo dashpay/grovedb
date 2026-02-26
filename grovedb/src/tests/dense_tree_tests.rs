@@ -575,8 +575,7 @@ fn test_dense_tree_batch_single_insert() {
     .expect("insert dense tree");
 
     let ops = vec![QualifiedGroveDbOp::dense_tree_insert_op(
-        vec![],
-        b"dense".to_vec(),
+        vec![b"dense".to_vec()],
         b"batch_val".to_vec(),
     )];
 
@@ -608,9 +607,9 @@ fn test_dense_tree_batch_multiple_inserts() {
     .expect("insert dense tree");
 
     let ops = vec![
-        QualifiedGroveDbOp::dense_tree_insert_op(vec![], b"dense".to_vec(), b"first".to_vec()),
-        QualifiedGroveDbOp::dense_tree_insert_op(vec![], b"dense".to_vec(), b"second".to_vec()),
-        QualifiedGroveDbOp::dense_tree_insert_op(vec![], b"dense".to_vec(), b"third".to_vec()),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"first".to_vec()),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"second".to_vec()),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"third".to_vec()),
     ];
 
     db.apply_batch(ops, None, None, grove_version)
@@ -666,8 +665,7 @@ fn test_dense_tree_batch_mixed_with_items() {
             Element::new_item(b"hello".to_vec()),
         ),
         QualifiedGroveDbOp::dense_tree_insert_op(
-            vec![b"parent".to_vec()],
-            b"dense".to_vec(),
+            vec![b"parent".to_vec(), b"dense".to_vec()],
             b"dense_val".to_vec(),
         ),
     ];
@@ -722,8 +720,7 @@ fn test_dense_tree_batch_propagation() {
         .expect("root before");
 
     let ops = vec![QualifiedGroveDbOp::dense_tree_insert_op(
-        vec![b"parent".to_vec()],
-        b"dense".to_vec(),
+        vec![b"parent".to_vec(), b"dense".to_vec()],
         b"batch_propagate".to_vec(),
     )];
 

@@ -591,7 +591,7 @@ impl GroveDb {
                                 // todo: to_path clones (best to figure out how to compare
                                 // without cloning)
                                 if op.path.to_path() == subtree_merk_path_vec {
-                                    Some(op.key.as_slice())
+                                    Some(op.key.as_ref()?.as_slice())
                                 } else {
                                     None
                                 }
