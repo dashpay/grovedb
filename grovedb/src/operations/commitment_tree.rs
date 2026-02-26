@@ -105,7 +105,7 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power, existing_flags) = match &element {
-            Element::CommitmentTree(_, total_count, chunk_power, flags) => {
+            Element::CommitmentTree(total_count, chunk_power, flags) => {
                 (*total_count, *chunk_power, flags.clone())
             }
             _ => {
@@ -160,8 +160,7 @@ impl GroveDb {
             )
         );
 
-        let updated_element = Element::new_commitment_tree_with_all(
-            new_sinsemilla_root,
+        let updated_element = Element::new_commitment_tree(
             new_total_count,
             chunk_power,
             existing_flags,
@@ -232,7 +231,7 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power) = match &element {
-            Element::CommitmentTree(_, tc, cp, _) => (*tc, *cp),
+            Element::CommitmentTree(tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a commitment tree"))
                     .wrap_with_cost(cost);
@@ -283,7 +282,7 @@ impl GroveDb {
         );
 
         let (total_count, chunk_power) = match &element {
-            Element::CommitmentTree(_, tc, cp, _) => (*tc, *cp),
+            Element::CommitmentTree(tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a commitment tree"))
                     .wrap_with_cost(cost);
@@ -363,7 +362,7 @@ impl GroveDb {
         );
 
         match element {
-            Element::CommitmentTree(_, total_count, ..) => Ok(total_count).wrap_with_cost(cost),
+            Element::CommitmentTree(total_count, ..) => Ok(total_count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a commitment tree")).wrap_with_cost(cost),
         }
     }
@@ -454,7 +453,7 @@ impl GroveDb {
             );
 
             let (total_count, chunk_power) = match &element {
-                Element::CommitmentTree(_, tc, cp, _) => (*tc, *cp),
+                Element::CommitmentTree(tc, cp, _) => (*tc, *cp),
                 _ => {
                     return Err(Error::InvalidInput("element is not a commitment tree"))
                         .wrap_with_cost(cost);
@@ -495,24 +494,22 @@ impl GroveDb {
                 cost,
                 ct.compute_current_state_root().map_err(map_ct_err)
             );
-            let new_sinsemilla_root = ct.root_hash();
             let current_total_count = ct.total_count();
 
             // Drop ct (and its storage context)
             drop(ct);
 
-            // Create a ReplaceTreeRootKey with sinsemilla_root + bulk_state
+            // Create a ReplaceNonMerkTreeRoot
             // Key is restored for downstream (from_ops, execute_ops_on_path)
             let replacement = QualifiedGroveDbOp {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec),
                 key: Some(crate::batch::key_info::KeyInfo::KnownKey(key_bytes)),
-                op: GroveOp::ReplaceTreeRootKey {
+                op: GroveOp::ReplaceNonMerkTreeRoot {
                     hash: bulk_state_root,
-                    root_key: None,
-                    aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
-                    custom_root: Some(new_sinsemilla_root),
-                    custom_count: Some(current_total_count),
-                    bulk_state: Some((current_total_count, chunk_power)),
+                    meta: crate::batch::NonMerkTreeMeta::CommitmentTree {
+                        total_count: current_total_count,
+                        chunk_power,
+                    },
                 },
             };
             replacements.insert(tree_path.clone(), replacement);

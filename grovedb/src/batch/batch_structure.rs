@@ -153,14 +153,15 @@ where
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
                 | GroveOp::DenseTreeInsert { .. }
-                | GroveOp::ReplaceTreeRootKey { .. } => {
-                    // CommitmentTreeInsert is preprocessed into item inserts
-                    // + ReplaceTreeRootKey before batch execution.
-                    // ReplaceTreeRootKey is internal only (produced by
-                    // preprocessing), not submitted by users directly.
+                | GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::ReplaceNonMerkTreeRoot { .. } => {
+                    // User-facing tree ops are preprocessed before batch
+                    // execution. ReplaceTreeRootKey / ReplaceNonMerkTreeRoot
+                    // are internal (produced by preprocessing).
                     Ok(())
                 }
-                GroveOp::InsertTreeWithRootHash { .. } => Err(Error::InvalidBatchOperation(
+                GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::InsertNonMerkTree { .. } => Err(Error::InvalidBatchOperation(
                     "insert tree hash is an internal operation only",
                 )),
             };

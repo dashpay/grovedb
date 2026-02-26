@@ -129,35 +129,40 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::CommitmentTreeInsert { cmx, payload } => {
-                let mut value = Vec::with_capacity(32 + payload.len());
-                value.extend_from_slice(cmx);
-                value.extend_from_slice(payload);
-                // Cost of inserting the item (cmx || payload) into the subtree
-                let item_cost = GroveDb::average_case_merk_insert_element(
+            GroveOp::CommitmentTreeInsert { .. } => {
+                // After preprocessing, CommitmentTreeInsert becomes
+                // ReplaceTreeRootKey. The base cost is a tree root key
+                // replacement in the parent Merk.
+                let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
-                    &Element::new_item(value),
-                    in_tree_type,
-                    propagate_if_input(),
+                    layer_element_estimates,
+                    TreeType::CommitmentTree(0),
+                    propagate,
                     grove_version,
                 );
-                // Add cost of frontier data I/O (load + save).
-                // Average frontier size with ~16 ommers:
-                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 (ommers) = 554
-                const AVG_FRONTIER_SIZE: u32 = 554;
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Additional cost: frontier I/O (data storage load + save),
+                // buffer entry write, and Sinsemilla hashing.
+                //
+                // Average frontier size with ~16 ommers:
+                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 = 554
+                const AVG_FRONTIER_SIZE: u32 = 554;
+                // Buffer entry write: 1 seek + ~280 bytes (cmx + ciphertext)
+                const AVG_BUFFER_ENTRY_SIZE: u32 = 280;
                 // Average Sinsemilla hashes per append:
-                // 32 (root computation traverses all levels) + 1 (avg ommer updates) = 33
+                // 32 (root computation) + 1 (avg ommer updates) = 33
                 const AVG_SINSEMILLA_HASHES: u32 = 33;
+                // Average blake3 hashes: 1 for running buffer hash
+                const AVG_BLAKE3_HASHES: u32 = 1;
                 item_cost.add_cost(OperationCost {
-                    seek_count: 2, // get_aux + put_aux
+                    seek_count: 3, // frontier load + frontier save + buffer write
                     storage_cost: StorageCost {
-                        added_bytes: 0,
+                        added_bytes: AVG_BUFFER_ENTRY_SIZE,
                         replaced_bytes: AVG_FRONTIER_SIZE,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
-                    hash_node_calls: 0,
+                    hash_node_calls: AVG_BLAKE3_HASHES,
                     sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
                 })
             }
@@ -170,19 +175,28 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Add cost of aux I/O for MMR nodes
-                // Average: 1 leaf write + ~1 internal node write
+                // Additional cost: MMR node I/O in data storage.
+                // push() writes 1 leaf + trailing_ones(leaf_count) internal
+                // nodes. Average trailing_ones ≈ 1, so ~2 writes + 1 sibling
+                // read for merging.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                const AVG_NODE_SIZE: u32 = 42; // 1 flag + 32 hash + 4 len + ~5 avg value
-                const AVG_HASH_CALLS: u32 = 2; // 1 leaf + 1 avg merge
+                // Internal node: 33 bytes (1 flag + 32 hash)
+                // Leaf node: 37 + value_len. Average value ~32 bytes = 69 bytes.
+                // Weighted average (half internal, half leaf): ~51 bytes
+                const AVG_NODE_SIZE: u32 = 51;
+                // hash_count_for_push = 1 + trailing_ones. Average ≈ 2.
+                const AVG_HASH_CALLS: u32 = 2;
+                // Average writes: 2 (1 leaf + 1 merge). Reads: 1 sibling.
+                const AVG_WRITES: u32 = 2;
+                const AVG_READS: u32 = 1;
                 item_cost.add_cost(OperationCost {
-                    seek_count: 2,
+                    seek_count: AVG_WRITES + AVG_READS,
                     storage_cost: StorageCost {
-                        added_bytes: AVG_NODE_SIZE * 2,
+                        added_bytes: AVG_NODE_SIZE * AVG_WRITES,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: AVG_NODE_SIZE as u64,
+                    storage_loaded_bytes: (AVG_NODE_SIZE * AVG_READS) as u64,
                     hash_node_calls: AVG_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
@@ -196,19 +210,22 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Add cost of aux I/O for bulk append nodes
-                // Average: 1 leaf write + ~1 internal node write
+                // Additional cost: buffer write + running hash.
+                // Most appends only write to the buffer (O(1)). Compaction
+                // happens once per epoch_size appends and is amortized.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                const AVG_NODE_SIZE: u32 = 42;
-                const AVG_HASH_CALLS: u32 = 2;
+                // Average buffer entry: ~64 bytes (value)
+                const AVG_ENTRY_SIZE: u32 = 64;
+                // 1 blake3 hash for running buffer hash chain
+                const AVG_HASH_CALLS: u32 = 1;
                 item_cost.add_cost(OperationCost {
-                    seek_count: 2,
+                    seek_count: 1, // 1 buffer entry write
                     storage_cost: StorageCost {
-                        added_bytes: AVG_NODE_SIZE * 2,
+                        added_bytes: AVG_ENTRY_SIZE,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: AVG_NODE_SIZE as u64,
+                    storage_loaded_bytes: 0,
                     hash_node_calls: AVG_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
@@ -222,22 +239,46 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Average: 1 value write + hash recomputation from root
+                // Additional cost: 1 value write + full root recomputation.
+                // compute_root_hash visits all filled positions: each does
+                // 1 storage read + 2 hash calls (value_hash + node_hash).
+                // Average count ≈ 8 (half-full tree, height 4).
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 const AVG_VALUE_SIZE: u32 = 64;
-                const AVG_HASH_CALLS: u32 = 16; // average height traversal
+                const AVG_COUNT: u32 = 8;
+                // 2 hash calls per filled node (value_hash + node_hash)
+                const AVG_HASH_CALLS: u32 = AVG_COUNT * 2;
                 item_cost.add_cost(OperationCost {
-                    seek_count: 1,
+                    seek_count: 1 + AVG_COUNT, // 1 write + AVG_COUNT reads for root hash
                     storage_cost: StorageCost {
                         added_bytes: AVG_VALUE_SIZE,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: AVG_VALUE_SIZE as u64,
+                    storage_loaded_bytes: (AVG_VALUE_SIZE * AVG_COUNT) as u64,
                     hash_node_calls: AVG_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
             }
+            GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => {
+                GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    meta.to_tree_type(),
+                    propagate,
+                    grove_version,
+                )
+            }
+            GroveOp::InsertNonMerkTree {
+                flags, meta, ..
+            } => GroveDb::average_case_merk_insert_tree(
+                key,
+                flags,
+                meta.to_tree_type(),
+                in_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
         }
     }
 }

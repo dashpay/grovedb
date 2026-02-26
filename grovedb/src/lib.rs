@@ -729,11 +729,10 @@ impl GroveDb {
                     grove_version,
                 )
                 .map_err(|e| e.into())
-            } else if let Element::CommitmentTree(sinsemilla_root, total_count, chunk_power, flag) =
+            } else if let Element::CommitmentTree(total_count, chunk_power, flag) =
                 element
             {
-                let tree = Element::new_commitment_tree_with_all(
-                    sinsemilla_root,
+                let tree = Element::new_commitment_tree(
                     total_count,
                     chunk_power,
                     flag,
@@ -779,8 +778,6 @@ impl GroveDb {
         maybe_root_key: Option<Vec<u8>>,
         root_tree_hash: Hash,
         aggregate_data: AggregateData,
-        custom_root_override: Option<[u8; 32]>,
-        custom_count_override: Option<u64>,
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -927,23 +924,20 @@ impl GroveDb {
                     )
                     .map_err(|e| e.into())
                 } else if let Element::CommitmentTree(
-                    existing_sr,
                     existing_total_count,
                     chunk_power,
                     flag,
                 ) = element
                 {
-                    // Use override if provided (from preprocessing), else preserve
-                    let sr = custom_root_override.unwrap_or(existing_sr);
-                    let total_count = custom_count_override.unwrap_or(existing_total_count);
+                    // Defensive: propagation reached a non-Merk tree entry.
+                    // Preserve existing counts (no override available here).
                     let tree =
-                        Element::new_commitment_tree_with_all(sr, total_count, chunk_power, flag);
+                        Element::new_commitment_tree(existing_total_count, chunk_power, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
                             .wrap_with_cost(OperationCost::default())
                     );
-                    let key_hex = hex::encode(key.as_ref());
                     tree.insert_subtree_into_batch_operations(
                         key,
                         root_tree_hash,
@@ -952,15 +946,9 @@ impl GroveDb {
                         merk_feature_type,
                         grove_version,
                     )
-                    .map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "failed to batch-propagate commitment tree subtree for key {}: {}",
-                            key_hex, e
-                        ))
-                    })
+                    .map_err(|e| e.into())
                 } else if let Element::MmrTree(existing_mmr_size, flag) = element {
-                    let mmr_size = custom_count_override.unwrap_or(existing_mmr_size);
-                    let tree = Element::new_mmr_tree(mmr_size, flag);
+                    let tree = Element::new_mmr_tree(existing_mmr_size, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -981,9 +969,8 @@ impl GroveDb {
                     flag,
                 ) = element
                 {
-                    let total_count = custom_count_override.unwrap_or(existing_total_count);
                     let tree =
-                        Element::new_bulk_append_tree(total_count, existing_chunk_power, flag);
+                        Element::new_bulk_append_tree(existing_total_count, existing_chunk_power, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -1004,10 +991,7 @@ impl GroveDb {
                     flag,
                 ) = element
                 {
-                    let count = custom_count_override
-                        .map(|c| c as u16)
-                        .unwrap_or(existing_count);
-                    let tree = Element::new_dense_tree(count, existing_height, flag);
+                    let tree = Element::new_dense_tree(existing_count, existing_height, flag);
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,
                         tree.get_feature_type(parent_tree.tree_type)
@@ -1274,7 +1258,7 @@ impl GroveDb {
                     // Non-Merk tree types use their own root hash as the
                     // Merk child hash (not the inner Merk root, which is
                     // always empty for these types).
-                    let root_hash = if let Element::CommitmentTree(_, total_count, chunk_power, _) =
+                    let root_hash = if let Element::CommitmentTree(total_count, chunk_power, _) =
                         &element
                     {
                         if *total_count == 0 {
@@ -1380,41 +1364,6 @@ impl GroveDb {
                             new_path.to_vec(),
                             (root_hash, combined_value_hash, element_value_hash),
                         );
-                    }
-
-                    // For CommitmentTree elements, verify the sinsemilla_root
-                    // matches the actual frontier state in data storage
-                    if let Element::CommitmentTree(sinsemilla_root, total_count, chunk_power, ..) =
-                        &element
-                    {
-                        let frontier_ctx = self
-                            .db
-                            .get_transactional_storage_context(
-                                new_path_ref.clone(),
-                                None,
-                                transaction,
-                            )
-                            .unwrap();
-                        let open_result = grovedb_commitment_tree::CommitmentTree::<
-                            _,
-                            grovedb_commitment_tree::DashMemo,
-                        >::open(
-                            *total_count, *chunk_power, frontier_ctx
-                        );
-                        match open_result.value {
-                            Ok(ct) => {
-                                let actual_root = ct.root_hash();
-                                if actual_root != *sinsemilla_root {
-                                    issues.insert(
-                                        new_path.to_vec(),
-                                        (actual_root, *sinsemilla_root, actual_root),
-                                    );
-                                }
-                            }
-                            Err(_) => {
-                                issues.insert(new_path.to_vec(), ([0u8; 32], [0u8; 32], [0u8; 32]));
-                            }
-                        }
                     }
 
                     // Non-Merk data trees (CommitmentTree, MmrTree,

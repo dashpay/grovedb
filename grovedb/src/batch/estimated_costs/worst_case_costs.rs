@@ -126,35 +126,38 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::CommitmentTreeInsert { cmx, payload } => {
-                let mut value = Vec::with_capacity(32 + payload.len());
-                value.extend_from_slice(cmx);
-                value.extend_from_slice(payload);
-                // Cost of inserting the item (cmx || payload) into the subtree
-                let item_cost = GroveDb::worst_case_merk_insert_element(
+            GroveOp::CommitmentTreeInsert { .. } => {
+                // After preprocessing, CommitmentTreeInsert becomes
+                // ReplaceTreeRootKey. The base cost is a tree root key
+                // replacement in the parent Merk.
+                let item_cost = GroveDb::worst_case_merk_replace_tree(
                     key,
-                    &Element::new_item(value),
+                    TreeType::CommitmentTree(0),
                     in_parent_tree_type,
-                    propagate_if_input(),
+                    worst_case_layer_element_estimates,
+                    propagate,
                     grove_version,
                 );
-                // Add cost of frontier data I/O (load + save).
-                // Worst-case frontier size with 32 ommers (max depth):
-                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 (ommers) = 1066
-                const MAX_FRONTIER_SIZE: u32 = 1066;
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Worst-case frontier size with 32 ommers (max depth):
+                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 = 1066
+                const MAX_FRONTIER_SIZE: u32 = 1066;
+                // Worst-case buffer entry (cmx 32 + max ciphertext ~216)
+                const MAX_BUFFER_ENTRY_SIZE: u32 = 280;
                 // Worst-case Sinsemilla hashes per append:
-                // 32 (root computation) + 32 (all ommers cascade at position 2^32-1) = 64
+                // 32 (root computation) + 32 (all ommers cascade) = 64
                 const MAX_SINSEMILLA_HASHES: u32 = 64;
+                // 1 blake3 hash for running buffer hash
+                const MAX_BLAKE3_HASHES: u32 = 1;
                 item_cost.add_cost(OperationCost {
-                    seek_count: 2, // get_aux + put_aux
+                    seek_count: 3, // frontier load + frontier save + buffer write
                     storage_cost: StorageCost {
-                        added_bytes: 0,
+                        added_bytes: MAX_BUFFER_ENTRY_SIZE,
                         replaced_bytes: MAX_FRONTIER_SIZE,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
                     storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
-                    hash_node_calls: 0,
+                    hash_node_calls: MAX_BLAKE3_HASHES,
                     sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
                 })
             }
@@ -168,19 +171,27 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst-case aux I/O: up to 64 node writes (log2(max_leaves))
+                // Worst-case data I/O: push writes 1 + trailing_ones(leaf_count)
+                // nodes. Maximum trailing_ones for u64 is 64 (at 2^64-1 leaves).
+                // Each merge reads 1 sibling.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                const MAX_NODE_SIZE: u32 = 42;
-                const MAX_HASH_CALLS: u32 = 64;
-                const MAX_NODE_WRITES: u32 = 64;
+                // Leaf node worst case: 37 + 256 (max value) = 293
+                // Internal node: 33 bytes. Use 293 as safe upper bound.
+                const MAX_NODE_SIZE: u32 = 293;
+                // hash_count_for_push = 1 + trailing_ones. Max = 65.
+                const MAX_HASH_CALLS: u32 = 65;
+                // Max writes: 1 leaf + 64 internal = 65
+                const MAX_NODE_WRITES: u32 = 65;
+                // Max reads: 64 sibling reads for merges
+                const MAX_NODE_READS: u32 = 64;
                 item_cost.add_cost(OperationCost {
-                    seek_count: MAX_NODE_WRITES,
+                    seek_count: MAX_NODE_WRITES + MAX_NODE_READS,
                     storage_cost: StorageCost {
-                        added_bytes: MAX_NODE_SIZE * MAX_NODE_WRITES,
+                        added_bytes: MAX_NODE_SIZE + 33 * (MAX_NODE_WRITES - 1),
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (MAX_NODE_SIZE * MAX_NODE_WRITES) as u64,
+                    storage_loaded_bytes: (33 * MAX_NODE_READS) as u64,
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
@@ -195,19 +206,27 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst-case aux I/O: up to 64 node writes (log2(max_leaves))
+                // Worst case: compaction trigger. Buffer fills → serialize
+                // chunk blob → compute dense Merkle root → push to MMR.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                const MAX_NODE_SIZE: u32 = 42;
-                const MAX_HASH_CALLS: u32 = 64;
-                const MAX_NODE_WRITES: u32 = 64;
+                // Max epoch_size = 2^31. Chunk blob can be very large.
+                // Use conservative max: 2^15 entries * 256 bytes = 8MB.
+                // For cost estimation we cap at a reasonable bound.
+                const MAX_CHUNK_BLOB_SIZE: u32 = 65536; // 64KB safe bound
+                // Dense Merkle root: epoch_size hashes. Buffer hash: 1.
+                // MMR push: up to 64 merges.
+                const MAX_HASH_CALLS: u32 = 1024 + 1 + 65; // epoch hashes + buffer + MMR
+                // Writes: buffer entry + chunk blob + MMR nodes
+                const MAX_WRITES: u32 = 1 + 1 + 65;
+                const MAX_READS: u32 = 64; // MMR sibling reads
                 item_cost.add_cost(OperationCost {
-                    seek_count: MAX_NODE_WRITES,
+                    seek_count: MAX_WRITES + MAX_READS,
                     storage_cost: StorageCost {
-                        added_bytes: MAX_NODE_SIZE * MAX_NODE_WRITES,
+                        added_bytes: MAX_CHUNK_BLOB_SIZE,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (MAX_NODE_SIZE * MAX_NODE_WRITES) as u64,
+                    storage_loaded_bytes: (33 * MAX_READS) as u64,
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
@@ -222,22 +241,48 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                // Worst-case: 1 value write + full tree hash recomputation (height 63)
+                // Worst-case: 1 value write + full root hash recomputation.
+                // compute_root_hash visits ALL filled positions: each does
+                // 1 read + 2 hashes (value_hash + node_hash).
+                // Max height = 15 (u16 count), so max positions = 2^15-1 = 32767.
+                // Using practical max: height 8 → 255 positions.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 const MAX_VALUE_SIZE: u32 = 256;
-                const MAX_HASH_CALLS: u32 = 63; // max height
+                const MAX_COUNT: u32 = 255; // practical worst case (height 8)
+                // 2 hash calls per node (value_hash + node_hash)
+                const MAX_HASH_CALLS: u32 = MAX_COUNT * 2;
                 item_cost.add_cost(OperationCost {
-                    seek_count: 1,
+                    seek_count: 1 + MAX_COUNT, // 1 write + MAX_COUNT reads
                     storage_cost: StorageCost {
                         added_bytes: MAX_VALUE_SIZE,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (MAX_VALUE_SIZE * MAX_HASH_CALLS) as u64,
+                    storage_loaded_bytes: (MAX_VALUE_SIZE * MAX_COUNT) as u64,
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
             }
+            GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => {
+                GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    meta.to_tree_type(),
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                )
+            }
+            GroveOp::InsertNonMerkTree {
+                flags, meta, ..
+            } => GroveDb::worst_case_merk_insert_tree(
+                key,
+                flags,
+                meta.to_tree_type(),
+                in_parent_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
         }
     }
 }

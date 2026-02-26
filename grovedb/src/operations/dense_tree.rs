@@ -406,13 +406,12 @@ impl GroveDb {
             let replacement = QualifiedGroveDbOp {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec),
                 key: Some(crate::batch::key_info::KeyInfo::KnownKey(key_bytes)),
-                op: GroveOp::ReplaceTreeRootKey {
+                op: GroveOp::ReplaceNonMerkTreeRoot {
                     hash: new_root_hash,
-                    root_key: None,
-                    aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
-                    custom_root: None,
-                    custom_count: Some(new_count as u64),
-                    bulk_state: None,
+                    meta: crate::batch::NonMerkTreeMeta::DenseTree {
+                        count: new_count,
+                        height,
+                    },
                 },
             };
             replacements.insert(tree_path.clone(), replacement);

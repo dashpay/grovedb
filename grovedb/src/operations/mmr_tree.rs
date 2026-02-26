@@ -453,18 +453,16 @@ impl GroveDb {
             #[allow(clippy::drop_non_drop)]
             drop(storage_ctx);
 
-            // Create a ReplaceTreeRootKey — MMR root flows as child hash
+            // Create a ReplaceNonMerkTreeRoot — MMR root flows as child hash
             // Key is restored for downstream (from_ops, execute_ops_on_path)
             let replacement = QualifiedGroveDbOp {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec),
                 key: Some(crate::batch::key_info::KeyInfo::KnownKey(key_bytes)),
-                op: GroveOp::ReplaceTreeRootKey {
+                op: GroveOp::ReplaceNonMerkTreeRoot {
                     hash: new_mmr_root,
-                    root_key: None,
-                    aggregate_data: grovedb_merk::tree::AggregateData::NoAggregateData,
-                    custom_root: None,
-                    custom_count: Some(new_mmr_size),
-                    bulk_state: None,
+                    meta: crate::batch::NonMerkTreeMeta::MmrTree {
+                        mmr_size: new_mmr_size,
+                    },
                 },
             };
             replacements.insert(tree_path.clone(), replacement);
