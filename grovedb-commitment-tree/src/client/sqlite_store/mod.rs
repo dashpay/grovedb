@@ -25,7 +25,6 @@ use shardtree::{
     store::{Checkpoint, ShardStore},
     LocatedPrunableTree, PrunableTree,
 };
-
 use sql_helpers::*;
 
 // Re-export SHARD_HEIGHT from parent so sql_helpers can use it.

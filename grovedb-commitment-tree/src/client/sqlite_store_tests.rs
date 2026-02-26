@@ -50,10 +50,8 @@ mod tests {
     fn test_schema_idempotent() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let arc = Arc::new(Mutex::new(conn));
-        let _store1 =
-            SqliteShardStore::new_shared(arc.clone()).expect("first create");
-        let _store2 =
-            SqliteShardStore::new_shared(arc.clone()).expect("second create on same DB");
+        let _store1 = SqliteShardStore::new_shared(arc.clone()).expect("first create");
+        let _store2 = SqliteShardStore::new_shared(arc.clone()).expect("second create on same DB");
     }
 
     #[test]

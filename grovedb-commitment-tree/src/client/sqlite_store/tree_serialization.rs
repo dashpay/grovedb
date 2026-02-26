@@ -68,7 +68,8 @@ pub(crate) fn deserialize_tree(
     deserialize_tree_bounded(data, pos, 0)
 }
 
-/// Depth-bounded deserialization to prevent stack overflow from malicious input.
+/// Depth-bounded deserialization to prevent stack overflow from malicious
+/// input.
 fn deserialize_tree_bounded(
     data: &[u8],
     pos: &mut usize,

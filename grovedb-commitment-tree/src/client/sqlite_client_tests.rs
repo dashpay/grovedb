@@ -131,13 +131,14 @@ mod tests {
         // Verify app table is still readable after commitment tree writes
         let guard = arc.lock().expect("lock");
         let value: String = guard
-            .query_row(
-                "SELECT value FROM my_app_data WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT value FROM my_app_data WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .expect("query app data");
-        assert_eq!(value, "hello", "app data should survive commitment tree writes");
+        assert_eq!(
+            value, "hello",
+            "app data should survive commitment tree writes"
+        );
     }
 
     #[test]
