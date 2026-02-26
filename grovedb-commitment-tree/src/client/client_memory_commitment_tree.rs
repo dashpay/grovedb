@@ -1,13 +1,12 @@
-use shardtree::ShardTree;
-use shardtree::store::memory::MemoryShardStore;
-use orchard::tree::{MerkleHashOrchard, MerklePath};
-use orchard::constants::MERKLE_DEPTH_ORCHARD as NOTE_COMMITMENT_TREE_DEPTH;
 use incrementalmerkletree::{Position, Retention};
-use orchard::Anchor;
-use crate::commitment_frontier::{merkle_hash_from_bytes, CommitmentTreeError};
+use orchard::{
+    tree::{MerkleHashOrchard, MerklePath},
+    Anchor, NOTE_COMMITMENT_TREE_DEPTH,
+};
+use shardtree::{store::memory::MemoryShardStore, ShardTree};
 
-/// Shard height for the ShardTree. Each shard covers 16 levels.
-const SHARD_HEIGHT: u8 = 4;
+use super::SHARD_HEIGHT;
+use crate::commitment_frontier::{merkle_hash_from_bytes, CommitmentTreeError};
 
 /// Client-side Orchard commitment tree with full Merkle witness support.
 ///
@@ -19,7 +18,8 @@ const SHARD_HEIGHT: u8 = 4;
 /// - Test harnesses that construct valid Orchard spend bundles
 ///
 /// Do **not** use this for server-side anchor tracking — use
-/// [`CommitmentFrontier`](crate::commitment_frontier::CommitmentFrontier) instead.
+/// [`CommitmentFrontier`](crate::commitment_frontier::CommitmentFrontier)
+/// instead.
 pub struct ClientMemoryCommitmentTree {
     inner: ShardTree<
         MemoryShardStore<MerkleHashOrchard, u32>,

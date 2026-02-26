@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Orchard-style commitment tree integration for GroveDB.
 //!
 //! This crate provides a lightweight frontier-based Sinsemilla Merkle tree
@@ -17,21 +18,30 @@
 #[cfg(feature = "client")]
 mod client;
 #[cfg(feature = "client")]
-pub use client::client_memory_commitment_tree::ClientMemoryCommitmentTree;
-#[cfg(feature = "sqlite")]
-mod sqlite_client;
-#[cfg(feature = "sqlite")]
-mod sqlite_store;
+pub use client::ClientMemoryCommitmentTree;
+mod commitment_frontier;
 #[cfg(feature = "storage")]
 mod commitment_tree;
 mod error;
-mod commitment_frontier;
+#[cfg(test)]
+pub(crate) mod test_utils;
+// Trial decryption functions and traits
+#[cfg(feature = "sqlite")]
+pub use client::ClientPersistentCommitmentTree;
+#[cfg(feature = "sqlite")]
+pub use client::{SqliteShardStore, SqliteShardStoreError};
 pub use commitment_frontier::*;
+#[cfg(feature = "storage")]
+pub use commitment_tree::{
+    ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
+    CommitmentTree, COMMITMENT_TREE_DATA_KEY,
+};
 pub use error::CommitmentTreeError;
-
+#[cfg(feature = "storage")]
+pub use grovedb_bulk_append_tree::{
+    deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree,
+};
 pub use grovedb_costs::{self};
-#[cfg(feature = "server")]
-use grovedb_costs::CostsExt;
 pub use incrementalmerkletree::{Hashable, Level, Position, Retention};
 // Builder for constructing shielded transactions
 pub use orchard::builder::{Builder, BundleType};
@@ -86,29 +96,15 @@ pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
 pub use orchard::note_encryption::{CompactAction, OrchardDomain};
 // Byte wrapper and trait for constructing note ciphertexts
 pub use orchard::zcash_note_encryption::note_bytes::{NoteBytes, NoteBytesData};
-// Trial decryption functions and traits
-pub use orchard::zcash_note_encryption::{
-    try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
-};
 pub use orchard::{
     note::Rho,
     primitives::redpallas,
     tree::{Anchor, MerkleHashOrchard, MerklePath},
     value::{NoteValue, ValueCommitment},
+    zcash_note_encryption::{
+        try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
+    },
     Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
 };
 #[cfg(feature = "sqlite")]
 pub use rusqlite;
-#[cfg(feature = "sqlite")]
-pub use sqlite_client::ClientPersistentCommitmentTree;
-#[cfg(feature = "sqlite")]
-pub use sqlite_store::{SqliteShardStore, SqliteShardStoreError};
-#[cfg(feature = "storage")]
-pub use grovedb_bulk_append_tree::{
-    deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree,
-};
-#[cfg(feature = "storage")]
-pub use commitment_tree::{
-    ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
-    CommitmentTree, COMMITMENT_TREE_DATA_KEY,
-};

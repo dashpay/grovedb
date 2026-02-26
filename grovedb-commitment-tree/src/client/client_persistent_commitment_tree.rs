@@ -34,11 +34,11 @@ use orchard::{
 use rusqlite::Connection;
 use shardtree::ShardTree;
 
-use crate::sqlite_store::{SqliteShardStore, SqliteShardStoreError};
+use super::{
+    sqlite_store::{SqliteShardStore, SqliteShardStoreError},
+    SHARD_HEIGHT,
+};
 use crate::commitment_frontier::{merkle_hash_from_bytes, CommitmentTreeError};
-
-/// Shard height for the ShardTree. Each shard covers 16 levels.
-const SHARD_HEIGHT: u8 = 4;
 
 /// Persistent Orchard commitment tree backed by SQLite.
 ///
@@ -168,4 +168,3 @@ impl ClientPersistentCommitmentTree {
         })
     }
 }
-

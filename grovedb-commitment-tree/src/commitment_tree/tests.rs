@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod storage_tests {
-    use std::collections::BTreeMap;
-    use std::marker::PhantomData;
+    use std::{collections::BTreeMap, marker::PhantomData};
 
     use grovedb_bulk_append_tree::BulkAppendTree;
     use grovedb_costs::{
@@ -10,8 +9,10 @@ mod storage_tests {
     };
     use grovedb_storage::StorageContext;
 
-    use crate::commitment_tree::*;
-    use crate::{CommitmentFrontier, DashMemo, MemoSize, NoteBytesData, TransmittedNoteCiphertext};
+    use crate::{
+        commitment_tree::*, test_utils::test_leaf, CommitmentFrontier, DashMemo, NoteBytesData,
+        TransmittedNoteCiphertext,
+    };
 
     // ── Mock StorageContext with working data storage ─────────────────────
 
@@ -401,20 +402,10 @@ mod storage_tests {
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
-    /// Create a deterministic test leaf from an index.
-    fn test_leaf(index: u64) -> [u8; 32] {
-        use incrementalmerkletree::{Hashable, Level};
-        use orchard::tree::MerkleHashOrchard;
-
-        let empty = MerkleHashOrchard::empty_leaf();
-        let varied =
-            MerkleHashOrchard::combine(Level::from((index % 31) as u8 + 1), &empty, &empty);
-        MerkleHashOrchard::combine(Level::from(0), &empty, &varied).to_bytes()
-    }
-
     /// Create a deterministic test ciphertext for DashMemo from an index.
     ///
-    /// Layout: `epk_bytes (32) || enc_ciphertext (104) || out_ciphertext (80)` = 216 bytes.
+    /// Layout: `epk_bytes (32) || enc_ciphertext (104) || out_ciphertext (80)`
+    /// = 216 bytes.
     fn test_ciphertext(index: u8) -> TransmittedNoteCiphertext<DashMemo> {
         let mut epk_bytes = [0u8; 32];
         epk_bytes[0] = index;
@@ -618,10 +609,9 @@ mod storage_tests {
         ct.save().value.expect("save should succeed");
 
         let storage = ct.bulk_tree.dense_tree.storage;
-        let loaded =
-            CommitmentTree::<_, DashMemo>::open(total_count, TEST_CHUNK_POWER, storage)
-                .value
-                .expect("open should succeed");
+        let loaded = CommitmentTree::<_, DashMemo>::open(total_count, TEST_CHUNK_POWER, storage)
+            .value
+            .expect("open should succeed");
 
         // Build an identical frontier to compare root hashes
         let mut expected = CommitmentFrontier::new();
@@ -650,8 +640,7 @@ mod storage_tests {
         assert_eq!(r0.global_position, 0, "first append should be position 0");
         assert_ne!(r0.sinsemilla_root, [0u8; 32], "root should be non-zero");
         assert_ne!(
-            r0.bulk_state_root,
-            [0u8; 32],
+            r0.bulk_state_root, [0u8; 32],
             "state root should be non-zero"
         );
 
@@ -669,8 +658,8 @@ mod storage_tests {
     #[test]
     fn test_new_creates_empty_tree() {
         let ctx = MockDataStorageContext::new();
-        let ct = CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx)
-            .expect("new should succeed");
+        let ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
 
         assert_eq!(ct.position(), None);
         assert_eq!(ct.tree_size(), 0);
@@ -725,5 +714,231 @@ mod storage_tests {
             ct.enc_ciphertext.as_ref()
         );
         assert_eq!(deserialized.out_ciphertext, ct.out_ciphertext);
+    }
+
+    // ── Coverage gap tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_deserialize_ciphertext_too_short() {
+        // Less than 32 + 80 = 112 bytes minimum
+        let result: Option<TransmittedNoteCiphertext<DashMemo>> =
+            deserialize_ciphertext(&[0u8; 50]);
+        assert!(result.is_none(), "should return None for too-short data");
+    }
+
+    #[test]
+    fn test_deserialize_ciphertext_empty() {
+        let result: Option<TransmittedNoteCiphertext<DashMemo>> = deserialize_ciphertext(&[]);
+        assert!(result.is_none(), "should return None for empty data");
+    }
+
+    #[test]
+    fn test_deserialize_ciphertext_wrong_enc_size() {
+        // 32 (epk) + wrong enc size + 80 (out) = 113 bytes total
+        // enc_size = 113 - 32 - 80 = 1 byte, but DashMemo expects 104
+        let result: Option<TransmittedNoteCiphertext<DashMemo>> =
+            deserialize_ciphertext(&[0u8; 113]);
+        assert!(
+            result.is_none(),
+            "should return None for wrong enc_ciphertext size"
+        );
+    }
+
+    #[test]
+    fn test_get_buffer_value_empty_tree() {
+        let ctx = MockDataStorageContext::new();
+        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        let result = ct
+            .get_buffer_value(0)
+            .expect("get_buffer_value should not error");
+        assert!(result.is_none(), "empty tree should have no buffer values");
+    }
+
+    #[test]
+    fn test_get_buffer_value_after_appends() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        // Append one item (goes into buffer since epoch_size = 2 for chunk_power=1)
+        ct.append(test_leaf(0), &test_ciphertext(0))
+            .value
+            .expect("append should succeed");
+
+        let val = ct
+            .get_buffer_value(0)
+            .expect("get_buffer_value should not error");
+        assert!(val.is_some(), "buffer should contain the first entry");
+
+        // Position beyond buffer should be None
+        let val = ct
+            .get_buffer_value(100)
+            .expect("get_buffer_value should not error");
+        assert!(val.is_none(), "out-of-range position should return None");
+    }
+
+    #[test]
+    fn test_get_chunk_value_empty_tree() {
+        let ctx = MockDataStorageContext::new();
+        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        let result = ct
+            .get_chunk_value(0)
+            .expect("get_chunk_value should not error");
+        assert!(result.is_none(), "empty tree should have no chunks");
+    }
+
+    #[test]
+    fn test_get_chunk_value_after_compaction() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        // chunk_power=1 → epoch_size=2. Append 2 items to trigger compaction.
+        ct.append(test_leaf(0), &test_ciphertext(0))
+            .value
+            .expect("append 0");
+        let r = ct
+            .append(test_leaf(1), &test_ciphertext(1))
+            .value
+            .expect("append 1");
+        assert!(r.compacted, "second append should trigger compaction");
+
+        let chunk = ct
+            .get_chunk_value(0)
+            .expect("get_chunk_value should not error");
+        assert!(chunk.is_some(), "chunk 0 should exist after compaction");
+
+        let no_chunk = ct
+            .get_chunk_value(99)
+            .expect("get_chunk_value should not error");
+        assert!(no_chunk.is_none(), "non-existent chunk should return None");
+    }
+
+    #[test]
+    fn test_compute_current_state_root_empty() {
+        let ctx = MockDataStorageContext::new();
+        let ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        let root = ct
+            .compute_current_state_root()
+            .expect("state root should succeed");
+        // Empty tree still has a deterministic root
+        assert_ne!(root, [0u8; 32], "empty state root should be non-zero");
+    }
+
+    #[test]
+    fn test_compute_current_state_root_matches_append_result() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        let r = ct
+            .append(test_leaf(0), &test_ciphertext(0))
+            .value
+            .expect("append 0");
+
+        let computed = ct
+            .compute_current_state_root()
+            .expect("state root should succeed");
+        assert_eq!(
+            computed, r.bulk_state_root,
+            "computed state root should match append result"
+        );
+    }
+
+    #[test]
+    fn test_epoch_size_and_chunk_count() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        assert_eq!(ct.epoch_size(), 2, "chunk_power=1 → epoch_size=2");
+        assert_eq!(ct.chunk_count(), 0, "no chunks initially");
+
+        // Fill one epoch
+        ct.append(test_leaf(0), &test_ciphertext(0))
+            .value
+            .expect("append 0");
+        ct.append(test_leaf(1), &test_ciphertext(1))
+            .value
+            .expect("append 1");
+
+        assert_eq!(ct.chunk_count(), 1, "one chunk after filling one epoch");
+
+        // Fill another epoch
+        ct.append(test_leaf(2), &test_ciphertext(2))
+            .value
+            .expect("append 2");
+        ct.append(test_leaf(3), &test_ciphertext(3))
+            .value
+            .expect("append 3");
+
+        assert_eq!(ct.chunk_count(), 2, "two chunks after filling two epochs");
+    }
+
+    #[test]
+    fn test_anchor_on_commitment_tree() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        let empty_anchor = ct.anchor();
+        assert_eq!(
+            empty_anchor,
+            crate::Anchor::empty_tree(),
+            "empty tree should have empty anchor"
+        );
+
+        ct.append(test_leaf(0), &test_ciphertext(0))
+            .value
+            .expect("append 0");
+
+        let anchor = ct.anchor();
+        assert_ne!(
+            anchor,
+            crate::Anchor::empty_tree(),
+            "non-empty tree should have non-empty anchor"
+        );
+    }
+
+    #[test]
+    fn test_append_raw_rejects_invalid_cmx() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        // All 0xFF is not a valid Pallas field element
+        let payload = vec![0u8; ciphertext_payload_size::<DashMemo>()];
+        let result = ct.append_raw([0xFF; 32], &payload);
+        assert!(
+            result.value.is_err(),
+            "should reject invalid cmx field element"
+        );
+        let msg = format!("{}", result.value.expect_err("should be an error"));
+        assert!(
+            msg.contains("invalid Pallas field element"),
+            "error should mention field element: {msg}"
+        );
+
+        // Verify tree was NOT mutated
+        assert_eq!(
+            ct.total_count(),
+            0,
+            "tree should not have been mutated by invalid cmx"
+        );
     }
 }

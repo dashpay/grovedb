@@ -10,11 +10,28 @@
 //! grovedb-commitment-tree = { version = "4", features = ["client"] }
 //! ```
 
-use client_memory_commitment_tree::ClientMemoryCommitmentTree;
-mod tests;
-mod sqlite_store_tests;
-mod sqlite_client_tests;
-mod client_persistent_commitment_tree;
-mod sqlite_store;
-mod client_memory_commitment_tree;
+/// Shard height for the ShardTree. Each shard covers 2^SHARD_HEIGHT levels.
+///
+/// This value is used by all client tree implementations (memory, persistent)
+/// and the SQLite store to ensure consistent shard addressing.
+pub(crate) const SHARD_HEIGHT: u8 = 4;
 
+mod client_memory_commitment_tree;
+pub use client_memory_commitment_tree::ClientMemoryCommitmentTree;
+
+#[cfg(feature = "sqlite")]
+mod sqlite_store;
+#[cfg(feature = "sqlite")]
+pub use sqlite_store::{SqliteShardStore, SqliteShardStoreError};
+
+#[cfg(feature = "sqlite")]
+mod client_persistent_commitment_tree;
+#[cfg(feature = "sqlite")]
+pub use client_persistent_commitment_tree::ClientPersistentCommitmentTree;
+
+#[cfg(all(test, feature = "sqlite"))]
+mod sqlite_client_tests;
+#[cfg(all(test, feature = "sqlite"))]
+mod sqlite_store_tests;
+#[cfg(test)]
+mod tests;

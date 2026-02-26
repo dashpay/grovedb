@@ -13,6 +13,11 @@ mod tests {
         LocatedTree, Node, PrunableTree, RetentionFlags, Tree,
     };
 
+    use crate::client::sqlite_store::{
+        tree_serialization::{deserialize_tree, serialize_tree},
+        SqliteShardStore, SHARD_HEIGHT,
+    };
+
     fn test_store() -> SqliteShardStore {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         SqliteShardStore::new(conn).expect("create store")
@@ -44,7 +49,9 @@ mod tests {
     #[test]
     fn test_schema_idempotent() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
-        let _store = SqliteShardStore::new(conn).expect("first create");
+        let arc = Arc::new(Mutex::new(conn));
+        let _store1 = SqliteShardStore::new_shared(arc.clone()).expect("first create");
+        let _store2 = SqliteShardStore::new_shared(arc.clone()).expect("second create on same DB");
     }
 
     #[test]

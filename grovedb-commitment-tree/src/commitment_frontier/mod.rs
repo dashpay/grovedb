@@ -1,12 +1,10 @@
-use incrementalmerkletree::frontier::Frontier;
-use orchard::tree::MerkleHashOrchard;
-use incrementalmerkletree::{Hashable, Level, Position};
-use orchard::NOTE_COMMITMENT_TREE_DEPTH;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use orchard::Anchor;
+use incrementalmerkletree::{frontier::Frontier, Hashable, Level, Position};
+use orchard::{tree::MerkleHashOrchard, Anchor, NOTE_COMMITMENT_TREE_DEPTH};
 
 pub use crate::error::CommitmentTreeError;
 
+#[cfg(all(test, feature = "server"))]
 mod tests;
 
 /// Depth of the Sinsemilla Merkle tree as a u8 constant for the Frontier type
@@ -231,4 +229,3 @@ pub const EMPTY_SINSEMILLA_ROOT: [u8; 32] = [
     0xae, 0x29, 0x35, 0xf1, 0xdf, 0xd8, 0xa2, 0x4a, 0xed, 0x7c, 0x70, 0xdf, 0x7d, 0xe3, 0xa6, 0x68,
     0xeb, 0x7a, 0x49, 0xb1, 0x31, 0x98, 0x80, 0xdd, 0xe2, 0xbb, 0xd9, 0x03, 0x1a, 0xe5, 0xd8, 0x2f,
 ];
-

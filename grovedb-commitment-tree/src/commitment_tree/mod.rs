@@ -13,9 +13,11 @@ use std::marker::PhantomData;
 use grovedb_bulk_append_tree::BulkAppendTree;
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::StorageContext;
-use orchard::memo::{DashMemo, MemoSize};
-use orchard::note::TransmittedNoteCiphertext;
-use orchard::zcash_note_encryption::note_bytes::NoteBytes;
+use orchard::{
+    memo::{DashMemo, MemoSize},
+    note::TransmittedNoteCiphertext,
+    zcash_note_encryption::note_bytes::NoteBytes,
+};
 
 use crate::{CommitmentFrontier, CommitmentTreeError};
 
@@ -97,9 +99,29 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 /// - [`append`](CommitmentTree::append) appends `cmx||ciphertext` to the bulk
 ///   tree and `cmx` to the frontier
 /// - [`save`](CommitmentTree::save) persists the frontier back to storage
+///
+/// # Authentication model
+///
+/// The Sinsemilla root (from [`CommitmentFrontier`]) authenticates the **cmx
+/// values** — it is a standard Orchard-compatible anchor. The **ciphertext
+/// payload** is not independently authenticated by the Sinsemilla root;
+/// instead, it is covered by the [`BulkAppendTree`]'s state root
+/// (`blake3(mmr_root || dense_tree_root)`), which includes the full
+/// `cmx||ciphertext` entries. Both roots flow up through GroveDB's Merk
+/// hierarchy, providing authentication for the entire data set.
+///
+/// # Atomicity
+///
+/// [`append`](CommitmentTree::append) mutates both the BulkAppendTree (in
+/// storage) and the frontier (in memory). The caller must call
+/// [`save`](CommitmentTree::save) to persist the frontier. In a GroveDB
+/// context, both writes happen within the same transaction, so atomicity is
+/// guaranteed by the transaction boundary. If a crash occurs before the
+/// transaction commits, both the BulkAppendTree and frontier changes are
+/// rolled back.
 pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
     frontier: CommitmentFrontier,
-    pub bulk_tree: BulkAppendTree<S>,
+    pub(crate) bulk_tree: BulkAppendTree<S>,
     _memo: PhantomData<M>,
 }
 
@@ -173,6 +195,18 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             }
         };
 
+        // Validate that the frontier and bulk tree agree on the number of
+        // appended items. A mismatch indicates a partial commit or data
+        // corruption.
+        let frontier_size = frontier.tree_size();
+        if frontier_size != total_count {
+            return Err(CommitmentTreeError::InvalidData(format!(
+                "frontier tree_size ({}) != bulk tree total_count ({})",
+                frontier_size, total_count
+            )))
+            .wrap_with_cost(cost);
+        }
+
         Ok(Self {
             frontier,
             bulk_tree,
@@ -211,6 +245,13 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let mut cost = OperationCost::default();
 
+        // Validate cmx is a valid Pallas field element before any mutation.
+        // This prevents inconsistent state if BulkAppendTree is mutated but
+        // the frontier rejects the cmx.
+        if crate::commitment_frontier::merkle_hash_from_bytes(&cmx).is_none() {
+            return Err(CommitmentTreeError::InvalidFieldElement).wrap_with_cost(cost);
+        }
+
         // Validate payload size
         let expected = ciphertext_payload_size::<M>();
         if payload.len() != expected {
@@ -244,14 +285,14 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
                 value: Ok(root),
                 cost: frontier_cost,
             } => {
-                cost = cost + frontier_cost;
+                cost += frontier_cost;
                 root
             }
             grovedb_costs::CostContext {
                 value: Err(e),
                 cost: frontier_cost,
             } => {
-                cost = cost + frontier_cost;
+                cost += frontier_cost;
                 return Err(e).wrap_with_cost(cost);
             }
         };
@@ -323,10 +364,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     }
 
     /// Get a single value from the dense tree buffer by buffer-local position.
-    pub fn get_buffer_value(
-        &self,
-        position: u16,
-    ) -> Result<Option<Vec<u8>>, CommitmentTreeError> {
+    pub fn get_buffer_value(&self, position: u16) -> Result<Option<Vec<u8>>, CommitmentTreeError> {
         self.bulk_tree
             .get_buffer_value(position)
             .map_err(|e| CommitmentTreeError::InvalidData(format!("buffer value: {}", e)))
