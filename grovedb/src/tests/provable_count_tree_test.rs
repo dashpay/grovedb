@@ -571,7 +571,7 @@ mod tests {
             .expect("should get root hash");
 
         // Verify original proof works
-        let (root, results) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+        let (root, _results) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
             .expect("original should verify");
         assert_eq!(root, expected_root);
 

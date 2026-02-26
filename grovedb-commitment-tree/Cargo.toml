@@ -1,0 +1,37 @@
+[package]
+name = "grovedb-commitment-tree"
+description = "Orchard-style commitment tree integration for GroveDB"
+version = "4.0.0"
+authors = ["Samuel Westrich <sam@dash.org>"]
+edition = "2021"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+readme = "../README.md"
+documentation = "https://docs.rs/grovedb"
+
+[features]
+default = []
+server = []
+storage = ["grovedb-storage", "grovedb-bulk-append-tree", "server"]
+client = ["shardtree"]
+sqlite = ["client", "rusqlite"]
+
+[dependencies]
+orchard = { git = "https://github.com/dashpay/orchard.git", rev = "41c8f7169f2683c99cf0e0c63e8d25ec12c47a79", features = ["circuit"] }
+incrementalmerkletree = "0.8"
+shardtree = { version = "0.6", optional = true }
+rusqlite = { version = "0.38", features = ["bundled"], optional = true }
+grovedb-costs = { version = "4.0.0", path = "../costs" }
+grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
+grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-tree", optional = true }
+thiserror = "2.0"
+
+[dev-dependencies]
+tempfile = "3"
+criterion = "0.4"
+rand = "0.8"
+
+[[bench]]
+name = "verification"
+harness = false
