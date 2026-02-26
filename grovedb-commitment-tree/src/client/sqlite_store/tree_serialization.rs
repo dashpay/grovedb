@@ -123,24 +123,30 @@ fn deserialize_tree_bounded(
             let has_ann = data[*pos];
             *pos += 1;
 
-            let ann: Option<Arc<MerkleHashOrchard>> = if has_ann == 0x01 {
-                if *pos + 32 > data.len() {
-                    return Err(SqliteShardStoreError::Serialization(
-                        "truncated parent annotation".to_string(),
-                    ));
+            let ann: Option<Arc<MerkleHashOrchard>> = match has_ann {
+                0x00 => None,
+                0x01 => {
+                    if *pos + 32 > data.len() {
+                        return Err(SqliteShardStoreError::Serialization(
+                            "truncated parent annotation".to_string(),
+                        ));
+                    }
+                    let ann_bytes: [u8; 32] = data[*pos..*pos + 32]
+                        .try_into()
+                        .map_err(|_| SqliteShardStoreError::Serialization("bad ann".to_string()))?;
+                    *pos += 32;
+                    let hash = merkle_hash_from_bytes(&ann_bytes).ok_or_else(|| {
+                        SqliteShardStoreError::Serialization(
+                            "invalid Pallas field element in annotation".to_string(),
+                        )
+                    })?;
+                    Some(Arc::new(hash))
                 }
-                let ann_bytes: [u8; 32] = data[*pos..*pos + 32]
-                    .try_into()
-                    .map_err(|_| SqliteShardStoreError::Serialization("bad ann".to_string()))?;
-                *pos += 32;
-                let hash = merkle_hash_from_bytes(&ann_bytes).ok_or_else(|| {
-                    SqliteShardStoreError::Serialization(
-                        "invalid Pallas field element in annotation".to_string(),
-                    )
-                })?;
-                Some(Arc::new(hash))
-            } else {
-                None
+                other => {
+                    return Err(SqliteShardStoreError::Serialization(format!(
+                        "invalid parent annotation flag: 0x{other:02x}"
+                    )));
+                }
             };
 
             let left = deserialize_tree_bounded(data, pos, depth + 1)?;
