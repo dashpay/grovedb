@@ -111,7 +111,11 @@ fn deserialize_tree_bounded(
                     "invalid Pallas field element in leaf".to_string(),
                 )
             })?;
-            let flags = RetentionFlags::from_bits_truncate(flags_byte);
+            let flags = RetentionFlags::from_bits(flags_byte).ok_or_else(|| {
+                SqliteShardStoreError::Serialization(format!(
+                    "invalid retention flags: 0x{flags_byte:02x}"
+                ))
+            })?;
             Ok(Tree::leaf((hash, flags)))
         }
         TAG_PARENT => {
