@@ -1714,14 +1714,8 @@ fn test_dense_tree_batch_with_transaction() {
     let tx = db.start_transaction();
 
     let ops = vec![
-        QualifiedGroveDbOp::dense_tree_insert_op(
-            vec![b"dense".to_vec()],
-            b"batch_tx_1".to_vec(),
-        ),
-        QualifiedGroveDbOp::dense_tree_insert_op(
-            vec![b"dense".to_vec()],
-            b"batch_tx_2".to_vec(),
-        ),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"batch_tx_1".to_vec()),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"batch_tx_2".to_vec()),
     ];
 
     db.apply_batch(ops, None, Some(&tx), grove_version)
@@ -1820,5 +1814,309 @@ fn test_dense_tree_batch_propagation_with_sibling() {
         .root_hash(None, grove_version)
         .unwrap()
         .expect("root after");
-    assert_ne!(root_before, root_after, "root hash should change after batch");
+    assert_ne!(
+        root_before, root_after,
+        "root hash should change after batch"
+    );
+}
+
+// ===========================================================================
+// Error-path tests: wrong element type
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_insert_on_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a normal tree (not a DenseAppendOnlyFixedSizeTree)
+    db.insert(
+        EMPTY_PATH,
+        b"normal",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+
+    let result = db
+        .dense_tree_insert(EMPTY_PATH, b"normal", b"data".to_vec(), None, grove_version)
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "dense_tree_insert on a normal tree should fail"
+    );
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert_eq!(msg, "element is not a dense tree");
+        }
+        other => panic!(
+            "expected InvalidInput('element is not a dense tree'), got: {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_dense_tree_get_on_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert an Item (not a DenseAppendOnlyFixedSizeTree)
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(vec![1, 2, 3]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .dense_tree_get(EMPTY_PATH, b"item", 0, None, grove_version)
+        .unwrap();
+    assert!(result.is_err(), "dense_tree_get on an Item should fail");
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert_eq!(msg, "element is not a dense tree");
+        }
+        other => panic!(
+            "expected InvalidInput('element is not a dense tree'), got: {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_dense_tree_root_hash_on_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert an Item
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(vec![4, 5, 6]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .dense_tree_root_hash(EMPTY_PATH, b"item", None, grove_version)
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "dense_tree_root_hash on an Item should fail"
+    );
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert_eq!(msg, "element is not a dense tree");
+        }
+        other => panic!(
+            "expected InvalidInput('element is not a dense tree'), got: {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_dense_tree_count_on_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert an Item
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(vec![7, 8, 9]),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .dense_tree_count(EMPTY_PATH, b"item", None, grove_version)
+        .unwrap();
+    assert!(result.is_err(), "dense_tree_count on an Item should fail");
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert_eq!(msg, "element is not a dense tree");
+        }
+        other => panic!(
+            "expected InvalidInput('element is not a dense tree'), got: {:?}",
+            other
+        ),
+    }
+}
+
+// ===========================================================================
+// Batch capacity-overflow rejection test
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_batch_exceeds_capacity() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a DenseTree with height=2 (capacity = 2^2 - 1 = 3)
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(2),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree with height=2");
+
+    // Build a batch with 4 DenseTreeInsert ops — exceeds capacity of 3
+    let ops = vec![
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"val_0".to_vec()),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"val_1".to_vec()),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"val_2".to_vec()),
+        QualifiedGroveDbOp::dense_tree_insert_op(vec![b"dense".to_vec()], b"val_3".to_vec()),
+    ];
+
+    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+    assert!(
+        result.is_err(),
+        "batch with 4 inserts into capacity-3 dense tree should fail"
+    );
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert_eq!(msg, "batch inserts exceed dense tree capacity");
+        }
+        other => panic!(
+            "expected InvalidInput('batch inserts exceed dense tree capacity'), got: {:?}",
+            other
+        ),
+    }
+}
+
+// ===========================================================================
+// Persistence-across-reopen tests
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_persistence_across_reopen() {
+    let grove_version = GroveVersion::latest();
+    let tmp_dir = tempfile::TempDir::new().expect("should create temp dir");
+
+    let root_hash_before_close;
+
+    // Open, insert DenseTree (height=3, capacity=7), insert 5 values
+    {
+        let db = crate::GroveDb::open(tmp_dir.path()).expect("should open grovedb");
+        db.insert(
+            EMPTY_PATH,
+            b"dense",
+            Element::empty_dense_tree(3),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert dense tree");
+
+        for i in 0..5u16 {
+            db.dense_tree_insert(
+                EMPTY_PATH,
+                b"dense",
+                format!("val_{}", i).into_bytes(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("dense tree insert");
+        }
+
+        root_hash_before_close = db
+            .dense_tree_root_hash(EMPTY_PATH, b"dense", None, grove_version)
+            .unwrap()
+            .expect("root hash before close");
+
+        assert_ne!(
+            root_hash_before_close, [0u8; 32],
+            "root hash should not be zero after 5 inserts"
+        );
+    }
+    // db is dropped here
+
+    // Reopen and verify state
+    {
+        let db = crate::GroveDb::open(tmp_dir.path()).expect("should reopen grovedb");
+
+        // Verify count == 5
+        let count = db
+            .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+            .unwrap()
+            .expect("count after reopen");
+        assert_eq!(count, 5, "count should be 5 after reopen");
+
+        // Verify all values retrievable
+        for i in 0..5u16 {
+            let val = db
+                .dense_tree_get(EMPTY_PATH, b"dense", i, None, grove_version)
+                .unwrap()
+                .expect("get value after reopen");
+            assert_eq!(
+                val,
+                Some(format!("val_{}", i).into_bytes()),
+                "value at position {} should match after reopen",
+                i
+            );
+        }
+
+        // Verify root hash matches
+        let root_hash_after_reopen = db
+            .dense_tree_root_hash(EMPTY_PATH, b"dense", None, grove_version)
+            .unwrap()
+            .expect("root hash after reopen");
+        assert_eq!(
+            root_hash_before_close, root_hash_after_reopen,
+            "root hash should be stable across reopen"
+        );
+    }
+}
+
+// ===========================================================================
+// verify_grovedb empty tree test
+// ===========================================================================
+
+#[test]
+fn test_verify_grovedb_dense_tree_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert an empty DenseAppendOnlyFixedSizeTree (no inserts)
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty dense tree");
+
+    // verify_grovedb should report no issues on an empty DenseTree
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(
+        issues.is_empty(),
+        "expected no issues for empty dense tree, got: {:?}",
+        issues
+    );
 }

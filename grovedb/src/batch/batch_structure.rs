@@ -165,8 +165,8 @@ where
                     "replace and insert tree hash are internal operations only",
                 )),
             };
-            if op_result.is_err() {
-                return Err(op_result.err().unwrap()).wrap_with_cost(op_cost);
+            if let Err(e) = op_result {
+                return Err(e).wrap_with_cost(op_cost);
             }
 
             let level = op.path.len();

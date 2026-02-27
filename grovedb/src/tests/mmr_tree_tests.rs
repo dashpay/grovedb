@@ -1431,3 +1431,251 @@ fn test_verify_grovedb_merkle_mountain_range_tree_valid() {
         .expect("verify should not fail");
     assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
 }
+
+// ===========================================================================
+// Batch-with-transaction tests
+// ===========================================================================
+
+#[test]
+fn test_mmr_tree_batch_with_transaction() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Tree must exist BEFORE the batch (preprocessing requires it)
+    db.insert(
+        EMPTY_PATH,
+        b"log",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    let tx = db.start_transaction();
+
+    let ops = vec![
+        QualifiedGroveDbOp::mmr_tree_append_op(vec![b"log".to_vec()], b"tx_val_1".to_vec()),
+        QualifiedGroveDbOp::mmr_tree_append_op(vec![b"log".to_vec()], b"tx_val_2".to_vec()),
+    ];
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch apply in transaction");
+
+    // Not visible outside the transaction
+    let count_outside = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"log", None, grove_version)
+        .unwrap()
+        .expect("leaf count outside tx");
+    assert_eq!(count_outside, 0, "data should not be visible outside tx");
+
+    // Verify data is visible inside the transaction
+    let count_inside = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"log", Some(&tx), grove_version)
+        .unwrap()
+        .expect("leaf count inside tx");
+    assert_eq!(count_inside, 2, "data should be visible inside tx");
+
+    // Commit the transaction
+    db.commit_transaction(tx).unwrap().expect("commit tx");
+
+    // After commit, data should be visible
+    let count_after = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"log", None, grove_version)
+        .unwrap()
+        .expect("leaf count after commit");
+    assert_eq!(count_after, 2, "data should be visible after commit");
+
+    // Verify values are correct
+    let root = db
+        .mmr_tree_root_hash(EMPTY_PATH, b"log", None, grove_version)
+        .unwrap()
+        .expect("get root hash");
+    let exp = expected_mmr_root(&[b"tx_val_1".to_vec(), b"tx_val_2".to_vec()]);
+    assert_eq!(root, exp, "root hash should match expected after commit");
+}
+
+#[test]
+fn test_mmr_tree_batch_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Tree must exist BEFORE the batch
+    db.insert(
+        EMPTY_PATH,
+        b"log",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    let tx = db.start_transaction();
+
+    let ops = vec![QualifiedGroveDbOp::mmr_tree_append_op(
+        vec![b"log".to_vec()],
+        b"rollback_val".to_vec(),
+    )];
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch apply in transaction");
+
+    // Verify data is visible inside tx before rollback
+    let count_inside = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"log", Some(&tx), grove_version)
+        .unwrap()
+        .expect("leaf count inside tx");
+    assert_eq!(count_inside, 1, "data should be visible inside tx");
+
+    // Drop tx (rollback)
+    drop(tx);
+
+    // Data should NOT be visible after rollback
+    let count_after = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"log", None, grove_version)
+        .unwrap()
+        .expect("leaf count after rollback");
+    assert_eq!(count_after, 0, "data should not be visible after rollback");
+
+    let root = db
+        .mmr_tree_root_hash(EMPTY_PATH, b"log", None, grove_version)
+        .unwrap()
+        .expect("root hash after rollback");
+    assert_eq!(
+        root, [0u8; 32],
+        "empty MMR root should be zeros after rollback"
+    );
+}
+
+// ===========================================================================
+// Empty V1 proof test
+// ===========================================================================
+
+/// Empty MMR tree proof generation currently errors because
+/// `generate_mmr_layer_proof` passes empty leaf_indices to
+/// `MmrTreeProof::generate` which rejects it. This test documents
+/// the current behavior: querying an empty MmrTree via V1 proof
+/// returns a CorruptedData error containing "leaf_indices must not
+/// be empty". A future fix should handle this gracefully and return
+/// an empty result set instead.
+#[test]
+fn test_mmr_tree_v1_proof_empty() {
+    use grovedb_merk::proofs::{
+        query::{QueryItem, SubqueryBranch},
+        Query,
+    };
+
+    use crate::{PathQuery, SizedQuery};
+
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert parent tree and empty MmrTree
+    db.insert(
+        EMPTY_PATH,
+        b"root",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert root tree");
+
+    db.insert(
+        &[b"root"],
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty mmr tree");
+
+    // Query position [0..=0] on an empty MmrTree
+    let mut inner_query = Query::new();
+    inner_query.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=0u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"root".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"mmr".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    // Empty MmrTree proof generation currently errors because
+    // MmrTreeProof::generate rejects empty leaf_indices.
+    let result = db.prove_query_v1(&path_query, None, grove_version).unwrap();
+
+    match result {
+        Err(Error::CorruptedData(msg)) => {
+            assert!(
+                msg.contains("leaf_indices must not be empty"),
+                "error should mention empty leaf_indices, got: {}",
+                msg
+            );
+        }
+        Err(other) => {
+            panic!(
+                "expected CorruptedData error about empty leaf_indices, got: {:?}",
+                other
+            );
+        }
+        Ok(_) => {
+            // If a future fix makes this succeed, verify the result is correct
+            panic!(
+                "prove_query_v1 succeeded for empty MmrTree; if this is intentional, update this \
+                 test to verify the proof produces an empty result set"
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// verify_grovedb empty tree test
+// ===========================================================================
+
+#[test]
+fn test_verify_grovedb_mmr_tree_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert an empty MmrTree (no appends)
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty mmr tree");
+
+    // verify_grovedb should report no issues on an empty MmrTree
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(
+        issues.is_empty(),
+        "expected no issues for empty mmr tree, got: {:?}",
+        issues
+    );
+}

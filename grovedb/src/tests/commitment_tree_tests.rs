@@ -1834,3 +1834,199 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
         }
     }
 }
+
+// ===========================================================================
+// Error-path tests: wrong element type
+// ===========================================================================
+
+#[test]
+fn test_commitment_tree_get_value_on_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a normal tree (not a CommitmentTree)
+    db.insert(
+        EMPTY_PATH,
+        b"normal",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+
+    let result = db
+        .commitment_tree_get_value(EMPTY_PATH, b"normal", 0, None, grove_version)
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "commitment_tree_get_value on a normal tree should fail"
+    );
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert_eq!(msg, "element is not a commitment tree");
+        }
+        other => panic!(
+            "expected InvalidInput('element is not a commitment tree'), got: {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_commitment_tree_count_on_wrong_element_type() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a normal tree (not a CommitmentTree)
+    db.insert(
+        EMPTY_PATH,
+        b"normal",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert normal tree");
+
+    let result = db
+        .commitment_tree_count(EMPTY_PATH, b"normal", None, grove_version)
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "commitment_tree_count on a normal tree should fail"
+    );
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert_eq!(msg, "element is not a commitment tree");
+        }
+        other => panic!(
+            "expected InvalidInput('element is not a commitment tree'), got: {:?}",
+            other
+        ),
+    }
+}
+
+// ===========================================================================
+// Persistence-across-reopen tests
+// ===========================================================================
+
+#[test]
+fn test_commitment_tree_persistence_across_reopen() {
+    let grove_version = GroveVersion::latest();
+    let tmp_dir = tempfile::TempDir::new().expect("should create temp dir");
+
+    let anchor_before_close;
+
+    // Open, insert CommitmentTree, append 3 notes
+    {
+        let db = crate::GroveDb::open(tmp_dir.path()).expect("should open grovedb");
+        db.insert(
+            EMPTY_PATH,
+            b"pool",
+            Element::empty_commitment_tree(TEST_CHUNK_POWER),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert commitment tree");
+
+        for i in 1..=3u8 {
+            db.commitment_tree_insert(
+                EMPTY_PATH,
+                b"pool",
+                test_cmx(i),
+                test_ciphertext(i),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert note");
+        }
+
+        anchor_before_close = db
+            .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
+            .unwrap()
+            .expect("anchor before close");
+    }
+    // db is dropped here
+
+    // Reopen and verify state
+    {
+        let db = crate::GroveDb::open(tmp_dir.path()).expect("should reopen grovedb");
+
+        // Verify count == 3
+        let count = db
+            .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+            .unwrap()
+            .expect("count after reopen");
+        assert_eq!(count, 3, "count should be 3 after reopen");
+
+        // Verify anchor (root hash) is unchanged
+        let anchor_after_reopen = db
+            .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
+            .unwrap()
+            .expect("anchor after reopen");
+        assert_eq!(
+            anchor_before_close, anchor_after_reopen,
+            "anchor (sinsemilla root) should be stable across reopen"
+        );
+
+        // Verify the anchor matches expected computation
+        let leaves: Vec<[u8; 32]> = (1..=3u8).map(test_cmx).collect();
+        let exp = expected_root(&leaves);
+        assert_eq!(
+            anchor_after_reopen,
+            Anchor::from_bytes(exp).expect("valid anchor"),
+            "anchor should match expected sinsemilla root"
+        );
+    }
+}
+
+// ===========================================================================
+// verify_grovedb empty tree test
+// ===========================================================================
+
+/// An empty CommitmentTree (no inserts) currently has a hash mismatch in
+/// verify_grovedb: the initial insert stores NULL_HASH ([0; 32]) as the
+/// child hash in Merk, but verify_grovedb computes the actual state root
+/// (which includes the non-zero sinsemilla empty tree root). This test
+/// documents that known behavior. After the first insert, verify_grovedb
+/// passes cleanly (see `test_verify_grovedb_commitment_tree_valid`).
+#[test]
+fn test_verify_grovedb_commitment_tree_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert an empty CommitmentTree (no inserts)
+    db.insert(
+        EMPTY_PATH,
+        b"ct",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty commitment tree");
+
+    // An empty CommitmentTree currently reports a hash mismatch because the
+    // initial child hash is NULL_HASH but the computed state root includes
+    // the non-zero sinsemilla empty tree root.
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(
+        !issues.is_empty(),
+        "empty commitment tree should report hash mismatch (NULL_HASH vs sinsemilla empty root)"
+    );
+    // Exactly one issue for the path [b"ct"]
+    assert_eq!(
+        issues.len(),
+        1,
+        "should have exactly one issue for the empty commitment tree path"
+    );
+}

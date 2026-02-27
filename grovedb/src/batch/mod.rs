@@ -1036,7 +1036,9 @@ where
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
-        let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
+        let (key, reference_path) = qualified_path
+            .split_last()
+            .expect("path validated non-empty above");
 
         let merk = match self.merks.entry(reference_path.to_vec()) {
             HashMapEntry::Occupied(o) => o.into_mut(),
@@ -1378,7 +1380,9 @@ where
                                 let mut new_element = element.clone();
 
                                 // it can be unmerged, let's get the value on disk
-                                let (key, reference_path) = qualified_path.split_last().unwrap();
+                                let (key, reference_path) = qualified_path
+                                    .split_last()
+                                    .expect("path validated non-empty above");
                                 let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
                                     self.get_and_deserialize_referenced_element(
@@ -2099,7 +2103,9 @@ where
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
                                     | Element::DenseAppendOnlyFixedSizeTree(..) => {
-                                        let tree_type = new_element.tree_type().unwrap();
+                                        let tree_type = new_element
+                                            .tree_type()
+                                            .expect("tree_type guaranteed by match arm");
                                         let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
                                             + flags_len

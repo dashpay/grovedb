@@ -15,6 +15,15 @@ pub(crate) fn validate_height(height: u8) -> Result<(), DenseMerkleError> {
 ///
 /// All nodes use the same scheme — leaf nodes simply have `[0; 32]` for
 /// both child hashes.
+///
+/// **No leaf/internal domain separation tag is needed here.** The tree
+/// structure (`height` and `count`) is externally authenticated in the
+/// parent `Element::DenseAppendOnlyFixedSizeTree`, which flows through
+/// the Merk hierarchy. The verifier always knows exactly which positions
+/// are leaves vs internal nodes, so an attacker cannot substitute one for
+/// the other without breaking the parent authentication chain. Exploiting
+/// the lack of a prefix byte would require a second-preimage attack on
+/// blake3 (2^128 security), which is computationally infeasible.
 pub(crate) fn node_hash(
     value_hash: &[u8; 32],
     left_hash: &[u8; 32],

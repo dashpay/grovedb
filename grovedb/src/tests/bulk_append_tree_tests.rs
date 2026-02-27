@@ -1279,3 +1279,250 @@ fn test_verify_grovedb_bulk_tree_valid() {
         .expect("verify should not fail");
     assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
 }
+
+// ===========================================================================
+// Persistence-across-reopen tests
+// ===========================================================================
+
+#[test]
+fn test_bulk_persistence_across_reopen() {
+    let grove_version = GroveVersion::latest();
+    let tmp_dir = tempfile::TempDir::new().expect("should create temp dir");
+
+    // Open, insert BulkAppendTree (epoch_size=4), append 6 values (triggers
+    // compaction)
+    {
+        let db = crate::GroveDb::open(tmp_dir.path()).expect("should open grovedb");
+        db.insert(
+            EMPTY_PATH,
+            b"bulk",
+            Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert bulk append tree");
+
+        // Append 6 values (chunk_size=4 triggers 1 compaction, 2 remain in buffer)
+        for i in 0..6u8 {
+            db.bulk_append(EMPTY_PATH, b"bulk", vec![i], None, grove_version)
+                .unwrap()
+                .expect("append value");
+        }
+
+        // Verify compaction happened before closing
+        let chunk_count = db
+            .bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
+            .unwrap()
+            .expect("chunk count before close");
+        assert_eq!(chunk_count, 1, "should have 1 completed chunk before close");
+    }
+    // db is dropped here
+
+    // Reopen and verify state
+    {
+        let db = crate::GroveDb::open(tmp_dir.path()).expect("should reopen grovedb");
+
+        // Verify count == 6
+        let count = db
+            .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+            .unwrap()
+            .expect("count after reopen");
+        assert_eq!(count, 6, "count should be 6 after reopen");
+
+        // Verify all values retrievable (from chunk blob and buffer)
+        for i in 0..6u8 {
+            let val = db
+                .bulk_get_value(EMPTY_PATH, b"bulk", i as u64, None, grove_version)
+                .unwrap()
+                .expect("get value after reopen");
+            assert_eq!(
+                val,
+                Some(vec![i]),
+                "value at position {} should match after reopen",
+                i
+            );
+        }
+
+        // Verify chunk count is stable
+        let chunk_count = db
+            .bulk_chunk_count(EMPTY_PATH, b"bulk", None, grove_version)
+            .unwrap()
+            .expect("chunk count after reopen");
+        assert_eq!(chunk_count, 1, "chunk count should be stable across reopen");
+
+        // Verify root hash is stable by appending one more value and confirming it
+        // doesn't panic (ensures internal state was properly restored)
+        let (state_root, position) = db
+            .bulk_append(
+                EMPTY_PATH,
+                b"bulk",
+                b"after_reopen".to_vec(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("append after reopen should succeed");
+        assert_eq!(position, 6, "next position should be 6");
+        assert_ne!(state_root, [0u8; 32], "state root should not be zero");
+
+        let count_after = db
+            .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+            .unwrap()
+            .expect("count after additional append");
+        assert_eq!(count_after, 7, "count should be 7 after additional append");
+    }
+}
+
+// ===========================================================================
+// Batch-with-transaction tests
+// ===========================================================================
+
+#[test]
+fn test_bulk_batch_with_transaction() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Tree must exist BEFORE the batch (preprocessing requires it)
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    let tx = db.start_transaction();
+
+    let ops = vec![
+        QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], b"tx_val_1".to_vec()),
+        QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], b"tx_val_2".to_vec()),
+    ];
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch apply in transaction");
+
+    // Not visible outside the transaction
+    let count_outside = db
+        .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count outside tx");
+    assert_eq!(count_outside, 0, "data should not be visible outside tx");
+
+    // Verify data is visible inside the transaction
+    let count_inside = db
+        .bulk_count(EMPTY_PATH, b"bulk", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count inside tx");
+    assert_eq!(count_inside, 2, "data should be visible inside tx");
+
+    // Commit the transaction
+    db.commit_transaction(tx).unwrap().expect("commit tx");
+
+    // After commit, data should be visible
+    let count_after = db
+        .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count after commit");
+    assert_eq!(count_after, 2, "data should be visible after commit");
+
+    // Verify values are correct
+    let val0 = db
+        .bulk_get_value(EMPTY_PATH, b"bulk", 0, None, grove_version)
+        .unwrap()
+        .expect("get value 0");
+    assert_eq!(val0, Some(b"tx_val_1".to_vec()), "first value should match");
+
+    let val1 = db
+        .bulk_get_value(EMPTY_PATH, b"bulk", 1, None, grove_version)
+        .unwrap()
+        .expect("get value 1");
+    assert_eq!(
+        val1,
+        Some(b"tx_val_2".to_vec()),
+        "second value should match"
+    );
+}
+
+#[test]
+fn test_bulk_batch_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Tree must exist BEFORE the batch
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    let tx = db.start_transaction();
+
+    let ops = vec![QualifiedGroveDbOp::bulk_append_op(
+        vec![b"bulk".to_vec()],
+        b"rollback_val".to_vec(),
+    )];
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch apply in transaction");
+
+    // Verify data is visible inside tx before rollback
+    let count_inside = db
+        .bulk_count(EMPTY_PATH, b"bulk", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count inside tx");
+    assert_eq!(count_inside, 1, "data should be visible inside tx");
+
+    // Drop tx (rollback)
+    drop(tx);
+
+    // Data should NOT be visible after rollback
+    let count_after = db
+        .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(count_after, 0, "data should not be visible after rollback");
+}
+
+// ===========================================================================
+// verify_grovedb empty tree test
+// ===========================================================================
+
+#[test]
+fn test_verify_grovedb_bulk_tree_empty() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert an empty BulkAppendTree (no appends)
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty bulk append tree");
+
+    // verify_grovedb should report no issues on an empty BulkAppendTree
+    let issues = db
+        .verify_grovedb(None, true, false, grove_version)
+        .expect("verify should not fail");
+    assert!(
+        issues.is_empty(),
+        "expected no issues for empty bulk append tree, got: {:?}",
+        issues
+    );
+}

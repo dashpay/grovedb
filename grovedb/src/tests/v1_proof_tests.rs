@@ -678,8 +678,7 @@ fn test_dense_tree_v1_proof_serialization_roundtrip() {
         .with_big_endian()
         .with_no_limit();
     let (decoded_proof, _): (GroveDBProof, _) =
-        bincode::decode_from_slice(&proof_bytes, config)
-            .expect("decode proof from bytes");
+        bincode::decode_from_slice(&proof_bytes, config).expect("decode proof from bytes");
 
     match &decoded_proof {
         GroveDBProof::V1(_) => {} // expected
@@ -705,20 +704,280 @@ fn test_dense_tree_v1_proof_serialization_roundtrip() {
         .unwrap()
         .expect("should get root hash");
     assert_eq!(root_hash, expected_root, "root hash should match");
-    assert_eq!(result_set.len(), 2, "should have 2 results for positions 0 and 2");
+    assert_eq!(
+        result_set.len(),
+        2,
+        "should have 2 results for positions 0 and 2"
+    );
 
     // Verify the returned elements match what was inserted
     let (_, key0, elem0) = &result_set[0];
-    assert_eq!(key0, &0u16.to_be_bytes().to_vec(), "first key should be position 0");
+    assert_eq!(
+        key0,
+        &0u16.to_be_bytes().to_vec(),
+        "first key should be position 0"
+    );
     match elem0.as_ref().expect("element should be Some") {
         Element::Item(data, _) => assert_eq!(data, b"item_0", "position 0 value mismatch"),
         other => panic!("expected Item at position 0, got {:?}", other),
     }
 
     let (_, key2, elem2) = &result_set[1];
-    assert_eq!(key2, &2u16.to_be_bytes().to_vec(), "second key should be position 2");
+    assert_eq!(
+        key2,
+        &2u16.to_be_bytes().to_vec(),
+        "second key should be position 2"
+    );
     match elem2.as_ref().expect("element should be Some") {
         Element::Item(data, _) => assert_eq!(data, b"item_2", "position 2 value mismatch"),
         other => panic!("expected Item at position 2, got {:?}", other),
+    }
+}
+
+// ===========================================================================
+// V0 proof rejection tests for non-Merk tree subqueries
+// ===========================================================================
+
+/// V0 proofs cannot descend into MmrTree subtrees — the code returns
+/// NotSupported. This test verifies that `prove_query` (V0) rejects a
+/// PathQuery whose subquery targets an MmrTree element.
+#[test]
+fn test_v0_proof_rejects_mmr_tree_subquery() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Create parent tree containing an MmrTree child
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree under parent");
+
+    // Append some values so the MmrTree is non-empty
+    for i in 0..3u8 {
+        db.mmr_tree_append([b"parent"].as_ref(), b"mmr", vec![i], None, grove_version)
+            .unwrap()
+            .expect("append to mmr");
+    }
+
+    // Build a PathQuery with a subquery that descends into the MmrTree
+    let mut inner_query = Query::new();
+    inner_query.insert_key(0u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"mmr".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    // V0 prove_query should return NotSupported
+    let result = db.prove_query(&path_query, None, grove_version).unwrap();
+    match result {
+        Err(crate::Error::NotSupported(msg)) => {
+            assert!(
+                msg.contains("V0 proofs do not support subqueries"),
+                "error message should mention V0 limitation, got: {}",
+                msg
+            );
+        }
+        Err(other) => {
+            panic!(
+                "expected NotSupported error, got different error: {:?}",
+                other
+            );
+        }
+        Ok(_) => {
+            panic!("expected NotSupported error, but prove_query succeeded");
+        }
+    }
+}
+
+/// V0 proofs cannot descend into BulkAppendTree subtrees.
+#[test]
+fn test_v0_proof_rejects_bulk_append_tree_subquery() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"bulk",
+        Element::empty_bulk_append_tree(2),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree under parent");
+
+    // Append some values
+    for i in 0..3u8 {
+        db.bulk_append([b"parent"].as_ref(), b"bulk", vec![i], None, grove_version)
+            .unwrap()
+            .expect("bulk append");
+    }
+
+    // Build a PathQuery with a subquery targeting the BulkAppendTree
+    let mut inner_query = Query::new();
+    inner_query.insert_key(0u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"bulk".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let result = db.prove_query(&path_query, None, grove_version).unwrap();
+    match result {
+        Err(crate::Error::NotSupported(msg)) => {
+            assert!(
+                msg.contains("V0 proofs do not support subqueries"),
+                "error message should mention V0 limitation, got: {}",
+                msg
+            );
+        }
+        Err(other) => {
+            panic!(
+                "expected NotSupported error, got different error: {:?}",
+                other
+            );
+        }
+        Ok(_) => {
+            panic!("expected NotSupported error, but prove_query succeeded");
+        }
+    }
+}
+
+/// V0 proofs cannot descend into DenseAppendOnlyFixedSizeTree subtrees.
+#[test]
+fn test_v0_proof_rejects_dense_tree_subquery() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree under parent");
+
+    // Insert some values
+    for i in 0..3u16 {
+        db.dense_tree_insert(
+            [b"parent"].as_ref(),
+            b"dense",
+            format!("v_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense tree insert");
+    }
+
+    // Build a PathQuery with a subquery targeting the DenseTree
+    let mut inner_query = Query::new();
+    inner_query.insert_key(0u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let result = db.prove_query(&path_query, None, grove_version).unwrap();
+    match result {
+        Err(crate::Error::NotSupported(msg)) => {
+            assert!(
+                msg.contains("V0 proofs do not support subqueries"),
+                "error message should mention V0 limitation, got: {}",
+                msg
+            );
+        }
+        Err(other) => {
+            panic!(
+                "expected NotSupported error, got different error: {:?}",
+                other
+            );
+        }
+        Ok(_) => {
+            panic!("expected NotSupported error, but prove_query succeeded");
+        }
     }
 }

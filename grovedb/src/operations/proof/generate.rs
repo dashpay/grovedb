@@ -926,7 +926,11 @@ impl GroveDb {
                                 }
                                 has_a_result_at_level |= true;
                             }
-                            Ok(Element::Item(..)) if !done_with_results => {
+                            Ok(Element::Item(..))
+                            | Ok(Element::SumItem(..))
+                            | Ok(Element::ItemWithSumItem(..))
+                                if !done_with_results =>
+                            {
                                 if !should_preserve_node_type {
                                     *node = Node::KV(key.to_owned(), value.to_owned());
                                 }
@@ -1105,7 +1109,25 @@ impl GroveDb {
                                 has_a_result_at_level |= true;
                             }
 
-                            _ => continue,
+                            // Explicit: when done_with_results is true, the above guards fail
+                            // and we skip. Listed explicitly so adding a new Element variant
+                            // produces a compile error here instead of silently dropping it.
+                            Ok(Element::Item(..))
+                            | Ok(Element::SumItem(..))
+                            | Ok(Element::ItemWithSumItem(..))
+                            | Ok(Element::Tree(..))
+                            | Ok(Element::SumTree(..))
+                            | Ok(Element::BigSumTree(..))
+                            | Ok(Element::CountTree(..))
+                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::ProvableCountTree(..))
+                            | Ok(Element::ProvableCountSumTree(..))
+                            | Ok(Element::CommitmentTree(..))
+                            | Ok(Element::MmrTree(..))
+                            | Ok(Element::BulkAppendTree(..))
+                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
+                            // Deserialization errors: skip silently
+                            Err(_) => continue,
                         }
                     }
                     _ => continue,
