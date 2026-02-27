@@ -22,7 +22,8 @@ use crate::operations::proof::util::{
 use crate::{
     operations::proof::{
         util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
-        GroveDBProof, GroveDBProofV0, LayerProof, ProveOptions,
+        GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof, ProofBytes,
+        ProveOptions,
     },
     query::{GroveTrunkQueryResult, PathTrunkChunkQuery},
     query_result_type::PathKeyOptionalElementTrio,
@@ -60,7 +61,7 @@ impl GroveDb {
 
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
@@ -109,7 +110,7 @@ impl GroveDb {
 
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
@@ -140,7 +141,7 @@ impl GroveDb {
         );
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
@@ -175,6 +176,9 @@ impl GroveDb {
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_v0_internal(proof_v0, query, options, grove_version)
+            }
+            GroveDBProof::V1(proof_v1) => {
+                Self::verify_proof_v1_internal(proof_v1, query, options, grove_version)
             }
         }
     }
@@ -275,6 +279,9 @@ impl GroveDb {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_raw_internal_v0(proof_v0, query, options, grove_version)
             }
+            GroveDBProof::V1(proof_v1) => {
+                Self::verify_proof_v1_raw_internal(proof_v1, query, options, grove_version)
+            }
         }
     }
 
@@ -301,8 +308,730 @@ impl GroveDb {
         Ok((root_hash, last_tree_feature_type, result))
     }
 
-    fn verify_layer_proof<T>(
+    fn verify_proof_v1_internal(
+        proof: &GroveDBProofV1,
+        query: &PathQuery,
+        options: VerifyOptions,
+        grove_version: &GroveVersion,
+    ) -> Result<
+        (
+            CryptoHash,
+            Option<TreeFeatureType>,
+            Vec<PathKeyOptionalElementTrio>,
+        ),
+        Error,
+    > {
+        let mut result = Vec::new();
+        let mut limit = query.query.limit;
+        let mut last_tree_feature_type = None;
+        let root_hash = Self::verify_layer_proof_v1(
+            &proof.root_layer,
+            &proof.prove_options,
+            query,
+            &mut limit,
+            &[],
+            &mut result,
+            &mut last_tree_feature_type,
+            &options,
+            grove_version,
+        )?;
+
+        if options.absence_proofs_for_non_existing_searched_keys {
+            let max_results = query.query.limit.ok_or(Error::NotSupported(
+                "limits must be set in verify_query_with_absence_proof".to_string(),
+            ))? as usize;
+
+            let terminal_keys = query.terminal_keys(max_results, grove_version)?;
+
+            let mut result_set_as_map: BTreeMap<PathKey, Option<Element>> = result
+                .into_iter()
+                .map(|(path, key, element)| ((path, key), element))
+                .collect();
+
+            result = terminal_keys
+                .into_iter()
+                .map(|terminal_key| {
+                    let element = result_set_as_map.remove(&terminal_key).flatten();
+                    (terminal_key.0, terminal_key.1, element)
+                })
+                .collect();
+        }
+
+        Ok((root_hash, last_tree_feature_type, result))
+    }
+
+    fn verify_proof_v1_raw_internal(
+        proof: &GroveDBProofV1,
+        query: &PathQuery,
+        options: VerifyOptions,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
+        let mut result = Vec::new();
+        let mut limit = query.query.limit;
+        let mut last_tree_feature_type = None;
+        let root_hash = Self::verify_layer_proof_v1(
+            &proof.root_layer,
+            &proof.prove_options,
+            query,
+            &mut limit,
+            &[],
+            &mut result,
+            &mut last_tree_feature_type,
+            &options,
+            grove_version,
+        )?;
+        Ok((root_hash, last_tree_feature_type, result))
+    }
+
+    fn verify_layer_proof_v1<T>(
         layer_proof: &LayerProof,
+        prove_options: &ProveOptions,
+        query: &PathQuery,
+        limit_left: &mut Option<u16>,
+        current_path: &[&[u8]],
+        result: &mut Vec<T>,
+        last_parent_tree_type: &mut Option<TreeFeatureType>,
+        options: &VerifyOptions,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        // The merk proof at this layer must be Merk type
+        let merk_proof_bytes = match &layer_proof.merk_proof {
+            ProofBytes::Merk(bytes) => bytes,
+            ProofBytes::MMR(_)
+            | ProofBytes::BulkAppendTree(_)
+            | ProofBytes::DenseTree(_)
+            | ProofBytes::CommitmentTree(_) => {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
+                ));
+            }
+        };
+
+        let internal_query = query
+            .query_items_at_path(current_path, grove_version)?
+            .ok_or(Error::CorruptedPath(format!(
+                "verify v1: path {} should be part of path_query {}",
+                current_path
+                    .iter()
+                    .map(hex::encode)
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                query
+            )))?;
+
+        let level_query = Query {
+            items: internal_query.items.to_vec(),
+            left_to_right: internal_query.left_to_right,
+            ..Default::default()
+        };
+
+        let (root_hash, merk_result) = level_query
+            .execute_proof(merk_proof_bytes, *limit_left, internal_query.left_to_right)
+            .unwrap()
+            .map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!("Invalid V1 proof verification parameters: {}", e),
+                )
+            })?;
+
+        let mut verified_keys = BTreeSet::new();
+
+        if merk_result.result_set.is_empty() {
+            if prove_options.decrease_limit_on_empty_sub_query_result {
+                limit_left.iter_mut().for_each(|limit| *limit -= 1);
+            }
+        } else {
+            for proved_key_value in merk_result.result_set {
+                let mut path = current_path.to_vec();
+                let key = &proved_key_value.key;
+                let hash = &proved_key_value.proof;
+                if let Some(value_bytes) = &proved_key_value.value {
+                    let element = Element::deserialize(value_bytes, grove_version)?;
+
+                    verified_keys.insert(key.clone());
+
+                    if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
+                        // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
+                        // so they match on (..) rather than (Some(_), ..)
+                        match element {
+                            Element::Tree(Some(_), _)
+                            | Element::SumTree(Some(_), ..)
+                            | Element::BigSumTree(Some(_), ..)
+                            | Element::CountTree(Some(_), ..)
+                            | Element::CountSumTree(Some(_), ..)
+                            | Element::ProvableCountTree(Some(_), ..)
+                            | Element::ProvableCountSumTree(Some(_), ..)
+                            | Element::CommitmentTree(..)
+                            | Element::MmrTree(..)
+                            | Element::BulkAppendTree(..)
+                            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                                path.push(key);
+                                *last_parent_tree_type = element.tree_feature_type();
+                                if query.query_items_at_path(&path, grove_version)?.is_none() {
+                                    // Query targets the tree itself, not its contents
+                                    let path_key_optional_value =
+                                        ProvedPathKeyOptionalValue::from_proved_key_value(
+                                            path.iter().map(|p| p.to_vec()).collect(),
+                                            proved_key_value,
+                                        );
+                                    result.push(
+                                        path_key_optional_value
+                                            .try_into_versioned(grove_version)?,
+                                    );
+                                    limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                                    if limit_left == &Some(0) {
+                                        break;
+                                    }
+                                } else {
+                                    if query.should_add_parent_tree_at_path(
+                                        current_path,
+                                        grove_version,
+                                    )? {
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                path.iter().map(|p| p.to_vec()).collect(),
+                                                proved_key_value.clone(),
+                                            );
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                    }
+
+                                    // Dispatch based on lower layer proof type
+                                    let lower_hash = match &lower_layer.merk_proof {
+                                        ProofBytes::Merk(_) => {
+                                            // Standard Merk subtree - recurse
+                                            Self::verify_layer_proof_v1(
+                                                lower_layer,
+                                                prove_options,
+                                                query,
+                                                limit_left,
+                                                &path,
+                                                result,
+                                                last_parent_tree_type,
+                                                options,
+                                                grove_version,
+                                            )?
+                                        }
+                                        ProofBytes::MMR(mmr_bytes) => Self::verify_mmr_lower_layer(
+                                            mmr_bytes,
+                                            &element,
+                                            &path,
+                                            limit_left,
+                                            result,
+                                            query,
+                                            grove_version,
+                                        )?,
+                                        ProofBytes::BulkAppendTree(bulk_bytes) => {
+                                            Self::verify_bulk_append_lower_layer(
+                                                bulk_bytes,
+                                                &element,
+                                                &path,
+                                                limit_left,
+                                                result,
+                                                query,
+                                                grove_version,
+                                            )?
+                                        }
+                                        ProofBytes::DenseTree(dense_bytes) => {
+                                            Self::verify_dense_tree_lower_layer(
+                                                dense_bytes,
+                                                &element,
+                                                &path,
+                                                limit_left,
+                                                result,
+                                                query,
+                                                grove_version,
+                                            )?
+                                        }
+                                        ProofBytes::CommitmentTree(ct_bytes) => {
+                                            Self::verify_commitment_tree_lower_layer(
+                                                ct_bytes,
+                                                &element,
+                                                &path,
+                                                limit_left,
+                                                result,
+                                                query,
+                                                grove_version,
+                                            )?
+                                        }
+                                    };
+
+                                    let combined_root_hash =
+                                        combine_hash(value_hash(value_bytes).value(), &lower_hash)
+                                            .value()
+                                            .to_owned();
+
+                                    if hash != &combined_root_hash {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 mismatch in lower layer hash, expected {}, \
+                                                 got {}",
+                                                hex::encode(hash),
+                                                hex::encode(combined_root_hash)
+                                            ),
+                                        ));
+                                    }
+                                    if limit_left == &Some(0) {
+                                        break;
+                                    }
+                                }
+                            }
+                            // MmrTree/BulkAppendTree/CommitmentTree handled above
+                            Element::Tree(None, _)
+                            | Element::SumTree(None, ..)
+                            | Element::BigSumTree(None, ..)
+                            | Element::CountTree(None, ..)
+                            | Element::CountSumTree(None, ..)
+                            | Element::ProvableCountTree(None, ..)
+                            | Element::ProvableCountSumTree(None, ..)
+                            | Element::SumItem(..)
+                            | Element::Item(..)
+                            | Element::ItemWithSumItem(..)
+                            | Element::Reference(..) => {
+                                return Err(Error::InvalidProof(
+                                    query.clone(),
+                                    "V1 proof has lower layer for a non-tree element.".to_string(),
+                                ));
+                            }
+                        }
+                    } else if element.is_any_item()
+                        || !internal_query.has_subquery_or_matching_in_path_on_key(key)
+                            && (options.include_empty_trees_in_result
+                                || !matches!(element, Element::Tree(None, _)))
+                    {
+                        let path_key_optional_value =
+                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                path.iter().map(|p| p.to_vec()).collect(),
+                                proved_key_value,
+                            );
+                        result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+                        limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                        if limit_left == &Some(0) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(root_hash)
+    }
+
+    /// Verify an MMR lower layer proof and add results.
+    /// Returns the computed MMR root hash, which the caller uses as the
+    /// child hash for Merk authentication (`combine_hash(value_hash ||
+    /// mmr_root)`).
+    fn verify_mmr_lower_layer<T>(
+        mmr_bytes: &[u8],
+        element: &Element,
+        path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        // Extract the MMR size from the element
+        let element_mmr_size = match element {
+            Element::MmrTree(mmr_size, ..) => *mmr_size,
+            _ => {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    "MMR proof attached to non-MmrTree element".to_string(),
+                ))
+            }
+        };
+
+        let mmr_proof = grovedb_merkle_mountain_range::MmrTreeProof::decode_from_slice(mmr_bytes)
+            .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        // Cross-validate: proof's mmr_size must match the element's mmr_size
+        if mmr_proof.mmr_size() != element_mmr_size {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "MMR proof mmr_size {} does not match element mmr_size {}",
+                    mmr_proof.mmr_size(),
+                    element_mmr_size
+                ),
+            ));
+        }
+
+        // Compute root from the proof — the Merk child hash mechanism
+        // authenticates this root via combine_hash(value_hash || mmr_root)
+        let (mmr_root, verified_leaves) = mmr_proof
+            .verify_and_get_root()
+            .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Add each verified leaf to the result set
+        for (leaf_index, value) in verified_leaves {
+            let key = leaf_index.to_be_bytes().to_vec();
+            let element = Element::new_item(value);
+            let serialized = element.serialize(grove_version).map_err(|e| {
+                Error::CorruptedData(format!("failed to serialize MMR leaf element: {}", e))
+            })?;
+
+            let path_key_optional_value = ProvedPathKeyOptionalValue {
+                path: path.iter().map(|p| p.to_vec()).collect(),
+                key,
+                value: Some(serialized),
+                proof: [0u8; 32],
+            };
+            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
+            if limit_left == &Some(0) {
+                break;
+            }
+        }
+
+        // Return the computed MMR root as the child hash
+        Ok(mmr_root)
+    }
+
+    /// Verify a BulkAppendTree lower layer proof and add results.
+    ///
+    /// For both `BulkAppendTree` and `CommitmentTree` elements: verifies
+    /// internal consistency and returns the computed state_root as the lower
+    /// hash (authenticated via child Merk hash).
+    fn verify_bulk_append_lower_layer<T>(
+        bulk_bytes: &[u8],
+        element: &Element,
+        path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        let (element_total_count, element_height) = match element {
+            Element::BulkAppendTree(total_count, height, _) => (*total_count, *height),
+            Element::CommitmentTree(total_count, height, _) => (*total_count, *height),
+            _ => {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    "BulkAppendTree proof attached to incompatible element".to_string(),
+                ))
+            }
+        };
+
+        let bulk_proof =
+            grovedb_bulk_append_tree::BulkAppendTreeProof::decode_from_slice(bulk_bytes)
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        let (bulk_state_root, proof_result) = bulk_proof
+            .verify_and_compute_root(element_height, element_total_count)
+            .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Get the query range from the path query to extract matching values
+        let sub_query =
+            query
+                .query_items_at_path(path, grove_version)?
+                .ok_or(Error::InvalidProof(
+                    query.clone(),
+                    "BulkAppendTree path not found in query".to_string(),
+                ))?;
+
+        // Determine the range from query items, clamped to total_count
+        let (start, end) = Self::extract_range_from_query_items(&sub_query.items)?;
+        let end = end.min(proof_result.total_count);
+
+        let values = proof_result
+            .values_in_range(start, end)
+            .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        for (position, value) in values {
+            let key = position.to_be_bytes().to_vec();
+            let element = Element::new_item(value);
+            let serialized = element.serialize(grove_version).map_err(|e| {
+                Error::CorruptedData(format!(
+                    "failed to serialize BulkAppendTree entry element: {}",
+                    e
+                ))
+            })?;
+
+            let path_key_optional_value = ProvedPathKeyOptionalValue {
+                path: path.iter().map(|p| p.to_vec()).collect(),
+                key,
+                value: Some(serialized),
+                proof: [0u8; 32],
+            };
+            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
+            if limit_left == &Some(0) {
+                break;
+            }
+        }
+
+        // Return computed state_root as child Merk hash
+        Ok(bulk_state_root)
+    }
+
+    /// Verify a CommitmentTree lower layer proof and add results.
+    ///
+    /// The proof bytes are `sinsemilla_root (32 bytes) || bulk_append_proof`.
+    /// Verifies the BulkAppendTree proof to get `bulk_state_root`, then returns
+    /// `blake3("ct_state" || sinsemilla_root || bulk_state_root)` as the
+    /// authenticated child hash.
+    fn verify_commitment_tree_lower_layer<T>(
+        ct_bytes: &[u8],
+        element: &Element,
+        path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        if ct_bytes.len() < 32 {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "CommitmentTree proof too short (missing sinsemilla_root)".to_string(),
+            ));
+        }
+
+        let sinsemilla_root: [u8; 32] = ct_bytes[..32]
+            .try_into()
+            .expect("sinsemilla_root is exactly 32 bytes");
+        let bulk_proof_bytes = &ct_bytes[32..];
+
+        // Verify the bulk append proof to get bulk_state_root
+        let bulk_state_root = Self::verify_bulk_append_lower_layer(
+            bulk_proof_bytes,
+            element,
+            path,
+            limit_left,
+            result,
+            query,
+            grove_version,
+        )?;
+
+        // Combine sinsemilla_root with bulk_state_root to produce the
+        // authenticated child hash.
+        // Inlined from grovedb_commitment_tree::compute_commitment_tree_state_root
+        // to avoid pulling the heavy orchard crate into the verify feature.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"ct_state");
+        hasher.update(&sinsemilla_root);
+        hasher.update(&bulk_state_root);
+        Ok(*hasher.finalize().as_bytes())
+    }
+
+    /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.
+    /// Returns NULL_HASH since DenseTree has no child Merk.
+    fn verify_dense_tree_lower_layer<T>(
+        dense_bytes: &[u8],
+        element: &Element,
+        path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        // Extract the count and height from the authenticated element
+        let (element_count, element_height) = match element {
+            Element::DenseAppendOnlyFixedSizeTree(count, height, _) => (*count, *height),
+            _ => {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    "DenseTree proof attached to non-DenseTree element".to_string(),
+                ))
+            }
+        };
+
+        let dense_proof =
+            grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof::decode_from_slice(dense_bytes)
+                .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        // Height and count are NOT stored in the proof — they come from the
+        // authenticated parent Element in Merk.  We pass them from the Element
+        // directly into verification.
+        let (computed_root, verified_entries): ([u8; 32], Vec<(u16, Vec<u8>)>) = dense_proof
+            .verify_and_get_root(element_height, element_count)
+            .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Add each verified entry to the result set
+        for (position, value) in verified_entries {
+            let key = position.to_be_bytes().to_vec();
+            let elem = Element::new_item(value);
+            let serialized = elem.serialize(grove_version).map_err(|e| {
+                Error::CorruptedData(format!(
+                    "failed to serialize DenseTree entry element: {}",
+                    e
+                ))
+            })?;
+
+            let path_key_optional_value = ProvedPathKeyOptionalValue {
+                path: path.iter().map(|p| p.to_vec()).collect(),
+                key,
+                value: Some(serialized),
+                proof: [0u8; 32],
+            };
+            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
+            if limit_left == &Some(0) {
+                break;
+            }
+        }
+
+        // Return computed dense root as the child hash for Merk verification
+        Ok(computed_root)
+    }
+
+    /// Extract a position range from query items (used by BulkAppendTree
+    /// verification).
+    fn extract_range_from_query_items(
+        items: &[grovedb_merk::proofs::query::QueryItem],
+    ) -> Result<(u64, u64), Error> {
+        use grovedb_merk::proofs::query::QueryItem;
+
+        let mut min_start = u64::MAX;
+        let mut max_end = 0u64;
+
+        for item in items {
+            match item {
+                QueryItem::Key(k) => {
+                    if k.len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree key must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let pos = u64::from_be_bytes(k[..8].try_into().unwrap());
+                    min_start = min_start.min(pos);
+                    max_end = max_end.max(pos + 1);
+                }
+                QueryItem::Range(r) => {
+                    if r.start.len() != 8 || r.end.len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range keys must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let s = u64::from_be_bytes(r.start[..8].try_into().unwrap());
+                    let e = u64::from_be_bytes(r.end[..8].try_into().unwrap());
+                    min_start = min_start.min(s);
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeInclusive(r) => {
+                    if r.start().len() != 8 || r.end().len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range keys must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let s = u64::from_be_bytes(r.start()[..8].try_into().unwrap());
+                    let e = u64::from_be_bytes(r.end()[..8].try_into().unwrap());
+                    min_start = min_start.min(s);
+                    max_end = max_end.max(e + 1);
+                }
+                QueryItem::RangeFull(..) => {
+                    min_start = 0;
+                    max_end = u64::MAX;
+                }
+                QueryItem::RangeFrom(r) => {
+                    if r.start.len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range key must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let s = u64::from_be_bytes(r.start[..8].try_into().unwrap());
+                    min_start = min_start.min(s);
+                    max_end = u64::MAX;
+                }
+                QueryItem::RangeTo(r) => {
+                    if r.end.len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range key must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let e = u64::from_be_bytes(r.end[..8].try_into().unwrap());
+                    min_start = 0;
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeToInclusive(r) => {
+                    if r.end.len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range key must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let e = u64::from_be_bytes(r.end[..8].try_into().unwrap());
+                    min_start = 0;
+                    max_end = max_end.max(e + 1);
+                }
+                QueryItem::RangeAfter(r) => {
+                    if r.start.len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range key must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let s = u64::from_be_bytes(r.start[..8].try_into().unwrap());
+                    min_start = min_start.min(s + 1);
+                    max_end = u64::MAX;
+                }
+                QueryItem::RangeAfterTo(r) => {
+                    if r.start.len() != 8 || r.end.len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range keys must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let s = u64::from_be_bytes(r.start[..8].try_into().unwrap());
+                    let e = u64::from_be_bytes(r.end[..8].try_into().unwrap());
+                    min_start = min_start.min(s + 1);
+                    max_end = max_end.max(e);
+                }
+                QueryItem::RangeAfterToInclusive(r) => {
+                    if r.start().len() != 8 || r.end().len() != 8 {
+                        return Err(Error::InvalidInput(
+                            "BulkAppendTree range keys must be 8 bytes (BE u64)",
+                        ));
+                    }
+                    let s = u64::from_be_bytes(r.start()[..8].try_into().unwrap());
+                    let e = u64::from_be_bytes(r.end()[..8].try_into().unwrap());
+                    min_start = min_start.min(s + 1);
+                    max_end = max_end.max(e + 1);
+                }
+            }
+        }
+
+        if min_start == u64::MAX {
+            return Err(Error::InvalidInput(
+                "No valid range items found in BulkAppendTree query",
+            ));
+        }
+
+        Ok((min_start, max_end))
+    }
+
+    fn verify_layer_proof<T>(
+        layer_proof: &MerkOnlyLayerProof,
         prove_options: &ProveOptions,
         query: &PathQuery,
         limit_left: &mut Option<u16>,
@@ -524,6 +1253,10 @@ impl GroveDb {
                             | Element::CountSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
+                            | Element::CommitmentTree(..)
+                            | Element::MmrTree(..)
+                            | Element::BulkAppendTree(..)
+                            | Element::DenseAppendOnlyFixedSizeTree(..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -819,7 +1552,7 @@ impl GroveDb {
     ) -> Result<(CryptoHash, GroveTrunkQueryResult), Error> {
         let config = bincode::config::standard()
             .with_big_endian()
-            .with_no_limit();
+            .with_limit::<{ 256 * 1024 * 1024 }>();
         let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
             .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
             .0;
@@ -828,6 +1561,9 @@ impl GroveDb {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_trunk_chunk_proof_v0(&proof_v0, query, grove_version)
             }
+            GroveDBProof::V1(_) => Err(Error::NotSupported(
+                "V1 trunk chunk proof verification not yet implemented".to_string(),
+            )),
         }
     }
 

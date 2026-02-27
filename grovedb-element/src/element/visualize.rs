@@ -132,6 +132,50 @@ impl Visualize for Element {
                     }
                 }
             }
+            Element::CommitmentTree(count, chunk_power, flags) => {
+                drawer.write(
+                    format!("commitment_tree: count: {count} chunk_power: {chunk_power}",)
+                        .as_bytes(),
+                )?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
+            Element::MmrTree(mmr_size, flags) => {
+                drawer.write(format!("mmr_tree: mmr_size: {mmr_size}").as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
+            Element::BulkAppendTree(total_count, chunk_power, flags) => {
+                drawer.write(
+                    format!(
+                        "bulk_append_tree: total_count: {total_count} chunk_power: {chunk_power}",
+                    )
+                    .as_bytes(),
+                )?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
+            Element::DenseAppendOnlyFixedSizeTree(count, height, flags) => {
+                drawer.write(format!("dense_tree: count: {count} height: {height}",).as_bytes())?;
+
+                if let Some(f) = flags {
+                    if !f.is_empty() {
+                        drawer = f.visualize(drawer)?;
+                    }
+                }
+            }
         }
         Ok(drawer)
     }

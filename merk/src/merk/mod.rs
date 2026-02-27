@@ -250,15 +250,40 @@ impl MerkType {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_query::proofs::NodeType;
 
-/// A handle to a Merkle key/value store backed by RocksDB.
+/// A Merkle AVL tree providing authenticated key/value storage.
+///
+/// Each `Merk` instance is a self-balancing binary search tree where every
+/// node carries a cryptographic hash of its subtree. The generic parameter
+/// `S` is the backing storage (typically a RocksDB storage context).
+///
+/// In GroveDB a `Merk` represents a single subtree in the grove hierarchy.
+/// Its root hash is propagated upward into the parent tree's node, forming
+/// the authenticated chain from leaves to the grove root.
 pub struct Merk<S> {
+    /// The in-memory root of the AVL tree, or `None` if the tree is empty.
+    /// Wrapped in a `Cell` so it can be temporarily taken out for traversal
+    /// and mutation (see `use_tree`, `walk`) without requiring `&mut self`.
     pub(crate) tree: Cell<Option<TreeNode>>,
+    /// The key under which the root `TreeNode` is stored, or `None` for an
+    /// empty tree. For standalone/base Merks this is read from the
+    /// `ROOT_KEY_KEY` metadata entry; for layered Merks it is supplied by
+    /// the parent tree. Updated after each commit when the root may change
+    /// due to AVL rotations.
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
-    /// Storage
+    /// The backing storage context for reading and writing tree nodes.
+    ///
+    /// Concrete types used in practice:
+    /// - `PrefixedRocksDbImmediateStorageContext` — direct reads/writes outside
+    ///   a transaction.
+    /// - `PrefixedRocksDbTransactionContext` — reads/writes within an
+    ///   optimistic transaction; writes go to a `StorageBatch` and are
+    ///   committed atomically.
+    /// - `PrefixedRocksDbReadOnlyStorageContext` — read-only access used during
+    ///   proof generation and queries.
     pub storage: S,
-    /// Merk type
+    /// How this Merk is managed: standalone, base, or layered under a parent.
     pub merk_type: MerkType,
-    /// The tree type
+    /// The kind of data this tree holds (normal, sum, count, etc.).
     pub tree_type: TreeType,
 }
 

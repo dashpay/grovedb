@@ -6,10 +6,15 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod batch_rejection_tests;
+mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
+mod commitment_tree_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
+mod dense_tree_tests;
+mod mmr_tree_tests;
 mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;
@@ -18,6 +23,7 @@ mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
+mod v1_proof_tests;
 
 use std::{
     ops::{Deref, DerefMut},

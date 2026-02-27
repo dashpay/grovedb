@@ -49,6 +49,16 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
+            Element::CommitmentTree(_, chunk_power, _) => {
+                Some((None, TreeType::CommitmentTree(chunk_power)))
+            }
+            Element::MmrTree(..) => Some((None, TreeType::MmrTree)),
+            Element::BulkAppendTree(_, chunk_power, _) => {
+                Some((None, TreeType::BulkAppendTree(chunk_power)))
+            }
+            Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
+                Some((None, TreeType::DenseAppendOnlyFixedSizeTree(height)))
+            }
             _ => None,
         }
     }
@@ -56,6 +66,8 @@ impl ElementTreeTypeExtensions for Element {
     /// Check if the element is a tree and return the root_tree info and the
     /// tree type
     fn root_key_and_tree_type(&self) -> Option<(&Option<Vec<u8>>, TreeType)> {
+        // We use a const None to return a stable reference for non-Merk tree types.
+        const NONE_ROOT_KEY: Option<Vec<u8>> = None;
         match self {
             Element::Tree(root_key, _) => Some((root_key, TreeType::NormalTree)),
             Element::SumTree(root_key, ..) => Some((root_key, TreeType::SumTree)),
@@ -68,6 +80,17 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
+            Element::CommitmentTree(_, chunk_power, _) => {
+                Some((&NONE_ROOT_KEY, TreeType::CommitmentTree(*chunk_power)))
+            }
+            Element::MmrTree(..) => Some((&NONE_ROOT_KEY, TreeType::MmrTree)),
+            Element::BulkAppendTree(_, chunk_power, _) => {
+                Some((&NONE_ROOT_KEY, TreeType::BulkAppendTree(*chunk_power)))
+            }
+            Element::DenseAppendOnlyFixedSizeTree(_, height, _) => Some((
+                &NONE_ROOT_KEY,
+                TreeType::DenseAppendOnlyFixedSizeTree(*height),
+            )),
             _ => None,
         }
     }
@@ -84,6 +107,16 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
+            Element::CommitmentTree(_, chunk_power, flags) => {
+                Some((flags, TreeType::CommitmentTree(*chunk_power)))
+            }
+            Element::MmrTree(.., flags) => Some((flags, TreeType::MmrTree)),
+            Element::BulkAppendTree(_, chunk_power, flags) => {
+                Some((flags, TreeType::BulkAppendTree(*chunk_power)))
+            }
+            Element::DenseAppendOnlyFixedSizeTree(_, height, flags) => {
+                Some((flags, TreeType::DenseAppendOnlyFixedSizeTree(*height)))
+            }
             _ => None,
         }
     }
@@ -98,6 +131,16 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
+            Element::CommitmentTree(_, chunk_power, _) => {
+                Some(TreeType::CommitmentTree(*chunk_power))
+            }
+            Element::MmrTree(..) => Some(TreeType::MmrTree),
+            Element::BulkAppendTree(_, chunk_power, _) => {
+                Some(TreeType::BulkAppendTree(*chunk_power))
+            }
+            Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
+                Some(TreeType::DenseAppendOnlyFixedSizeTree(*height))
+            }
             _ => None,
         }
     }
@@ -117,6 +160,10 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(_, count, sum, _) => {
                 Some(TreeFeatureType::ProvableCountedSummedMerkNode(*count, *sum))
             }
+            Element::CommitmentTree(..) => Some(BasicMerkNode),
+            Element::MmrTree(..) => Some(BasicMerkNode),
+            Element::BulkAppendTree(..) => Some(BasicMerkNode),
+            Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
             _ => None,
         }
     }
@@ -131,6 +178,16 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => MaybeTree::Tree(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
+            Element::CommitmentTree(_, chunk_power, _) => {
+                MaybeTree::Tree(TreeType::CommitmentTree(*chunk_power))
+            }
+            Element::MmrTree(..) => MaybeTree::Tree(TreeType::MmrTree),
+            Element::BulkAppendTree(_, chunk_power, _) => {
+                MaybeTree::Tree(TreeType::BulkAppendTree(*chunk_power))
+            }
+            Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
+                MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree(*height))
+            }
             _ => MaybeTree::NotTree,
         }
     }
@@ -139,6 +196,7 @@ impl ElementTreeTypeExtensions for Element {
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
             TreeType::NormalTree => Ok(BasicMerkNode),
+            TreeType::CommitmentTree(_) => Ok(BasicMerkNode),
             TreeType::SumTree => Ok(SummedMerkNode(self.sum_value_or_default())),
             TreeType::BigSumTree => Ok(BigSummedMerkNode(self.big_sum_value_or_default())),
             TreeType::CountTree => Ok(CountedMerkNode(self.count_value_or_default())),
@@ -153,6 +211,9 @@ impl ElementTreeTypeExtensions for Element {
                 let v = self.count_sum_value_or_default();
                 Ok(TreeFeatureType::ProvableCountedSummedMerkNode(v.0, v.1))
             }
+            TreeType::MmrTree => Ok(BasicMerkNode),
+            TreeType::BulkAppendTree(_) => Ok(BasicMerkNode),
+            TreeType::DenseAppendOnlyFixedSizeTree(_) => Ok(BasicMerkNode),
         }
     }
 }

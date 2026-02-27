@@ -129,6 +129,155 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
+            GroveOp::CommitmentTreeInsert { payload, .. } => {
+                // After preprocessing, CommitmentTreeInsert becomes
+                // ReplaceNonMerkTreeRoot. The base cost is a tree root key
+                // replacement in the parent Merk.
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::CommitmentTree(0),
+                    propagate,
+                    grove_version,
+                );
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Additional cost: frontier I/O (data storage load + save),
+                // buffer entry write, and Sinsemilla hashing.
+                //
+                // Average frontier size with ~16 ommers:
+                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 = 554
+                const AVG_FRONTIER_SIZE: u32 = 554;
+                // Buffer entry: cmx (32 bytes) + payload
+                let buffer_entry_size = 32 + payload.len() as u32;
+                // Average Sinsemilla hashes per append:
+                // 32 (root computation) + 1 (avg ommer updates) = 33
+                const AVG_SINSEMILLA_HASHES: u32 = 33;
+                // Average blake3 hashes: 1 for running buffer hash
+                const AVG_BLAKE3_HASHES: u32 = 1;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 3, // frontier load + frontier save + buffer write
+                    storage_cost: StorageCost {
+                        added_bytes: buffer_entry_size,
+                        replaced_bytes: AVG_FRONTIER_SIZE,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: AVG_FRONTIER_SIZE as u64,
+                    hash_node_calls: AVG_BLAKE3_HASHES,
+                    sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
+                })
+            }
+            GroveOp::MmrTreeAppend { value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::MmrTree,
+                    propagate,
+                    grove_version,
+                );
+                // Additional cost: MMR node I/O in data storage.
+                // push() writes 1 leaf + trailing_ones(leaf_count) internal
+                // nodes. Average trailing_ones ≈ 1, so ~2 writes + 1 sibling
+                // read for merging.
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Internal node: 33 bytes (1 flag + 32 hash)
+                const INTERNAL_NODE_SIZE: u32 = 33;
+                // Leaf node: 37 + value_len (1 flag + 32 hash + 4 length + value)
+                let leaf_node_size = 37 + value.len() as u32;
+                // hash_count_for_push = 1 + trailing_ones. Average ≈ 2.
+                const AVG_HASH_CALLS: u32 = 2;
+                // Average writes: 2 (1 leaf + 1 internal merge). Reads: 1 sibling.
+                const AVG_INTERNAL_WRITES: u32 = 1;
+                const AVG_READS: u32 = 1;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1 + AVG_INTERNAL_WRITES + AVG_READS,
+                    storage_cost: StorageCost {
+                        added_bytes: leaf_node_size + INTERNAL_NODE_SIZE * AVG_INTERNAL_WRITES,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (INTERNAL_NODE_SIZE * AVG_READS) as u64,
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::BulkAppend { value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::BulkAppendTree(0),
+                    propagate,
+                    grove_version,
+                );
+                // Additional cost: buffer write + running hash.
+                // Most appends only write to the buffer (O(1)). Compaction
+                // happens once per epoch_size appends and is amortized.
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                let entry_size = value.len() as u32;
+                // 1 blake3 hash for running buffer hash chain
+                const AVG_HASH_CALLS: u32 = 1;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1, // 1 buffer entry write
+                    storage_cost: StorageCost {
+                        added_bytes: entry_size,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: 0,
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::DenseTreeInsert { value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    TreeType::DenseAppendOnlyFixedSizeTree(0),
+                    propagate,
+                    grove_version,
+                );
+                // Additional cost: 1 value write + full root recomputation.
+                // compute_root_hash visits all filled positions: each does
+                // 1 storage read + 2 hash calls (value_hash + node_hash).
+                // Average count ≈ 8 (half-full tree, height 4).
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                let value_size = value.len() as u32;
+                const AVG_COUNT: u32 = 8;
+                // 2 hash calls per filled node (value_hash + node_hash)
+                const AVG_HASH_CALLS: u32 = AVG_COUNT * 2;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1 + AVG_COUNT, // 1 write + AVG_COUNT reads for root hash
+                    storage_cost: StorageCost {
+                        added_bytes: value_size,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (value_size as u64) * (AVG_COUNT as u64),
+                    hash_node_calls: AVG_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => {
+                GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    meta.to_tree_type(),
+                    propagate,
+                    grove_version,
+                )
+            }
+            GroveOp::InsertNonMerkTree { flags, meta, .. } => {
+                GroveDb::average_case_merk_insert_tree(
+                    key,
+                    flags,
+                    meta.to_tree_type(),
+                    in_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
         }
     }
 }
@@ -166,7 +315,13 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
-        inserted_path.push(op.key.clone());
+        let key = cost_return_on_error_no_add!(
+            average_case_cost,
+            op.key
+                .clone()
+                .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
+        );
+        inserted_path.push(key);
         // There is no need to pay for getting a merk, because we know the merk to be
         // empty at this point.
         // There is however a hash call that creates the prefix
@@ -827,6 +982,52 @@ mod tests {
         assert_eq!(
             average_case_cost.storage_cost.added_bytes,
             cost.storage_cost.added_bytes
+        );
+    }
+
+    #[test]
+    fn test_batch_root_one_dense_tree_insert_op_average_case_costs() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_dense_tree(3),
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(0),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
+        );
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs for dense tree insert");
+
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
+        assert!(
+            average_case_cost.eq(&cost),
+            "average cost not eq {:?} \n to cost {:?}",
+            average_case_cost,
+            cost
+        );
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            average_case_cost.storage_cost.added_bytes
         );
     }
 }

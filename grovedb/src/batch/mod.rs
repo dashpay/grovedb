@@ -86,10 +86,91 @@ use crate::{
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
+/// Metadata for non-Merk tree types, carrying tree-type-specific state
+/// through the batch system.
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub enum NonMerkTreeMeta {
+    /// CommitmentTree state: total_count and chunk_power.
+    CommitmentTree {
+        /// Total number of entries appended so far.
+        total_count: u64,
+        /// Power-of-2 chunk size for the bulk append layer.
+        chunk_power: u8,
+    },
+    /// MmrTree state: mmr_size.
+    MmrTree {
+        /// MMR size (number of nodes, not leaves).
+        mmr_size: u64,
+    },
+    /// BulkAppendTree state: total_count and chunk_power.
+    BulkAppendTree {
+        /// Total number of entries appended so far.
+        total_count: u64,
+        /// Power-of-2 chunk size for epochs.
+        chunk_power: u8,
+    },
+    /// DenseAppendOnlyFixedSizeTree state: count and height.
+    DenseTree {
+        /// Number of entries inserted so far.
+        count: u16,
+        /// Fixed height of the dense Merkle tree.
+        height: u8,
+    },
+}
+
+impl NonMerkTreeMeta {
+    /// Returns the `TreeType` corresponding to this metadata.
+    pub fn to_tree_type(&self) -> TreeType {
+        match self {
+            NonMerkTreeMeta::CommitmentTree { chunk_power, .. } => {
+                TreeType::CommitmentTree(*chunk_power)
+            }
+            NonMerkTreeMeta::MmrTree { .. } => TreeType::MmrTree,
+            NonMerkTreeMeta::BulkAppendTree { chunk_power, .. } => {
+                TreeType::BulkAppendTree(*chunk_power)
+            }
+            NonMerkTreeMeta::DenseTree { height, .. } => {
+                TreeType::DenseAppendOnlyFixedSizeTree(*height)
+            }
+        }
+    }
+
+    /// Constructs an `Element` from this metadata with the given flags.
+    pub fn to_element(&self, flags: Option<ElementFlags>) -> Element {
+        match self {
+            NonMerkTreeMeta::CommitmentTree {
+                total_count,
+                chunk_power,
+            } => Element::new_commitment_tree(*total_count, *chunk_power, flags),
+            NonMerkTreeMeta::MmrTree { mmr_size } => Element::new_mmr_tree(*mmr_size, flags),
+            NonMerkTreeMeta::BulkAppendTree {
+                total_count,
+                chunk_power,
+            } => Element::new_bulk_append_tree(*total_count, *chunk_power, flags),
+            NonMerkTreeMeta::DenseTree { count, height } => {
+                Element::new_dense_tree(*count, *height, flags)
+            }
+        }
+    }
+
+    /// Extracts the count field used in `execute_ops_on_path`.
+    pub fn count(&self) -> u64 {
+        match self {
+            NonMerkTreeMeta::CommitmentTree { total_count, .. } => *total_count,
+            NonMerkTreeMeta::MmrTree { mmr_size } => *mmr_size,
+            NonMerkTreeMeta::BulkAppendTree { total_count, .. } => *total_count,
+            NonMerkTreeMeta::DenseTree { count, .. } => *count as u64,
+        }
+    }
+}
+
 /// Operations
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum GroveOp {
-    /// Replace tree root key
+    /// Replace tree root key for standard Merk trees.
+    ///
+    /// Used by propagation to update an existing Merk tree's root hash
+    /// and aggregate data. For non-Merk trees, see `ReplaceNonMerkTreeRoot`.
     ReplaceTreeRootKey {
         /// Hash
         hash: [u8; 32],
@@ -120,7 +201,11 @@ pub enum GroveOp {
         /// Byte change
         change_in_bytes: i32,
     },
-    /// Insert tree with root hash
+    /// Insert tree with root hash for standard Merk trees.
+    ///
+    /// Created during batch propagation from an `InsertOrReplace`/`InsertOnly`
+    /// occupied entry when a child subtree's root hash is propagated upward.
+    /// For non-Merk trees, see `InsertNonMerkTree`.
     InsertTreeWithRootHash {
         /// Hash
         hash: [u8; 32],
@@ -130,6 +215,31 @@ pub enum GroveOp {
         flags: Option<ElementFlags>,
         /// Aggregate Data such as sum
         aggregate_data: AggregateData,
+    },
+    /// Replace root hash for a non-Merk tree (CommitmentTree, MmrTree,
+    /// BulkAppendTree, DenseTree). Produced by preprocessing functions.
+    ReplaceNonMerkTreeRoot {
+        /// New root hash (sinsemilla root, MMR root, state root, dense root).
+        hash: [u8; 32],
+        /// Tree-type-specific metadata (count, chunk_power, height, etc.).
+        meta: NonMerkTreeMeta,
+    },
+    /// Insert a non-Merk tree with root hash during propagation.
+    ///
+    /// Created when propagation encounters an occupied entry that is a
+    /// non-Merk tree element (CommitmentTree, MmrTree, BulkAppendTree,
+    /// DenseTree).
+    InsertNonMerkTree {
+        /// Hash
+        hash: [u8; 32],
+        /// Root key
+        root_key: Option<Vec<u8>>,
+        /// Flags
+        flags: Option<ElementFlags>,
+        /// Aggregate data (always NoAggregateData for non-Merk trees)
+        aggregate_data: AggregateData,
+        /// Tree-type-specific metadata.
+        meta: NonMerkTreeMeta,
     },
     /// Refresh the reference with information provided
     /// Providing this information is necessary to be able to calculate
@@ -147,6 +257,28 @@ pub enum GroveOp {
     Delete,
     /// Delete tree
     DeleteTree(TreeType),
+    /// Insert a note commitment + payload into a CommitmentTree
+    CommitmentTreeInsert {
+        /// 32-byte note commitment (must be a valid Pallas field element)
+        cmx: [u8; 32],
+        /// Payload data (typically encrypted note)
+        payload: Vec<u8>,
+    },
+    /// Append a value to an MmrTree
+    MmrTreeAppend {
+        /// Value to append (will be Blake3-hashed for the leaf)
+        value: Vec<u8>,
+    },
+    /// Append a value to a BulkAppendTree
+    BulkAppend {
+        /// Value to append
+        value: Vec<u8>,
+    },
+    /// Insert a value into a DenseAppendOnlyFixedSizeTree
+    DenseTreeInsert {
+        /// Value to insert
+        value: Vec<u8>,
+    },
 }
 
 impl GroveOp {
@@ -162,6 +294,12 @@ impl GroveOp {
             GroveOp::Patch { .. } => 7,
             GroveOp::InsertOrReplace { .. } => 8,
             GroveOp::InsertOnly { .. } => 9,
+            GroveOp::CommitmentTreeInsert { .. } => 10,
+            GroveOp::MmrTreeAppend { .. } => 11,
+            GroveOp::BulkAppend { .. } => 12,
+            GroveOp::DenseTreeInsert { .. } => 13,
+            GroveOp::ReplaceNonMerkTreeRoot { .. } => 14,
+            GroveOp::InsertNonMerkTree { .. } => 15,
         }
     }
 }
@@ -348,8 +486,11 @@ impl KeyInfoPath {
 pub struct QualifiedGroveDbOp {
     /// Path to a subtree - subject to an operation
     pub path: KeyInfoPath,
-    /// Key of an element in the subtree
-    pub key: KeyInfo,
+    /// Key of an element in the subtree.
+    /// `None` for append-only tree ops (CommitmentTreeInsert, MmrTreeAppend,
+    /// BulkAppend, DenseTreeInsert) where the tree key is the last segment
+    /// of `path` instead.
+    pub key: Option<KeyInfo>,
     /// Operation to perform on the key
     pub op: GroveOp,
 }
@@ -359,9 +500,14 @@ impl fmt::Debug for QualifiedGroveDbOp {
         let mut path_out = Vec::new();
         let path_drawer = Drawer::new(&mut path_out);
         self.path.visualize(path_drawer).unwrap();
-        let mut key_out = Vec::new();
-        let key_drawer = Drawer::new(&mut key_out);
-        self.key.visualize(key_drawer).unwrap();
+        let key_display = if let Some(ref key) = self.key {
+            let mut key_out = Vec::new();
+            let key_drawer = Drawer::new(&mut key_out);
+            key.visualize(key_drawer).unwrap();
+            String::from_utf8_lossy(&key_out).into_owned()
+        } else {
+            "(keyless)".to_string()
+        };
 
         let op_dbg = match &self.op {
             GroveOp::InsertOrReplace { element } => format!("Insert Or Replace {:?}", element),
@@ -383,11 +529,21 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::DeleteTree(tree_type) => format!("Delete Tree {}", tree_type),
             GroveOp::ReplaceTreeRootKey { .. } => "Replace Tree Hash and Root Key".to_string(),
             GroveOp::InsertTreeWithRootHash { .. } => "Insert Tree Hash and Root Key".to_string(),
+            GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => {
+                format!("Replace Non-Merk Tree Root ({:?})", meta)
+            }
+            GroveOp::InsertNonMerkTree { meta, .. } => {
+                format!("Insert Non-Merk Tree ({:?})", meta)
+            }
+            GroveOp::CommitmentTreeInsert { .. } => "Commitment Tree Insert".to_string(),
+            GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
+            GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
+            GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
         };
 
         f.debug_struct("GroveDbOp")
             .field("path", &String::from_utf8_lossy(&path_out))
-            .field("key", &String::from_utf8_lossy(&key_out))
+            .field("key", &key_display)
             .field("op", &op_dbg)
             .finish()
     }
@@ -399,7 +555,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::InsertOnly { element },
         }
     }
@@ -409,7 +565,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::InsertOrReplace { element },
         }
     }
@@ -418,7 +574,7 @@ impl QualifiedGroveDbOp {
     pub fn insert_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::InsertOrReplace { element },
         }
     }
@@ -428,7 +584,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::Replace { element },
         }
     }
@@ -437,7 +593,7 @@ impl QualifiedGroveDbOp {
     pub fn replace_estimated_op(path: KeyInfoPath, key: KeyInfo, element: Element) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::Replace { element },
         }
     }
@@ -452,7 +608,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::Patch {
                 element,
                 change_in_bytes,
@@ -469,7 +625,7 @@ impl QualifiedGroveDbOp {
     ) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::Patch {
                 element,
                 change_in_bytes,
@@ -489,7 +645,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
@@ -504,7 +660,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::Delete,
         }
     }
@@ -514,7 +670,7 @@ impl QualifiedGroveDbOp {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
-            key: KnownKey(key),
+            key: Some(KnownKey(key)),
             op: GroveOp::DeleteTree(tree_type),
         }
     }
@@ -523,7 +679,7 @@ impl QualifiedGroveDbOp {
     pub fn delete_estimated_op(path: KeyInfoPath, key: KeyInfo) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::Delete,
         }
     }
@@ -532,8 +688,63 @@ impl QualifiedGroveDbOp {
     pub fn delete_estimated_tree_op(path: KeyInfoPath, key: KeyInfo, tree_type: TreeType) -> Self {
         Self {
             path,
-            key,
+            key: Some(key),
             op: GroveOp::DeleteTree(tree_type),
+        }
+    }
+
+    /// A commitment tree insert op. `path` includes the tree key as its last
+    /// segment (e.g. `vec![b"pool".to_vec()]` for a tree at key `b"pool"` in
+    /// the root subtree).
+    pub fn commitment_tree_insert_op(path: Vec<Vec<u8>>, cmx: [u8; 32], payload: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: None,
+            op: GroveOp::CommitmentTreeInsert { cmx, payload },
+        }
+    }
+
+    /// A typed commitment tree insert op. Serializes the ciphertext and
+    /// delegates to
+    /// [`commitment_tree_insert_op`](Self::commitment_tree_insert_op).
+    pub fn commitment_tree_insert_op_typed<M: grovedb_commitment_tree::MemoSize>(
+        path: Vec<Vec<u8>>,
+        cmx: [u8; 32],
+        ciphertext: &grovedb_commitment_tree::TransmittedNoteCiphertext<M>,
+    ) -> Self {
+        let payload = grovedb_commitment_tree::serialize_ciphertext(ciphertext);
+        Self::commitment_tree_insert_op(path, cmx, payload)
+    }
+
+    /// An MMR tree append op. `path` includes the tree key as its last segment.
+    pub fn mmr_tree_append_op(path: Vec<Vec<u8>>, value: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: None,
+            op: GroveOp::MmrTreeAppend { value },
+        }
+    }
+
+    /// A bulk append op. `path` includes the tree key as its last segment.
+    pub fn bulk_append_op(path: Vec<Vec<u8>>, value: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: None,
+            op: GroveOp::BulkAppend { value },
+        }
+    }
+
+    /// A dense tree insert op. `path` includes the tree key as its last
+    /// segment.
+    pub fn dense_tree_insert_op(path: Vec<Vec<u8>>, value: Vec<u8>) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: None,
+            op: GroveOp::DenseTreeInsert { value },
         }
     }
 
@@ -541,9 +752,25 @@ impl QualifiedGroveDbOp {
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
     ) -> GroveDbOpConsistencyResults {
+        // Reject internal-only ops that should never appear in user-submitted
+        // batches. These are produced by preprocessing or propagation only.
+        let internal_only_ops: Vec<(QualifiedGroveDbOp, u16)> = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.op,
+                    GroveOp::ReplaceTreeRootKey { .. }
+                        | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                        | GroveOp::InsertTreeWithRootHash { .. }
+                        | GroveOp::InsertNonMerkTree { .. }
+                )
+            })
+            .map(|op| (op.clone(), 1))
+            .collect();
+
         let ops_len = ops.len();
         // operations should not have any duplicates
-        let mut repeated_ops = vec![];
+        let mut repeated_ops = internal_only_ops;
         for (i, op) in ops.iter().enumerate() {
             if i == ops_len {
                 continue;
@@ -561,17 +788,24 @@ impl QualifiedGroveDbOp {
 
         let mut same_path_key_ops = vec![];
 
-        // No double insert or delete of same key in same path
+        // No double insert or delete of same key in same path.
+        // Keyless ops (append-only tree ops) can't conflict — skip them.
         for (i, op) in ops.iter().enumerate() {
             if i == ops_len {
                 continue;
             } // Don't do last one
+            if op.key.is_none() {
+                continue;
+            } // Keyless ops can't conflict
             let mut doubled_ops = ops
                 .split_at(i + 1)
                 .1
                 .iter()
                 .filter_map(|current_op| {
-                    if current_op.path == op.path && current_op.key == op.key {
+                    if current_op.key.is_some()
+                        && current_op.path == op.path
+                        && current_op.key == op.key
+                    {
                         Some(current_op.op.clone())
                     } else {
                         None
@@ -581,6 +815,39 @@ impl QualifiedGroveDbOp {
             if !doubled_ops.is_empty() {
                 doubled_ops.push(op.op.clone());
                 same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
+            }
+        }
+
+        // Detect conflicts between keyless ops (appends) and keyed ops
+        // (delete/delete-tree) targeting the same tree element.
+        // Keyless ops encode the tree as the last path segment; keyed ops use
+        // (parent_path, key).
+        let mut append_delete_conflicts = vec![];
+        {
+            // Collect (parent_path, tree_key) for every keyless op.
+            let mut keyless_tree_ids: HashMap<(Vec<Vec<u8>>, Vec<u8>), usize> = HashMap::new();
+            for (i, op) in ops.iter().enumerate() {
+                if op.key.is_none() {
+                    let full = op.path.to_path();
+                    if let Some((tree_key, parent)) = full.split_last() {
+                        keyless_tree_ids
+                            .entry((parent.to_vec(), tree_key.clone()))
+                            .or_insert(i);
+                    }
+                }
+            }
+            // Check keyed Delete / DeleteTree ops for conflicts.
+            for op in ops.iter() {
+                if !matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                    continue;
+                }
+                if let Some(ref key_info) = op.key {
+                    let parent = op.path.to_path();
+                    let key = key_info.get_key_clone();
+                    if let Some(&idx) = keyless_tree_ids.get(&(parent, key)) {
+                        append_delete_conflicts.push((ops[idx].clone(), op.clone()));
+                    }
+                }
             }
         }
 
@@ -609,8 +876,11 @@ impl QualifiedGroveDbOp {
 
         // No inserts under a deleted path
         for deleted_op in deletes.iter() {
+            let Some(ref deleted_key) = deleted_op.key else {
+                continue;
+            };
             let mut deleted_qualified_path = deleted_op.path.clone();
-            deleted_qualified_path.push(deleted_op.key.clone());
+            deleted_qualified_path.push(deleted_key.clone());
             let inserts_with_deleted_ops_above = inserts
                 .iter()
                 .filter_map(|inserted_op| {
@@ -636,6 +906,7 @@ impl QualifiedGroveDbOp {
             repeated_ops,
             same_path_key_ops,
             insert_ops_below_deleted_ops,
+            append_delete_conflicts,
         }
     }
 }
@@ -646,10 +917,13 @@ pub struct GroveDbOpConsistencyResults {
     /// Repeated Ops, the second u16 element represents the count
     repeated_ops: Vec<(QualifiedGroveDbOp, u16)>,
     /// The same path key ops
-    same_path_key_ops: Vec<(KeyInfoPath, KeyInfo, Vec<GroveOp>)>,
+    same_path_key_ops: Vec<(KeyInfoPath, Option<KeyInfo>, Vec<GroveOp>)>,
     /// This shows issues when we delete a tree but insert under the deleted
     /// tree Deleted ops are first, with inserts under them in a tree
     insert_ops_below_deleted_ops: Vec<(QualifiedGroveDbOp, Vec<QualifiedGroveDbOp>)>,
+    /// Conflicts between keyless append ops and keyed delete ops targeting the
+    /// same tree element. Tuple is (append_op, delete_op).
+    append_delete_conflicts: Vec<(QualifiedGroveDbOp, QualifiedGroveDbOp)>,
 }
 
 impl GroveDbOpConsistencyResults {
@@ -658,6 +932,7 @@ impl GroveDbOpConsistencyResults {
         self.repeated_ops.is_empty()
             && self.same_path_key_ops.is_empty()
             && self.insert_ops_below_deleted_ops.is_empty()
+            && self.append_delete_conflicts.is_empty()
     }
 }
 
@@ -761,7 +1036,9 @@ where
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
-        let (key, reference_path) = qualified_path.split_last().unwrap(); // already checked
+        let (key, reference_path) = qualified_path
+            .split_last()
+            .expect("path validated non-empty above");
 
         let merk = match self.merks.entry(reference_path.to_vec()) {
             HashMapEntry::Occupied(o) => o.into_mut(),
@@ -1025,7 +1302,11 @@ where
             | Element::CountTree(..)
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
-            | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::ProvableCountSumTree(..)
+            | Element::CommitmentTree(..)
+            | Element::MmrTree(..)
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1071,9 +1352,16 @@ where
         if let Some(op) = ops_by_qualified_paths.get(qualified_path) {
             // the path is being modified, inserted or deleted in the batch of operations
             match op {
-                GroveOp::ReplaceTreeRootKey { .. } | GroveOp::InsertTreeWithRootHash { .. } => Err(
-                    Error::InvalidBatchOperation("references can not point to trees being updated"),
-                )
+                GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                | GroveOp::InsertNonMerkTree { .. }
+                | GroveOp::CommitmentTreeInsert { .. }
+                | GroveOp::MmrTreeAppend { .. }
+                | GroveOp::BulkAppend { .. }
+                | GroveOp::DenseTreeInsert { .. } => Err(Error::InvalidBatchOperation(
+                    "references can not point to trees being updated",
+                ))
                 .wrap_with_cost(cost),
                 GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
@@ -1092,7 +1380,9 @@ where
                                 let mut new_element = element.clone();
 
                                 // it can be unmerged, let's get the value on disk
-                                let (key, reference_path) = qualified_path.split_last().unwrap();
+                                let (key, reference_path) = qualified_path
+                                    .split_last()
+                                    .expect("path validated non-empty above");
                                 let serialized_element_result = cost_return_on_error!(
                                     &mut cost,
                                     self.get_and_deserialize_referenced_element(
@@ -1149,10 +1439,16 @@ where
                         | Element::CountTree(..)
                         | Element::CountSumTree(..)
                         | Element::ProvableCountTree(..)
-                        | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost),
+                        | Element::ProvableCountSumTree(..)
+                        | Element::CommitmentTree(..)
+                        | Element::MmrTree(..)
+                        | Element::BulkAppendTree(..)
+                        | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            Err(Error::InvalidBatchOperation(
+                                "references can not point to trees being updated",
+                            ))
+                            .wrap_with_cost(cost)
+                        }
                     }
                 }
                 GroveOp::InsertOnly { element } => match element {
@@ -1184,10 +1480,16 @@ where
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
-                    | Element::ProvableCountSumTree(..) => Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost),
+                    | Element::ProvableCountSumTree(..)
+                    | Element::CommitmentTree(..)
+                    | Element::MmrTree(..)
+                    | Element::BulkAppendTree(..)
+                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                        Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost)
+                    }
                 },
                 GroveOp::RefreshReference {
                     reference_path_type,
@@ -1244,7 +1546,13 @@ where
         let mut cost = OperationCost::default();
 
         let mut inserted_path = op.path.to_path();
-        inserted_path.push(op.key.get_key_clone());
+        let key = cost_return_on_error_no_add!(
+            cost,
+            op.key
+                .as_ref()
+                .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
+        );
+        inserted_path.push(key.get_key_clone());
         if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
             let mut merk =
                 cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
@@ -1362,7 +1670,10 @@ where
                     | Element::CountTree(..)
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
-                    | Element::ProvableCountSumTree(..) => {
+                    | Element::ProvableCountSumTree(..)
+                    | Element::MmrTree(..)
+                    | Element::BulkAppendTree(..)
+                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
                         let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
@@ -1374,6 +1685,33 @@ where
                             element.insert_subtree_into_batch_operations(
                                 key_info.get_key_clone(),
                                 NULL_HASH,
+                                false,
+                                &mut batch_operations,
+                                merk_feature_type,
+                                grove_version,
+                            )
+                        );
+                    }
+                    Element::CommitmentTree(..) => {
+                        let merk_feature_type = cost_return_on_error_into!(
+                            &mut cost,
+                            element
+                                .get_feature_type(in_tree_type)
+                                .wrap_with_cost(OperationCost::default())
+                        );
+                        // Combined empty state root: sinsemilla + bulk
+                        let empty_bulk_root =
+                            grovedb_bulk_append_tree::compute_state_root(&NULL_HASH, &NULL_HASH);
+                        let empty_state_root =
+                            grovedb_commitment_tree::compute_commitment_tree_state_root(
+                                &grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
+                                &empty_bulk_root,
+                            );
+                        cost_return_on_error_into!(
+                            &mut cost,
+                            element.insert_subtree_into_batch_operations(
+                                key_info.get_key_clone(),
+                                empty_state_root,
                                 false,
                                 &mut batch_operations,
                                 merk_feature_type,
@@ -1549,12 +1887,40 @@ where
                         )
                     );
                 }
+                GroveOp::ReplaceNonMerkTreeRoot { hash, meta } => {
+                    // Read existing element to preserve flags
+                    let merk = self.merks.get(path).expect("the Merk is cached");
+                    let existing_flags = cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
+                    )
+                    .get_flags_owned();
+
+                    let element = meta.to_element(existing_flags);
+                    let merk_feature_type = cost_return_on_error_into_no_add!(
+                        cost,
+                        element.get_feature_type(in_tree_type)
+                    );
+
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element.insert_subtree_into_batch_operations(
+                            key_info.get_key_clone(),
+                            hash,
+                            true,
+                            &mut batch_operations,
+                            merk_feature_type,
+                            grove_version
+                        )
+                    );
+                }
                 GroveOp::InsertTreeWithRootHash {
                     hash,
                     root_key,
                     flags,
                     aggregate_data,
                 } => {
+                    // Standard Merk trees — infer element from aggregate_data
                     let element = match aggregate_data {
                         AggregateData::NoAggregateData => {
                             Element::new_tree_with_flags(root_key, flags)
@@ -1592,12 +1958,7 @@ where
                             )
                         }
                         AggregateData::ProvableCountAndSum(count_value, sum_value) => {
-                            Element::new_provable_count_sum_tree_with_flags_and_sum_and_count_value(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
+                            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
                         }
                     };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
@@ -1616,6 +1977,51 @@ where
                             grove_version
                         )
                     );
+                }
+                GroveOp::InsertNonMerkTree {
+                    hash, flags, meta, ..
+                } => {
+                    let element = meta.to_element(flags);
+                    let merk_feature_type = cost_return_on_error_into_no_add!(
+                        cost,
+                        element.get_feature_type(in_tree_type)
+                    );
+
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element.insert_subtree_into_batch_operations(
+                            key_info.get_key_clone(),
+                            hash,
+                            false,
+                            &mut batch_operations,
+                            merk_feature_type,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::CommitmentTreeInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "CommitmentTreeInsert should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::MmrTreeAppend { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "MmrTreeAppend should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::BulkAppend { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "BulkAppend should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::DenseTreeInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "DenseTreeInsert should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
                 }
             }
         }
@@ -1692,8 +2098,14 @@ where
                                     | Element::CountTree(..)
                                     | Element::CountSumTree(..)
                                     | Element::ProvableCountTree(..)
-                                    | Element::ProvableCountSumTree(..) => {
-                                        let tree_type = new_element.tree_type().unwrap();
+                                    | Element::ProvableCountSumTree(..)
+                                    | Element::CommitmentTree(..)
+                                    | Element::MmrTree(..)
+                                    | Element::BulkAppendTree(..)
+                                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                                        let tree_type = new_element
+                                            .tree_type()
+                                            .expect("tree_type guaranteed by match arm");
                                         let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
                                             + flags_len
@@ -1876,7 +2288,16 @@ impl GroveDb {
                                                     *root_key = calculated_root_key;
                                                     *aggregate_data_entry = aggregate_data;
                                                 }
-                                                GroveOp::InsertTreeWithRootHash { .. } => {
+                                                GroveOp::ReplaceNonMerkTreeRoot {
+                                                    hash, ..
+                                                } => {
+                                                    // Non-Merk tree root update: just
+                                                    // update the hash, meta is preserved
+                                                    // from preprocessing.
+                                                    *hash = root_hash;
+                                                }
+                                                GroveOp::InsertTreeWithRootHash { .. }
+                                                | GroveOp::InsertNonMerkTree { .. } => {
                                                     return Err(Error::CorruptedCodeExecution(
                                                         "we can not do this operation twice",
                                                     ))
@@ -1886,6 +2307,7 @@ impl GroveDb {
                                                 | GroveOp::InsertOnly { element }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::Patch { element, .. } => {
+                                                    // Standard Merk trees
                                                     if let Element::Tree(_, flags) = element {
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertTreeWithRootHash {
@@ -1959,6 +2381,77 @@ impl GroveDb {
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
                                                             }
+                                                    // Non-Merk trees → InsertNonMerkTree
+                                                    } else if let Element::CommitmentTree(
+                                                        total_count,
+                                                        chunk_power,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        let meta = NonMerkTreeMeta::CommitmentTree {
+                                                            total_count: *total_count,
+                                                            chunk_power: *chunk_power,
+                                                        };
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertNonMerkTree {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                meta,
+                                                            }
+                                                    } else if let Element::MmrTree(
+                                                        mmr_size,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        let meta = NonMerkTreeMeta::MmrTree {
+                                                            mmr_size: *mmr_size,
+                                                        };
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertNonMerkTree {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                meta,
+                                                            }
+                                                    } else if let Element::BulkAppendTree(
+                                                        total_count,
+                                                        chunk_power,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        let meta = NonMerkTreeMeta::BulkAppendTree {
+                                                            total_count: *total_count,
+                                                            chunk_power: *chunk_power,
+                                                        };
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertNonMerkTree {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                meta,
+                                                            }
+                                                    } else if let
+                                                        Element::DenseAppendOnlyFixedSizeTree(
+                                                            count,
+                                                            height,
+                                                            flags,
+                                                        ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertNonMerkTree {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                meta: NonMerkTreeMeta::DenseTree {
+                                                                    count: *count,
+                                                                    height: *height,
+                                                                },
+                                                            }
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -1981,6 +2474,33 @@ impl GroveDb {
                                                         ))
                                                         .wrap_with_cost(cost);
                                                     }
+                                                }
+                                                GroveOp::CommitmentTreeInsert { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "CommitmentTree ops should have been \
+                                                         preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
+                                                GroveOp::MmrTreeAppend { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "MmrTree ops should have been preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
+                                                GroveOp::BulkAppend { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "BulkAppend ops should have been \
+                                                         preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
+                                                }
+                                                GroveOp::DenseTreeInsert { .. } => {
+                                                    return Err(Error::InvalidBatchOperation(
+                                                        "DenseTreeInsert ops should have been \
+                                                         preprocessed",
+                                                    ))
+                                                    .wrap_with_cost(cost);
                                                 }
                                             }
                                         }
@@ -2143,11 +2663,17 @@ impl GroveDb {
                     // TODO: paths in batches is something to think about
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key
+                            .as_ref()
+                            .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
+                    );
                     cost_return_on_error!(
                         &mut cost,
                         self.insert(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            key.as_slice(),
                             element.to_owned(),
                             options.clone().map(|o| o.as_insert_options()),
                             transaction,
@@ -2158,18 +2684,110 @@ impl GroveDb {
                 GroveOp::Delete => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key
+                            .as_ref()
+                            .ok_or(Error::InvalidBatchOperation("delete op is missing a key"))
+                    );
                     cost_return_on_error!(
                         &mut cost,
                         self.delete(
                             path_slices.as_slice(),
-                            op.key.as_slice(),
+                            key.as_slice(),
                             options.clone().map(|o| o.as_delete_options()),
                             transaction,
                             grove_version
                         )
                     );
                 }
-                _ => {}
+                GroveOp::CommitmentTreeInsert { cmx, payload } => {
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.commitment_tree_insert_raw(
+                            path_slices.as_slice(),
+                            &key,
+                            cmx,
+                            payload.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::MmrTreeAppend { value } => {
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.mmr_tree_append(
+                            path_slices.as_slice(),
+                            &key,
+                            value.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::BulkAppend { value } => {
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.bulk_append(
+                            path_slices.as_slice(),
+                            &key,
+                            value.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::DenseTreeInsert { value } => {
+                    let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        path_vec.pop().ok_or(Error::InvalidBatchOperation(
+                            "append op path must include tree key"
+                        ))
+                    );
+                    let path_slices: Vec<&[u8]> = path_vec.iter().map(|p| p.as_slice()).collect();
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.dense_tree_insert(
+                            path_slices.as_slice(),
+                            &key,
+                            value.clone(),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                _ => {
+                    return Err(Error::NotSupported(
+                        "operation not supported in apply_operations_without_batching".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
             }
         }
         Ok(()).wrap_with_cost(cost)
@@ -2364,9 +2982,9 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        // Determines whether to check batch operation consistency
-        // return false if the disable option is set to true, returns true for any other
-        // case
+        // Check batch operation consistency BEFORE preprocessing so that
+        // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
+        // path/key) are caught before any work is done.
         let check_batch_operation_consistency = batch_apply_options
             .as_ref()
             .map(|batch_options| !batch_options.disable_operation_consistency_check)
@@ -2382,9 +3000,60 @@ impl GroveDb {
             }
         }
 
-        // `StorageBatch` allows us to collect operations on different subtrees before
-        // execution
+        // `StorageBatch` collects all operations (preprocessing + apply_body)
+        // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
+
+        // Preprocess CommitmentTreeInsert ops: execute Sinsemilla operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess MmrTreeAppend ops: execute MMR operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess BulkAppend ops: execute bulk append operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess DenseTreeInsert ops: execute dense tree operations
+        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Non-Merk trees (MmrTree, BulkAppendTree, DenseTree, CommitmentTree)
+        // store their data in the data storage namespace of their subtree path
+        // (e.g. MMR nodes, buffer entries, dense tree values). When apply_body
+        // processes a DeleteTree op it removes the Element from the parent Merk
+        // and clears the subtree's Merk metadata, but does NOT clear the raw
+        // data these tree types wrote. Without explicit cleanup, deleting a
+        // non-Merk tree would leave orphaned data that could corrupt a new tree
+        // inserted at the same path. Standard Merk trees don't need this because
+        // their data IS their Merk — deleting the subtree clears everything.
+        let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
+            .iter()
+            .filter_map(|op| {
+                if let GroveOp::DeleteTree(tree_type) = &op.op {
+                    if tree_type.uses_non_merk_data_storage() {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(op.key.as_ref()?.as_slice().to_vec());
+                        return Some(child_path);
+                    }
+                }
+                None
+            })
+            .collect();
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -2415,6 +3084,28 @@ impl GroveDb {
                 grove_version
             )
         );
+
+        // Clean up data storage for deleted non-Merk trees.
+        for child_path in &non_merk_delete_paths {
+            let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+            // Clear data namespace for all non-Merk tree types
+            let mut storage = self
+                .db
+                .get_transactional_storage_context(
+                    child_subtree_path,
+                    Some(&storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up non-merk tree data in batch delete: {e}",
+                    ))
+                })
+            );
+        }
 
         // TODO: compute batch costs
         cost_return_on_error!(
@@ -2484,17 +3175,13 @@ impl GroveDb {
             return Ok(()).wrap_with_cost(cost);
         }
 
-        let mut batch_apply_options = batch_apply_options.unwrap_or_default();
-        if batch_apply_options.batch_pause_height.is_none() {
-            // we default to pausing at the root tree, which is the most common case
-            batch_apply_options.batch_pause_height = Some(1);
-        }
-
-        // Determines whether to check batch operation consistency
-        // return false if the disable option is set to true, returns true for any other
-        // case
-        let check_batch_operation_consistency =
-            !batch_apply_options.disable_operation_consistency_check;
+        // Check batch operation consistency BEFORE preprocessing so that
+        // conflicting ops (e.g., CommitmentTreeInsert + Delete on the same
+        // path/key) are caught before any work is done.
+        let check_batch_operation_consistency = batch_apply_options
+            .as_ref()
+            .map(|batch_options| !batch_options.disable_operation_consistency_check)
+            .unwrap_or(true);
 
         if check_batch_operation_consistency {
             let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
@@ -2506,9 +3193,55 @@ impl GroveDb {
             }
         }
 
-        // `StorageBatch` allows us to collect operations on different subtrees before
-        // execution
+        // `StorageBatch` collects all operations (preprocessing + apply_body)
+        // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
+
+        // Preprocess CommitmentTreeInsert ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess MmrTreeAppend ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess BulkAppend ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // Preprocess DenseTreeInsert ops using the shared batch
+        let ops = cost_return_on_error!(
+            &mut cost,
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+        );
+
+        // See comment above in apply_batch_with_element_flags_update for why
+        // non-Merk tree deletions need explicit data storage cleanup.
+        let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
+            .iter()
+            .filter_map(|op| {
+                if let GroveOp::DeleteTree(tree_type) = &op.op {
+                    if tree_type.uses_non_merk_data_storage() {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(op.key.as_ref()?.as_slice().to_vec());
+                        return Some(child_path);
+                    }
+                }
+                None
+            })
+            .collect();
+
+        let mut batch_apply_options = batch_apply_options.unwrap_or_default();
+        if batch_apply_options.batch_pause_height.is_none() {
+            // we default to pausing at the root tree, which is the most common case
+            batch_apply_options.batch_pause_height = Some(1);
+        }
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -2587,6 +3320,27 @@ impl GroveDb {
                 grove_version
             )
         );
+
+        // Clean up data storage for deleted non-Merk trees.
+        for child_path in &non_merk_delete_paths {
+            let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+            let mut storage = self
+                .db
+                .get_transactional_storage_context(
+                    child_subtree_path,
+                    Some(&continue_storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up non-merk tree data in batch delete: {e}",
+                    ))
+                })
+            );
+        }
 
         // let's build the write batch
         let continued_pending_costs = cost_return_on_error!(

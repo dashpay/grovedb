@@ -23,6 +23,10 @@ grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
 grovedb-version = { version = "4.0.0", path = "../grovedb-version" }
 grovedb-visualize = { version = "4.0.0", path = "../visualize", optional = true }
 grovedb-element = { version = "4.0.0", path = "../grovedb-element" }
+grovedb-commitment-tree = { version = "4.0.0", path = "../grovedb-commitment-tree", optional = true }
+grovedb-merkle-mountain-range = { version = "4.0.0", path = "../grovedb-merkle-mountain-range", optional = true, features = ["storage"] }
+grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-tree", optional = true }
+grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree", optional = true }
 grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
 
 axum = { version = "0.8", features = ["macros"], optional = true }
@@ -71,6 +75,12 @@ serde = ["dep:serde", "grovedb-merk/serde", "indexmap/serde"]
 full = ["grovedb-merk/full", "minimal"]
 minimal = [
     "grovedb-merk/minimal",
+    "grovedb-commitment-tree",
+    "grovedb-commitment-tree/server",
+    "grovedb-commitment-tree/storage",
+    "grovedb-merkle-mountain-range",
+    "grovedb-bulk-append-tree",
+    "grovedb-dense-fixed-sized-merkle-tree",
     "thiserror",
     "tempfile",
     "grovedb-storage/rocksdb_storage",
@@ -86,8 +96,12 @@ verify = [
     "grovedb-costs",
     "thiserror",
     "integer-encoding",
+    "grovedb-merkle-mountain-range",
+    "grovedb-bulk-append-tree",
+    "grovedb-dense-fixed-sized-merkle-tree",
 ]
 estimated_costs = ["full"]
+zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client", "grovedb-commitment-tree/storage"]
 grovedbg = [
     "grovedbg-types",
     "tokio",

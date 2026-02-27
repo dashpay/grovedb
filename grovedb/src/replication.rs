@@ -420,7 +420,7 @@ pub(crate) mod utils {
             res.push(0u8);
         }
 
-        res.push(tree_type as u8);
+        res.push(tree_type.discriminant());
 
         res.extend(pack_nested_bytes(chunk_ids));
 

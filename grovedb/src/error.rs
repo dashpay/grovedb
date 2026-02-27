@@ -161,6 +161,10 @@ pub enum Error {
     #[error("cyclic error")]
     /// Cyclic reference
     CyclicError(&'static str),
+
+    #[error("commitment tree error: {0}")]
+    /// Commitment tree operation error
+    CommitmentTreeError(String),
 }
 
 impl Error {
@@ -185,7 +189,8 @@ impl Error {
             | Self::SplitRemovalBytesClientError(s)
             | Self::ClientReturnedNonClientError(s)
             | Self::PathNotFoundInCacheForEstimatedCosts(s)
-            | Self::NotSupported(s) => {
+            | Self::NotSupported(s)
+            | Self::CommitmentTreeError(s) => {
                 s.push_str(", ");
                 s.push_str(append.as_ref());
             }

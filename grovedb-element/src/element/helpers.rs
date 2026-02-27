@@ -153,7 +153,63 @@ impl Element {
                 | Element::CountSumTree(..)
                 | Element::ProvableCountTree(..)
                 | Element::ProvableCountSumTree(..)
+                | Element::CommitmentTree(..)
+                | Element::MmrTree(..)
+                | Element::BulkAppendTree(..)
+                | Element::DenseAppendOnlyFixedSizeTree(..)
         )
+    }
+
+    /// Check if the element is a commitment tree
+    pub fn is_commitment_tree(&self) -> bool {
+        matches!(self, Element::CommitmentTree(..))
+    }
+
+    /// Check if the element is an MMR tree
+    pub fn is_mmr_tree(&self) -> bool {
+        matches!(self, Element::MmrTree(..))
+    }
+
+    /// Check if the element is a bulk append tree
+    pub fn is_bulk_append_tree(&self) -> bool {
+        matches!(self, Element::BulkAppendTree(..))
+    }
+
+    /// Check if the element is a dense append-only fixed-size tree
+    pub fn is_dense_tree(&self) -> bool {
+        matches!(self, Element::DenseAppendOnlyFixedSizeTree(..))
+    }
+
+    /// Check if the element is a tree type that stores data in the data
+    /// namespace as non-Merk entries.  These tree types have an always-empty
+    /// Merk (root_key = None) and never contain child subtrees. The data
+    /// namespace must be cleared directly rather than iterated as Merk
+    /// elements.
+    ///
+    /// Note: This must be kept in sync with
+    /// `TreeType::uses_non_merk_data_storage()` in the merk crate.
+    pub fn uses_non_merk_data_storage(&self) -> bool {
+        matches!(
+            self,
+            Element::CommitmentTree(..)
+                | Element::MmrTree(..)
+                | Element::BulkAppendTree(..)
+                | Element::DenseAppendOnlyFixedSizeTree(..)
+        )
+    }
+
+    /// Returns the entry count for non-Merk data tree types, or `None` for
+    /// regular Merk trees and non-tree elements.  This is used by delete
+    /// and is_empty_tree operations to determine emptiness without
+    /// iterating the data namespace.
+    pub fn non_merk_entry_count(&self) -> Option<u64> {
+        match self {
+            Element::CommitmentTree(count, ..) => Some(*count),
+            Element::MmrTree(mmr_size, _) => Some(*mmr_size),
+            Element::BulkAppendTree(count, ..) => Some(*count),
+            Element::DenseAppendOnlyFixedSizeTree(count, ..) => Some(*count as u64),
+            _ => None,
+        }
     }
 
     /// Check if the element is a reference
@@ -202,7 +258,11 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
         }
     }
 
@@ -219,7 +279,11 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
         }
     }
 
@@ -236,7 +300,11 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
         }
     }
 
@@ -253,7 +321,11 @@ impl Element {
             | Element::CountSumTree(.., flags)
             | Element::ProvableCountTree(.., flags)
             | Element::ProvableCountSumTree(.., flags)
-            | Element::ItemWithSumItem(.., flags) => *flags = new_flags,
+            | Element::ItemWithSumItem(.., flags)
+            | Element::CommitmentTree(.., flags)
+            | Element::MmrTree(.., flags)
+            | Element::BulkAppendTree(.., flags)
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => *flags = new_flags,
         }
     }
 

@@ -298,7 +298,7 @@ mod tests {
     fn test_provable_count_tree_type_conversion() {
         // Test TreeType to/from u8
         let tree_type = TreeType::ProvableCountTree;
-        assert_eq!(tree_type as u8, 5);
+        assert_eq!(tree_type.discriminant(), 5);
 
         let from_u8 = TreeType::try_from(5u8).unwrap();
         assert_eq!(from_u8, TreeType::ProvableCountTree);

@@ -19,7 +19,7 @@ use orchard::{
     zcash_note_encryption::note_bytes::NoteBytes,
 };
 
-use crate::{CommitmentFrontier, CommitmentTreeError};
+use crate::{compute_commitment_tree_state_root, CommitmentFrontier, CommitmentTreeError};
 
 mod tests;
 
@@ -356,11 +356,22 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         self.bulk_tree.total_count
     }
 
-    /// Compute the current BulkAppendTree state root without modification.
+    /// Compute the combined state root that binds the Sinsemilla anchor to the
+    /// BulkAppendTree data root.
+    ///
+    /// Returns `blake3("ct_state" || sinsemilla_root || bulk_state_root)`.
+    /// This is the value that flows as the Merk child hash, ensuring both the
+    /// Orchard anchor and the bulk data are authenticated.
     pub fn compute_current_state_root(&self) -> Result<[u8; 32], CommitmentTreeError> {
-        self.bulk_tree
+        let bulk_root = self
+            .bulk_tree
             .compute_current_state_root()
-            .map_err(|e| CommitmentTreeError::InvalidData(format!("state root: {}", e)))
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("state root: {}", e)))?;
+        let sinsemilla_root = self.frontier.root_hash();
+        Ok(compute_commitment_tree_state_root(
+            &sinsemilla_root,
+            &bulk_root,
+        ))
     }
 
     /// Get a single value from the dense tree buffer by buffer-local position.
