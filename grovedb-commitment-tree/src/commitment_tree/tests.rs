@@ -851,9 +851,11 @@ mod storage_tests {
         let computed = ct
             .compute_current_state_root()
             .expect("state root should succeed");
+        let expected =
+            crate::compute_commitment_tree_state_root(&r.sinsemilla_root, &r.bulk_state_root);
         assert_eq!(
-            computed, r.bulk_state_root,
-            "computed state root should match append result"
+            computed, expected,
+            "computed state root should match combined sinsemilla + bulk root"
         );
     }
 
