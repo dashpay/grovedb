@@ -141,41 +141,47 @@ impl GroveDb {
 
         #[cfg(feature = "proof_debug")]
         {
-            // we want to query raw because we want the references to not be resolved at
-            // this point
+            // We want to query raw because we want the references to not be
+            // resolved at this point. This is purely for debugging — if
+            // query_raw fails (e.g. because the path contains non-Merk tree
+            // types like DenseTree, MmrTree, etc.), we just print the error
+            // and continue with proof generation.
+            let values_result = self.query_raw(
+                path_query,
+                false,
+                prove_options.decrease_limit_on_empty_sub_query_result,
+                false,
+                QueryResultType::QueryPathKeyElementTrioResultType,
+                None,
+                grove_version,
+            );
+            match values_result.value() {
+                Ok(values) => {
+                    println!("values are {}", values.0);
 
-            let values = cost_return_on_error!(
-                &mut cost,
-                self.query_raw(
-                    path_query,
-                    false,
-                    prove_options.decrease_limit_on_empty_sub_query_result,
-                    false,
-                    QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
-                    grove_version,
-                )
-            )
-            .0;
-
-            println!("values are {}", values);
-
-            let precomputed_result_map = cost_return_on_error!(
-                &mut cost,
-                self.query_raw(
-                    path_query,
-                    false,
-                    prove_options.decrease_limit_on_empty_sub_query_result,
-                    false,
-                    QueryResultType::QueryPathKeyElementTrioResultType,
-                    None,
-                    grove_version,
-                )
-            )
-            .0
-            .to_btree_map_level_results();
-
-            println!("precomputed results are {}", precomputed_result_map);
+                    let precomputed_result_map = self
+                        .query_raw(
+                            path_query,
+                            false,
+                            prove_options.decrease_limit_on_empty_sub_query_result,
+                            false,
+                            QueryResultType::QueryPathKeyElementTrioResultType,
+                            None,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .expect("query_raw should succeed if it succeeded above")
+                        .0
+                        .to_btree_map_level_results();
+                    println!("precomputed results are {}", precomputed_result_map);
+                }
+                Err(e) => {
+                    println!(
+                        "proof_debug: query_raw failed (non-Merk tree in path?): {}",
+                        e
+                    );
+                }
+            }
         }
 
         let mut limit = path_query.query.limit;
