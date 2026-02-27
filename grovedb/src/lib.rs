@@ -178,7 +178,7 @@ pub use grovedb_merk::calculate_max_tree_depth_from_count;
 use grovedb_merk::element::{
     costs::ElementCostExtensions, decode::ElementDecodeExtensions,
     get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
-    tree_type::ElementTreeTypeExtensions, ElementExt,
+    reconstruct::ElementReconstructExtensions, tree_type::ElementTreeTypeExtensions, ElementExt,
 };
 #[cfg(feature = "estimated_costs")]
 pub use grovedb_merk::estimated_costs::{
@@ -283,59 +283,6 @@ type OpenedMerkForReplication<'tx> = (
     Option<Vec<u8>>,
     TreeType,
 );
-
-/// Reconstruct a tree element with updated root key and aggregate data,
-/// preserving flags and type-specific fields.
-/// Returns `None` for non-tree elements.
-#[cfg(feature = "minimal")]
-fn reconstruct_tree_with_root_key(
-    element: &Element,
-    maybe_root_key: Option<Vec<u8>>,
-    aggregate_data: AggregateData,
-) -> Option<Element> {
-    match element {
-        Element::Tree(_, f) => Some(Element::Tree(maybe_root_key, f.clone())),
-        Element::SumTree(.., f) => Some(Element::SumTree(
-            maybe_root_key,
-            aggregate_data.as_sum_i64(),
-            f.clone(),
-        )),
-        Element::BigSumTree(.., f) => Some(Element::BigSumTree(
-            maybe_root_key,
-            aggregate_data.as_summed_i128(),
-            f.clone(),
-        )),
-        Element::CountTree(.., f) => Some(Element::CountTree(
-            maybe_root_key,
-            aggregate_data.as_count_u64(),
-            f.clone(),
-        )),
-        Element::CountSumTree(.., f) => Some(Element::CountSumTree(
-            maybe_root_key,
-            aggregate_data.as_count_u64(),
-            aggregate_data.as_sum_i64(),
-            f.clone(),
-        )),
-        Element::ProvableCountTree(.., f) => Some(Element::ProvableCountTree(
-            maybe_root_key,
-            aggregate_data.as_count_u64(),
-            f.clone(),
-        )),
-        Element::ProvableCountSumTree(.., f) => Some(Element::ProvableCountSumTree(
-            maybe_root_key,
-            aggregate_data.as_count_u64(),
-            aggregate_data.as_sum_i64(),
-            f.clone(),
-        )),
-        Element::CommitmentTree(tc, cp, f) => Some(Element::CommitmentTree(*tc, *cp, f.clone())),
-        Element::MmrTree(sz, f) => Some(Element::MmrTree(*sz, f.clone())),
-        Element::BulkAppendTree(tc, cp, f) => Some(Element::BulkAppendTree(*tc, *cp, f.clone())),
-        Element::DenseAppendOnlyFixedSizeTree(c, h, f) => {
-            Some(Element::DenseAppendOnlyFixedSizeTree(*c, *h, f.clone()))
-        }
-        _ => None,
-    }
-}
 
 #[cfg(feature = "minimal")]
 impl GroveDb {
@@ -692,7 +639,7 @@ impl GroveDb {
         let key_ref = key.as_ref();
 
         Self::get_element_from_subtree(parent_tree, key_ref, grove_version).flat_map_ok(|element| {
-            match reconstruct_tree_with_root_key(&element, maybe_root_key, aggregate_data) {
+            match element.reconstruct_with_root_key(maybe_root_key, aggregate_data) {
                 Some(tree) => tree
                     .insert_subtree(parent_tree, key_ref, root_tree_hash, None, grove_version)
                     .map_err(|e| e.into()),
@@ -721,8 +668,7 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
         Self::get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(
-            |element| match reconstruct_tree_with_root_key(&element, maybe_root_key, aggregate_data)
-            {
+            |element| match element.reconstruct_with_root_key(maybe_root_key, aggregate_data) {
                 Some(tree) => {
                     let merk_feature_type = cost_return_on_error_into!(
                         &mut cost,

@@ -15,6 +15,8 @@ pub mod exists;
 pub mod get;
 #[cfg(feature = "minimal")]
 pub mod insert;
+#[cfg(feature = "minimal")]
+pub mod reconstruct;
 pub mod tree_type;
 
 pub trait ElementExt {
