@@ -15,7 +15,7 @@ known in advance and you need O(1) append, O(1) retrieval by position, and a com
 A tree of height *h* has capacity `2^h - 1` positions. Positions use 0-based level-order
 indexing:
 
-```
+```text
 Height 3 tree (capacity = 7):
 
               pos 0          ← root (level 0)
@@ -40,7 +40,7 @@ in level-order — the most natural traversal order for a complete binary tree.
 The root hash is not stored separately — it is recomputed from scratch whenever needed.
 The recursive algorithm visits only filled positions:
 
-```
+```text
 hash(position, store):
   value = store.get(position)
 
@@ -103,7 +103,7 @@ via `insert_subtree`'s `subtree_root_hash` parameter.
 Like MmrTree and BulkAppendTree, the DenseAppendOnlyFixedSizeTree stores data in the
 **data** namespace (not a child Merk). Values are keyed by their position as a big-endian `u64`:
 
-```
+```text
 Subtree path: blake3(parent_path || key)
 
 Storage keys:
@@ -121,11 +121,11 @@ The root hash flows as the Merk child hash. This means:
 
 ## Operations
 
-#### `dense_tree_insert(path, key, value, tx, grove_version)`
+### `dense_tree_insert(path, key, value, tx, grove_version)`
 
 Appends a value to the next available position. Returns `(root_hash, position)`.
 
-```
+```text
 Step 1: Read element, extract (count, height)
 Step 2: Check capacity: if count >= 2^height - 1 → error
 Step 3: Build subtree path, open storage context
@@ -137,16 +137,16 @@ Step 8: Propagate changes up through Merk hierarchy
 Step 9: Commit transaction
 ```
 
-#### `dense_tree_get(path, key, position, tx, grove_version)`
+### `dense_tree_get(path, key, position, tx, grove_version)`
 
 Retrieves the value at a given position. Returns `None` if position >= count.
 
-#### `dense_tree_root_hash(path, key, tx, grove_version)`
+### `dense_tree_root_hash(path, key, tx, grove_version)`
 
 Returns the root hash stored in the element. This is the hash computed during the
 most recent insert — no recomputation needed.
 
-#### `dense_tree_count(path, key, tx, grove_version)`
+### `dense_tree_count(path, key, tx, grove_version)`
 
 Returns the number of values stored (the `count` field from the element).
 
@@ -188,7 +188,7 @@ DenseAppendOnlyFixedSizeTree supports **V1 subquery proofs** via the `ProofBytes
 variant. Individual positions can be proved against the tree's root hash using inclusion
 proofs that carry ancestor values and sibling subtree hashes.
 
-#### Auth Path Structure
+### Auth Path Structure
 
 Because internal nodes hash their **own value** (not just child hashes), the
 authentication path differs from a standard Merkle tree. To verify a leaf at position
@@ -212,11 +212,11 @@ pub struct DenseTreeProof {
 
 > **Note:** `height` and `count` are not in the proof struct — the verifier gets them from the parent Element, which is authenticated by the Merk hierarchy.
 
-#### Walkthrough Example
+### Walkthrough Example
 
 Tree with height=3, capacity=7, count=5, proving position 4:
 
-```
+```text
         0
        / \
       1   2
@@ -239,19 +239,19 @@ Verification recomputes the root hash bottom-up:
 5. `H(0) = blake3(H(value[0]) || H(1) || H(2))` — root uses value hash from `node_value_hashes`
 6. Compare `H(0)` against expected root hash
 
-#### Multi-Position Proofs
+### Multi-Position Proofs
 
 When proving multiple positions, the expanded set merges overlapping auth paths. Shared
 ancestors are included only once, making multi-position proofs more compact than
 independent single-position proofs.
 
-#### V0 Limitation
+### V0 Limitation
 
 V0 proofs cannot descend into dense trees. If a V0 query matches a
 `DenseAppendOnlyFixedSizeTree` with a subquery, the system returns
 `Error::NotSupported` directing the caller to use `prove_query_v1`.
 
-#### Query Key Encoding
+### Query Key Encoding
 
 Dense tree positions are encoded as **big-endian u16** (2-byte) query keys, unlike
 MmrTree and BulkAppendTree which use u64. All standard `QueryItem` range types

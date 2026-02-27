@@ -48,7 +48,7 @@ path. Like MmrTree and BulkAppendTree, it has **no child Merk** (no `root_key`
 field — the type-specific root flows as the Merk child hash). The BulkAppendTree entries and the Sinsemilla frontier coexist
 in the data namespace using distinct key prefixes:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │                       CommitmentTree                          │
 │                                                               │
@@ -95,7 +95,7 @@ of storing all 2^32 possible leaves, it stores only the information needed to
 **append the next leaf and compute the current root**: the rightmost leaf and
 its ommers (sibling hashes needed for root computation).
 
-```
+```text
                          root (level 32)
                         /               \
                       ...               ...
@@ -125,7 +125,7 @@ Key properties:
 The `EMPTY_SINSEMILLA_ROOT` constant is the root of an empty depth-32 tree,
 precomputed as `MerkleHashOrchard::empty_root(Level::from(32)).to_bytes()`:
 
-```
+```text
 0xae2935f1dfd8a24aed7c70df7de3a668eb7a49b1319880dde2bbd9031ae5d82f
 ```
 
@@ -138,7 +138,7 @@ binary representation. This is the same pattern as the MMR merge cascade
 
 **Worked example — appending 4 leaves:**
 
-```
+```text
 Position 0 (binary: 0, trailing_ones: 0):
   frontier = { leaf: L0, ommers: [], position: 0 }
   Sinsemilla hashes: 32 (root computation) + 0 (no ommer merges) = 32
@@ -161,7 +161,7 @@ Position 3 (binary: 11, trailing_ones: 0 of PREVIOUS position 2):
 
 The **total Sinsemilla hashes** per append is:
 
-```
+```text
 32 (root computation always traverses all 32 levels)
 + trailing_ones(current_position)  (ommer cascade)
 ```
@@ -175,7 +175,7 @@ cost is **~33 Sinsemilla hashes per append**. The worst case (at position
 The frontier is stored in data storage at key `b"__ct_data__"`. The wire
 format is:
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │ has_frontier: u8                                                  │
 │   0x00 → empty tree (no more fields)                             │
@@ -230,7 +230,7 @@ The Sinsemilla root is NOT stored in the Element. It flows as the Merk child has
 through the `insert_subtree` mechanism. When the parent Merk computes its
 `combined_value_hash`, the Sinsemilla-derived root is included as the child hash:
 
-```
+```text
 combined_value_hash = blake3(value_hash || child_hash)
                                            ↑ sinsemilla/BulkAppendTree combined root
 ```
@@ -252,7 +252,7 @@ The CommitmentTree stores all its data in a single **data namespace** at the
 subtree path. BulkAppendTree entries and the Sinsemilla frontier coexist in
 the same column using distinct key prefixes. No aux namespace is used.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │  Data Namespace (all CommitmentTree storage)                      │
 │                                                                   │
@@ -284,7 +284,7 @@ and saved.
 Both are captured in the updated `CommitmentTree` element. The parent Merk node
 hash becomes:
 
-```
+```text
 combined_hash = combine_hash(
     value_hash(element_bytes),    ← includes total_count + chunk_power
     child_hash(combined_root)     ← sinsemilla/BulkAppendTree combined root
@@ -338,7 +338,7 @@ serialized.
 The insert operation updates both the BulkAppendTree and the Sinsemilla
 frontier in a single atomic operation:
 
-```
+```text
 Step 1: Validate element at path/key is a CommitmentTree
         → extract total_count, chunk_power, flags
 
@@ -389,7 +389,7 @@ graph TD
 
 The anchor operation is a read-only query:
 
-```
+```text
 Step 1: Validate element at path/key is a CommitmentTree
 Step 2: Build ct_path = path ++ [key]
 Step 3: Load frontier from data storage
@@ -404,7 +404,7 @@ spend authorization proofs.
 
 Retrieves a stored value (cmx || payload) by its global position:
 
-```
+```text
 Step 1: Validate element at path/key is a CommitmentTree
         → extract total_count, chunk_power
 Step 2: Build ct_path = path ++ [key]
@@ -421,7 +421,7 @@ where the position falls.
 
 Returns the total number of items appended to the tree:
 
-```
+```text
 Step 1: Read element at path/key
 Step 2: Verify it is a CommitmentTree
 Step 3: Return total_count from element fields
@@ -457,7 +457,7 @@ ops must be preprocessed before `apply_body`.
 
 **The preprocessing pipeline** (`preprocess_commitment_tree_ops`):
 
-```
+```text
 Input: [CTInsert{cmx1}, Insert{...}, CTInsert{cmx2}, CTInsert{cmx3}]
                                        ↑ same (path,key) as cmx1
 
@@ -508,7 +508,7 @@ works without specifying `M`.
 **Stored entry format**: Each entry in the BulkAppendTree is
 `cmx (32 bytes) || ciphertext_payload`, where the payload layout is:
 
-```
+```text
 epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
 ```
 
@@ -671,7 +671,7 @@ separate dependency.
 The `SqliteShardStore` implements all 18 methods of the `ShardStore` trait.
 Shard trees are serialized using a compact binary format:
 
-```
+```text
 Nil:    [0x00]                                     — 1 byte
 Leaf:   [0x01][hash: 32][flags: 1]                 — 34 bytes
 Parent: [0x02][has_ann: 1][ann?: 32][left][right]  — recursive
@@ -697,7 +697,7 @@ CommitmentTree supports two proof paths:
 
 **1. Sinsemilla anchor proof (ZK path):**
 
-```
+```text
 GroveDB root hash
   ↓ Merk proof (V0, standard)
 Parent Merk node
@@ -778,7 +778,7 @@ everything from a single crate.
 
 **Key management types:**
 
-```
+```text
 SpendingKey
   ├── SpendAuthorizingKey → SpendValidatingKey
   └── FullViewingKey

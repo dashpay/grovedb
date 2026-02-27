@@ -12,7 +12,7 @@ records finalized chunk roots.
 
 ## The Two-Level Architecture
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────┐
 │                      BulkAppendTree                            │
 │                                                                │
@@ -53,7 +53,7 @@ on every append, ensuring the parent Merk tree always reflects the latest state.
 
 Each call to `append()` follows this sequence:
 
-```
+```text
 Step 1: Write value to dense tree buffer at next position
         dense_tree.insert(value, store)
 
@@ -77,7 +77,7 @@ This root hash is what flows into the state root computation.
 
 When the buffer fills (reaches `chunk_size` entries), compaction fires automatically:
 
-```
+```text
 Compaction Steps:
 ─────────────────
 1. Read all chunk_size buffer entries
@@ -106,7 +106,7 @@ storage.
 
 **Example: 4 appends with chunk_power=2 (chunk_size=4)**
 
-```
+```text
 Append v_0: dense_tree=[v_0],       dense_root=H(v_0), total=1
 Append v_1: dense_tree=[v_0,v_1],   dense_root=H(v_0,v_1), total=2
 Append v_2: dense_tree=[v_0..v_2],  dense_root=H(v_0..v_2), total=3
@@ -145,7 +145,7 @@ flows as the Merk child hash and propagates up to the GroveDB root hash.
 When a chunk compacts, the entries need a single 32-byte commitment. The
 BulkAppendTree uses a **dense (complete) binary Merkle tree**:
 
-```
+```text
 Given entries [e_0, e_1, e_2, e_3]:
 
 Level 0 (leaves):  blake3(e_0)  blake3(e_1)  blake3(e_2)  blake3(e_3)
@@ -174,7 +174,7 @@ auto-selects the most compact wire format based on entry sizes:
 
 **Fixed-size format** (flag `0x01`) — when all entries have the same length:
 
-```
+```text
 ┌──────┬──────────┬─────────────┬─────────┬─────────┬─────────┐
 │ 0x01 │ count    │ entry_size  │ entry_0 │ entry_1 │ ...     │
 │ 1B   │ 4B (BE)  │ 4B (BE)     │ N bytes │ N bytes │         │
@@ -184,7 +184,7 @@ Total: 1 + 4 + 4 + (count × entry_size) bytes
 
 **Variable-size format** (flag `0x00`) — when entries have different lengths:
 
-```
+```text
 ┌──────┬──────────┬─────────┬──────────┬─────────┬─────────────┐
 │ 0x00 │ len_0    │ entry_0 │ len_1    │ entry_1 │ ...         │
 │ 1B   │ 4B (BE)  │ N bytes │ 4B (BE)  │ M bytes │             │
@@ -252,7 +252,7 @@ The BulkAppendTree integrates with GroveDB through six operations defined in
 
 The primary mutating operation. Follows the standard GroveDB non-Merk storage pattern:
 
-```
+```text
 1. Validate element is BulkAppendTree
 2. Open data storage context
 3. Load tree from store
@@ -278,7 +278,7 @@ append operation are added to `cost.hash_node_calls`.
 
 The `get_value` operation transparently routes by position:
 
-```
+```text
 if position < completed_chunks × chunk_size:
     chunk_idx = position / chunk_size
     intra_idx = position % chunk_size
@@ -296,7 +296,7 @@ must be preprocessed before `apply_body`.
 
 The preprocessing pipeline:
 
-```
+```text
 Input: [BulkAppend{v1}, Insert{...}, BulkAppend{v2}, BulkAppend{v3}]
                                      ↑ same (path,key) as v1
 
@@ -362,7 +362,7 @@ pub struct BulkAppendTreeProof {
 
 **Generation steps** for a range `[start, end)` (with `chunk_size = 1u32 << chunk_power`):
 
-```
+```text
 1. Determine overlapping chunks
    first_chunk = start / chunk_size
    last_chunk  = min((end-1) / chunk_size, completed_chunks - 1)
@@ -398,7 +398,7 @@ entries), this is a reasonable cost.
 
 Verification is a pure function — no database access needed. It performs five checks:
 
-```
+```text
 Step 0: Metadata consistency
         - chunk_power <= 31
         - buffer_entries.len() == total_count % chunk_size
@@ -432,13 +432,13 @@ chunk blobs and buffer entries.
 The BulkAppendTree is a **non-Merk tree** — it stores data in the data namespace,
 not in a child Merk subtree. In the parent Merk, the element is stored as:
 
-```
+```text
 Element::BulkAppendTree(total_count, chunk_power, flags)
 ```
 
 The state root flows as the Merk child hash. The parent Merk node hash is:
 
-```
+```text
 combine_hash(value_hash(element_bytes), state_root)
 ```
 

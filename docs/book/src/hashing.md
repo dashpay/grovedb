@@ -48,7 +48,7 @@ graph LR
 
 > The ROOT of the tree = `node_hash` of the root node — authenticates **every** key, value, and structural relationship. Missing children use `NULL_HASH = [0x00; 32]`.
 
-#### Level 1: value_hash
+### Level 1: value_hash
 
 ```rust
 // merk/src/tree/hash.rs
@@ -64,7 +64,7 @@ pub fn value_hash(value: &[u8]) -> CostContext<CryptoHash> {
 The value's length is **varint-encoded** and prepended. This is critical for
 collision resistance — without it, `H("AB" ‖ "C")` would equal `H("A" ‖ "BC")`.
 
-#### Level 2: kv_hash
+### Level 2: kv_hash
 
 ```rust
 pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<CryptoHash> {
@@ -88,7 +88,7 @@ pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &CryptoHash) -> CostContext<
 This is used when the verifier already has the value_hash (e.g., for subtrees
 where value_hash is a combined hash).
 
-#### Level 3: node_hash
+### Level 3: node_hash
 
 ```rust
 pub fn node_hash(

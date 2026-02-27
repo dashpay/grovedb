@@ -80,7 +80,7 @@ pub(crate) const META_CF_NAME: &str = "meta";
 Each subtree gets its own **prefixed storage context** — a wrapper that
 automatically prepends the 32-byte Blake3 prefix to all keys:
 
-```
+```text
     Subtree path: ["identities", "alice"]
     Prefix: Blake3(path) = [0xab, 0x3f, 0xc2, ...]  (32 bytes)
 
@@ -94,7 +94,7 @@ automatically prepends the 32-byte Blake3 prefix to all keys:
 
 The context types:
 
-```
+```text
     Without transaction:
     PrefixedRocksDbImmediateStorageContext
     └── Reads/writes directly to DB with prefix

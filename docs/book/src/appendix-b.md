@@ -2,7 +2,7 @@
 
 ## V0 Proofs (Merk-only)
 
-```
+```text
 Generate:
   1. Start at root Merk, execute query → collect matching elements
   2. For each matching tree element with subquery:
@@ -22,7 +22,7 @@ Verify:
 When any layer involves a CommitmentTree, MmrTree, BulkAppendTree, or
 DenseAppendOnlyFixedSizeTree, a V1 proof is generated:
 
-```
+```text
 Generate:
   1. Same as V0 for Merk layers
   2. When descending into CommitmentTree:

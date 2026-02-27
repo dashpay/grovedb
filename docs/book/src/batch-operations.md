@@ -132,7 +132,7 @@ This is a significant optimization when many operations target the same subtree.
 A key property of GroveDB batches is **atomicity across subtrees**. A single batch
 can modify elements in multiple subtrees, and either all changes commit or none do:
 
-```
+```text
     Batch:
     1. Delete ["balances", "alice"]       (remove balance)
     2. Insert ["balances", "bob"] = 100   (add balance)

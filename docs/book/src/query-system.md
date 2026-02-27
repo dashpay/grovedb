@@ -156,8 +156,12 @@ graph LR
 
 When combined with `left_to_right: false`, the iteration is reversed:
 
-```
-    SizedQuery { query: RangeFull, limit: Some(3), offset: None, left_to_right: false }
+```text
+    SizedQuery {
+        query: Query { items: [RangeFull], left_to_right: false, .. },
+        limit: Some(3),
+        offset: None
+    }
 
     Result: [H, G, F]
 ```
@@ -167,7 +171,7 @@ When combined with `left_to_right: false`, the iteration is reversed:
 Multiple PathQueries can be merged into a single query for efficiency. The merge
 algorithm finds common path prefixes and combines query items:
 
-```
+```text
     Query A: path=["users"], query=Key("alice")
     Query B: path=["users"], query=Key("bob")
 

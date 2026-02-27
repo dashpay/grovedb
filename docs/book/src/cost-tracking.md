@@ -145,7 +145,7 @@ compressions:
 
 The general formula for Blake3:
 
-```
+```text
 hash_calls = 1 + (input_bytes - 1) / 64
 ```
 

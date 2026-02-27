@@ -36,7 +36,7 @@ exactly 2^h leaves.
 The key insight: **the binary representation of the leaf count determines the
 peak structure**. Each 1-bit in the binary form corresponds to one peak:
 
-```
+```text
 Leaf count    Binary    Peaks
 ─────────     ──────    ─────
 1             1         one peak h=0
@@ -59,13 +59,13 @@ Each node in the MMR has a **position** (0-indexed). Leaves and internal nodes
 are interleaved in a specific pattern. Here is step-by-step growth:
 
 **After 1 leaf (mmr_size = 1):**
-```
+```text
 pos:  0
       leaf₀        ← one peak at height 0
 ```
 
 **After 2 leaves (mmr_size = 3):**
-```
+```text
 pos:     2          ← internal: blake3(leaf₀.hash || leaf₁.hash)
         / \
        0   1        ← leaves
@@ -76,7 +76,7 @@ When leaf₁ was appended, it created a height-0 peak. But there was already a
 height-0 peak (leaf₀), so they **merged** into a height-1 peak.
 
 **After 3 leaves (mmr_size = 4):**
-```
+```text
 pos:     2     3    ← peak h=1, peak h=0
         / \
        0   1
@@ -86,7 +86,7 @@ Two peaks. No merge — heights 1 and 0 are different.
 ```
 
 **After 4 leaves (mmr_size = 7):**
-```
+```text
 pos:         6              ← internal: merge of nodes 2 and 5
            /   \
          2       5          ← internal nodes
@@ -101,7 +101,7 @@ are equal-height adjacent peaks, so they merge into node₆. **A cascade of two
 merges from a single append.**
 
 **After 5 leaves (mmr_size = 8):**
-```
+```text
 pos:         6         7    ← peak h=2, peak h=0
            /   \
          2       5
@@ -112,7 +112,7 @@ Two peaks. (Binary: 5 = 101₂)
 ```
 
 **After 7 leaves (mmr_size = 11):**
-```
+```text
 pos:         6         10    ← peak h=2, peak h=1, peak h=0
            /   \      / \
          2       5   8   9    7
@@ -123,7 +123,7 @@ Three peaks. (Binary: 7 = 111₂)
 ```
 
 **After 8 leaves (mmr_size = 15):**
-```
+```text
 pos:              14                     ← single peak h=3
                /      \
             6            13
@@ -200,7 +200,7 @@ pub fn hash_count_for_push(leaf_count: u64) -> u32 {
 The MMR stores both leaves and internal nodes in a flat position space, so
 `mmr_size` is always larger than the leaf count. The exact relationship is:
 
-```
+```text
 mmr_size = 2 * leaf_count - popcount(leaf_count)
 ```
 
@@ -239,7 +239,7 @@ the leaf count on the fly.
 An MMR has multiple peaks (one per 1-bit in the leaf count). To produce a
 single 32-byte root hash, the peaks are **"bagged"** right-to-left:
 
-```
+```text
 root = bag_rhs_peaks(peaks):
     start with rightmost peak
     fold leftward: blake3(left_peak || accumulated_right)
@@ -304,7 +304,7 @@ fn blake3_merge(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 > produces `value: None`.
 
 **Serialization format:**
-```
+```text
 Internal: [0x00] [hash: 32 bytes]                                = 33 bytes
 Leaf:     [0x01] [hash: 32 bytes] [value_len: 4 BE] [value...]   = 37 + len bytes
 ```
@@ -320,7 +320,7 @@ field — the MMR root hash flows as the Merk **child hash** via
 `insert_subtree(subtree_root_hash)`, authenticating the MMR state.
 
 **Storage keys** are position-based:
-```
+```text
 key = 'm' || position_as_be_u64    (9 bytes: prefix + u64 BE)
 ```
 
@@ -356,7 +356,7 @@ computing node₆, even though node₅ hasn't been committed to RocksDB yet.
 
 **Root hash propagation to the GroveDB state root:**
 
-```
+```text
 combined_value_hash = blake3(
     blake3(varint(len) || element_bytes),   ← value_hash from serialized Element
     mmr_root_hash                           ← child_hash = type-specific root
@@ -385,7 +385,7 @@ db.mmr_tree_get_value(path, key, leaf_index, tx, version)
 db.mmr_tree_leaf_count(path, key, tx, version)
 ```
 
-#### Append Flow
+### Append Flow
 
 The append operation is the most complex, performing 8 steps:
 
@@ -413,7 +413,7 @@ nodes). Step 5 calls `mmr.commit()` which flushes the ckb MemStore to the
 MmrStore. Step 7 calls `insert_subtree` with the new MMR root as the child hash
 (via `subtree_root_hash`), since MmrTree has no child Merk.
 
-#### Read Operations
+### Read Operations
 
 `mmr_tree_root_hash` computes the root from MMR data in storage.
 `mmr_tree_leaf_count` derives the leaf count from `mmr_size` in the Element.
@@ -475,13 +475,13 @@ layered proof structure (see §9.6). The proof demonstrates that specific leaf
 values exist at specific positions within the MMR, and that their hashes are
 consistent with the `mmr_root` stored in the parent element.
 
-#### Query Encoding
+### Query Encoding
 
 Query keys encode positions as **big-endian u64 bytes**. This preserves
 lexicographic sort order (since BE encoding is monotonic), allowing all standard
 `QueryItem` variants to work:
 
-```
+```text
 QueryItem::Key([0,0,0,0,0,0,0,5])            → leaf index 5
 QueryItem::RangeInclusive([..2]..=[..7])      → leaf indices [2, 3, 4, 5, 6, 7]
 QueryItem::RangeFrom([..10]..)                → leaf indices [10, 11, ..., N-1]
@@ -491,7 +491,7 @@ QueryItem::RangeFull                          → all leaves [0..leaf_count)
 A safety cap of **10,000,000 indices** prevents memory exhaustion from
 unbounded range queries. An empty MMR (zero leaves) returns an empty proof.
 
-#### The MmrTreeProof Structure
+### The MmrTreeProof Structure
 
 ```rust
 struct MmrTreeProof {
@@ -505,7 +505,7 @@ The `proof_items` contain the minimal set of hashes needed to reconstruct
 paths from the proved leaves up to the MMR root. These are the sibling nodes
 at each level and the uninvolved peak hashes.
 
-#### Generation Flow
+### Generation Flow
 
 ```mermaid
 graph TD
@@ -532,11 +532,11 @@ nodes must be in memory.
 Step 5 is where the ckb library does the heavy lifting: given the MMR size and
 the positions to prove, it determines which sibling and peak hashes are needed.
 
-#### Worked Example
+### Worked Example
 
 **Proving leaf 2 in a 5-leaf MMR (mmr_size = 8):**
 
-```
+```text
 MMR structure:
 pos:         6         7
            /   \
@@ -567,7 +567,7 @@ Verification is **pure** — it requires no database access. The verifier needs
 only the proof bytes and the expected MMR root hash (which it extracts from the
 parent element proven in the Merk layer above).
 
-#### Verification Steps
+### Verification Steps
 
 ```mermaid
 graph TD
@@ -594,11 +594,11 @@ The ckb `MerkleProof::verify` function reconstructs the root from the leaves
 and proof items, then compares it (using `PartialEq`, which checks only the
 hash) against the expected root.
 
-#### Chain of Trust
+### Chain of Trust
 
 The full chain from GroveDB state root to a verified leaf value:
 
-```
+```text
 GroveDB state_root (known/trusted)
 │
 ├─ V0 Merk proof layer 0: proves subtree exists at root
@@ -616,7 +616,7 @@ GroveDB state_root (known/trusted)
     └─ Result: leaf₂ = [verified value bytes]
 ```
 
-#### Security Properties
+### Security Properties
 
 - **mmr_size cross-validation:** The proof's `mmr_size` must match the
   element's `mmr_size`. A mismatch indicates the proof was generated against
@@ -647,7 +647,7 @@ calls: 1 for the leaf hash, plus one merge hash per cascade level.
 
 **Amortized analysis:** Over N appends, the total hash count is:
 
-```
+```text
 Σ (1 + trailing_ones(i)) for i = 0..N-1
 = N + Σ trailing_ones(i) for i = 0..N-1
 = N + (N - popcount(N))

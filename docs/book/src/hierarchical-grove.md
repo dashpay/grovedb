@@ -54,7 +54,7 @@ graph TD
 Every element in GroveDB is addressed by a **path** — a sequence of byte strings
 that navigate from the root through subtrees to the target key:
 
-```
+```text
     Path: ["identities", "alice123", "name"]
 
     Step 1: In root tree, look up "identities" → Tree element
@@ -86,7 +86,7 @@ pub type SubtreePrefix = [u8; 32];
 
 For example:
 
-```
+```text
     Path: ["identities", "alice123"]
     Prefix: Blake3(["identities", "alice123"]) = [0xab, 0x3f, ...]  (32 bytes)
 
@@ -99,7 +99,7 @@ For example:
 
 This ensures:
 - No key collisions between subtrees (32-byte prefix = 256-bit isolation)
-- O(1) prefix computation (just a hash)
+- Efficient prefix computation (single Blake3 hash over the path bytes)
 - Subtree data is colocated in RocksDB for cache efficiency
 
 ## Root Hash Propagation Through the Hierarchy
@@ -107,7 +107,7 @@ This ensures:
 When a value changes deep in the grove, the change must **propagate upward** to
 update the root hash:
 
-```
+```text
     Change: Update "name" to "ALICE" in identities/alice123/
 
     Step 1: Update value in alice123's Merk tree

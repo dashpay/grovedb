@@ -46,7 +46,7 @@ pub enum ReferencePathType {
 
 Let's walk through each with diagrams.
 
-#### AbsolutePathReference
+### AbsolutePathReference
 
 The simplest type. Stores the full path to the target:
 
@@ -87,7 +87,7 @@ graph TD
 
 > X stores the full absolute path `[P, Q, R]`. No matter where X is located, it always resolves to the same target.
 
-#### UpstreamRootHeightReference
+### UpstreamRootHeightReference
 
 Keeps the first N segments of the current path, then appends a new path:
 
@@ -122,11 +122,11 @@ graph TD
     style gQ fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
 ```
 
-#### UpstreamRootHeightWithParentPathAdditionReference
+### UpstreamRootHeightWithParentPathAdditionReference
 
 Like UpstreamRootHeight, but re-appends the last segment of the current path:
 
-```
+```text
     Reference at path [A, B, C, D, E] key=X
     UpstreamRootHeightWithParentPathAdditionReference(2, [P, Q])
 
@@ -138,11 +138,11 @@ Like UpstreamRootHeight, but re-appends the last segment of the current path:
     Useful for: indexes where the parent key should be preserved
 ```
 
-#### UpstreamFromElementHeightReference
+### UpstreamFromElementHeightReference
 
 Discards the last N segments, then appends:
 
-```
+```text
     Reference at path [A, B, C, D] key=X
     UpstreamFromElementHeightReference(1, [P, Q])
 
@@ -151,7 +151,7 @@ Discards the last N segments, then appends:
     Append [P, Q]:    [A, B, C, P, Q]
 ```
 
-#### CousinReference
+### CousinReference
 
 Replaces only the immediate parent with a new key:
 
@@ -193,11 +193,11 @@ graph TD
 
 > The "cousin" is a sibling subtree of the reference's grandparent. The reference navigates up two levels, then descends into the cousin subtree.
 
-#### RemovedCousinReference
+### RemovedCousinReference
 
 Like CousinReference but replaces the parent with a multi-segment path:
 
-```
+```text
     Reference at path [A, B, C, D] key=X
     RemovedCousinReference([M, N])
 
@@ -207,7 +207,7 @@ Like CousinReference but replaces the parent with a multi-segment path:
     Push key X:    [A, B, M, N, X]
 ```
 
-#### SiblingReference
+### SiblingReference
 
 The simplest relative reference — just changes the key within the same parent:
 

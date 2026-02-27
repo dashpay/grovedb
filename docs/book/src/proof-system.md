@@ -314,14 +314,14 @@ pub struct LayerProof {
 involves an MmrTree, BulkAppendTree, or DenseAppendOnlyFixedSizeTree, it produces
 `GroveDBProof::V1`.
 
-#### How Non-Merk Tree Proofs Bind to the Root Hash
+### How Non-Merk Tree Proofs Bind to the Root Hash
 
 The parent Merk tree proves the element's serialized bytes via a standard Merk
 proof node (`KVValueHash`). The type-specific root (e.g., `mmr_root` or
 `state_root`) flows as the Merk **child hash** — it is NOT embedded in the
 element bytes:
 
-```
+```text
 combined_value_hash = combine_hash(
     Blake3(varint(len) || element_bytes),   ← contains count, height, etc.
     type_specific_root                      ← mmr_root / state_root / dense_root
@@ -331,7 +331,7 @@ combined_value_hash = combine_hash(
 The type-specific proof then proves that the queried data is consistent with
 the type-specific root that was used as the child hash.
 
-#### MMR Tree Proofs
+### MMR Tree Proofs
 
 An MMR proof demonstrates that specific leaves exist at known positions within
 the MMR, and that the MMR's root hash matches the child hash stored in the
@@ -384,7 +384,7 @@ start/end positions selects a contiguous range of MMR leaves.
 3. Cross-validate that `proof.mmr_size` matches the element's stored size
 4. Return the proved leaf values
 
-#### BulkAppendTree Proofs
+### BulkAppendTree Proofs
 
 BulkAppendTree proofs are more complex because data lives in two places: sealed
 chunk blobs and the in-progress buffer. A range proof must return:
@@ -431,7 +431,7 @@ toward the query limit, not each chunk blob as a whole. If a query has
 `limit: 100` and a chunk contains 1024 entries with 500 overlapping the range,
 all 500 entries count toward the limit.
 
-#### DenseAppendOnlyFixedSizeTree Proofs
+### DenseAppendOnlyFixedSizeTree Proofs
 
 A dense tree proof demonstrates that specific positions hold specific values,
 authenticated against the tree's root hash (which flows as the Merk child hash).

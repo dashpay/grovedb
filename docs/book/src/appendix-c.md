@@ -2,19 +2,19 @@
 
 ## Merk Node Hash
 
-```
+```text
 node_hash = blake3(key_len(1) || key || value_hash(32) || left_hash(32) || right_hash(32))
 ```
 
 ## GroveDB Subtree Prefix
 
-```
+```text
 prefix = blake3(parent_prefix || key) → 32 bytes
 ```
 
 ## State Root — BulkAppendTree
 
-```
+```text
 state_root = blake3("bulk_state" || mmr_root || dense_tree_root)
 ```
 
@@ -22,7 +22,7 @@ The buffer is a DenseFixedSizedMerkleTree — `dense_tree_root` is its root hash
 
 ## Dense Merkle Root — BulkAppendTree Chunks
 
-```
+```text
 leaves[i] = blake3(entry[i])
 internal[parent] = blake3(left_child || right_child)
 root = internal[0] (top of complete binary tree)
@@ -30,7 +30,7 @@ root = internal[0] (top of complete binary tree)
 
 ## Dense Tree Root Hash — DenseAppendOnlyFixedSizeTree
 
-```
+```text
 Recursive from root (position 0):
   all nodes with data: blake3(blake3(value) || H(left) || H(right))
                        (no domain separation tags — structure externally authenticated)
@@ -41,7 +41,7 @@ Recursive from root (position 0):
 
 ## Dense Tree Proof Verification — DenseAppendOnlyFixedSizeTree
 
-```
+```text
 Given: entries, node_value_hashes, node_hashes, expected_root
 
 Pre-checks:
@@ -69,20 +69,20 @@ GroveDB cross-validation:
 
 ## MMR Node Merge — MmrTree / BulkAppendTree Chunk MMR
 
-```
+```text
 parent.hash = blake3(left.hash || right.hash)
 ```
 
 ## Sinsemilla Root — CommitmentTree
 
-```
+```text
 Sinsemilla hash over Pallas curve (see Zcash ZIP-244)
 MerkleHashOrchard::empty_root(Level::from(32)) for empty tree
 ```
 
 ## combine_hash (Parent-Child Binding)
 
-```
+```text
 combine_hash(value_hash, child_hash) = blake3(value_hash || child_hash)
 For Merk trees: child_hash = child Merk root hash
 For non-Merk trees: child_hash = type-specific root (mmr_root, state_root, dense_root, etc.)

@@ -140,7 +140,7 @@ graph TD
 The sum is maintained at the Merk level through the `TreeFeatureType::SummedMerkNode(i64)`
 feature type. During tree propagation, each node's aggregate data is recomputed:
 
-```
+```text
 aggregate_sum = own_sum + left_child_sum + right_child_sum
 ```
 

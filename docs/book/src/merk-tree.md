@@ -94,7 +94,7 @@ invented by Adelson-Velsky and Landis. The key invariant is:
 
 This is expressed as the **balance factor**:
 
-```
+```text
 balance_factor = right_height - left_height
 ```
 
@@ -172,7 +172,7 @@ graph TD
 
 Both trees are valid AVL trees! The worst-case height of an AVL tree is:
 
-```
+```text
 h ≤ 1.4404 × log₂(n + 2) − 0.3277
 ```
 
@@ -233,7 +233,7 @@ When an insertion or deletion causes a balance factor to reach ±2, the tree mus
 be **rotated** to restore the AVL invariant. There are four cases, reducible to
 two fundamental operations.
 
-#### Single Left Rotation
+### Single Left Rotation
 
 Used when a node is **right-heavy** (bf = +2) and its right child is
 **right-heavy or balanced** (bf ≥ 0):
@@ -295,7 +295,7 @@ fn rotate<V>(self, left: bool, ...) -> CostResult<Self, Error> {
 Note how `maybe_balance` is called recursively — the rotation itself might create
 new imbalances that need further correction.
 
-#### Double Rotation (Left-Right)
+### Double Rotation (Left-Right)
 
 Used when a node is **left-heavy** (bf = -2) but its left child is
 **right-heavy** (bf > 0). A single rotation would not fix this:
@@ -394,7 +394,7 @@ apply multiple changes in a single pass. This is critical for efficiency: a batc
 of N operations on a tree of M elements takes **O((M + N) log(M + N))** time,
 versus O(N log M) for sequential inserts.
 
-#### The MerkBatch Type
+### The MerkBatch Type
 
 ```rust
 type MerkBatch<K> = [(K, Op)];
@@ -411,7 +411,7 @@ enum Op {
 }
 ```
 
-#### Strategy 1: build() — Building from Scratch
+### Strategy 1: build() — Building from Scratch
 
 When the tree is empty, `build()` constructs a balanced tree directly from the
 sorted batch using a **median-split** algorithm:
@@ -461,7 +461,7 @@ fn build(batch: &MerkBatch<K>, ...) -> CostResult<Option<TreeNode>, Error> {
 
 This produces a tree with height ⌈log₂(n)⌉ — perfectly balanced.
 
-#### Strategy 2: apply_sorted() — Merging into Existing Tree
+### Strategy 2: apply_sorted() — Merging into Existing Tree
 
 When the tree already has data, `apply_sorted()` uses **binary search** to find
 where each batch operation belongs, then recursively applies operations to the left
@@ -532,7 +532,7 @@ fn recurse(self, batch: &MerkBatch<K>, mid: usize, ...) {
 }
 ```
 
-#### Node Removal
+### Node Removal
 
 When deleting a node with two children, Merk promotes the **edge node** from the
 taller subtree. This minimizes the chance of needing additional rotations:
