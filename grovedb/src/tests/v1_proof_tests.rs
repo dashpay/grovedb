@@ -735,6 +735,321 @@ fn test_dense_tree_v1_proof_serialization_roundtrip() {
 }
 
 // ===========================================================================
+// V1 proof succinctness tests
+// ===========================================================================
+
+/// BulkAppendTree disjoint query: proves a coarsened range but the verifier
+/// should only include positions that match the actual query items.
+///
+/// With chunk_power=2 (height=2, chunk_size=4), inserting 8 values creates
+/// 2 full chunks (0-3, 4-7). Querying positions 1 and 6 (disjoint) forces
+/// the prover to include both full chunk blobs. Without filtering, the
+/// verifier would return all 6 positions in [1,7). With filtering, only
+/// positions 1 and 6 appear.
+#[test]
+fn test_bulk_append_tree_v1_proof_disjoint_query_succinctness() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // chunk_power=2 → height=2, capacity=3, chunk_item_count=4
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(2),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk append tree");
+
+    // Append 8 values → 2 full chunks, 0 buffer entries
+    for i in 0..8u64 {
+        db.bulk_append(
+            EMPTY_PATH,
+            b"bulk",
+            format!("val_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("bulk append");
+    }
+
+    // Query two disjoint positions: 1 (chunk 0) and 6 (chunk 1)
+    let mut inner_query = Query::new();
+    inner_query.insert_key(1u64.to_be_bytes().to_vec());
+    inner_query.insert_key(6u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"bulk".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    // Succinctness: exactly 2 results (positions 1 and 6), not 6 from [1,7)
+    assert_eq!(
+        result_set.len(),
+        2,
+        "should have exactly 2 results for disjoint query, got {}",
+        result_set.len()
+    );
+
+    let (_, key0, elem0) = &result_set[0];
+    assert_eq!(key0, &1u64.to_be_bytes().to_vec(), "first result key");
+    match elem0.as_ref().expect("element") {
+        Element::Item(data, _) => assert_eq!(data, b"val_1"),
+        other => panic!("expected Item, got {:?}", other),
+    }
+
+    let (_, key1, elem1) = &result_set[1];
+    assert_eq!(key1, &6u64.to_be_bytes().to_vec(), "second result key");
+    match elem1.as_ref().expect("element") {
+        Element::Item(data, _) => assert_eq!(data, b"val_6"),
+        other => panic!("expected Item, got {:?}", other),
+    }
+}
+
+/// DenseTree disjoint query: verify_for_query enforces both completeness
+/// (all queried positions present) and soundness (no extra positions).
+#[test]
+fn test_dense_tree_v1_proof_disjoint_query_succinctness() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // height=3, capacity=7
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Insert 7 values (full capacity)
+    for i in 0..7u16 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("d_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dense insert");
+    }
+
+    // Query disjoint positions: 1 and 5
+    let mut inner_query = Query::new();
+    inner_query.insert_key(1u16.to_be_bytes().to_vec());
+    inner_query.insert_key(5u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    // Succinctness: exactly 2 results (positions 1 and 5)
+    assert_eq!(
+        result_set.len(),
+        2,
+        "should have exactly 2 results, got {}",
+        result_set.len()
+    );
+
+    let (_, key0, elem0) = &result_set[0];
+    assert_eq!(key0, &1u16.to_be_bytes().to_vec());
+    match elem0.as_ref().expect("element") {
+        Element::Item(data, _) => assert_eq!(data, b"d_1"),
+        other => panic!("expected Item, got {:?}", other),
+    }
+
+    let (_, key1, elem1) = &result_set[1];
+    assert_eq!(key1, &5u16.to_be_bytes().to_vec());
+    match elem1.as_ref().expect("element") {
+        Element::Item(data, _) => assert_eq!(data, b"d_5"),
+        other => panic!("expected Item, got {:?}", other),
+    }
+}
+
+/// MMR disjoint key query: verify that only queried leaf indices appear
+/// in the result set.
+#[test]
+fn test_mmr_tree_v1_proof_disjoint_query_succinctness() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Append 10 values
+    for i in 0..10u64 {
+        db.mmr_tree_append(
+            EMPTY_PATH,
+            b"mmr",
+            format!("leaf_{}", i).into_bytes(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("append");
+    }
+
+    // Query disjoint leaf indices: 2 and 7
+    let mut inner_query = Query::new();
+    inner_query.insert_key(2u64.to_be_bytes().to_vec());
+    inner_query.insert_key(7u64.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"mmr".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof");
+
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+
+    // Succinctness: exactly 2 results (leaf indices 2 and 7)
+    assert_eq!(
+        result_set.len(),
+        2,
+        "should have exactly 2 results, got {}",
+        result_set.len()
+    );
+
+    let (_, key0, elem0) = &result_set[0];
+    assert_eq!(key0, &2u64.to_be_bytes().to_vec());
+    match elem0.as_ref().expect("element") {
+        Element::Item(data, _) => assert_eq!(data, b"leaf_2"),
+        other => panic!("expected Item, got {:?}", other),
+    }
+
+    let (_, key1, elem1) = &result_set[1];
+    assert_eq!(key1, &7u64.to_be_bytes().to_vec());
+    match elem1.as_ref().expect("element") {
+        Element::Item(data, _) => assert_eq!(data, b"leaf_7"),
+        other => panic!("expected Item, got {:?}", other),
+    }
+}
+
+// ===========================================================================
 // V0 proof rejection tests for non-Merk tree subqueries
 // ===========================================================================
 
