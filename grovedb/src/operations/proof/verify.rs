@@ -830,11 +830,14 @@ impl GroveDb {
         )?;
 
         // Combine sinsemilla_root with bulk_state_root to produce the
-        // authenticated child hash
-        Ok(grovedb_commitment_tree::compute_commitment_tree_state_root(
-            &sinsemilla_root,
-            &bulk_state_root,
-        ))
+        // authenticated child hash.
+        // Inlined from grovedb_commitment_tree::compute_commitment_tree_state_root
+        // to avoid pulling the heavy orchard crate into the verify feature.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"ct_state");
+        hasher.update(&sinsemilla_root);
+        hasher.update(&bulk_state_root);
+        Ok(*hasher.finalize().as_bytes())
     }
 
     /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.

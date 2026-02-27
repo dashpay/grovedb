@@ -3032,16 +3032,23 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
-        // Collect non-Merk tree delete paths so we can clean up their
-        // data storage after apply_body.
-        let non_merk_delete_paths: Vec<(Vec<Vec<u8>>, TreeType)> = ops
+        // Non-Merk trees (MmrTree, BulkAppendTree, DenseTree, CommitmentTree)
+        // store their data in the data storage namespace of their subtree path
+        // (e.g. MMR nodes, buffer entries, dense tree values). When apply_body
+        // processes a DeleteTree op it removes the Element from the parent Merk
+        // and clears the subtree's Merk metadata, but does NOT clear the raw
+        // data these tree types wrote. Without explicit cleanup, deleting a
+        // non-Merk tree would leave orphaned data that could corrupt a new tree
+        // inserted at the same path. Standard Merk trees don't need this because
+        // their data IS their Merk — deleting the subtree clears everything.
+        let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
             .iter()
             .filter_map(|op| {
                 if let GroveOp::DeleteTree(tree_type) = &op.op {
                     if tree_type.uses_non_merk_data_storage() {
                         let mut child_path = op.path.to_path();
                         child_path.push(op.key.as_ref()?.as_slice().to_vec());
-                        return Some((child_path, *tree_type));
+                        return Some(child_path);
                     }
                 }
                 None
@@ -3079,7 +3086,7 @@ impl GroveDb {
         );
 
         // Clean up data storage for deleted non-Merk trees.
-        for (child_path, _tree_type) in &non_merk_delete_paths {
+        for child_path in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
             // Clear data namespace for all non-Merk tree types
             let mut storage = self
@@ -3214,15 +3221,16 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
-        // Collect non-Merk tree delete paths for storage cleanup
-        let non_merk_delete_paths: Vec<(Vec<Vec<u8>>, TreeType)> = ops
+        // See comment above in apply_batch_with_element_flags_update for why
+        // non-Merk tree deletions need explicit data storage cleanup.
+        let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
             .iter()
             .filter_map(|op| {
                 if let GroveOp::DeleteTree(tree_type) = &op.op {
                     if tree_type.uses_non_merk_data_storage() {
                         let mut child_path = op.path.to_path();
                         child_path.push(op.key.as_ref()?.as_slice().to_vec());
-                        return Some((child_path, *tree_type));
+                        return Some(child_path);
                     }
                 }
                 None
@@ -3314,7 +3322,7 @@ impl GroveDb {
         );
 
         // Clean up data storage for deleted non-Merk trees.
-        for (child_path, _tree_type) in &non_merk_delete_paths {
+        for child_path in &non_merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
             let mut storage = self
                 .db
