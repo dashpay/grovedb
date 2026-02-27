@@ -675,6 +675,44 @@ impl GroveDb {
             .verify_and_get_root()
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
+        // Get the sub-query items for this path to enforce succinctness.
+        let sub_query =
+            query
+                .query_items_at_path(path, grove_version)?
+                .ok_or(Error::InvalidProof(
+                    query.clone(),
+                    "MMR path not found in query".to_string(),
+                ))?;
+
+        // Build expected and proved sets for completeness + soundness.
+        let leaf_count = grovedb_merkle_mountain_range::mmr_size_to_leaf_count(element_mmr_size);
+        let expected_indices = Self::expand_query_to_u64_positions(&sub_query.items, leaf_count)?;
+        let proved_indices: BTreeSet<u64> = verified_leaves.iter().map(|(idx, _)| *idx).collect();
+
+        // Soundness: no unrequested leaves in the proof.
+        let extra: Vec<u64> = proved_indices
+            .difference(&expected_indices)
+            .copied()
+            .collect();
+        if !extra.is_empty() {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!("MMR proof contains unrequested leaf indices {:?}", extra),
+            ));
+        }
+
+        // Completeness: every requested leaf must be in the proof.
+        let missing: Vec<u64> = expected_indices
+            .difference(&proved_indices)
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!("MMR proof missing requested leaf indices {:?}", missing),
+            ));
+        }
+
         // Add each verified leaf to the result set
         for (leaf_index, value) in verified_leaves {
             let key = leaf_index.to_be_bytes().to_vec();
@@ -749,7 +787,9 @@ impl GroveDb {
                     "BulkAppendTree path not found in query".to_string(),
                 ))?;
 
-        // Determine the range from query items, clamped to total_count
+        // Extract a bounding range from query items to pull values from the
+        // proof result. This may be broader than the actual query (e.g. for
+        // disjoint queries), so we filter each position below.
         let (start, end) = Self::extract_range_from_query_items(&sub_query.items)?;
         let end = end.min(proof_result.total_count);
 
@@ -757,8 +797,33 @@ impl GroveDb {
             .values_in_range(start, end)
             .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
 
+        // Completeness: every position the query expects must be present in
+        // the proof values. Build the expected set and check coverage.
+        let expected_positions =
+            Self::expand_query_to_u64_positions(&sub_query.items, element_total_count)?;
+        let proved_positions: BTreeSet<u64> = values.iter().map(|(pos, _)| *pos).collect();
+        let missing: Vec<u64> = expected_positions
+            .difference(&proved_positions)
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "BulkAppendTree proof missing requested positions {:?}",
+                    missing
+                ),
+            ));
+        }
+
+        // Filter values by checking each position against the actual query
+        // items. This enforces soundness: only positions matching the
+        // original query are included in results.
         for (position, value) in values {
             let key = position.to_be_bytes().to_vec();
+            if !sub_query.items.iter().any(|item| item.contains(&key)) {
+                continue;
+            }
             let element = Element::new_item(value);
             let serialized = element.serialize(grove_version).map_err(|e| {
                 Error::CorruptedData(format!(
@@ -870,11 +935,26 @@ impl GroveDb {
             grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof::decode_from_slice(dense_bytes)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
 
-        // Height and count are NOT stored in the proof — they come from the
-        // authenticated parent Element in Merk.  We pass them from the Element
-        // directly into verification.
+        // Get the sub-query items for this path to build a query for
+        // verify_for_query, which enforces both completeness and soundness.
+        let sub_query =
+            query
+                .query_items_at_path(path, grove_version)?
+                .ok_or(Error::InvalidProof(
+                    query.clone(),
+                    "DenseTree path not found in query".to_string(),
+                ))?;
+        let level_query = Query {
+            items: sub_query.items.to_vec(),
+            left_to_right: sub_query.left_to_right,
+            ..Default::default()
+        };
+
+        // verify_for_query validates height+count from the authenticated Element,
+        // checks completeness (all queried positions present) and soundness
+        // (no unrequested positions), then returns only matching entries.
         let (computed_root, verified_entries): ([u8; 32], Vec<(u16, Vec<u8>)>) = dense_proof
-            .verify_and_get_root(element_height, element_count)
+            .verify_for_query(&level_query, element_height, element_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Add each verified entry to the result set
@@ -928,7 +1008,7 @@ impl GroveDb {
                     }
                     let pos = u64::from_be_bytes(k[..8].try_into().unwrap());
                     min_start = min_start.min(pos);
-                    max_end = max_end.max(pos + 1);
+                    max_end = max_end.max(pos.saturating_add(1));
                 }
                 QueryItem::Range(r) => {
                     if r.start.len() != 8 || r.end.len() != 8 {
@@ -950,7 +1030,7 @@ impl GroveDb {
                     let s = u64::from_be_bytes(r.start()[..8].try_into().unwrap());
                     let e = u64::from_be_bytes(r.end()[..8].try_into().unwrap());
                     min_start = min_start.min(s);
-                    max_end = max_end.max(e + 1);
+                    max_end = max_end.max(e.saturating_add(1));
                 }
                 QueryItem::RangeFull(..) => {
                     min_start = 0;
@@ -984,7 +1064,7 @@ impl GroveDb {
                     }
                     let e = u64::from_be_bytes(r.end[..8].try_into().unwrap());
                     min_start = 0;
-                    max_end = max_end.max(e + 1);
+                    max_end = max_end.max(e.saturating_add(1));
                 }
                 QueryItem::RangeAfter(r) => {
                     if r.start.len() != 8 {
@@ -993,7 +1073,7 @@ impl GroveDb {
                         ));
                     }
                     let s = u64::from_be_bytes(r.start[..8].try_into().unwrap());
-                    min_start = min_start.min(s + 1);
+                    min_start = min_start.min(s.saturating_add(1));
                     max_end = u64::MAX;
                 }
                 QueryItem::RangeAfterTo(r) => {
@@ -1004,7 +1084,7 @@ impl GroveDb {
                     }
                     let s = u64::from_be_bytes(r.start[..8].try_into().unwrap());
                     let e = u64::from_be_bytes(r.end[..8].try_into().unwrap());
-                    min_start = min_start.min(s + 1);
+                    min_start = min_start.min(s.saturating_add(1));
                     max_end = max_end.max(e);
                 }
                 QueryItem::RangeAfterToInclusive(r) => {
@@ -1015,8 +1095,8 @@ impl GroveDb {
                     }
                     let s = u64::from_be_bytes(r.start()[..8].try_into().unwrap());
                     let e = u64::from_be_bytes(r.end()[..8].try_into().unwrap());
-                    min_start = min_start.min(s + 1);
-                    max_end = max_end.max(e + 1);
+                    min_start = min_start.min(s.saturating_add(1));
+                    max_end = max_end.max(e.saturating_add(1));
                 }
             }
         }
@@ -1028,6 +1108,118 @@ impl GroveDb {
         }
 
         Ok((min_start, max_end))
+    }
+
+    /// Expand query items (with BE u64 keys) into a set of individual positions
+    /// bounded by `count`. Used for completeness checking in non-Merk
+    /// verifiers.
+    fn expand_query_to_u64_positions(
+        items: &[grovedb_merk::proofs::query::QueryItem],
+        count: u64,
+    ) -> Result<BTreeSet<u64>, Error> {
+        use grovedb_merk::proofs::query::QueryItem;
+
+        fn be_u64(key: &[u8]) -> Result<u64, Error> {
+            let arr: [u8; 8] = key.try_into().map_err(|_| {
+                Error::InvalidInput("position key must be exactly 8 bytes (BE u64)")
+            })?;
+            Ok(u64::from_be_bytes(arr))
+        }
+
+        if count == 0 {
+            return Ok(BTreeSet::new());
+        }
+
+        const MAX_POSITIONS: usize = 10_000_000;
+        let max_idx = count - 1;
+        let mut positions = BTreeSet::new();
+
+        macro_rules! check_cap {
+            ($positions:expr) => {
+                if $positions.len() > MAX_POSITIONS {
+                    return Err(Error::InvalidInput("query range too large"));
+                }
+            };
+        }
+
+        for item in items {
+            match item {
+                QueryItem::Key(key) => {
+                    let idx = be_u64(key)?;
+                    if idx < count {
+                        positions.insert(idx);
+                    }
+                }
+                QueryItem::RangeInclusive(range) => {
+                    let s = be_u64(range.start())?;
+                    let e = be_u64(range.end())?.min(max_idx);
+                    for idx in s..=e {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::Range(range) => {
+                    let s = be_u64(&range.start)?;
+                    let e = be_u64(&range.end)?.min(count);
+                    for idx in s..e {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::RangeFrom(range) => {
+                    let s = be_u64(&range.start)?;
+                    for idx in s..count {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::RangeTo(range) => {
+                    let e = be_u64(&range.end)?.min(count);
+                    for idx in 0..e {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::RangeToInclusive(range) => {
+                    let e = be_u64(&range.end)?.min(max_idx);
+                    for idx in 0..=e {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::RangeFull(..) => {
+                    for idx in 0..count {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::RangeAfter(range) => {
+                    let s = be_u64(&range.start)?;
+                    for idx in s.saturating_add(1)..count {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::RangeAfterTo(range) => {
+                    let s = be_u64(&range.start)?;
+                    let e = be_u64(&range.end)?.min(count);
+                    for idx in s.saturating_add(1)..e {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+                QueryItem::RangeAfterToInclusive(range) => {
+                    let s = be_u64(range.start())?;
+                    let e = be_u64(range.end())?.min(max_idx);
+                    for idx in s.saturating_add(1)..=e {
+                        positions.insert(idx);
+                        check_cap!(positions);
+                    }
+                }
+            }
+        }
+
+        Ok(positions)
     }
 
     fn verify_layer_proof<T>(

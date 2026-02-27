@@ -2120,3 +2120,68 @@ fn test_verify_grovedb_dense_tree_empty() {
         issues
     );
 }
+
+/// Regression test: `check_subtree_exists` was missing the
+/// `DenseAppendOnlyFixedSizeTree` variant, causing `is_empty_tree` and
+/// other APIs that rely on it to report path-not-found for dense tree
+/// subtree paths.
+#[test]
+fn test_is_empty_tree_dense_tree_subtree() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Create parent → dense child
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        [b"parent".as_slice()].as_ref(),
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree under parent");
+
+    // is_empty_tree should succeed and return true (empty dense tree)
+    let is_empty = db
+        .is_empty_tree(
+            [b"parent".as_slice(), b"dense".as_slice()].as_ref(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("is_empty_tree should succeed for dense tree subtree");
+    assert!(is_empty, "empty dense tree should report as empty");
+
+    // Insert a value and check again
+    db.dense_tree_insert(
+        [b"parent".as_slice()].as_ref(),
+        b"dense",
+        b"value_0".to_vec(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("dense insert");
+
+    let is_empty = db
+        .is_empty_tree(
+            [b"parent".as_slice(), b"dense".as_slice()].as_ref(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("is_empty_tree should succeed for non-empty dense tree");
+    assert!(!is_empty, "non-empty dense tree should report as not empty");
+}
