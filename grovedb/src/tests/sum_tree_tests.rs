@@ -2180,4 +2180,153 @@ mod tests {
             "Expected total should exceed i64::MAX to demonstrate BigSumTree"
         );
     }
+
+    #[test]
+    fn test_sum_item_proof_generation_and_verification() {
+        // Regression test: SumItem was silently dropped during proof generation
+        // because the match in prove_subqueries only handled Element::Item,
+        // causing SumItem to fall through to `_ => continue`.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a SumTree and insert SumItems
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key1",
+            Element::new_sum_item(42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item 1");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key2",
+            Element::new_sum_item(-10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item 2");
+
+        // Prove a query for the sum items
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sum_tree".to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof for sum items");
+
+        let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof containing sum items");
+
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        // Both SumItems must appear in the result set
+        assert_eq!(
+            result_set.len(),
+            2,
+            "both sum items should be in the proof result set"
+        );
+
+        let elem1 = Element::deserialize(&result_set[0].value, grove_version)
+            .expect("should deserialize first element");
+        let elem2 = Element::deserialize(&result_set[1].value, grove_version)
+            .expect("should deserialize second element");
+        assert!(matches!(elem1, Element::SumItem(42, _)));
+        assert!(matches!(elem2, Element::SumItem(-10, _)));
+    }
+
+    #[test]
+    fn test_item_with_sum_item_proof_generation_and_verification() {
+        // Regression test: ItemWithSumItem was silently dropped during proof
+        // generation for the same reason as SumItem.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a SumTree and insert ItemWithSumItem elements
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key1",
+            Element::new_item_with_sum_item(b"payload1".to_vec(), 100),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum item 1");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key2",
+            Element::new_item_with_sum_item(b"payload2".to_vec(), 200),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum item 2");
+
+        // Prove a query for the items
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sum_tree".to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof for item with sum items");
+
+        let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof containing item with sum items");
+
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        // Both ItemWithSumItem elements must appear in the result set
+        assert_eq!(
+            result_set.len(),
+            2,
+            "both item-with-sum-items should be in the proof result set"
+        );
+
+        let elem1 = Element::deserialize(&result_set[0].value, grove_version)
+            .expect("should deserialize first element");
+        let elem2 = Element::deserialize(&result_set[1].value, grove_version)
+            .expect("should deserialize second element");
+        assert!(matches!(elem1, Element::ItemWithSumItem(_, 100, _)));
+        assert!(matches!(elem2, Element::ItemWithSumItem(_, 200, _)));
+    }
 }

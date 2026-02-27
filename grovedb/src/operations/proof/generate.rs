@@ -327,7 +327,11 @@ impl GroveDb {
                                 }
                                 has_a_result_at_level |= true;
                             }
-                            Ok(Element::Item(..)) if !done_with_results => {
+                            Ok(Element::Item(..))
+                            | Ok(Element::SumItem(..))
+                            | Ok(Element::ItemWithSumItem(..))
+                                if !done_with_results =>
+                            {
                                 #[cfg(feature = "proof_debug")]
                                 {
                                     println!("found {}", hex_to_ascii(key));
@@ -415,7 +419,22 @@ impl GroveDb {
                             // Node::Hash()     // we are done with the
                             // results, we can modify the proof to alter
                             // }
-                            _ => continue,
+
+                            // Explicit: when done_with_results is true, the above guards fail
+                            // and we skip. Listed explicitly so adding a new Element variant
+                            // produces a compile error here instead of silently dropping it.
+                            Ok(Element::Item(..))
+                            | Ok(Element::SumItem(..))
+                            | Ok(Element::ItemWithSumItem(..))
+                            | Ok(Element::Tree(..))
+                            | Ok(Element::SumTree(..))
+                            | Ok(Element::BigSumTree(..))
+                            | Ok(Element::CountTree(..))
+                            | Ok(Element::CountSumTree(..))
+                            | Ok(Element::ProvableCountTree(..))
+                            | Ok(Element::ProvableCountSumTree(..)) => continue,
+                            // Deserialization errors: skip silently
+                            Err(_) => continue,
                         }
                     }
                     _ => continue,
