@@ -126,9 +126,9 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::CommitmentTreeInsert { .. } => {
+            GroveOp::CommitmentTreeInsert { payload, .. } => {
                 // After preprocessing, CommitmentTreeInsert becomes
-                // ReplaceTreeRootKey. The base cost is a tree root key
+                // ReplaceNonMerkTreeRoot. The base cost is a tree root key
                 // replacement in the parent Merk.
                 let item_cost = GroveDb::worst_case_merk_replace_tree(
                     key,
@@ -142,8 +142,8 @@ impl GroveOp {
                 // Worst-case frontier size with 32 ommers (max depth):
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 = 1066
                 const MAX_FRONTIER_SIZE: u32 = 1066;
-                // Worst-case buffer entry (cmx 32 + max ciphertext ~216)
-                const MAX_BUFFER_ENTRY_SIZE: u32 = 280;
+                // Buffer entry: cmx (32 bytes) + payload
+                let buffer_entry_size = 32 + payload.len() as u32;
                 // Worst-case Sinsemilla hashes per append:
                 // 32 (root computation) + 32 (all ommers cascade) = 64
                 const MAX_SINSEMILLA_HASHES: u32 = 64;
@@ -152,7 +152,7 @@ impl GroveOp {
                 item_cost.add_cost(OperationCost {
                     seek_count: 3, // frontier load + frontier save + buffer write
                     storage_cost: StorageCost {
-                        added_bytes: MAX_BUFFER_ENTRY_SIZE,
+                        added_bytes: buffer_entry_size,
                         replaced_bytes: MAX_FRONTIER_SIZE,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
@@ -161,7 +161,7 @@ impl GroveOp {
                     sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
                 })
             }
-            GroveOp::MmrTreeAppend { value: _value } => {
+            GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::worst_case_merk_replace_tree(
                     key,
@@ -175,28 +175,29 @@ impl GroveOp {
                 // nodes. Maximum trailing_ones for u64 is 64 (at 2^64-1 leaves).
                 // Each merge reads 1 sibling.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                // Leaf node worst case: 37 + 256 (max value) = 293
-                // Internal node: 33 bytes. Use 293 as safe upper bound.
-                const MAX_NODE_SIZE: u32 = 293;
+                // Internal node: 33 bytes (1 flag + 32 hash)
+                const INTERNAL_NODE_SIZE: u32 = 33;
+                // Leaf node: 37 + value_len (1 flag + 32 hash + 4 length + value)
+                let leaf_node_size = 37 + value.len() as u32;
                 // hash_count_for_push = 1 + trailing_ones. Max = 65.
                 const MAX_HASH_CALLS: u32 = 65;
                 // Max writes: 1 leaf + 64 internal = 65
-                const MAX_NODE_WRITES: u32 = 65;
+                const MAX_INTERNAL_WRITES: u32 = 64;
                 // Max reads: 64 sibling reads for merges
                 const MAX_NODE_READS: u32 = 64;
                 item_cost.add_cost(OperationCost {
-                    seek_count: MAX_NODE_WRITES + MAX_NODE_READS,
+                    seek_count: 1 + MAX_INTERNAL_WRITES + MAX_NODE_READS,
                     storage_cost: StorageCost {
-                        added_bytes: MAX_NODE_SIZE + 33 * (MAX_NODE_WRITES - 1),
+                        added_bytes: leaf_node_size + INTERNAL_NODE_SIZE * MAX_INTERNAL_WRITES,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (33 * MAX_NODE_READS) as u64,
+                    storage_loaded_bytes: (INTERNAL_NODE_SIZE * MAX_NODE_READS) as u64,
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
             }
-            GroveOp::BulkAppend { value: _value } => {
+            GroveOp::BulkAppend { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::worst_case_merk_replace_tree(
                     key,
@@ -209,10 +210,14 @@ impl GroveOp {
                 // Worst case: compaction trigger. Buffer fills → serialize
                 // chunk blob → compute dense Merkle root → push to MMR.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                // Max epoch_size = 2^31. Chunk blob can be very large.
-                // Use conservative max: 2^15 entries * 256 bytes = 8MB.
-                // For cost estimation we cap at a reasonable bound.
-                const MAX_CHUNK_BLOB_SIZE: u32 = 65536; // 64KB safe bound
+                // Chunk blob worst case depends on epoch_size. For a single
+                // append the value itself is always written. If compaction
+                // triggers, the chunk blob is epoch_size * avg_value_size.
+                // We use value.len() for the per-append write and a capped
+                // compaction overhead.
+                let value_size = value.len() as u32;
+                // Max compaction overhead: 64KB safe bound for chunk blob
+                const MAX_COMPACTION_BLOB: u32 = 65536;
                 // Dense Merkle root: epoch_size hashes. Buffer hash: 1.
                 // MMR push: up to 64 merges.
                 const MAX_HASH_CALLS: u32 = 1024 + 1 + 65; // epoch hashes + buffer + MMR
@@ -222,7 +227,7 @@ impl GroveOp {
                 item_cost.add_cost(OperationCost {
                     seek_count: MAX_WRITES + MAX_READS,
                     storage_cost: StorageCost {
-                        added_bytes: MAX_CHUNK_BLOB_SIZE,
+                        added_bytes: value_size + MAX_COMPACTION_BLOB,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
@@ -231,7 +236,7 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
-            GroveOp::DenseTreeInsert { value: _value } => {
+            GroveOp::DenseTreeInsert { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::worst_case_merk_replace_tree(
                     key,
@@ -247,18 +252,18 @@ impl GroveOp {
                 // Max height = 15 (u16 count), so max positions = 2^15-1 = 32767.
                 // Using practical max: height 8 → 255 positions.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                const MAX_VALUE_SIZE: u32 = 256;
+                let value_size = value.len() as u32;
                 const MAX_COUNT: u32 = 255; // practical worst case (height 8)
                 // 2 hash calls per node (value_hash + node_hash)
                 const MAX_HASH_CALLS: u32 = MAX_COUNT * 2;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1 + MAX_COUNT, // 1 write + MAX_COUNT reads
                     storage_cost: StorageCost {
-                        added_bytes: MAX_VALUE_SIZE,
+                        added_bytes: value_size,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (MAX_VALUE_SIZE * MAX_COUNT) as u64,
+                    storage_loaded_bytes: (value_size as u64) * (MAX_COUNT as u64),
                     hash_node_calls: MAX_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })

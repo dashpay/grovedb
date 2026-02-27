@@ -709,7 +709,7 @@ impl GroveDb {
     {
         let (element_total_count, element_height) = match element {
             Element::BulkAppendTree(total_count, height, _) => (*total_count, *height),
-            Element::CommitmentTree(_, total_count, height, _) => (*total_count, *height),
+            Element::CommitmentTree(total_count, height, _) => (*total_count, *height),
             _ => {
                 return Err(Error::InvalidProof(
                     query.clone(),

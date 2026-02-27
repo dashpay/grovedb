@@ -49,7 +49,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(_, _, chunk_power, _) => {
+            Element::CommitmentTree(_, chunk_power, _) => {
                 Some((None, TreeType::CommitmentTree(chunk_power)))
             }
             Element::MmrTree(..) => Some((None, TreeType::MmrTree)),
@@ -80,7 +80,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(_, _, chunk_power, _) => {
+            Element::CommitmentTree(_, chunk_power, _) => {
                 Some((&NONE_ROOT_KEY, TreeType::CommitmentTree(*chunk_power)))
             }
             Element::MmrTree(..) => Some((&NONE_ROOT_KEY, TreeType::MmrTree)),
@@ -107,7 +107,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
-            Element::CommitmentTree(_, _, chunk_power, flags) => {
+            Element::CommitmentTree(_, chunk_power, flags) => {
                 Some((flags, TreeType::CommitmentTree(*chunk_power)))
             }
             Element::MmrTree(.., flags) => Some((flags, TreeType::MmrTree)),
@@ -131,7 +131,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
-            Element::CommitmentTree(_, _, chunk_power, _) => {
+            Element::CommitmentTree(_, chunk_power, _) => {
                 Some(TreeType::CommitmentTree(*chunk_power))
             }
             Element::MmrTree(..) => Some(TreeType::MmrTree),
@@ -178,7 +178,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => MaybeTree::Tree(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
-            Element::CommitmentTree(_, _, chunk_power, _) => {
+            Element::CommitmentTree(_, chunk_power, _) => {
                 MaybeTree::Tree(TreeType::CommitmentTree(*chunk_power))
             }
             Element::MmrTree(..) => MaybeTree::Tree(TreeType::MmrTree),

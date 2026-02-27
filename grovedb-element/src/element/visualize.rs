@@ -132,11 +132,10 @@ impl Visualize for Element {
                     }
                 }
             }
-            Element::CommitmentTree(sinsemilla_root, count, chunk_power, flags) => {
+            Element::CommitmentTree(count, chunk_power, flags) => {
                 drawer.write(
                     format!(
-                        "commitment_tree: sinsemilla: {} count: {count} chunk_power: {chunk_power}",
-                        hex::encode(sinsemilla_root)
+                        "commitment_tree: count: {count} chunk_power: {chunk_power}",
                     )
                     .as_bytes(),
                 )?;

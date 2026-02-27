@@ -153,16 +153,16 @@ where
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
                 | GroveOp::DenseTreeInsert { .. }
-                | GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. } => {
                     // User-facing tree ops are preprocessed before batch
-                    // execution. ReplaceTreeRootKey / ReplaceNonMerkTreeRoot
-                    // are internal (produced by preprocessing).
+                    // execution. ReplaceNonMerkTreeRoot is produced by
+                    // preprocessing and passed through.
                     Ok(())
                 }
-                GroveOp::InsertTreeWithRootHash { .. }
+                GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::InsertNonMerkTree { .. } => Err(Error::InvalidBatchOperation(
-                    "insert tree hash is an internal operation only",
+                    "replace and insert tree hash are internal operations only",
                 )),
             };
             if op_result.is_err() {

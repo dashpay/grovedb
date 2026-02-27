@@ -28,10 +28,9 @@ pub const COUNT_TREE_COST_SIZE: u32 = SUM_LAYER_COST_SIZE; // 12
 /// The cost of a count sum tree
 pub const COUNT_SUM_TREE_COST_SIZE: u32 = SUM_AND_COUNT_LAYER_COST_SIZE; // 21
 
-/// The cost of a commitment tree (32 bytes sinsemilla_root + 9 bytes
-/// total_count (u64 varint worst case) + 1 byte chunk_power (u8) + 2 bytes
-/// overhead)
-pub const COMMITMENT_TREE_COST_SIZE: u32 = 32 + 9 + 1 + 2; // 44
+/// The cost of a commitment tree (9 bytes total_count (u64 varint worst case)
+/// + 1 byte chunk_power (u8) + 2 bytes overhead)
+pub const COMMITMENT_TREE_COST_SIZE: u32 = 9 + 1 + 2; // 12
 
 /// The cost of an MMR tree (9 bytes for mmr_size (u64 varint worst case) +
 /// 2 bytes overhead). The MMR root hash is stored as the Merk child hash,

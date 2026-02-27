@@ -997,7 +997,6 @@ impl GroveDb {
                             // proof (CommitmentTree stores data via
                             // BulkAppendTree, root_key is always None)
                             Ok(Element::CommitmentTree(
-                                _sinsemilla_root,
                                 total_count,
                                 chunk_power,
                                 _,

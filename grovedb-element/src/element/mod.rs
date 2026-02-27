@@ -80,15 +80,16 @@ pub enum Element {
     /// Items are stored in the data namespace via BulkAppendTree;
     /// the frontier is stored in data storage.
     ///
-    /// Fields: `(sinsemilla_root, total_count, chunk_power, flags)`
-    /// - `sinsemilla_root`: The Sinsemilla frontier root hash, authenticated
-    ///   through the Merk hash chain via the BulkAppendTree state_root as child
-    ///   Merk hash.
+    /// Fields: `(total_count, chunk_power, flags)`
     /// - `total_count`: Number of notes appended so far.
     /// - `chunk_power`: Log2 of the chunk size (actual size = `1 <<
     ///   chunk_power`).
     /// - `flags`: Optional per-element metadata.
-    CommitmentTree([u8; 32], u64, u8, Option<ElementFlags>),
+    ///
+    /// The Sinsemilla frontier root hash is not stored in the Element; it
+    /// is persisted in data storage and verified by opening the frontier.
+    /// The BulkAppendTree state_root flows as the Merk child hash.
+    CommitmentTree(u64, u8, Option<ElementFlags>),
     /// MMR (Merkle Mountain Range) tree: append-only authenticated data
     /// structure with zero rotations, O(N) total hashes, sequential I/O.
     ///
@@ -263,11 +264,10 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
-            Element::CommitmentTree(sinsemilla_root, total_count, chunk_power, flags) => {
+            Element::CommitmentTree(total_count, chunk_power, flags) => {
                 write!(
                     f,
-                    "CommitmentTree(sinsemilla: {}, count: {}, chunk_power: {}{})",
-                    hex::encode(sinsemilla_root),
+                    "CommitmentTree(count: {}, chunk_power: {}{})",
                     total_count,
                     chunk_power,
                     flags

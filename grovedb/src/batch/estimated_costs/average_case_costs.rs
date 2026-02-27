@@ -129,9 +129,9 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::CommitmentTreeInsert { .. } => {
+            GroveOp::CommitmentTreeInsert { payload, .. } => {
                 // After preprocessing, CommitmentTreeInsert becomes
-                // ReplaceTreeRootKey. The base cost is a tree root key
+                // ReplaceNonMerkTreeRoot. The base cost is a tree root key
                 // replacement in the parent Merk.
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
@@ -147,8 +147,8 @@ impl GroveOp {
                 // Average frontier size with ~16 ommers:
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 = 554
                 const AVG_FRONTIER_SIZE: u32 = 554;
-                // Buffer entry write: 1 seek + ~280 bytes (cmx + ciphertext)
-                const AVG_BUFFER_ENTRY_SIZE: u32 = 280;
+                // Buffer entry: cmx (32 bytes) + payload
+                let buffer_entry_size = 32 + payload.len() as u32;
                 // Average Sinsemilla hashes per append:
                 // 32 (root computation) + 1 (avg ommer updates) = 33
                 const AVG_SINSEMILLA_HASHES: u32 = 33;
@@ -157,7 +157,7 @@ impl GroveOp {
                 item_cost.add_cost(OperationCost {
                     seek_count: 3, // frontier load + frontier save + buffer write
                     storage_cost: StorageCost {
-                        added_bytes: AVG_BUFFER_ENTRY_SIZE,
+                        added_bytes: buffer_entry_size,
                         replaced_bytes: AVG_FRONTIER_SIZE,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
@@ -166,7 +166,7 @@ impl GroveOp {
                     sinsemilla_hash_calls: AVG_SINSEMILLA_HASHES,
                 })
             }
-            GroveOp::MmrTreeAppend { value: _value } => {
+            GroveOp::MmrTreeAppend { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
@@ -181,27 +181,27 @@ impl GroveOp {
                 // read for merging.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 // Internal node: 33 bytes (1 flag + 32 hash)
-                // Leaf node: 37 + value_len. Average value ~32 bytes = 69 bytes.
-                // Weighted average (half internal, half leaf): ~51 bytes
-                const AVG_NODE_SIZE: u32 = 51;
+                const INTERNAL_NODE_SIZE: u32 = 33;
+                // Leaf node: 37 + value_len (1 flag + 32 hash + 4 length + value)
+                let leaf_node_size = 37 + value.len() as u32;
                 // hash_count_for_push = 1 + trailing_ones. Average ≈ 2.
                 const AVG_HASH_CALLS: u32 = 2;
-                // Average writes: 2 (1 leaf + 1 merge). Reads: 1 sibling.
-                const AVG_WRITES: u32 = 2;
+                // Average writes: 2 (1 leaf + 1 internal merge). Reads: 1 sibling.
+                const AVG_INTERNAL_WRITES: u32 = 1;
                 const AVG_READS: u32 = 1;
                 item_cost.add_cost(OperationCost {
-                    seek_count: AVG_WRITES + AVG_READS,
+                    seek_count: 1 + AVG_INTERNAL_WRITES + AVG_READS,
                     storage_cost: StorageCost {
-                        added_bytes: AVG_NODE_SIZE * AVG_WRITES,
+                        added_bytes: leaf_node_size + INTERNAL_NODE_SIZE * AVG_INTERNAL_WRITES,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (AVG_NODE_SIZE * AVG_READS) as u64,
+                    storage_loaded_bytes: (INTERNAL_NODE_SIZE * AVG_READS) as u64,
                     hash_node_calls: AVG_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
             }
-            GroveOp::BulkAppend { value: _value } => {
+            GroveOp::BulkAppend { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
@@ -214,14 +214,13 @@ impl GroveOp {
                 // Most appends only write to the buffer (O(1)). Compaction
                 // happens once per epoch_size appends and is amortized.
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                // Average buffer entry: ~64 bytes (value)
-                const AVG_ENTRY_SIZE: u32 = 64;
+                let entry_size = value.len() as u32;
                 // 1 blake3 hash for running buffer hash chain
                 const AVG_HASH_CALLS: u32 = 1;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1, // 1 buffer entry write
                     storage_cost: StorageCost {
-                        added_bytes: AVG_ENTRY_SIZE,
+                        added_bytes: entry_size,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
@@ -230,7 +229,7 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
-            GroveOp::DenseTreeInsert { value: _value } => {
+            GroveOp::DenseTreeInsert { value } => {
                 // Cost of updating parent element in the Merk
                 let item_cost = GroveDb::average_case_merk_replace_tree(
                     key,
@@ -244,18 +243,18 @@ impl GroveOp {
                 // 1 storage read + 2 hash calls (value_hash + node_hash).
                 // Average count ≈ 8 (half-full tree, height 4).
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
-                const AVG_VALUE_SIZE: u32 = 64;
+                let value_size = value.len() as u32;
                 const AVG_COUNT: u32 = 8;
                 // 2 hash calls per filled node (value_hash + node_hash)
                 const AVG_HASH_CALLS: u32 = AVG_COUNT * 2;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1 + AVG_COUNT, // 1 write + AVG_COUNT reads for root hash
                     storage_cost: StorageCost {
-                        added_bytes: AVG_VALUE_SIZE,
+                        added_bytes: value_size,
                         replaced_bytes: 0,
                         removed_bytes: StorageRemovedBytes::NoStorageRemoval,
                     },
-                    storage_loaded_bytes: (AVG_VALUE_SIZE * AVG_COUNT) as u64,
+                    storage_loaded_bytes: (value_size as u64) * (AVG_COUNT as u64),
                     hash_node_calls: AVG_HASH_CALLS,
                     sinsemilla_hash_calls: 0,
                 })
