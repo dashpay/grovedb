@@ -485,7 +485,11 @@ impl GroveDb {
                             | Ok(Element::CountTree(..))
                             | Ok(Element::CountSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
-                            | Ok(Element::ProvableCountSumTree(..)) => continue,
+                            | Ok(Element::ProvableCountSumTree(..))
+                            | Ok(Element::CommitmentTree(..))
+                            | Ok(Element::MmrTree(..))
+                            | Ok(Element::BulkAppendTree(..))
+                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
                             // Deserialization errors: skip silently
                             Err(_) => continue,
                         }

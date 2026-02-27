@@ -1591,3 +1591,234 @@ fn test_dense_tree_v1_proof_with_limit() {
         }
     }
 }
+
+// ===========================================================================
+// Transaction tests
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_transaction_commit() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    let tx = db.start_transaction();
+
+    db.dense_tree_insert(
+        EMPTY_PATH,
+        b"dense",
+        b"tx_data".to_vec(),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert in tx");
+
+    // Not yet visible outside tx (count still 0)
+    let count_outside = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count outside tx");
+    assert_eq!(count_outside, 0);
+
+    // Visible inside tx
+    let count_inside = db
+        .dense_tree_count(EMPTY_PATH, b"dense", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count inside tx");
+    assert_eq!(count_inside, 1);
+
+    // Commit
+    db.commit_transaction(tx).unwrap().expect("commit");
+
+    // Now visible
+    let count_after = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count after commit");
+    assert_eq!(count_after, 1);
+}
+
+#[test]
+fn test_dense_tree_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    let tx = db.start_transaction();
+
+    db.dense_tree_insert(
+        EMPTY_PATH,
+        b"dense",
+        b"rollback_data".to_vec(),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert in tx");
+
+    // Rollback
+    db.rollback_transaction(&tx).expect("rollback");
+    drop(tx);
+
+    // Not visible after rollback
+    let count = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(count, 0);
+
+    let root = db
+        .dense_tree_root_hash(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("root hash after rollback");
+    assert_eq!(root, [0u8; 32]);
+}
+
+#[test]
+fn test_dense_tree_batch_with_transaction() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    let tx = db.start_transaction();
+
+    let ops = vec![
+        QualifiedGroveDbOp::dense_tree_insert_op(
+            vec![b"dense".to_vec()],
+            b"batch_tx_1".to_vec(),
+        ),
+        QualifiedGroveDbOp::dense_tree_insert_op(
+            vec![b"dense".to_vec()],
+            b"batch_tx_2".to_vec(),
+        ),
+    ];
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch in tx");
+
+    // Not visible outside transaction
+    let count_outside = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count outside tx");
+    assert_eq!(count_outside, 0);
+
+    // Commit
+    db.commit_transaction(tx).unwrap().expect("commit");
+
+    // Now visible
+    let count_after = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count after commit");
+    assert_eq!(count_after, 2);
+}
+
+// ===========================================================================
+// Batch propagation tests
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_batch_propagation_with_sibling() {
+    // Exercises batch propagation when a DenseTreeInsert op coexists with
+    // a sibling item insert under the same parent in a single batch.
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    let root_before = db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root before");
+
+    // Single batch: append to dense tree AND insert sibling item
+    let ops = vec![
+        QualifiedGroveDbOp::dense_tree_insert_op(
+            vec![b"parent".to_vec(), b"dense".to_vec()],
+            b"dense_value".to_vec(),
+        ),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"parent".to_vec()],
+            b"sibling".to_vec(),
+            Element::new_item(b"sibling_data".to_vec()),
+        ),
+    ];
+
+    db.apply_batch(ops, None, None, grove_version)
+        .unwrap()
+        .expect("batch with dense append + sibling insert");
+
+    // Dense tree should have 1 element
+    let count = db
+        .dense_tree_count([b"parent"].as_ref(), b"dense", None, grove_version)
+        .unwrap()
+        .expect("count after batch");
+    assert_eq!(count, 1);
+
+    // Sibling should exist
+    let sibling = db
+        .get([b"parent"].as_ref(), b"sibling", None, grove_version)
+        .unwrap()
+        .expect("get sibling");
+    assert_eq!(sibling, Element::new_item(b"sibling_data".to_vec()));
+
+    // Root hash should change
+    let root_after = db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("root after");
+    assert_ne!(root_before, root_after, "root hash should change after batch");
+}

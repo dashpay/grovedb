@@ -614,3 +614,111 @@ fn test_v1_proof_serialization_roundtrip() {
     assert_eq!(root_hash, expected_root, "root hash should match");
     assert_eq!(result_set.len(), 2, "should have 2 results");
 }
+
+// ===========================================================================
+// DenseTree V1 proof tests
+// ===========================================================================
+
+#[test]
+fn test_dense_tree_v1_proof_serialization_roundtrip() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // 1. Create an empty dense tree (height 3, capacity 7) at root
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(3),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // 2. Insert 3 values via dense_tree_insert
+    for i in 0..3u16 {
+        let value = format!("item_{}", i).into_bytes();
+        db.dense_tree_insert(EMPTY_PATH, b"dense", value, None, grove_version)
+            .unwrap()
+            .expect("dense tree insert");
+    }
+
+    // 3. Build query: select positions 0 and 2 (u16 big-endian keys)
+    let mut inner_query = Query::new();
+    inner_query.insert_key(0u16.to_be_bytes().to_vec());
+    inner_query.insert_key(2u16.to_be_bytes().to_vec());
+
+    let path_query = PathQuery {
+        path: vec![],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"dense".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner_query.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    // 4. Generate V1 proof
+    let proof_bytes = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("generate V1 proof for dense tree");
+
+    // 5. Deserialize with bincode and check it's V1
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+    let (decoded_proof, _): (GroveDBProof, _) =
+        bincode::decode_from_slice(&proof_bytes, config)
+            .expect("decode proof from bytes");
+
+    match &decoded_proof {
+        GroveDBProof::V1(_) => {} // expected
+        GroveDBProof::V0(_) => panic!("expected V1 proof, got V0"),
+    }
+
+    // 6. Verify the proof and check results
+    let (root_hash, result_set) = GroveDb::verify_query_with_options(
+        &proof_bytes,
+        &path_query,
+        grovedb_merk::proofs::query::VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: false,
+        },
+        grove_version,
+    )
+    .expect("verify V1 proof for dense tree");
+
+    let expected_root = db
+        .grove_db
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("should get root hash");
+    assert_eq!(root_hash, expected_root, "root hash should match");
+    assert_eq!(result_set.len(), 2, "should have 2 results for positions 0 and 2");
+
+    // Verify the returned elements match what was inserted
+    let (_, key0, elem0) = &result_set[0];
+    assert_eq!(key0, &0u16.to_be_bytes().to_vec(), "first key should be position 0");
+    match elem0.as_ref().expect("element should be Some") {
+        Element::Item(data, _) => assert_eq!(data, b"item_0", "position 0 value mismatch"),
+        other => panic!("expected Item at position 0, got {:?}", other),
+    }
+
+    let (_, key2, elem2) = &result_set[1];
+    assert_eq!(key2, &2u16.to_be_bytes().to_vec(), "second key should be position 2");
+    match elem2.as_ref().expect("element should be Some") {
+        Element::Item(data, _) => assert_eq!(data, b"item_2", "position 2 value mismatch"),
+        other => panic!("expected Item at position 2, got {:?}", other),
+    }
+}

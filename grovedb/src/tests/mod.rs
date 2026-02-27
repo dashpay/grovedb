@@ -6,6 +6,7 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod batch_rejection_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;

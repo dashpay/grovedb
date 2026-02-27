@@ -984,4 +984,50 @@ mod tests {
             cost.storage_cost.added_bytes
         );
     }
+
+    #[test]
+    fn test_batch_root_one_dense_tree_insert_op_average_case_costs() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"key1".to_vec(),
+            Element::empty_dense_tree(3),
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(0),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
+        );
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs for dense tree insert");
+
+        let cost = db.apply_batch(ops, None, Some(&tx), grove_version).cost;
+        assert!(
+            average_case_cost.eq(&cost),
+            "average cost not eq {:?} \n to cost {:?}",
+            average_case_cost,
+            cost
+        );
+        assert_eq!(
+            cost.storage_cost.added_bytes,
+            average_case_cost.storage_cost.added_bytes
+        );
+    }
 }
