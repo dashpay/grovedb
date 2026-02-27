@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use grovedb_bulk_append_tree::BulkAppendTreeProof;
+use grovedb_commitment_tree::COMMITMENT_TREE_DATA_KEY;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
     cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -993,25 +994,20 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            // CommitmentTree with subquery → generate BulkAppend
-                            // proof (CommitmentTree stores data via
-                            // BulkAppendTree, root_key is always None)
-                            Ok(Element::CommitmentTree(
-                                total_count,
-                                chunk_power,
-                                _,
-                            )) if !done_with_results
-                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            // CommitmentTree with subquery → generate proof
+                            // that includes sinsemilla_root for anchor binding
+                            Ok(Element::CommitmentTree(total_count, chunk_power, _))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
-                                    self.generate_bulk_append_layer_proof(
+                                    self.generate_commitment_tree_layer_proof(
                                         &lower_path,
                                         path_query,
-                                        [0u8; 32], // unused param
                                         total_count,
                                         chunk_power,
                                         overall_limit,
@@ -1274,6 +1270,84 @@ impl GroveDb {
 
         Ok(LayerProof {
             merk_proof: ProofBytes::BulkAppendTree(proof_bytes),
+            lower_layers: BTreeMap::new(),
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Generate a CommitmentTree layer proof that includes the Sinsemilla root.
+    ///
+    /// The proof bytes are: `sinsemilla_root (32 bytes) || bulk_append_proof`.
+    /// This binds the Orchard anchor to the GroveDB root hash, allowing the
+    /// verifier to reconstruct the combined state root.
+    fn generate_commitment_tree_layer_proof(
+        &self,
+        subtree_path: &[&[u8]],
+        path_query: &PathQuery,
+        total_count: u64,
+        chunk_power: u8,
+        overall_limit: &mut Option<u16>,
+        tx: &crate::Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<LayerProof, Error> {
+        let mut cost = OperationCost::default();
+
+        // 1. Read the Sinsemilla frontier from storage to get the current root
+        let path_vec: Vec<Vec<u8>> = subtree_path.iter().map(|s| s.to_vec()).collect();
+        let path_refs: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();
+        let storage_path = grovedb_path::SubtreePath::from(path_refs.as_slice());
+
+        let storage_ctx = self
+            .db
+            .get_immediate_storage_context(storage_path, tx)
+            .unwrap_add_cost(&mut cost);
+
+        let sinsemilla_root = match storage_ctx.get(COMMITMENT_TREE_DATA_KEY).value {
+            Ok(Some(frontier_bytes)) => {
+                match grovedb_commitment_tree::CommitmentFrontier::deserialize(
+                    frontier_bytes.as_ref(),
+                ) {
+                    Ok(frontier) => frontier.root_hash(),
+                    Err(_) => grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
+                }
+            }
+            _ => grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
+        };
+        drop(storage_ctx);
+
+        // 2. Generate the BulkAppendTree proof (reuse existing method)
+        let bulk_layer_proof = cost_return_on_error!(
+            &mut cost,
+            self.generate_bulk_append_layer_proof(
+                subtree_path,
+                path_query,
+                [0u8; 32],
+                total_count,
+                chunk_power,
+                overall_limit,
+                tx,
+                grove_version,
+            )
+        );
+
+        // 3. Extract bulk proof bytes and prepend sinsemilla_root
+        let bulk_bytes = match bulk_layer_proof.merk_proof {
+            ProofBytes::BulkAppendTree(bytes) => bytes,
+            _ => {
+                return Err(Error::InternalError(
+                    "expected BulkAppendTree proof bytes from generate_bulk_append_layer_proof"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        let mut combined_bytes = Vec::with_capacity(32 + bulk_bytes.len());
+        combined_bytes.extend_from_slice(&sinsemilla_root);
+        combined_bytes.extend_from_slice(&bulk_bytes);
+
+        Ok(LayerProof {
+            merk_proof: ProofBytes::CommitmentTree(combined_bytes),
             lower_layers: BTreeMap::new(),
         })
         .wrap_with_cost(cost)

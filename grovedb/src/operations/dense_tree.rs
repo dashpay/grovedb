@@ -368,6 +368,18 @@ impl GroveDb {
                 }
             };
 
+            // Pre-validate capacity for ALL values before writing anything to
+            // storage. Without this check, partial inserts would persist in the
+            // transaction on failure.
+            let capacity = ((1u32 << height) - 1) as u16;
+            let needed = existing_count as u32 + values.len() as u32;
+            if needed > capacity as u32 {
+                return Err(Error::InvalidInput(
+                    "batch inserts exceed dense tree capacity",
+                ))
+                .wrap_with_cost(cost);
+            }
+
             // Build subtree path for storage
             let mut st_path_vec = path_vec.clone();
             st_path_vec.push(key_bytes.clone());

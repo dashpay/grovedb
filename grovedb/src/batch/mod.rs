@@ -752,9 +752,25 @@ impl QualifiedGroveDbOp {
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
     ) -> GroveDbOpConsistencyResults {
+        // Reject internal-only ops that should never appear in user-submitted
+        // batches. These are produced by preprocessing or propagation only.
+        let internal_only_ops: Vec<(QualifiedGroveDbOp, u16)> = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.op,
+                    GroveOp::ReplaceTreeRootKey { .. }
+                        | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                        | GroveOp::InsertTreeWithRootHash { .. }
+                        | GroveOp::InsertNonMerkTree { .. }
+                )
+            })
+            .map(|op| (op.clone(), 1))
+            .collect();
+
         let ops_len = ops.len();
         // operations should not have any duplicates
-        let mut repeated_ops = vec![];
+        let mut repeated_ops = internal_only_ops;
         for (i, op) in ops.iter().enumerate() {
             if i == ops_len {
                 continue;
@@ -799,6 +815,39 @@ impl QualifiedGroveDbOp {
             if !doubled_ops.is_empty() {
                 doubled_ops.push(op.op.clone());
                 same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
+            }
+        }
+
+        // Detect conflicts between keyless ops (appends) and keyed ops
+        // (delete/delete-tree) targeting the same tree element.
+        // Keyless ops encode the tree as the last path segment; keyed ops use
+        // (parent_path, key).
+        let mut append_delete_conflicts = vec![];
+        {
+            // Collect (parent_path, tree_key) for every keyless op.
+            let mut keyless_tree_ids: HashMap<(Vec<Vec<u8>>, Vec<u8>), usize> = HashMap::new();
+            for (i, op) in ops.iter().enumerate() {
+                if op.key.is_none() {
+                    let full = op.path.to_path();
+                    if let Some((tree_key, parent)) = full.split_last() {
+                        keyless_tree_ids
+                            .entry((parent.to_vec(), tree_key.clone()))
+                            .or_insert(i);
+                    }
+                }
+            }
+            // Check keyed Delete / DeleteTree ops for conflicts.
+            for op in ops.iter() {
+                if !matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
+                    continue;
+                }
+                if let Some(ref key_info) = op.key {
+                    let parent = op.path.to_path();
+                    let key = key_info.get_key_clone();
+                    if let Some(&idx) = keyless_tree_ids.get(&(parent, key)) {
+                        append_delete_conflicts.push((ops[idx].clone(), op.clone()));
+                    }
+                }
             }
         }
 
@@ -857,6 +906,7 @@ impl QualifiedGroveDbOp {
             repeated_ops,
             same_path_key_ops,
             insert_ops_below_deleted_ops,
+            append_delete_conflicts,
         }
     }
 }
@@ -871,6 +921,9 @@ pub struct GroveDbOpConsistencyResults {
     /// This shows issues when we delete a tree but insert under the deleted
     /// tree Deleted ops are first, with inserts under them in a tree
     insert_ops_below_deleted_ops: Vec<(QualifiedGroveDbOp, Vec<QualifiedGroveDbOp>)>,
+    /// Conflicts between keyless append ops and keyed delete ops targeting the
+    /// same tree element. Tuple is (append_op, delete_op).
+    append_delete_conflicts: Vec<(QualifiedGroveDbOp, QualifiedGroveDbOp)>,
 }
 
 impl GroveDbOpConsistencyResults {
@@ -879,6 +932,7 @@ impl GroveDbOpConsistencyResults {
         self.repeated_ops.is_empty()
             && self.same_path_key_ops.is_empty()
             && self.insert_ops_below_deleted_ops.is_empty()
+            && self.append_delete_conflicts.is_empty()
     }
 }
 
@@ -1641,8 +1695,14 @@ where
                                 .get_feature_type(in_tree_type)
                                 .wrap_with_cost(OperationCost::default())
                         );
-                        let empty_state_root =
+                        // Combined empty state root: sinsemilla + bulk
+                        let empty_bulk_root =
                             grovedb_bulk_append_tree::compute_state_root(&NULL_HASH, &NULL_HASH);
+                        let empty_state_root =
+                            grovedb_commitment_tree::compute_commitment_tree_state_root(
+                                &grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
+                                &empty_bulk_root,
+                            );
                         cost_return_on_error_into!(
                             &mut cost,
                             element.insert_subtree_into_batch_operations(
@@ -1828,11 +1888,7 @@ where
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     let existing_flags = cost_return_on_error!(
                         &mut cost,
-                        GroveDb::get_element_from_subtree(
-                            merk,
-                            key_info.as_slice(),
-                            grove_version
-                        )
+                        GroveDb::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
                     )
                     .get_flags_owned();
 
@@ -1898,12 +1954,7 @@ where
                             )
                         }
                         AggregateData::ProvableCountAndSum(count_value, sum_value) => {
-                            Element::ProvableCountSumTree(
-                                root_key,
-                                count_value,
-                                sum_value,
-                                flags,
-                            )
+                            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
                         }
                     };
                     let merk_feature_type = cost_return_on_error_into_no_add!(
@@ -1924,10 +1975,7 @@ where
                     );
                 }
                 GroveOp::InsertNonMerkTree {
-                    hash,
-                    flags,
-                    meta,
-                    ..
+                    hash, flags, meta, ..
                 } => {
                     let element = meta.to_element(flags);
                     let merk_feature_type = cost_return_on_error_into_no_add!(
@@ -2334,31 +2382,33 @@ impl GroveDb {
                                                         flags,
                                                     ) = element
                                                     {
+                                                        let meta = NonMerkTreeMeta::CommitmentTree {
+                                                            total_count: *total_count,
+                                                            chunk_power: *chunk_power,
+                                                        };
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertNonMerkTree {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                meta: NonMerkTreeMeta::CommitmentTree {
-                                                                    total_count: *total_count,
-                                                                    chunk_power: *chunk_power,
-                                                                },
+                                                                meta,
                                                             }
                                                     } else if let Element::MmrTree(
                                                         mmr_size,
                                                         flags,
                                                     ) = element
                                                     {
+                                                        let meta = NonMerkTreeMeta::MmrTree {
+                                                            mmr_size: *mmr_size,
+                                                        };
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertNonMerkTree {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                meta: NonMerkTreeMeta::MmrTree {
-                                                                    mmr_size: *mmr_size,
-                                                                },
+                                                                meta,
                                                             }
                                                     } else if let Element::BulkAppendTree(
                                                         total_count,
@@ -2366,16 +2416,17 @@ impl GroveDb {
                                                         flags,
                                                     ) = element
                                                     {
+                                                        let meta = NonMerkTreeMeta::BulkAppendTree {
+                                                            total_count: *total_count,
+                                                            chunk_power: *chunk_power,
+                                                        };
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertNonMerkTree {
                                                                 hash: root_hash,
                                                                 root_key: calculated_root_key,
                                                                 flags: flags.clone(),
                                                                 aggregate_data,
-                                                                meta: NonMerkTreeMeta::BulkAppendTree {
-                                                                    total_count: *total_count,
-                                                                    chunk_power: *chunk_power,
-                                                                },
+                                                                meta,
                                                             }
                                                     } else if let
                                                         Element::DenseAppendOnlyFixedSizeTree(

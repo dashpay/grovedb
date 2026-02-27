@@ -145,6 +145,14 @@ impl GroveDb {
         let position = append_result.global_position;
         let new_total_count = ct.total_count();
 
+        // Compute the combined state root that binds the Sinsemilla anchor to
+        // the bulk data root, ensuring both are authenticated in the Merk
+        // hierarchy.
+        let combined_root = grovedb_commitment_tree::compute_commitment_tree_state_root(
+            &new_sinsemilla_root,
+            &bulk_state_root,
+        );
+
         // Drop ct (and its storage context) before opening merk
         drop(ct);
 
@@ -160,18 +168,15 @@ impl GroveDb {
             )
         );
 
-        let updated_element = Element::new_commitment_tree(
-            new_total_count,
-            chunk_power,
-            existing_flags,
-        );
+        let updated_element =
+            Element::new_commitment_tree(new_total_count, chunk_power, existing_flags);
 
         cost_return_on_error_into!(
             &mut cost,
             updated_element.insert_subtree(
                 &mut parent_merk,
                 key,
-                bulk_state_root,
+                combined_root,
                 None,
                 grove_version,
             )

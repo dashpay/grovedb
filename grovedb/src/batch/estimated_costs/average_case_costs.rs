@@ -268,16 +268,16 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::InsertNonMerkTree {
-                flags, meta, ..
-            } => GroveDb::average_case_merk_insert_tree(
-                key,
-                flags,
-                meta.to_tree_type(),
-                in_tree_type,
-                propagate_if_input(),
-                grove_version,
-            ),
+            GroveOp::InsertNonMerkTree { flags, meta, .. } => {
+                GroveDb::average_case_merk_insert_tree(
+                    key,
+                    flags,
+                    meta.to_tree_type(),
+                    in_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
         }
     }
 }

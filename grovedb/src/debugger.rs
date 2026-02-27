@@ -742,12 +742,10 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             }
         }
-        crate::Element::CommitmentTree(_, _, element_flags) => {
-            grovedbg_types::Element::Subtree {
-                root_key: None,
-                element_flags,
-            }
-        }
+        crate::Element::CommitmentTree(_, _, element_flags) => grovedbg_types::Element::Subtree {
+            root_key: None,
+            element_flags,
+        },
         crate::Element::MmrTree(_, element_flags) => grovedbg_types::Element::Subtree {
             root_key: None,
             element_flags,
@@ -756,6 +754,12 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             root_key: None,
             element_flags,
         },
+        crate::Element::DenseAppendOnlyFixedSizeTree(_, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: None,
+                element_flags,
+            }
+        }
     }
 }
 

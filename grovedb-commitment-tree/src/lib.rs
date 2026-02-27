@@ -31,6 +31,25 @@ pub use client::ClientPersistentCommitmentTree;
 #[cfg(feature = "sqlite")]
 pub use client::{SqliteShardStore, SqliteShardStoreError};
 pub use commitment_frontier::*;
+/// Compute the combined CommitmentTree state root that binds the Sinsemilla
+/// anchor to the BulkAppendTree data root.
+///
+/// `ct_state_root = blake3("ct_state" || sinsemilla_root || bulk_state_root)`
+///
+/// This ensures both the Orchard-compatible anchor (authenticating cmx values)
+/// and the BulkAppendTree root (authenticating cmx||payload entries) are
+/// cryptographically bound to the GroveDB root hash.
+pub fn compute_commitment_tree_state_root(
+    sinsemilla_root: &[u8; 32],
+    bulk_state_root: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"ct_state");
+    hasher.update(sinsemilla_root);
+    hasher.update(bulk_state_root);
+    *hasher.finalize().as_bytes()
+}
+
 #[cfg(feature = "storage")]
 pub use commitment_tree::{
     ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,

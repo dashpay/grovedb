@@ -155,8 +155,8 @@ where
                 | GroveOp::DenseTreeInsert { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. } => {
                     // User-facing tree ops are preprocessed before batch
-                    // execution. ReplaceNonMerkTreeRoot is produced by
-                    // preprocessing and passed through.
+                    // execution into ReplaceNonMerkTreeRoot ops, which must
+                    // also pass through here.
                     Ok(())
                 }
                 GroveOp::ReplaceTreeRootKey { .. }

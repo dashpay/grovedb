@@ -72,6 +72,9 @@ pub enum ProofBytes {
     MMR(Vec<u8>),
     BulkAppendTree(Vec<u8>),
     DenseTree(Vec<u8>),
+    /// CommitmentTree proof: `sinsemilla_root (32 bytes) || bulk_append_proof`.
+    /// Binds the Orchard anchor to the GroveDB root hash.
+    CommitmentTree(Vec<u8>),
 }
 
 #[derive(Encode, Decode)]
@@ -264,6 +267,18 @@ impl fmt::Display for ProofBytes {
             }
             ProofBytes::DenseTree(bytes) => {
                 write!(f, "DenseTree({})", decode_dense_proof(bytes))
+            }
+            ProofBytes::CommitmentTree(bytes) => {
+                if bytes.len() >= 32 {
+                    write!(
+                        f,
+                        "CommitmentTree(sinsemilla={}, bulk={})",
+                        hex::encode(&bytes[..32]),
+                        decode_bulk_append_proof(&bytes[32..])
+                    )
+                } else {
+                    write!(f, "CommitmentTree(<invalid: {} bytes>)", bytes.len())
+                }
             }
         }
     }

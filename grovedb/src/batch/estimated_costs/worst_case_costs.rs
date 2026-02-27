@@ -220,7 +220,8 @@ impl GroveOp {
                 const MAX_COMPACTION_BLOB: u32 = 65536;
                 // Dense Merkle root: epoch_size hashes. Buffer hash: 1.
                 // MMR push: up to 64 merges.
-                const MAX_HASH_CALLS: u32 = 1024 + 1 + 65; // epoch hashes + buffer + MMR
+                // epoch hashes + buffer + MMR
+                const MAX_HASH_CALLS: u32 = 1024 + 1 + 65;
                 // Writes: buffer entry + chunk blob + MMR nodes
                 const MAX_WRITES: u32 = 1 + 1 + 65;
                 const MAX_READS: u32 = 64; // MMR sibling reads
@@ -254,7 +255,7 @@ impl GroveOp {
                 use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let value_size = value.len() as u32;
                 const MAX_COUNT: u32 = 255; // practical worst case (height 8)
-                // 2 hash calls per node (value_hash + node_hash)
+                                            // 2 hash calls per node (value_hash + node_hash)
                 const MAX_HASH_CALLS: u32 = MAX_COUNT * 2;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1 + MAX_COUNT, // 1 write + MAX_COUNT reads
@@ -268,19 +269,15 @@ impl GroveOp {
                     sinsemilla_hash_calls: 0,
                 })
             }
-            GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => {
-                GroveDb::worst_case_merk_replace_tree(
-                    key,
-                    meta.to_tree_type(),
-                    in_parent_tree_type,
-                    worst_case_layer_element_estimates,
-                    propagate,
-                    grove_version,
-                )
-            }
-            GroveOp::InsertNonMerkTree {
-                flags, meta, ..
-            } => GroveDb::worst_case_merk_insert_tree(
+            GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => GroveDb::worst_case_merk_replace_tree(
+                key,
+                meta.to_tree_type(),
+                in_parent_tree_type,
+                worst_case_layer_element_estimates,
+                propagate,
+                grove_version,
+            ),
+            GroveOp::InsertNonMerkTree { flags, meta, .. } => GroveDb::worst_case_merk_insert_tree(
                 key,
                 flags,
                 meta.to_tree_type(),

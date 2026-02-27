@@ -401,7 +401,10 @@ impl GroveDb {
         // The merk proof at this layer must be Merk type
         let merk_proof_bytes = match &layer_proof.merk_proof {
             ProofBytes::Merk(bytes) => bytes,
-            ProofBytes::MMR(_) | ProofBytes::BulkAppendTree(_) | ProofBytes::DenseTree(_) => {
+            ProofBytes::MMR(_)
+            | ProofBytes::BulkAppendTree(_)
+            | ProofBytes::DenseTree(_)
+            | ProofBytes::CommitmentTree(_) => {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
@@ -540,6 +543,17 @@ impl GroveDb {
                                         ProofBytes::DenseTree(dense_bytes) => {
                                             Self::verify_dense_tree_lower_layer(
                                                 dense_bytes,
+                                                &element,
+                                                &path,
+                                                limit_left,
+                                                result,
+                                                query,
+                                                grove_version,
+                                            )?
+                                        }
+                                        ProofBytes::CommitmentTree(ct_bytes) => {
+                                            Self::verify_commitment_tree_lower_layer(
+                                                ct_bytes,
                                                 &element,
                                                 &path,
                                                 limit_left,
@@ -771,6 +785,56 @@ impl GroveDb {
 
         // Return computed state_root as child Merk hash
         Ok(bulk_state_root)
+    }
+
+    /// Verify a CommitmentTree lower layer proof and add results.
+    ///
+    /// The proof bytes are `sinsemilla_root (32 bytes) || bulk_append_proof`.
+    /// Verifies the BulkAppendTree proof to get `bulk_state_root`, then returns
+    /// `blake3("ct_state" || sinsemilla_root || bulk_state_root)` as the
+    /// authenticated child hash.
+    fn verify_commitment_tree_lower_layer<T>(
+        ct_bytes: &[u8],
+        element: &Element,
+        path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        if ct_bytes.len() < 32 {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "CommitmentTree proof too short (missing sinsemilla_root)".to_string(),
+            ));
+        }
+
+        let sinsemilla_root: [u8; 32] = ct_bytes[..32]
+            .try_into()
+            .expect("sinsemilla_root is exactly 32 bytes");
+        let bulk_proof_bytes = &ct_bytes[32..];
+
+        // Verify the bulk append proof to get bulk_state_root
+        let bulk_state_root = Self::verify_bulk_append_lower_layer(
+            bulk_proof_bytes,
+            element,
+            path,
+            limit_left,
+            result,
+            query,
+            grove_version,
+        )?;
+
+        // Combine sinsemilla_root with bulk_state_root to produce the
+        // authenticated child hash
+        Ok(grovedb_commitment_tree::compute_commitment_tree_state_root(
+            &sinsemilla_root,
+            &bulk_state_root,
+        ))
     }
 
     /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.

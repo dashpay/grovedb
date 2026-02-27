@@ -9,17 +9,13 @@
 
 use std::collections::HashMap;
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
-};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_merkle_mountain_range::{
     hash_count_for_push, mmr_size_to_leaf_count, MmrNode, MmrStore, MMR,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
-};
+use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -340,7 +336,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
-        batch: &StorageBatch,
+        _batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -413,10 +409,10 @@ impl GroveDb {
             let st_path_refs: Vec<&[u8]> = st_path_vec.iter().map(|v| v.as_slice()).collect();
             let st_path = SubtreePath::from(st_path_refs.as_slice());
 
-            // Open transactional storage context (reads from transaction)
+            // Open immediate storage context (consistent with other preprocessors)
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path.clone(), Some(batch), transaction)
+                .get_immediate_storage_context(st_path, transaction)
                 .unwrap_add_cost(&mut cost);
 
             let store = MmrStore::new(&storage_ctx);

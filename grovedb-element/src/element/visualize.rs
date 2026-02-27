@@ -134,10 +134,8 @@ impl Visualize for Element {
             }
             Element::CommitmentTree(count, chunk_power, flags) => {
                 drawer.write(
-                    format!(
-                        "commitment_tree: count: {count} chunk_power: {chunk_power}",
-                    )
-                    .as_bytes(),
+                    format!("commitment_tree: count: {count} chunk_power: {chunk_power}",)
+                        .as_bytes(),
                 )?;
 
                 if let Some(f) = flags {
