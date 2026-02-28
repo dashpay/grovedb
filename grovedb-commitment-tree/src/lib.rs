@@ -81,7 +81,7 @@ pub use orchard::builder::{Builder, BundleType};
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```text
 /// use grovedb_commitment_tree::{BatchValidator, VerifyingKey};
 /// use rand::rngs::OsRng;
 ///

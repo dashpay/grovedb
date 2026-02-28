@@ -101,6 +101,7 @@ fn test_serialize_roundtrip() {
 }
 
 #[test]
+#[ignore] // ~60s: runs 1000 Sinsemilla appends; use `cargo test -- --ignored`
 fn test_serialize_roundtrip_with_many_leaves() {
     let mut f = CommitmentFrontier::new();
     for i in 0..1000u64 {

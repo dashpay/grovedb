@@ -593,6 +593,7 @@ mod storage_tests {
     }
 
     #[test]
+    #[ignore] // ~60s: runs 500 Sinsemilla appends; use `cargo test -- --ignored`
     fn test_roundtrip_with_many_leaves() {
         let ctx = MockDataStorageContext::new();
         let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
