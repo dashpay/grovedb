@@ -1,0 +1,46 @@
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+
+component_management:
+  individual_components:
+    - component_id: grovedb-core
+      name: GroveDB Core
+      paths:
+        - grovedb/src/**
+
+    - component_id: merk
+      name: Merk
+      paths:
+        - merk/src/**
+
+    - component_id: storage
+      name: Storage
+      paths:
+        - storage/src/**
+
+    - component_id: commitment-tree
+      name: Commitment Tree
+      paths:
+        - grovedb-commitment-tree/src/**
+
+    - component_id: mmr
+      name: MMR
+      paths:
+        - grovedb-merkle-mountain-range/src/**
+
+    - component_id: bulk-append-tree
+      name: BulkAppendTree
+      paths:
+        - grovedb-bulk-append-tree/src/**
+
+    - component_id: element
+      name: Element
+      paths:
+        - grovedb-element/src/**
