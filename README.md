@@ -2,7 +2,19 @@
 
 | Branch | Tests | Coverage |
 |--------|-------|----------|
-| master | [![Tests](https://github.com/dashevo/grovedb/workflows/CI/badge.svg?branch=master)](https://github.com/dashevo/grovedb/actions) | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV)](https://codecov.io/gh/dashpay/grovedb) |
+| master | [![Tests](https://github.com/dashpay/grovedb/actions/workflows/grovedb.yml/badge.svg?branch=master)](https://github.com/dashpay/grovedb/actions) | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV)](https://codecov.io/gh/dashpay/grovedb) |
+
+### Per-Crate Coverage
+
+| Crate | Coverage |
+|-------|----------|
+| grovedb | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV&component=grovedb-core)](https://codecov.io/gh/dashpay/grovedb/component/grovedb-core) |
+| merk | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV&component=merk)](https://codecov.io/gh/dashpay/grovedb/component/merk) |
+| storage | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV&component=storage)](https://codecov.io/gh/dashpay/grovedb/component/storage) |
+| commitment-tree | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV&component=commitment-tree)](https://codecov.io/gh/dashpay/grovedb/component/commitment-tree) |
+| mmr | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV&component=mmr)](https://codecov.io/gh/dashpay/grovedb/component/mmr) |
+| bulk-append-tree | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV&component=bulk-append-tree)](https://codecov.io/gh/dashpay/grovedb/component/bulk-append-tree) |
+| element | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV&component=element)](https://codecov.io/gh/dashpay/grovedb/component/element) |
 
 **GroveDB: Hierarchical Authenticated Data Structure Database**
 
