@@ -1,0 +1,15 @@
+[book]
+title = "Il Libro di GroveDB"
+authors = ["Dash Core Group"]
+language = "it"
+src = "src"
+
+[build]
+build-dir = "../../output/it"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-css = []
+additional-js = ["../../src/mermaid.min.js", "../../src/mermaid-init.js"]
