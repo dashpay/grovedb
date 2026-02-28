@@ -11,5 +11,5 @@ build-dir = "../../output/ar"
 command = "mdbook-mermaid"
 
 [output.html]
-additional-css = []
-additional-js = ["../../mermaid.min.js", "../../mermaid-init.js"]
+additional-css = ["lang-selector.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "lang-selector.js"]
