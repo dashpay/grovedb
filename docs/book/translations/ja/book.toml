@@ -1,0 +1,15 @@
+[book]
+title = "GroveDB ブック"
+authors = ["Dash Core Group"]
+language = "ja"
+src = "src"
+
+[build]
+build-dir = "../../output/ja"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-css = []
+additional-js = ["../../mermaid.min.js", "../../mermaid-init.js"]
