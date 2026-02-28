@@ -4,7 +4,7 @@
 |--------|-------|----------|
 | master | [![Tests](https://github.com/dashpay/grovedb/actions/workflows/grovedb.yml/badge.svg?branch=master)](https://github.com/dashpay/grovedb/actions) | [![codecov](https://codecov.io/gh/dashpay/grovedb/branch/master/graph/badge.svg?token=6Z6A6FT5HV)](https://codecov.io/gh/dashpay/grovedb) |
 
-### Per-Crate Coverage
+## Per-Crate Coverage
 
 | Crate | Coverage |
 |-------|----------|
