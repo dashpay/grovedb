@@ -6,7 +6,7 @@ on:
     branches:
       - master
       - develop
-      - v[0-9]+\.[0-9]+-dev
+      - 'v[0-9]*.[0-9]*-dev'
     paths:
       - 'grovedb-commitment-tree/**'
       - '.github/workflows/slow-tests.yml'
