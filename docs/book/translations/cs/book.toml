@@ -1,0 +1,15 @@
+[book]
+title = "Kniha GroveDB"
+authors = ["Dash Core Group"]
+language = "cs"
+src = "src"
+
+[build]
+build-dir = "../../output/cs"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-css = ["lang-selector.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "lang-selector.js"]
