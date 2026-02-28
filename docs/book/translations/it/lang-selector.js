@@ -34,10 +34,15 @@
   var pageName = path.split("/").pop() || "index.html";
   if (!pageName.endsWith(".html")) pageName = "index.html";
 
-  // Build the base path (strip current lang and page)
+  // Build the base path (strip page and current lang)
   var basePath = path;
-  if (pageName !== "") basePath = basePath.replace(pageName, "");
-  if (currentLang) basePath = basePath.replace(new RegExp(currentLang + "/?$"), "");
+  if (basePath.endsWith(pageName)) {
+    basePath = basePath.slice(0, -pageName.length);
+  }
+  if (currentLang) {
+    // Remove the language segment from the path
+    basePath = basePath.replace(new RegExp("/" + currentLang + "(/|$)"), "/");
+  }
   // Ensure trailing slash
   if (!basePath.endsWith("/")) basePath += "/";
 

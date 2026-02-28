@@ -10,6 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 LANGUAGES=(ru zh es fr pt ja ko ar de it)
+SHARED_ASSETS=(mermaid.min.js mermaid-init.js lang-selector.js lang-selector.css)
 
 # If specific languages are passed, use those instead
 if [ $# -gt 0 ]; then
@@ -25,6 +26,12 @@ for lang in "${LANGUAGES[@]}"; do
     echo "WARN: $dir/book.toml not found, skipping $lang"
     continue
   fi
+  # Sync shared assets from English source to keep copies in sync
+  for asset in "${SHARED_ASSETS[@]}"; do
+    if [ -f "$asset" ]; then
+      cp "$asset" "$dir/$asset"
+    fi
+  done
   echo "==> Building $lang translation"
   (cd "$dir" && mdbook build)
 done
