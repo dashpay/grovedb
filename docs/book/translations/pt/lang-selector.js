@@ -1,17 +1,23 @@
 // Language selector for GroveDB Book translations
 (function () {
   var LANGUAGES = [
-    { code: "", label: "English" },
-    { code: "ru", label: "Русский" },
-    { code: "zh", label: "中文" },
-    { code: "es", label: "Español" },
-    { code: "fr", label: "Français" },
-    { code: "pt", label: "Português" },
-    { code: "ja", label: "日本語" },
-    { code: "ko", label: "한국어" },
-    { code: "ar", label: "العربية" },
-    { code: "de", label: "Deutsch" },
-    { code: "it", label: "Italiano" },
+    { code: "", label: "🇬🇧 English" },
+    { code: "ru", label: "🇷🇺 Русский" },
+    { code: "zh", label: "🇨🇳 中文" },
+    { code: "es", label: "🇪🇸 Español" },
+    { code: "fr", label: "🇫🇷 Français" },
+    { code: "pt", label: "🇵🇹 Português" },
+    { code: "ja", label: "🇯🇵 日本語" },
+    { code: "ko", label: "🇰🇷 한국어" },
+    { code: "ar", label: "🇸🇦 العربية" },
+    { code: "de", label: "🇩🇪 Deutsch" },
+    { code: "it", label: "🇮🇹 Italiano" },
+    { code: "tr", label: "🇹🇷 Türkçe" },
+    { code: "vi", label: "🇻🇳 Tiếng Việt" },
+    { code: "id", label: "🇮🇩 Bahasa Indonesia" },
+    { code: "th", label: "🇹🇭 ไทย" },
+    { code: "pl", label: "🇵🇱 Polski" },
+    { code: "cs", label: "🇨🇿 Čeština" },
   ];
 
   // Detect current language from URL path

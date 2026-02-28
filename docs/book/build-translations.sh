@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-LANGUAGES=(ru zh es fr pt ja ko ar de it)
+LANGUAGES=(ru zh es fr pt ja ko ar de it tr vi id th pl cs)
 SHARED_ASSETS=(mermaid.min.js mermaid-init.js lang-selector.js lang-selector.css)
 
 # If specific languages are passed, use those instead

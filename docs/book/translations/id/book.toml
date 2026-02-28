@@ -1,0 +1,15 @@
+[book]
+title = "Buku GroveDB"
+authors = ["Dash Core Group"]
+language = "id"
+src = "src"
+
+[build]
+build-dir = "../../output/id"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-css = ["lang-selector.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "lang-selector.js"]

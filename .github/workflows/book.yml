@@ -51,7 +51,7 @@ jobs:
 
       - name: Build translations
         run: |
-          for lang in ru zh es fr pt ja ko ar de it; do
+          for lang in ru zh es fr pt ja ko ar de it tr vi id th pl cs; do
             echo "Building $lang..."
             (cd docs/book/translations/$lang && mdbook build)
           done
