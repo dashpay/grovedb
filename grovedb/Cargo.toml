@@ -65,6 +65,10 @@ name = "insertion_benchmark"
 harness = false
 
 [[bench]]
+name = "proof_generation_benchmark"
+harness = false
+
+[[bench]]
 name = "branch_chunk_queries"
 harness = false
 
