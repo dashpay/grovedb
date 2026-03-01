@@ -34,6 +34,12 @@ fn new_tree_invalid_height() {
 }
 
 #[test]
+fn from_state_invalid_height() {
+    assert!(BulkAppendTree::from_state(0, 0u8, MemStorageContext::new()).is_err());
+    assert!(BulkAppendTree::from_state(0, 17u8, MemStorageContext::new()).is_err());
+}
+
+#[test]
 fn single_append() {
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 
@@ -251,6 +257,15 @@ fn state_root_determinism() {
 }
 
 #[test]
+fn compute_current_state_root_empty_tree() {
+    let tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
+    let root = tree
+        .compute_current_state_root()
+        .expect("compute empty tree root");
+    assert_ne!(root, [0u8; 32]);
+}
+
+#[test]
 fn hash_count_accuracy() {
     // capacity=3, epoch_size=4
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
@@ -341,4 +356,16 @@ fn multiple_compaction_cycles() {
         assert_eq!(entries0[i as usize], vec![i]);
         assert_eq!(entries1[i as usize], vec![i + 4]);
     }
+}
+
+#[test]
+fn query_chunks_empty_indices_returns_empty_proof() {
+    let mut tree = BulkAppendTree::new(1u8, MemStorageContext::new()).expect("create tree");
+    tree.append(b"a").expect("append a");
+    tree.append(b"b").expect("append b"); // one completed chunk exists
+
+    let result = tree.query_chunks(&[]).expect("query with empty indices");
+    assert!(result.chunks.is_empty());
+    assert!(result.mmr_proof_items.is_empty());
+    assert_eq!(result.mmr_root, [0u8; 32]);
 }
