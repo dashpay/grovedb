@@ -1068,9 +1068,9 @@ mod tests {
         {
             let mut tampered = proof.clone();
             // Find value 101 (0x65) and change to 255 (0xff)
-            for i in 0..tampered.len() {
-                if tampered[i] == 101 {
-                    tampered[i] = 255;
+            for byte in &mut tampered {
+                if *byte == 101 {
+                    *byte = 255;
                     break;
                 }
             }

@@ -1699,7 +1699,7 @@ fn test_commitment_tree_prove_query_v1_with_chunks() {
     let config = bincode::config::standard()
         .with_big_endian()
         .with_no_limit();
-    let (proof, _): (crate::operations::proof::GroveDBProof, _) =
+    let (_proof, _): (crate::operations::proof::GroveDBProof, _) =
         bincode::decode_from_slice(&proof_bytes, config).expect("decode proof for display");
 
     let (root_hash, result_set) = GroveDb::verify_query_with_options(

@@ -836,8 +836,8 @@ mod tests {
     #[test]
     fn test_get_range_query_with_unique_subquery() {
         let grove_version = GroveVersion::latest();
-        let mut db = make_test_grovedb(grove_version);
-        populate_tree_for_unique_range_subquery(&mut db, grove_version);
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
 
         let path = vec![TEST_LEAF.to_vec()];
         let mut query = Query::new();

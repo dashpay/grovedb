@@ -1,7 +1,7 @@
 //! Count sum tree tests
 
 #[cfg(test)]
-mod count_sum_tree_tests {
+mod tests {
     use grovedb_merk::{
         element::costs::ElementCostExtensions,
         tree::{kv::ValueDefinedCostType, AggregateData},

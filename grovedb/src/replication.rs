@@ -148,7 +148,7 @@ impl GroveDb {
                 })?;
                 for chunk_id in nested_chunk_ids
                     .is_empty()
-                    .then(|| Vec::new())
+                    .then(Vec::new)
                     .into_iter()
                     .chain(nested_chunk_ids.into_iter())
                 {

@@ -14,6 +14,7 @@ use crate::batch::KeyInfoPath;
 #[cfg(feature = "minimal")]
 /// Batch Running Mode
 #[derive(Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Used by TreeCache trait implementations
 pub enum BatchRunMode {
     Execute,
     #[cfg(feature = "estimated_costs")]

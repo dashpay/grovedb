@@ -331,7 +331,7 @@ impl PathQuery {
                 .should_add_parent_tree_at_path
         );
 
-        fn recursive_should_add_parent_tree_at_path<'b>(query: &'b Query, path: &[&[u8]]) -> bool {
+        fn recursive_should_add_parent_tree_at_path(query: &Query, path: &[&[u8]]) -> bool {
             if path.is_empty() {
                 return query.add_parent_tree_on_subquery;
             }
@@ -634,6 +634,7 @@ impl HasSubquery<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SinglePathSubquery<'a> {
     /// Items
+    #[allow(clippy::owned_cow)]
     pub items: Cow<'a, Vec<QueryItem>>,
     /// Default subquery branch
     pub has_subquery: HasSubquery<'a>,
@@ -2185,7 +2186,7 @@ mod tests {
 
         // Empty path should return the query's add_parent_tree_on_subquery value
         let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
 
         // Test with add_parent_tree_on_subquery = false
         let mut query = Query::new();
@@ -2193,7 +2194,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![], query);
 
         let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]
@@ -2207,12 +2208,12 @@ mod tests {
         // Exact path match
         let path = vec![b"root".as_ref(), b"subtree".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
 
         // Different path of same length
         let path = vec![b"root".as_ref(), b"other".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]
@@ -2229,11 +2230,11 @@ mod tests {
         // Shorter path should return false
         let path = vec![b"root".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
 
         let path = vec![b"root".as_ref(), b"subtree".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]
@@ -2258,12 +2259,12 @@ mod tests {
         // Test path leading to the inner query
         let path = vec![b"root".as_ref(), b"key1".as_ref(), b"subpath".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), true); // Should return inner query's value
+        assert!(result.unwrap()); // Should return inner query's value
 
         // Test root path
         let path = vec![b"root".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false); // Should return root query's value
+        assert!(!result.unwrap()); // Should return root query's value
     }
 
     #[test]
@@ -2302,12 +2303,12 @@ mod tests {
         // Test path to branch1
         let path = vec![b"root".as_ref(), b"branch1".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
 
         // Test path to branch2 with nested path
         let path = vec![b"root".as_ref(), b"branch2".as_ref(), b"nested".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]
@@ -2347,15 +2348,15 @@ mod tests {
         // Test various depths
         let path = vec![b"root".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
 
         let path = vec![b"root".as_ref(), b"level1".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
 
         let path = vec![b"root".as_ref(), b"level1".as_ref(), b"level2".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
 
         let path = vec![
             b"root".as_ref(),
@@ -2364,7 +2365,7 @@ mod tests {
             b"level3".as_ref(),
         ];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
     }
 
     #[test]
@@ -2380,7 +2381,7 @@ mod tests {
         // Path that doesn't exist in the query structure
         let path = vec![b"root".as_ref(), b"nonexistent".as_ref()];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
 
         // Longer path that doesn't match
         let path = vec![
@@ -2389,7 +2390,7 @@ mod tests {
             b"but_no_subquery".as_ref(),
         ];
         let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 
     #[test]
@@ -2403,11 +2404,11 @@ mod tests {
 
         let result = path_query.should_add_parent_tree_at_path(&[b"root".as_ref()], grove_version);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
 
         // Test with mismatched path
         let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), false);
+        assert!(!result.unwrap());
     }
 }

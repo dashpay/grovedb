@@ -397,7 +397,7 @@ pub fn restore_500_1(c: &mut Criterion) {
 
     c.bench_function("restore_500_1", |b| {
         b.iter_batched(
-            || TempStorage::new(),
+            TempStorage::new,
             |storage| {
                 let tx = storage.start_transaction();
                 let ctx = storage

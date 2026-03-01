@@ -948,6 +948,7 @@ impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
     }
 }
 
+#[allow(dead_code)] // get_batch_run_mode is defined for future use
 trait TreeCache<G, SR> {
     fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error>;
 
@@ -3005,31 +3006,31 @@ impl GroveDb {
         let storage_batch = StorageBatch::new();
 
         // Preprocess CommitmentTreeInsert ops: execute Sinsemilla operations
-        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
         // Preprocess MmrTreeAppend ops: execute MMR operations
-        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
         // Preprocess BulkAppend ops: execute bulk append operations
-        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), grove_version)
         );
 
         // Preprocess DenseTreeInsert ops: execute dense tree operations
-        // using the shared batch, then convert to ReplaceTreeRootKey ops
+        // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
         // Non-Merk trees (MmrTree, BulkAppendTree, DenseTree, CommitmentTree)
@@ -3197,28 +3198,28 @@ impl GroveDb {
         // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
 
-        // Preprocess CommitmentTreeInsert ops using the shared batch
+        // Preprocess CommitmentTreeInsert ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
-        // Preprocess MmrTreeAppend ops using the shared batch
+        // Preprocess MmrTreeAppend ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
-        // Preprocess BulkAppend ops using the shared batch
+        // Preprocess BulkAppend ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), grove_version)
         );
 
-        // Preprocess DenseTreeInsert ops using the shared batch
+        // Preprocess DenseTreeInsert ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
         // See comment above in apply_batch_with_element_flags_update for why
@@ -3973,13 +3974,11 @@ mod tests {
     }
 
     fn grove_db_ops_for_contract_insert() -> Vec<QualifiedGroveDbOp> {
-        let mut grove_db_ops = vec![];
-
-        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+        let mut grove_db_ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"contract".to_vec(),
             Element::empty_tree(),
-        ));
+        )];
         grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec()],
             [0u8].to_vec(),
@@ -4035,9 +4034,7 @@ mod tests {
     }
 
     fn grove_db_ops_for_contract_document_insert() -> Vec<QualifiedGroveDbOp> {
-        let mut grove_db_ops = vec![];
-
-        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+        let mut grove_db_ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 b"contract".to_vec(),
                 [1u8].to_vec(),
@@ -4046,7 +4043,7 @@ mod tests {
             ],
             b"serialized_domain_id".to_vec(),
             Element::new_item(b"serialized_domain".to_vec()),
-        ));
+        )];
 
         grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![

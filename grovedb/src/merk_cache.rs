@@ -214,7 +214,7 @@ mod tests {
     #[should_panic]
     fn cant_borrow_twice() {
         let version = GroveVersion::latest();
-        let db = make_test_grovedb(&version);
+        let db = make_test_grovedb(version);
         let tx = db.start_transaction();
 
         let cache = MerkCache::new(&db, &tx, version);
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn subtrees_are_propagated() {
         let version = GroveVersion::latest();
-        let db = make_deep_tree(&version);
+        let db = make_deep_tree(version);
         let tx = db.start_transaction();
 
         let path = SubtreePath::from(&[TEST_LEAF, b"innertree"]);
@@ -248,11 +248,11 @@ mod tests {
             let batch = StorageBatch::new();
 
             let mut merk = db
-                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), &version)
+                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), version)
                 .unwrap()
                 .unwrap();
 
-            item.insert(&mut merk, b"k1", None, &version)
+            item.insert(&mut merk, b"k1", None, version)
                 .unwrap()
                 .unwrap();
 
@@ -263,7 +263,7 @@ mod tests {
 
         let mut merk = cache.get_merk(path.derive_owned()).unwrap().unwrap();
 
-        merk.for_merk(|m| item.insert(m, b"k1", None, &version).unwrap().unwrap());
+        merk.for_merk(|m| item.insert(m, b"k1", None, version).unwrap().unwrap());
 
         drop(merk);
 
