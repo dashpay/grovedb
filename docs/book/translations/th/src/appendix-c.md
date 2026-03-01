@@ -91,4 +91,3 @@ combine_hash(value_hash, child_hash) = blake3(value_hash || child_hash)
 ---
 
 *หนังสือ GroveDB — จัดทำเอกสารเกี่ยวกับรายละเอียดภายในของ GroveDB สำหรับนักพัฒนาและนักวิจัย อ้างอิงจากซอร์สโค้ดของ GroveDB*
-

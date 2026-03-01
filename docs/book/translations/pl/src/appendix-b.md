@@ -51,4 +51,3 @@ Verify:
 Jesli jakakolwiek warstwa jest drzewem nie-Merk, produkuj V1.
 
 ---
-

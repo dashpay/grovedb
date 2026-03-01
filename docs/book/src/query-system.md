@@ -179,4 +179,3 @@ algorithm finds common path prefixes and combines query items:
 ```
 
 ---
-

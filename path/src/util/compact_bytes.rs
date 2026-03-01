@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Compact two dimenstional bytes array structure.
+//! Compact two dimensional bytes array structure.
 
 use std::mem;
 

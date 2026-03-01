@@ -290,4 +290,3 @@ fn sync_db_demo(
 
     Ok(())
 }
-

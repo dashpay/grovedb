@@ -234,4 +234,3 @@ Oznacza to, ze dowod (proof) licznika nie wymaga ujawniania rzeczywistych danych
 licznik jest wbudowany w kryptograficzne zobowiazanie.
 
 ---
-

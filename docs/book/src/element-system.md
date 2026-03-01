@@ -406,4 +406,3 @@ the combined_value_hash, which propagates up through the GroveDB hash
 hierarchy — maintaining cryptographic integrity.
 
 ---
-

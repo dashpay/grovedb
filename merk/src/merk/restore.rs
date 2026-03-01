@@ -419,6 +419,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     /// Rebuild restoration state from partial storage state
+    #[allow(dead_code)]
     fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
         // TODO: think about the return type some more
         let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
@@ -516,8 +517,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         if let Some(link) = left_link {
-            let left_tree = link.tree();
-            if left_tree.is_none() {
+            if let Some(left_tree) = link.tree() {
+                self.verify_tree_height(left_tree, left_height, grove_version)?;
+            } else {
                 let left_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
@@ -527,14 +529,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height, grove_version)?;
-            } else {
-                self.verify_tree_height(left_tree.unwrap(), left_height, grove_version)?;
             }
         }
 
         if let Some(link) = right_link {
-            let right_tree = link.tree();
-            if right_tree.is_none() {
+            if let Some(right_tree) = link.tree() {
+                self.verify_tree_height(right_tree, right_height, grove_version)?;
+            } else {
                 let right_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
@@ -544,8 +545,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height, grove_version)?;
-            } else {
-                self.verify_tree_height(right_tree.unwrap(), right_height, grove_version)?;
             }
         }
 

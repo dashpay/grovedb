@@ -224,4 +224,3 @@ The `ReplaceNonMerkTreeRoot` op carries the new root hash and a `NonMerkTreeMeta
 so the element can be fully reconstructed after processing.
 
 ---
-

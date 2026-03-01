@@ -212,4 +212,3 @@ Jest to kluczowe dla utrzymania ograniczonego zuzycia pamieci w duzych drzewach 
 tylko wezly aktywnie uzywane musza byc w pamieci.
 
 ---
-

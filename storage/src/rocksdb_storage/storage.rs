@@ -157,16 +157,16 @@ impl RocksDbStorage {
         let segments_iter = path.into_reverse_iter();
         let mut segments_count: usize = 0;
         let mut res = Vec::new();
-        let mut lengthes = Vec::new();
+        let mut lengths = Vec::new();
 
         for s in segments_iter {
             segments_count += 1;
             res.extend_from_slice(s);
-            lengthes.push(s.len() as u8); // if the key len is under 255 bytes
+            lengths.push(s.len() as u8); // if the key len is under 255 bytes
         }
 
         res.extend(segments_count.to_ne_bytes());
-        res.extend(lengthes);
+        res.extend(lengths);
         (res, segments_count)
     }
 
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn rocksdb_layout_not_affect_iteration_costs() {
-        // The test checks that key lengthes of seemingly unrelated subtrees
+        // The test checks that key lengths of seemingly unrelated subtrees
         // won't affect iteration costs. To achieve this we'll have two subtrees
         // and see that nothing nasty will happen if key lengths of the next subtree
         // change.

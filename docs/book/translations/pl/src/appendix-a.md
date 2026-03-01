@@ -28,4 +28,3 @@
 - Licznik `DenseAppendOnlyFixedSizeTree` to `u16` (maks. 65 535); wysokosci ograniczone do 1..=16
 
 ---
-

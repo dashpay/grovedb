@@ -694,4 +694,3 @@ magazynowania na dopisanie wynosi okolo 33 + 37 + dlugosc_wartosci bajtow ≈ 70
 | **Obsluga usuwania** | Nie | Tak | Nie |
 
 ---
-

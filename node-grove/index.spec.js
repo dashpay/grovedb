@@ -107,7 +107,7 @@ describe('GroveDB', () => {
         true,
       );
 
-      // Inserted value is not yet commited, but can be retrieved by `get`
+      // Inserted value is not yet committed, but can be retrieved by `get`
       // with `useTransaction` flag.
       const elementInTransaction = await groveDb.get(itemTreePath, itemKey, true);
 

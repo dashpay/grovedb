@@ -101,7 +101,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         // `MerkHandle`'s references. We use `UnsafeCell` to connect lifetimes and check
         // in compile time that `MerkHandle`s won't outlive the cache, even though we
         // don't hold any references to it, but `&mut` reference would make this borrow
-        // exclusive for the whole time of `MerkHandle`, so it shall go intially through
+        // exclusive for the whole time of `MerkHandle`, so it shall go initially through
         // a shared reference.
         //
         // Borrowing rules are covered using a borrow flag of each Merk:
@@ -124,7 +124,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         .wrap_with_cost(cost)
     }
 
-    /// Consumes `MerkCache` into accumulated batch of uncommited operations
+    /// Consumes `MerkCache` into accumulated batch of uncommitted operations
     /// with subtrees' root hash  propagation done.
     pub(crate) fn into_batch(mut self) -> CostResult<Box<StorageBatch>, Error> {
         let mut cost = Default::default();
@@ -169,7 +169,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     }
 }
 
-/// Wrapper over `Merk` tree to manage unqiue borrow dynamically.
+/// Wrapper over `Merk` tree to manage unique borrow dynamically.
 #[derive(Clone)]
 pub(crate) struct MerkHandle<'db, 'c> {
     merk: *mut TxMerk<'db>,

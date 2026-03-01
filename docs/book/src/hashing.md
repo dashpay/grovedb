@@ -232,4 +232,3 @@ This means a proof of count doesn't require revealing the actual data — the co
 is baked into the cryptographic commitment.
 
 ---
-

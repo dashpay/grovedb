@@ -409,4 +409,3 @@ combined_value_hash, ktory propaguje sie w gore przez hierarchie haszow GroveDB 
 utrzymujac integralnosc kryptograficzna.
 
 ---
-

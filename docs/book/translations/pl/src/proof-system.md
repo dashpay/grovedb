@@ -490,4 +490,3 @@ wspolni przodkowie i ich wartosci pojawiaja sie tylko raz, co sprawia, ze sa
 bardziej kompaktowe niz niezalezne dowody.
 
 ---
-

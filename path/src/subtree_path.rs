@@ -342,7 +342,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePath<'b, B> {
         }
     }
 
-    /// Retuns `true` if the subtree path is empty, so it points to the root
+    /// Returns `true` if the subtree path is empty, so it points to the root
     /// tree.
     pub fn is_root(&self) -> bool {
         match &self.ref_variant {

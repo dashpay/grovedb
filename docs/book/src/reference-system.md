@@ -327,4 +327,3 @@ This means changing either the reference itself OR the data it points to will
 change the root hash — both are cryptographically bound.
 
 ---
-

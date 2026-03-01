@@ -74,6 +74,16 @@ cargo test
 cargo bench
 ```
 
+## Contributing
+
+Install [pre-commit](https://pre-commit.com/) to catch formatting and lint issues before CI:
+
+```bash
+pip install pre-commit        # or: brew install pre-commit
+pre-commit install             # fmt + typos on every commit
+pre-commit install --hook-type pre-push  # clippy on push
+```
+
 ## Architecture
 
 GroveDB is built in three layers:

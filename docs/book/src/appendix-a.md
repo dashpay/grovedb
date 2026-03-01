@@ -28,4 +28,3 @@
 - `DenseAppendOnlyFixedSizeTree` count is `u16` (max 65,535); heights restricted to 1..=16
 
 ---
-

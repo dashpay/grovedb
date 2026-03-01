@@ -421,7 +421,7 @@ impl TreeNode {
         self.inner.kv.hash()
     }
 
-    /// Returns the hash of the node's valu
+    /// Returns the hash of the node's value
     #[inline]
     pub const fn value_hash(&self) -> &CryptoHash {
         self.inner.kv.value_hash()

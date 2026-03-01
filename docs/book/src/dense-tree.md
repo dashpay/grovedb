@@ -344,4 +344,3 @@ let hash = db.dense_tree_root_hash(&[b"state"], b"validator_slots", None, grove_
 | `grovedb/src/tests/dense_tree_tests.rs` | 22 integration tests |
 
 ---
-

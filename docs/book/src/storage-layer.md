@@ -188,4 +188,3 @@ This is especially important because the `storage_ctx` borrows the transaction.
 You must `drop(storage_ctx)` before you can call `tx.commit_local()`.
 
 ---
-

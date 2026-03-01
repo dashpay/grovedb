@@ -134,4 +134,3 @@ Every operation accumulates costs as it traverses the stack, enabling precise
 resource accounting.
 
 ---
-

@@ -189,4 +189,3 @@ Jest to szczegolnie wazne, poniewaz `storage_ctx` pozycza transakcje.
 Musisz wykonac `drop(storage_ctx)` zanim bedziesz mogl wywolac `tx.commit_local()`.
 
 ---
-
