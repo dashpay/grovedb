@@ -220,64 +220,6 @@ tree.visualize(drawer)?;
 
 ---
 
-## node-grove - Node.js Bindings
-
-### Overview
-Provides complete GroveDB functionality to JavaScript/Node.js applications through native bindings using NAPI-RS.
-
-### Architecture
-- **Thread Safety**: Dedicated thread for GroveDB operations
-- **Message Passing**: Commands sent via channels
-- **Async API**: Non-blocking JavaScript interface
-
-### JavaScript API
-```javascript
-const GroveDB = require('node-grove');
-
-// Open database
-const db = new GroveDB('./db');
-
-// Insert data
-await db.insert(
-    ['users', 'alice'],
-    'balance',
-    { type: 'item', value: Buffer.from('100') }
-);
-
-// Query data
-const result = await db.get(['users', 'alice'], 'balance');
-
-// Start transaction
-const tx = await db.startTransaction();
-await db.insert(['users', 'bob'], 'balance', { type: 'item', value: Buffer.from('200') }, tx);
-await db.commitTransaction(tx);
-
-// Execute path query
-const query = {
-    path: ['users'],
-    query: {
-        items: [{ type: 'range', from: 'a', to: 'z' }],
-        limit: 10
-    }
-};
-const results = await db.query(query);
-```
-
-### Type Conversions
-- Rust `Vec<u8>` ↔ JavaScript `Buffer`
-- Rust `Element` ↔ JavaScript object with type field
-- Rust errors ↔ JavaScript exceptions
-
-### Features
-- Full transaction support
-- Batch operations
-- Path queries
-- Proof generation and verification
-- Cost tracking
-- Async/await interface
-
----
-
 ## Integration and Design Patterns
 
 ### Common Patterns Across Crates
@@ -296,8 +238,7 @@ GroveDB Core
     ├── Checks grovedb-version for compatibility
     ├── Tracks costs with grovedb-costs
     ├── Manages storage with epoch flags
-    ├── Debugs with grovedb-visualize
-    └── Exposes to JS via node-grove
+    └── Debugs with grovedb-visualize
 ```
 
 ### Design Philosophy
