@@ -75,7 +75,7 @@ harness = false
 [features]
 default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
-serde = ["dep:serde", "grovedb-merk/serde", "indexmap/serde"]
+serde = ["dep:serde", "grovedb-merk/serde", "grovedb-query/serde", "indexmap/serde"]
 full = ["grovedb-merk/full", "minimal"]
 minimal = [
     "grovedb-merk/minimal",
