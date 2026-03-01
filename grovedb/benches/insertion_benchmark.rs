@@ -4,7 +4,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(feature = "minimal")]
 use grovedb::{Element, GroveDb};
-#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
@@ -16,7 +15,6 @@ use tempfile::TempDir;
 #[cfg(feature = "minimal")]
 const N_ITEMS: usize = 10_000;
 
-#[cfg(feature = "minimal")]
 const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::empty();
 
 /// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree
