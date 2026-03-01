@@ -164,25 +164,31 @@ mod tests {
         let decoder = Decoder::new(merk_proof);
         let mut found_count_node = false;
 
-        for op in decoder {
-            if let Ok(op) = op {
-                match op {
-                    Op::Push(node) | Op::PushInverted(node) => match node {
-                        Node::KVCount(k, _, c) => {
-                            eprintln!("Found KVCount node: key={}, count={}", hex::encode(k), c);
-                            found_count_node = true;
-                            break;
+        for res in decoder {
+            match res {
+                Err(e) => panic!("failed to decode proof op: {e}"),
+                Ok(op) => {
+                    if let Op::Push(node) | Op::PushInverted(node) = op {
+                        match node {
+                            Node::KVCount(k, _, c) => {
+                                eprintln!(
+                                    "Found KVCount node: key={}, count={}",
+                                    hex::encode(k),
+                                    c
+                                );
+                                found_count_node = true;
+                                break;
+                            }
+                            Node::KVHashCount(_, c) => {
+                                eprintln!("Found KVHashCount node: count={}", c);
+                                found_count_node = true;
+                                break;
+                            }
+                            n => {
+                                eprintln!("Found node: {:?}", n);
+                            }
                         }
-                        Node::KVHashCount(_, c) => {
-                            eprintln!("Found KVHashCount node: count={}", c);
-                            found_count_node = true;
-                            break;
-                        }
-                        n => {
-                            eprintln!("Found node: {:?}", n);
-                        }
-                    },
-                    _ => {}
+                    }
                 }
             }
         }
@@ -392,7 +398,7 @@ mod tests {
         for (key, value) in &test_data {
             db.insert(
                 &[b"verified"],
-                *key,
+                key,
                 Element::new_item(value.to_vec()),
                 None,
                 None,

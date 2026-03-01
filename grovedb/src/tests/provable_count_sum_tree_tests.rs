@@ -87,9 +87,7 @@ mod tests {
     ) -> Result<grovedb_merk::proofs::tree::Tree, grovedb_merk::error::Error> {
         let decoder = Decoder::new(merk_proof_bytes);
         // collapse=false preserves the full tree structure
-        execute(decoder, false, |_node| Ok(()))
-            .unwrap()
-            .map_err(|e| e)
+        execute(decoder, false, |_node| Ok(())).unwrap()
     }
 
     #[test]
@@ -1526,12 +1524,12 @@ mod tests {
         // Navigate through proof hierarchy: root -> TEST_LEAF -> rotation_tree
         let test_leaf_layer = root_layer
             .lower_layers
-            .get(&TEST_LEAF.to_vec())
+            .get(TEST_LEAF)
             .expect("should have TEST_LEAF layer");
 
         let rotation_tree_layer = test_leaf_layer
             .lower_layers
-            .get(&b"rotation_tree".to_vec())
+            .get(b"rotation_tree".as_slice())
             .expect("should have rotation_tree layer");
 
         // Execute the proof to build the tree structure
@@ -1685,12 +1683,12 @@ mod tests {
         // Navigate through proof hierarchy: root -> TEST_LEAF -> stress_tree
         let test_leaf_layer = root_layer
             .lower_layers
-            .get(&TEST_LEAF.to_vec())
+            .get(TEST_LEAF)
             .expect("should have TEST_LEAF layer");
 
         let stress_tree_layer = test_leaf_layer
             .lower_layers
-            .get(&b"stress_tree".to_vec())
+            .get(b"stress_tree".as_slice())
             .expect("should have stress_tree layer");
 
         // Execute the proof to build the tree structure
@@ -2252,7 +2250,7 @@ mod tests {
                     }
 
                     // Recursively check lower layers
-                    for (_, lower_layer) in &layer.lower_layers {
+                    for lower_layer in layer.lower_layers.values() {
                         check_layer_proof(lower_layer, found_kvdigest_count, found_plain_kvdigest);
                     }
                 }

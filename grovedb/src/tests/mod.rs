@@ -768,7 +768,7 @@ pub fn make_deep_tree_with_sum_trees(grove_version: &GroveVersion) -> TempGroveD
                 grove_version,
             )
             .unwrap()
-            .expect(&format!("successful item insert for {}", letter as char));
+            .unwrap_or_else(|_| panic!("successful item insert for {}", letter as char));
     }
 
     temp_db
@@ -1006,7 +1006,7 @@ pub fn make_deep_tree_with_sum_trees_mixed_with_items(grove_version: &GroveVersi
                 grove_version,
             )
             .unwrap()
-            .expect(&format!("successful item insert for {}", letter as char));
+            .unwrap_or_else(|_| panic!("successful item insert for {}", letter as char));
     }
 
     temp_db
@@ -4275,12 +4275,10 @@ mod general_tests {
         }
 
         // `verify_grovedb` must identify issues
-        assert!(
-            db.verify_grovedb(None, true, false, grove_version)
-                .unwrap()
-                .len()
-                > 0
-        );
+        assert!(!db
+            .verify_grovedb(None, true, false, grove_version)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

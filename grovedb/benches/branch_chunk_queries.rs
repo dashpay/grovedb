@@ -43,6 +43,8 @@
 //!
 //! This simulates how a client would search for specific keys in a large tree.
 
+#![allow(clippy::type_complexity)]
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
