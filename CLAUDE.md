@@ -219,7 +219,6 @@ grovedb/
 ├── grovedb-version/   # Version management
 ├── grovedb-epoch-based-storage-flags/  # Epoch storage features
 ├── visualize/         # Debug visualization
-├── node-grove/        # Node.js bindings
 └── docs/             # Detailed documentation
     └── crates/       # Per-crate documentation
 ```
