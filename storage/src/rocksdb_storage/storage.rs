@@ -462,7 +462,8 @@ impl RocksDbStorage {
         let mut iter = self.db.raw_iterator_cf(&cf_handle);
         iter.seek_to_first();
         while iter.valid() {
-            self.db.delete(iter.key().expect("should have key"))?;
+            let key = iter.key().expect("should have key").to_vec();
+            self.db.delete_cf(&cf_handle, key)?;
             iter.next()
         }
         Ok(())
