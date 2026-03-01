@@ -1,17 +1,12 @@
-#[cfg(feature = "minimal")]
-use std::collections::LinkedList;
 use std::fmt;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "minimal")]
-use crate::proofs::{
-    query::{Map, MapBuilder},
-    Op,
-};
+use crate::proofs::query::{Map, MapBuilder};
 use crate::{
     error::Error,
-    proofs::{hex_to_ascii, query::ProofStatus, tree::execute, Decoder, Node, Query},
+    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
     tree::value_hash,
     CryptoHash as MerkHash, CryptoHash,
 };

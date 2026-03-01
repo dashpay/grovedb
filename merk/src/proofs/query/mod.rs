@@ -119,6 +119,7 @@ where
     }
 
     /// Creates a `Node::Hash` from the hash of the node.
+    #[allow(dead_code)]
     pub(crate) fn to_hash_node(&self) -> CostContext<Node> {
         self.tree().hash().map(Node::Hash)
     }

@@ -3441,7 +3441,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prove_absent_path_with_intermediate_emtpy_tree() {
+    fn test_prove_absent_path_with_intermediate_empty_tree() {
         let grove_version = GroveVersion::latest();
         //         root
         // test_leaf (empty)

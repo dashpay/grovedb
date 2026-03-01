@@ -239,4 +239,3 @@ Kazde pole to oddzielne drzewo Merk, uwierzytelnione az do pojedynczego hasza
 korzenia, na ktory zgadzaja sie walidatorzy.
 
 ---
-

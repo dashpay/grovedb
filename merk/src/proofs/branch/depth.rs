@@ -138,7 +138,7 @@ pub fn calculate_chunk_depths_with_minimum(
         let chunks_left = num_chunks - i;
         // Base even share for remaining chunks
         let base = remaining / chunks_left as u8;
-        let has_extra = (remaining % chunks_left as u8) > 0;
+        let has_extra = !remaining.is_multiple_of(chunks_left as u8);
 
         // Front chunks get extra, first chunk at least min_depth
         let chunk = if has_extra { base + 1 } else { base };

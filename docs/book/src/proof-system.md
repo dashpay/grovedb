@@ -487,4 +487,3 @@ graph TD
 values appear only once, making them more compact than independent proofs.
 
 ---
-

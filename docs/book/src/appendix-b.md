@@ -51,4 +51,3 @@ Verify:
 If any layer is a non-Merk tree, produce V1.
 
 ---
-

@@ -202,4 +202,3 @@ pub const MERK_BIGGEST_KEY_SIZE: u32 = 256;
 ```
 
 ---
-

@@ -239,4 +239,3 @@ Each box is a separate Merk tree, authenticated all the way up to a single root
 hash that validators agree on.
 
 ---
-

@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Difinitions of versatile type representing a path to a subtree that can own
+//! Definitions of versatile type representing a path to a subtree that can own
 //! certain path segments.
 
 use std::hash::{Hash, Hasher};
@@ -329,7 +329,7 @@ impl<'b, B: AsRef<[u8]>> SubtreePathBuilder<'b, B> {
         result
     }
 
-    /// Retuns `true` if the subtree path is empty, so it points to the root
+    /// Returns `true` if the subtree path is empty, so it points to the root
     /// tree.
     pub fn is_root(&self) -> bool {
         match self {

@@ -876,4 +876,3 @@ where every position stores a value and the root hash is always recomputed on
 the fly.
 
 ---
-

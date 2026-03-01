@@ -52,7 +52,6 @@ impl Iterator for Decoder<'_> {
 /// Re-export encoding module for backward compatibility
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod encoding {
-    //! Re-exports of proof encoding types from grovedb-query
     pub use grovedb_query::proofs::encode_into;
 
     pub use super::Decoder;

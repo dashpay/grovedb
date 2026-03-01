@@ -875,4 +875,3 @@ potrzebujesz zwiezlej struktury o stalej pojemnosci, gdzie kazda pozycja przecho
 wartosc i hasz korzenia jest zawsze przeliczany na biezaco.
 
 ---
-

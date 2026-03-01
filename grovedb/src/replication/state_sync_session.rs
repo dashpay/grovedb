@@ -221,7 +221,7 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     pub fn commit(self: Pin<Box<Self>>) -> Result<(), Error> {
-        // SAFETY: the struct isn't used anymore and no storage contexts would acccess
+        // SAFETY: the struct isn't used anymore and no storage contexts would access
         // transaction
         let session = unsafe { Pin::into_inner_unchecked(self) };
         session.db.commit_transaction(session.transaction).unwrap()
@@ -315,7 +315,7 @@ impl<'db> MultiStateSyncSession<'db> {
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>> {
         // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaciton` so it will be safe to modify them
+        // `transaction` so it will be safe to modify them
         &mut unsafe { self.get_unchecked_mut() }.current_prefixes
     }
 
@@ -323,13 +323,13 @@ impl<'db> MultiStateSyncSession<'db> {
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeSet<SubtreePrefix> {
         // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaciton` so it will be safe to modify them
+        // `transaction` so it will be safe to modify them
         &mut unsafe { self.get_unchecked_mut() }.processed_prefixes
     }
 
     fn num_processed_subtrees_in_batch(self: Pin<&mut MultiStateSyncSession<'db>>) -> &mut usize {
         // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaciton` so it will be safe to modify them
+        // `transaction` so it will be safe to modify them
         &mut unsafe { self.get_unchecked_mut() }.num_processed_subtrees_in_batch
     }
 
@@ -337,7 +337,7 @@ impl<'db> MultiStateSyncSession<'db> {
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut Option<SubtreesMetadata> {
         // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaciton` so it will be safe to modify them
+        // `transaction` so it will be safe to modify them
         &mut unsafe { self.get_unchecked_mut() }.pending_discovered_subtrees
     }
 

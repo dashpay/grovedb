@@ -425,7 +425,7 @@ impl KV {
     }
 
     /// This function is used to calculate the cost of groveDB sum item nodes
-    /// The difference with layered nodes is that the value hash is payed for by
+    /// The difference with layered nodes is that the value hash is paid for by
     /// the node in the specialized nodes and by the parent in the layered
     /// ones
     #[inline]

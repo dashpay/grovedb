@@ -1,0 +1,45 @@
+name: Pre-commit
+
+on:
+  pull_request:
+    branches:
+      - master
+      - develop
+      - v[0-9]+.[0-9]+-dev
+  push:
+    branches:
+      - master
+      - develop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    name: Pre-commit checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Enable Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run commit-stage hooks
+        uses: pre-commit/action@v3.0.1
+
+      - name: Run pre-push hooks (clippy)
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --all-files --hook-stage pre-push

@@ -92,4 +92,3 @@ For non-Merk trees: child_hash = type-specific root (mmr_root, state_root, dense
 
 *The GroveDB Book — documenting the internals of GroveDB for developers and
 researchers. Based on the GroveDB source code.*
-

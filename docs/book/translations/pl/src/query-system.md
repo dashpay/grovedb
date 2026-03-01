@@ -180,4 +180,3 @@ scalania znajduje wspolne prefiksy sciezek i laczy elementy zapytan:
 ```
 
 ---
-

@@ -226,4 +226,3 @@ Operacja `ReplaceNonMerkTreeRoot` przenosi nowy hasz korzenia i enumeracje `NonM
 dzieki czemu element moze byc w pelni zrekonstruowany po przetworzeniu.
 
 ---
-

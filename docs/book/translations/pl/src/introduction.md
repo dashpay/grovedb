@@ -133,4 +133,3 @@ Kazda operacja akumuluje koszty przechodzac przez stos, umozliwiajac precyzyjne
 rozliczanie zasobow.
 
 ---
-

@@ -329,4 +329,3 @@ Oznacza to, ze zmiana zarowno samej referencji, JAK I danych, na ktore wskazuje,
 zmieni hasz korzenia -- oba sa kryptograficznie powiazane.
 
 ---
-
