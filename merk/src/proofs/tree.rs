@@ -794,4 +794,79 @@ mod test {
             }
         );
     }
+
+    #[test]
+    fn execute_push_inverted_rejects_increasing_keys() {
+        let proof = vec![
+            Op::PushInverted(Node::KV(vec![2], vec![2])),
+            Op::PushInverted(Node::KV(vec![3], vec![3])),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering inverted"
+        ));
+    }
+
+    #[test]
+    fn execute_parent_inverted_attaches_right_child() {
+        let proof = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::ParentInverted,
+        ];
+        let tree = execute(proof.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        assert!(tree.left.is_none());
+        assert_eq!(
+            tree.right.as_ref().and_then(|c| c.tree.key()),
+            Some(vec![1].as_slice())
+        );
+        assert_eq!(tree.key(), Some(vec![2].as_slice()));
+    }
+
+    #[test]
+    fn execute_child_inverted_attaches_left_child() {
+        let proof = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::ChildInverted,
+        ];
+        let tree = execute(proof.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        assert!(tree.right.is_none());
+        assert_eq!(
+            tree.left.as_ref().and_then(|c| c.tree.key()),
+            Some(vec![2].as_slice())
+        );
+        assert_eq!(tree.key(), Some(vec![1].as_slice()));
+    }
+
+    #[test]
+    fn execute_returns_stack_underflow_error() {
+        let result = execute(vec![Ok(Op::Parent)], false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Stack underflow"
+        ));
+    }
+
+    #[test]
+    fn hash_supports_counted_node_variants() {
+        let tree: ProofTree = Node::KVHashCount([1; 32], 7).into();
+        let kv_hash_count_hash = tree.hash().unwrap();
+        assert_ne!(kv_hash_count_hash, NULL_HASH);
+
+        let tree: ProofTree = Node::KVDigestCount(vec![1], [2; 32], 5).into();
+        let digest_count_hash = tree.hash().unwrap();
+        assert_ne!(digest_count_hash, NULL_HASH);
+
+        let tree: ProofTree = Node::KVRefValueHashCount(vec![3], vec![4], [5; 32], 9).into();
+        let ref_value_count_hash = tree.hash().unwrap();
+        assert_ne!(ref_value_count_hash, NULL_HASH);
+    }
 }

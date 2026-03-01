@@ -219,3 +219,72 @@ impl<T> MerkErrorExt for CostResult<T, Error> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::{CostResult, CostsExt};
+
+    use super::{Error, MerkErrorExt};
+
+    #[test]
+    fn test_add_context_mutates_string_errors() {
+        let mut err = Error::PathNotFound("missing".to_string());
+        err.add_context("ctx");
+        match err {
+            Error::PathNotFound(s) => assert_eq!(s, "missing, ctx"),
+            _ => panic!("expected path not found"),
+        }
+    }
+
+    #[test]
+    fn test_add_context_noop_for_static_errors() {
+        let mut err = Error::InvalidOperation("bad op");
+        err.add_context("ctx");
+        match err {
+            Error::InvalidOperation(s) => assert_eq!(s, "bad op"),
+            _ => panic!("expected invalid operation"),
+        }
+    }
+
+    #[test]
+    fn test_cost_result_add_context() {
+        let result: CostResult<(), Error> =
+            Err(Error::CorruptedData("data".to_string())).wrap_with_cost(Default::default());
+
+        let err = result.add_context("decode").unwrap().unwrap_err();
+        match err {
+            Error::CorruptedData(s) => assert_eq!(s, "data, decode"),
+            _ => panic!("expected corrupted data"),
+        }
+    }
+
+    #[test]
+    fn test_from_query_error_mapping() {
+        let e: Error = grovedb_query::error::Error::NotSupported("n".to_string()).into();
+        assert!(matches!(e, Error::NotSupported(s) if s == "n"));
+
+        let e: Error = grovedb_query::error::Error::RequestAmountExceeded("r".to_string()).into();
+        assert!(matches!(e, Error::RequestAmountExceeded(s) if s == "r"));
+
+        let e: Error = grovedb_query::error::Error::CorruptedCodeExecution("c").into();
+        assert!(matches!(e, Error::CorruptedCodeExecution("c")));
+
+        let e: Error = grovedb_query::error::Error::InvalidOperation("i").into();
+        assert!(matches!(e, Error::InvalidOperation("i")));
+
+        let e: Error = grovedb_query::error::Error::ProofCreationError("p".to_string()).into();
+        assert!(matches!(e, Error::ProofCreationError(s) if s == "p"));
+
+        let e: Error = grovedb_query::error::Error::InvalidProofError("v".to_string()).into();
+        assert!(matches!(e, Error::InvalidProofError(s) if s == "v"));
+
+        let e: Error = grovedb_query::error::Error::KeyOrderingError("k").into();
+        assert!(matches!(e, Error::KeyOrderingError("k")));
+    }
+
+    #[test]
+    fn test_from_query_error_ed_error_mapping() {
+        let e: Error = grovedb_query::error::Error::EdError(ed::Error::UnexpectedByte(7)).into();
+        assert!(matches!(e, Error::EdError(ed::Error::UnexpectedByte(7))));
+    }
+}
