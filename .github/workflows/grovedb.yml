@@ -2,105 +2,178 @@ name: GroveDB
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master, develop]
   pull_request:
     branches:
       - master
       - develop
-      - v[0-9]+.[0-9]+-dev
+      - 'v[0-9]+.[0-9]+-dev'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Tests
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      trees: ${{ steps.filter.outputs.trees }}
+      any-code: ${{ steps.filter.outputs.any-code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'costs/**'
+              - 'path/**'
+              - 'visualize/**'
+              - 'grovedb-version/**'
+              - 'grovedbg-types/**'
+              - 'storage/**'
+              - 'grovedb-epoch-based-storage-flags/**'
+              - 'grovedb-element/**'
+              - 'merk/**'
+              - 'grovedb-query/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            trees:
+              - 'costs/**'
+              - 'storage/**'
+              - 'grovedb-query/**'
+              - 'grovedb-merkle-mountain-range/**'
+              - 'grovedb-dense-fixed-sized-merkle-tree/**'
+              - 'grovedb-bulk-append-tree/**'
+              - 'grovedb-commitment-tree/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            any-code:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+
+  test-core:
+    name: Test Core
+    needs: detect-changes
+    if: needs.detect-changes.outputs.core == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Enable Rust cache
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - name: Run core crate tests
+        run: >
+          cargo test
+          -p grovedb-costs
+          -p grovedb-path
+          -p grovedb-visualize
+          -p grovedb-version
+          -p grovedbg-types
+          -p grovedb-storage
+          -p grovedb-epoch-based-storage-flags
+          -p grovedb-element
+          -p grovedb-merk
+          -p grovedb-query
+          --all-features
 
-      - name: Setup Trunk
-        uses: jetli/trunk-action@v0.5.0
+  test-trees:
+    name: Test Trees
+    needs: detect-changes
+    if: needs.detect-changes.outputs.trees == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - name: Run tree crate tests
+        run: >
+          cargo test
+          -p grovedb-merkle-mountain-range
+          -p grovedb-dense-fixed-sized-merkle-tree
+          -p grovedb-bulk-append-tree
+          -p grovedb-commitment-tree
+          --all-features
 
-      - run: cargo test --workspace --all-features
+  test-grovedb:
+    name: Test GroveDB
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-code == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - name: Run grovedb tests
+        run: cargo test -p grovedb --all-features
 
   linting:
     name: Linting
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
-      - name: Enable Rust cache
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
-
       - name: Run clippy
-        run: cargo clippy --workspace --all-features -- -D warnings -A mismatched_lifetime_syntaxes
+        run: cargo clippy --workspace --all-features -- -D warnings
 
   formatting:
     name: Formatting
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-
       - run: cargo fmt --all --check
 
   errors:
-    name: Compilation errors
+    name: Compilation Errors
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Enable Rust cache
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
-
       - run: cargo check
-
-      - name: Compile proof verification feature
+      - name: Check verify feature
         run: cargo build --no-default-features --features verify -p grovedb
 
   security:
-    name: Dependencies security audit
+    name: Security Audit
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Generate lockfile
-        run: cargo generate-lockfile
-
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo generate-lockfile
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
