@@ -51,7 +51,7 @@ impl fmt::Display for ProvedPathKeyOptionalValue {
         writeln!(
             f,
             "  value: {},",
-            optional_element_hex_to_ascii(self.value.as_ref())
+            optional_element_hex_to_ascii(self.value.as_ref())?
         )?;
         writeln!(f, "  proof: {}", hex::encode(self.proof))?;
         write!(f, "}}")
@@ -86,7 +86,11 @@ impl fmt::Display for ProvedPathKeyValue {
                 .join(", ")
         )?;
         writeln!(f, "  key: {},", hex_to_ascii(&self.key))?;
-        writeln!(f, "  value: {},", element_hex_to_ascii(self.value.as_ref()))?;
+        writeln!(
+            f,
+            "  value: {},",
+            element_hex_to_ascii(self.value.as_ref())?
+        )?;
         writeln!(f, "  proof: {}", hex::encode(self.proof))?;
         write!(f, "}}")
     }
@@ -212,19 +216,17 @@ pub fn path_as_slices_hex_to_ascii(path: &[&[u8]]) -> String {
         .collect::<Vec<_>>()
         .join("/")
 }
-pub fn optional_element_hex_to_ascii(hex_value: Option<&Vec<u8>>) -> String {
+pub fn optional_element_hex_to_ascii(hex_value: Option<&Vec<u8>>) -> Result<String, fmt::Error> {
     match hex_value {
-        None => "None".to_string(),
-        Some(hex_value) => Element::deserialize(hex_value, GroveVersion::latest())
-            .map(|e| e.to_string())
-            .unwrap_or_else(|_| hex::encode(hex_value)),
+        None => Ok("None".to_string()),
+        Some(hex_value) => element_hex_to_ascii(hex_value),
     }
 }
 
-pub fn element_hex_to_ascii(hex_value: &[u8]) -> String {
-    Element::deserialize(hex_value, GroveVersion::latest())
-        .map(|e| e.to_string())
-        .unwrap_or_else(|_| hex::encode(hex_value))
+pub fn element_hex_to_ascii(hex_value: &[u8]) -> Result<String, fmt::Error> {
+    let element =
+        Element::deserialize(hex_value, GroveVersion::latest()).map_err(|_| fmt::Error)?;
+    Ok(element.to_string())
 }
 
 #[cfg(test)]
