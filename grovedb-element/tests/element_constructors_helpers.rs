@@ -12,17 +12,49 @@ fn sample_flags() -> Option<ElementFlags> {
 }
 
 #[test]
-fn constructors_create_expected_variants() {
+fn constructors_create_expected_tree_variants() {
+    // Empty tree constructors
     assert_eq!(Element::empty_tree(), Element::Tree(None, None));
     assert_eq!(
         Element::empty_tree_with_flags(sample_flags()),
         Element::Tree(None, sample_flags())
     );
+
+    // Non-empty tree constructors
+    assert_eq!(
+        Element::new_tree(Some(vec![1, 2, 3])),
+        Element::Tree(Some(vec![1, 2, 3]), None)
+    );
+    assert_eq!(
+        Element::new_tree_with_flags(Some(vec![2]), sample_flags()),
+        Element::Tree(Some(vec![2]), sample_flags())
+    );
+}
+
+#[test]
+fn constructors_create_expected_sum_and_big_sum_tree_variants() {
+    // Empty sum tree constructors
     assert_eq!(Element::empty_sum_tree(), Element::SumTree(None, 0, None));
     assert_eq!(
         Element::empty_sum_tree_with_flags(sample_flags()),
         Element::SumTree(None, 0, sample_flags())
     );
+
+    // Non-empty sum tree constructors
+    assert_eq!(
+        Element::new_sum_tree(Some(vec![3])),
+        Element::SumTree(Some(vec![3]), 0, None)
+    );
+    assert_eq!(
+        Element::new_sum_tree_with_flags(Some(vec![3]), sample_flags()),
+        Element::SumTree(Some(vec![3]), 0, sample_flags())
+    );
+    assert_eq!(
+        Element::new_sum_tree_with_flags_and_sum_value(Some(vec![3]), 11, sample_flags()),
+        Element::SumTree(Some(vec![3]), 11, sample_flags())
+    );
+
+    // Empty big sum tree constructors
     assert_eq!(
         Element::empty_big_sum_tree(),
         Element::BigSumTree(None, 0, None)
@@ -31,6 +63,29 @@ fn constructors_create_expected_variants() {
         Element::empty_big_sum_tree_with_flags(sample_flags()),
         Element::BigSumTree(None, 0, sample_flags())
     );
+
+    // Non-empty big sum tree constructors
+    assert_eq!(
+        Element::new_big_sum_tree(Some(vec![4])),
+        Element::BigSumTree(Some(vec![4]), 0, None)
+    );
+    assert_eq!(
+        Element::new_big_sum_tree_with_flags(Some(vec![4]), sample_flags()),
+        Element::BigSumTree(Some(vec![4]), 0, sample_flags())
+    );
+    assert_eq!(
+        Element::new_big_sum_tree_with_flags_and_sum_value(
+            Some(vec![4]),
+            i128::from(i64::MAX) + 1,
+            sample_flags()
+        ),
+        Element::BigSumTree(Some(vec![4]), i128::from(i64::MAX) + 1, sample_flags())
+    );
+}
+
+#[test]
+fn constructors_create_expected_count_and_count_sum_tree_variants() {
+    // Empty count tree constructors
     assert_eq!(
         Element::empty_count_tree(),
         Element::CountTree(None, 0, None)
@@ -39,6 +94,22 @@ fn constructors_create_expected_variants() {
         Element::empty_count_tree_with_flags(sample_flags()),
         Element::CountTree(None, 0, sample_flags())
     );
+
+    // Non-empty count tree constructors
+    assert_eq!(
+        Element::new_count_tree(Some(vec![5])),
+        Element::CountTree(Some(vec![5]), 0, None)
+    );
+    assert_eq!(
+        Element::new_count_tree_with_flags(Some(vec![5]), sample_flags()),
+        Element::CountTree(Some(vec![5]), 0, sample_flags())
+    );
+    assert_eq!(
+        Element::new_count_tree_with_flags_and_count_value(Some(vec![5]), 9, sample_flags()),
+        Element::CountTree(Some(vec![5]), 9, sample_flags())
+    );
+
+    // Empty count sum tree constructors
     assert_eq!(
         Element::empty_count_sum_tree(),
         Element::CountSumTree(None, 0, 0, None)
@@ -48,6 +119,28 @@ fn constructors_create_expected_variants() {
         Element::CountSumTree(None, 0, 0, sample_flags())
     );
 
+    // Non-empty count sum tree constructors
+    assert_eq!(
+        Element::new_count_sum_tree(Some(vec![6])),
+        Element::CountSumTree(Some(vec![6]), 0, 0, None)
+    );
+    assert_eq!(
+        Element::new_count_sum_tree_with_flags(Some(vec![6]), sample_flags()),
+        Element::CountSumTree(Some(vec![6]), 0, 0, sample_flags())
+    );
+    assert_eq!(
+        Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+            Some(vec![6]),
+            2,
+            -3,
+            sample_flags()
+        ),
+        Element::CountSumTree(Some(vec![6]), 2, -3, sample_flags())
+    );
+}
+
+#[test]
+fn constructors_create_expected_item_and_sum_item_variants() {
     assert_eq!(
         Element::new_item(vec![1, 2]),
         Element::Item(vec![1, 2], None)
@@ -69,7 +162,10 @@ fn constructors_create_expected_variants() {
         Element::new_item_with_sum_item_with_flags(vec![1], -44, sample_flags()),
         Element::ItemWithSumItem(vec![1], -44, sample_flags())
     );
+}
 
+#[test]
+fn constructors_create_expected_reference_variants() {
     let ref_path = ReferencePathType::SiblingReference(vec![5]);
     assert_eq!(
         Element::new_reference(ref_path.clone()),
@@ -91,73 +187,11 @@ fn constructors_create_expected_variants() {
             sample_flags()
         )
     );
+}
 
-    assert_eq!(
-        Element::new_tree(Some(vec![1, 2, 3])),
-        Element::Tree(Some(vec![1, 2, 3]), None)
-    );
-    assert_eq!(
-        Element::new_tree_with_flags(Some(vec![2]), sample_flags()),
-        Element::Tree(Some(vec![2]), sample_flags())
-    );
-    assert_eq!(
-        Element::new_sum_tree(Some(vec![3])),
-        Element::SumTree(Some(vec![3]), 0, None)
-    );
-    assert_eq!(
-        Element::new_sum_tree_with_flags(Some(vec![3]), sample_flags()),
-        Element::SumTree(Some(vec![3]), 0, sample_flags())
-    );
-    assert_eq!(
-        Element::new_sum_tree_with_flags_and_sum_value(Some(vec![3]), 11, sample_flags()),
-        Element::SumTree(Some(vec![3]), 11, sample_flags())
-    );
-    assert_eq!(
-        Element::new_big_sum_tree(Some(vec![4])),
-        Element::BigSumTree(Some(vec![4]), 0, None)
-    );
-    assert_eq!(
-        Element::new_big_sum_tree_with_flags(Some(vec![4]), sample_flags()),
-        Element::BigSumTree(Some(vec![4]), 0, sample_flags())
-    );
-    assert_eq!(
-        Element::new_big_sum_tree_with_flags_and_sum_value(
-            Some(vec![4]),
-            i128::from(i64::MAX) + 1,
-            sample_flags()
-        ),
-        Element::BigSumTree(Some(vec![4]), i128::from(i64::MAX) + 1, sample_flags())
-    );
-    assert_eq!(
-        Element::new_count_tree(Some(vec![5])),
-        Element::CountTree(Some(vec![5]), 0, None)
-    );
-    assert_eq!(
-        Element::new_count_tree_with_flags(Some(vec![5]), sample_flags()),
-        Element::CountTree(Some(vec![5]), 0, sample_flags())
-    );
-    assert_eq!(
-        Element::new_count_tree_with_flags_and_count_value(Some(vec![5]), 9, sample_flags()),
-        Element::CountTree(Some(vec![5]), 9, sample_flags())
-    );
-    assert_eq!(
-        Element::new_count_sum_tree(Some(vec![6])),
-        Element::CountSumTree(Some(vec![6]), 0, 0, None)
-    );
-    assert_eq!(
-        Element::new_count_sum_tree_with_flags(Some(vec![6]), sample_flags()),
-        Element::CountSumTree(Some(vec![6]), 0, 0, sample_flags())
-    );
-    assert_eq!(
-        Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
-            Some(vec![6]),
-            2,
-            -3,
-            sample_flags()
-        ),
-        Element::CountSumTree(Some(vec![6]), 2, -3, sample_flags())
-    );
-
+#[test]
+fn constructors_create_expected_provable_tree_variants() {
+    // Provable count tree constructors
     assert_eq!(
         Element::empty_provable_count_tree(),
         Element::ProvableCountTree(None, 0, None)
@@ -183,6 +217,7 @@ fn constructors_create_expected_variants() {
         Element::ProvableCountTree(Some(vec![7]), 12, sample_flags())
     );
 
+    // Provable count sum tree constructors
     assert_eq!(
         Element::empty_provable_count_sum_tree(),
         Element::ProvableCountSumTree(None, 0, 0, None)
@@ -208,7 +243,11 @@ fn constructors_create_expected_variants() {
         ),
         Element::ProvableCountSumTree(Some(vec![8]), 7, -9, sample_flags())
     );
+}
 
+#[test]
+fn constructors_create_expected_commitment_mmr_bulk_dense_variants() {
+    // Commitment tree constructors
     assert_eq!(
         Element::empty_commitment_tree(4),
         Element::CommitmentTree(0, 4, None)
@@ -222,6 +261,7 @@ fn constructors_create_expected_variants() {
         Element::CommitmentTree(11, 5, sample_flags())
     );
 
+    // MMR tree constructors
     assert_eq!(Element::empty_mmr_tree(), Element::MmrTree(0, None));
     assert_eq!(
         Element::empty_mmr_tree_with_flags(sample_flags()),
@@ -232,6 +272,7 @@ fn constructors_create_expected_variants() {
         Element::MmrTree(17, sample_flags())
     );
 
+    // Bulk append tree constructors
     assert_eq!(
         Element::empty_bulk_append_tree(6),
         Element::BulkAppendTree(0, 6, None)
@@ -245,6 +286,7 @@ fn constructors_create_expected_variants() {
         Element::BulkAppendTree(99, 7, sample_flags())
     );
 
+    // Dense tree constructors
     assert_eq!(
         Element::empty_dense_tree(9),
         Element::DenseAppendOnlyFixedSizeTree(0, 9, None)
