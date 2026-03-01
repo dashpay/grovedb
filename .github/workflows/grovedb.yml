@@ -48,15 +48,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-          targets: wasm32-unknown-unknown
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
-
-      - name: Setup Trunk
-        uses: jetli/trunk-action@v0.5.0
 
       - name: Run clippy
         run: cargo clippy --workspace --all-features -- -D warnings -A mismatched_lifetime_syntaxes

@@ -27,10 +27,7 @@ pub fn single_item_proof(c: &mut Criterion) {
                 |(_dir, db, path, key)| {
                     let mut query = Query::new();
                     query.insert_key(key);
-                    let pq = PathQuery::new(
-                        path,
-                        SizedQuery::new(query, None, None),
-                    );
+                    let pq = PathQuery::new(path, SizedQuery::new(query, None, None));
 
                     let _proof = db
                         .get_proved_path_query(&pq, None, None, grove_version)
@@ -132,10 +129,20 @@ fn setup_db(depth: usize) -> (TempDir, GroveDb, Vec<Vec<u8>>, Vec<u8>) {
         .expect("should insert item");
     }
 
-    (dir, db, path, first_key.expect("should have at least one key"))
+    (
+        dir,
+        db,
+        path,
+        first_key.expect("should have at least one key"),
+    )
 }
 
 #[cfg(feature = "minimal")]
-criterion_group!(benches, single_item_proof, full_leaf_proof, proof_verification);
+criterion_group!(
+    benches,
+    single_item_proof,
+    full_leaf_proof,
+    proof_verification
+);
 #[cfg(feature = "minimal")]
 criterion_main!(benches);
