@@ -139,6 +139,8 @@ jobs:
           cache-on-failure: "false"
       - name: Run clippy
         run: cargo clippy --workspace --all-features -- -D warnings
+      - name: Check verify feature
+        run: cargo build --no-default-features --features verify -p grovedb
 
   formatting:
     name: Formatting
@@ -151,21 +153,6 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all --check
-
-  errors:
-    name: Compilation Errors
-    needs: detect-changes
-    if: needs.detect-changes.outputs.any-code == 'true'
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: "false"
-      - run: cargo check
-      - name: Check verify feature
-        run: cargo build --no-default-features --features verify -p grovedb
 
   security:
     name: Security Audit
