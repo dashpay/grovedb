@@ -1378,7 +1378,7 @@ fn test_dense_tree_v1_proof_multiple_disjoint_positions() {
 
     assert_eq!(result_set.len(), 3, "should have exactly 3 results");
 
-    let expected = vec![
+    let expected = [
         (1u16, b"d_1".to_vec()),
         (5u16, b"d_5".to_vec()),
         (9u16, b"d_9".to_vec()),

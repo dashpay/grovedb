@@ -2431,7 +2431,7 @@ fn range_after_to_proof_inclusive() {
 
     let mut iter = proof.iter();
     iter.next();
-    Some(&Op::Push(Node::Hash([
+    let _ = Some(&Op::Push(Node::Hash([
         121, 235, 207, 195, 143, 58, 159, 120, 166, 33, 151, 45, 178, 124, 91, 233, 201, 4, 241,
         127, 41, 198, 197, 228, 19, 190, 36, 173, 183, 73, 104, 30,
     ])));
@@ -3507,10 +3507,9 @@ fn query_from_vec() {
     )];
     let query = Query::from(query_items);
 
-    let mut expected = Vec::new();
-    expected.push(QueryItem::Range(
+    let expected = vec![QueryItem::Range(
         vec![0, 0, 0, 0, 0, 0, 0, 5, 5]..vec![0, 0, 0, 0, 0, 0, 0, 7],
-    ));
+    )];
     assert_eq!(query.items, expected);
 }
 
@@ -3544,6 +3543,7 @@ fn query_item_from_vec_u8() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn verify_ops() {
     let grove_version = GroveVersion::latest();
     let mut tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode).unwrap();
@@ -3575,6 +3575,7 @@ fn verify_ops() {
 }
 
 #[test]
+#[allow(deprecated)]
 #[should_panic(expected = "verify failed")]
 fn verify_ops_mismatched_hash() {
     let grove_version = GroveVersion::latest();

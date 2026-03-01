@@ -948,6 +948,7 @@ impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
     }
 }
 
+#[allow(dead_code)] // get_batch_run_mode is defined for future use
 trait TreeCache<G, SR> {
     fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error>;
 
@@ -3973,13 +3974,11 @@ mod tests {
     }
 
     fn grove_db_ops_for_contract_insert() -> Vec<QualifiedGroveDbOp> {
-        let mut grove_db_ops = vec![];
-
-        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+        let mut grove_db_ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![],
             b"contract".to_vec(),
             Element::empty_tree(),
-        ));
+        )];
         grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"contract".to_vec()],
             [0u8].to_vec(),
@@ -4035,9 +4034,7 @@ mod tests {
     }
 
     fn grove_db_ops_for_contract_document_insert() -> Vec<QualifiedGroveDbOp> {
-        let mut grove_db_ops = vec![];
-
-        grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
+        let mut grove_db_ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![
                 b"contract".to_vec(),
                 [1u8].to_vec(),
@@ -4046,7 +4043,7 @@ mod tests {
             ],
             b"serialized_domain_id".to_vec(),
             Element::new_item(b"serialized_domain".to_vec()),
-        ));
+        )];
 
         grove_db_ops.push(QualifiedGroveDbOp::insert_or_replace_op(
             vec![

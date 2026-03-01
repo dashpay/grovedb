@@ -179,7 +179,7 @@ fn test_mmr_tree_v1_proof_multiple_leaves() {
     assert_eq!(result_set.len(), 3, "should have 3 results");
 
     // Check values
-    let expected_values = vec![
+    let expected_values = [
         (1u64, b"val_1".to_vec()),
         (5u64, b"val_5".to_vec()),
         (8u64, b"val_8".to_vec()),

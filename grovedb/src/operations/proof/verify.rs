@@ -1284,7 +1284,7 @@ impl GroveDb {
                 "\nDEBUG: Layer proof verification at path {:?}",
                 current_path.iter().map(hex::encode).collect::<Vec<_>>()
             );
-            println!("  Calculated root hash: {}", hex::encode(&root_hash));
+            println!("  Calculated root hash: {}", hex::encode(root_hash));
             if let Some(parent_type) = last_parent_tree_type {
                 println!("  Parent tree type: {:?}", parent_type);
             }
@@ -1391,7 +1391,7 @@ impl GroveDb {
                                         );
                                         println!(
                                             "  Lower layer root hash: {}",
-                                            hex::encode(&lower_hash)
+                                            hex::encode(lower_hash)
                                         );
                                         println!("  Parent tree type: {:?}", last_parent_tree_type);
                                     }
@@ -1413,13 +1413,10 @@ impl GroveDb {
                                             "  Value bytes hash: {}",
                                             hex::encode(value_hash(value_bytes).value())
                                         );
-                                        println!(
-                                            "  Lower layer hash: {}",
-                                            hex::encode(&lower_hash)
-                                        );
+                                        println!("  Lower layer hash: {}", hex::encode(lower_hash));
                                         println!(
                                             "  Combined hash: {}",
-                                            hex::encode(&combined_root_hash)
+                                            hex::encode(combined_root_hash)
                                         );
                                         println!("  Expected hash: {}", hex::encode(hash));
                                     }

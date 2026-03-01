@@ -125,6 +125,12 @@
 //! [Architectural Decision Records](https://github.com/dashpay/grovedb/tree/master/adr) or
 //! [Tutorial](https://www.grovedb.org/tutorials.html)
 
+// Pre-existing patterns throughout the crate; fix incrementally.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::result_large_err)]
+#![allow(clippy::drop_non_drop)] // Intentional drops to release borrows before re-borrowing
+
 #[cfg(feature = "minimal")]
 pub mod batch;
 #[cfg(feature = "minimal")]
@@ -138,6 +144,7 @@ pub mod error;
 #[cfg(feature = "estimated_costs")]
 mod estimated_costs;
 #[cfg(feature = "minimal")]
+#[allow(dead_code)] // WIP module, will be used in future batch rework
 mod merk_cache;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod operations;
@@ -146,6 +153,7 @@ mod query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod query_result_type;
 #[cfg(feature = "minimal")]
+#[allow(dead_code)] // WIP module, will be used in future batch rework
 pub mod reference_path;
 #[cfg(feature = "minimal")]
 pub mod replication;
