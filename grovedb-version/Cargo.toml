@@ -11,5 +11,8 @@ repository = "https://github.com/dashpay/grovedb"
 thiserror = "2.0.17"
 versioned-feature-core = "1.0.0"
 
+[dev-dependencies]
+grovedb-costs = { path = "../costs" }
+
 [features]
 mock-versions = []
