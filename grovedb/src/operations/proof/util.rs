@@ -232,8 +232,12 @@ pub fn element_hex_to_ascii(hex_value: &[u8]) -> Result<String, fmt::Error> {
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::query::ProvedKeyOptionalValue;
+    use grovedb_version::version::GroveVersion;
 
-    use crate::operations::proof::util::ProvedPathKeyOptionalValue;
+    use crate::operations::proof::util::{
+        element_hex_to_ascii, optional_element_hex_to_ascii, ProvedPathKeyOptionalValue,
+    };
+    use crate::Element;
 
     #[test]
     fn test_proved_path_from_single_proved_key_value() {
@@ -324,6 +328,62 @@ mod tests {
                 value: None,
                 proof: [2; 32]
             }
+        );
+    }
+
+    #[test]
+    fn test_element_hex_to_ascii_valid() {
+        let grove_version = GroveVersion::latest();
+        let item = Element::new_item(b"hello".to_vec());
+        let serialized = item
+            .serialize(grove_version)
+            .expect("should serialize item");
+        let result =
+            element_hex_to_ascii(&serialized).expect("should deserialize valid element bytes");
+        assert!(
+            !result.is_empty(),
+            "display string should not be empty for a valid element"
+        );
+    }
+
+    #[test]
+    fn test_element_hex_to_ascii_invalid() {
+        let invalid_bytes = vec![0xFF, 0xFE, 0xFD];
+        let result = element_hex_to_ascii(&invalid_bytes);
+        assert!(
+            result.is_err(),
+            "should return Err for invalid element bytes"
+        );
+    }
+
+    #[test]
+    fn test_optional_element_hex_to_ascii_none() {
+        let result = optional_element_hex_to_ascii(None).expect("None should always succeed");
+        assert_eq!(result, "None");
+    }
+
+    #[test]
+    fn test_optional_element_hex_to_ascii_valid() {
+        let grove_version = GroveVersion::latest();
+        let item = Element::new_item(b"test".to_vec());
+        let serialized = item
+            .serialize(grove_version)
+            .expect("should serialize item");
+        let result = optional_element_hex_to_ascii(Some(&serialized))
+            .expect("should deserialize valid element bytes");
+        assert!(
+            !result.is_empty(),
+            "display string should not be empty for a valid element"
+        );
+    }
+
+    #[test]
+    fn test_optional_element_hex_to_ascii_invalid() {
+        let invalid_bytes = vec![0xFF, 0xFE];
+        let result = optional_element_hex_to_ascii(Some(&invalid_bytes));
+        assert!(
+            result.is_err(),
+            "should return Err for invalid element bytes"
         );
     }
 }
