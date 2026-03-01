@@ -136,3 +136,173 @@ impl StorageFlags {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+
+    use crate::StorageFlags;
+
+    #[test]
+    fn update_element_flags_returns_false_when_old_flags_missing() {
+        let cost = StorageCost {
+            added_bytes: 10,
+            replaced_bytes: 1,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        };
+        let mut new_flags = StorageFlags::SingleEpoch(1).to_element_flags();
+
+        let changed = StorageFlags::update_element_flags(&cost, None, &mut new_flags)
+            .expect("expected success");
+
+        assert!(!changed);
+        assert_eq!(new_flags, StorageFlags::SingleEpoch(1).to_element_flags());
+    }
+
+    #[test]
+    fn update_element_flags_bigger_size_updates_flags() {
+        let old = StorageFlags::SingleEpoch(1).to_element_flags();
+        let mut new_flags = StorageFlags::SingleEpoch(2).to_element_flags();
+        let cost = StorageCost {
+            added_bytes: 10,
+            replaced_bytes: 1,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        };
+
+        let changed = StorageFlags::update_element_flags(&cost, Some(old), &mut new_flags)
+            .expect("expected success");
+
+        assert!(changed);
+        assert_eq!(
+            StorageFlags::from_element_flags_ref(&new_flags).expect("flags must deserialize"),
+            Some(StorageFlags::MultiEpoch(1, BTreeMap::from([(2, 10)])))
+        );
+    }
+
+    #[test]
+    fn update_element_flags_bigger_size_returns_false_when_unchanged() {
+        let old = StorageFlags::SingleEpoch(1).to_element_flags();
+        let mut new_flags =
+            StorageFlags::MultiEpoch(1, BTreeMap::from([(2, 10)])).to_element_flags();
+        let cost = StorageCost {
+            added_bytes: 10,
+            replaced_bytes: 1,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        };
+
+        let changed = StorageFlags::update_element_flags(&cost, Some(old), &mut new_flags)
+            .expect("expected success");
+
+        assert!(!changed);
+    }
+
+    #[test]
+    fn update_element_flags_smaller_size_updates_flags() {
+        let owner = [1u8; 32];
+        let old =
+            StorageFlags::MultiEpochOwned(1, BTreeMap::from([(2, 20)]), owner).to_element_flags();
+        let mut new_flags = StorageFlags::SingleEpochOwned(2, owner).to_element_flags();
+
+        let mut per_owner = BTreeMap::new();
+        per_owner.insert(owner, intmap::IntMap::from_iter([(2u16, 5u32)]));
+        let cost = StorageCost {
+            added_bytes: 0,
+            replaced_bytes: 1,
+            removed_bytes: StorageRemovedBytes::SectionedStorageRemoval(per_owner),
+        };
+
+        let changed = StorageFlags::update_element_flags(&cost, Some(old), &mut new_flags)
+            .expect("expected success");
+
+        assert!(changed);
+        assert_eq!(
+            StorageFlags::from_element_flags_ref(&new_flags).expect("flags must deserialize"),
+            Some(StorageFlags::MultiEpochOwned(
+                1,
+                BTreeMap::from([(2, 15)]),
+                owner
+            ))
+        );
+    }
+
+    #[test]
+    fn update_element_flags_same_size_keeps_old_flags() {
+        let old = StorageFlags::SingleEpoch(9).to_element_flags();
+        let mut new_flags = StorageFlags::SingleEpoch(1).to_element_flags();
+        let cost = StorageCost {
+            added_bytes: 0,
+            replaced_bytes: 1,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        };
+
+        let changed = StorageFlags::update_element_flags(&cost, Some(old), &mut new_flags)
+            .expect("expected success");
+
+        assert!(changed);
+        assert_eq!(new_flags, StorageFlags::SingleEpoch(9).to_element_flags());
+    }
+
+    #[test]
+    fn update_element_flags_non_update_transition_returns_false() {
+        let old = StorageFlags::SingleEpoch(1).to_element_flags();
+        let mut new_flags = StorageFlags::SingleEpoch(2).to_element_flags();
+        let cost = StorageCost {
+            added_bytes: 1,
+            replaced_bytes: 0,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        };
+
+        let changed = StorageFlags::update_element_flags(&cost, Some(old), &mut new_flags)
+            .expect("expected success");
+
+        assert!(!changed);
+        assert_eq!(new_flags, StorageFlags::SingleEpoch(2).to_element_flags());
+    }
+
+    #[test]
+    fn update_element_flags_errors_when_new_flags_removed() {
+        let old = StorageFlags::SingleEpoch(1).to_element_flags();
+        let mut new_flags = vec![];
+        let cost = StorageCost {
+            added_bytes: 0,
+            replaced_bytes: 1,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        };
+
+        let error = StorageFlags::update_element_flags(&cost, Some(old), &mut new_flags)
+            .expect_err("expected error");
+
+        assert!(error
+            .to_string()
+            .contains("removing flags from an item with flags is not allowed"));
+    }
+
+    #[test]
+    fn update_element_flags_adds_context_for_parse_errors() {
+        let mut new_flags = StorageFlags::SingleEpoch(1).to_element_flags();
+        let cost = StorageCost {
+            added_bytes: 0,
+            replaced_bytes: 1,
+            removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+        };
+
+        let old_error = StorageFlags::update_element_flags(&cost, Some(vec![255]), &mut new_flags)
+            .expect_err("expected old flag parse error");
+        assert!(old_error
+            .to_string()
+            .contains("drive did not understand flags of old item being updated"));
+
+        let mut invalid_new = vec![255];
+        let new_error = StorageFlags::update_element_flags(
+            &cost,
+            Some(StorageFlags::SingleEpoch(1).to_element_flags()),
+            &mut invalid_new,
+        )
+        .expect_err("expected new flag parse error");
+        assert!(new_error
+            .to_string()
+            .contains("drive did not understand updated item flag information"));
+    }
+}
