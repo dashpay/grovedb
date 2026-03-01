@@ -13,8 +13,26 @@ on:
       - 'v[0-9]*.[0-9]*-dev'
 
 jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      any-code: ${{ steps.filter.outputs.any-code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            any-code:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+
   coverage:
     name: Code Coverage
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
