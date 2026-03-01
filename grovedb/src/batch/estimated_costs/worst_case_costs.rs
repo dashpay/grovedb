@@ -126,6 +126,165 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
+            GroveOp::CommitmentTreeInsert { payload, .. } => {
+                // After preprocessing, CommitmentTreeInsert becomes
+                // ReplaceNonMerkTreeRoot. The base cost is a tree root key
+                // replacement in the parent Merk.
+                let item_cost = GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    TreeType::CommitmentTree(0),
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                );
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Worst-case frontier size with 32 ommers (max depth):
+                // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 = 1066
+                const MAX_FRONTIER_SIZE: u32 = 1066;
+                // Buffer entry: cmx (32 bytes) + payload
+                let buffer_entry_size = 32 + payload.len() as u32;
+                // Worst-case Sinsemilla hashes per append:
+                // 32 (root computation) + 32 (all ommers cascade) = 64
+                const MAX_SINSEMILLA_HASHES: u32 = 64;
+                // 1 blake3 hash for running buffer hash
+                const MAX_BLAKE3_HASHES: u32 = 1;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 3, // frontier load + frontier save + buffer write
+                    storage_cost: StorageCost {
+                        added_bytes: buffer_entry_size,
+                        replaced_bytes: MAX_FRONTIER_SIZE,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: MAX_FRONTIER_SIZE as u64,
+                    hash_node_calls: MAX_BLAKE3_HASHES,
+                    sinsemilla_hash_calls: MAX_SINSEMILLA_HASHES,
+                })
+            }
+            GroveOp::MmrTreeAppend { value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    TreeType::MmrTree,
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                );
+                // Worst-case data I/O: push writes 1 + trailing_ones(leaf_count)
+                // nodes. Maximum trailing_ones for u64 is 64 (at 2^64-1 leaves).
+                // Each merge reads 1 sibling.
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Internal node: 33 bytes (1 flag + 32 hash)
+                const INTERNAL_NODE_SIZE: u32 = 33;
+                // Leaf node: 37 + value_len (1 flag + 32 hash + 4 length + value)
+                let leaf_node_size = 37 + value.len() as u32;
+                // hash_count_for_push = 1 + trailing_ones. Max = 65.
+                const MAX_HASH_CALLS: u32 = 65;
+                // Max writes: 1 leaf + 64 internal = 65
+                const MAX_INTERNAL_WRITES: u32 = 64;
+                // Max reads: 64 sibling reads for merges
+                const MAX_NODE_READS: u32 = 64;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1 + MAX_INTERNAL_WRITES + MAX_NODE_READS,
+                    storage_cost: StorageCost {
+                        added_bytes: leaf_node_size + INTERNAL_NODE_SIZE * MAX_INTERNAL_WRITES,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (INTERNAL_NODE_SIZE * MAX_NODE_READS) as u64,
+                    hash_node_calls: MAX_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::BulkAppend { value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    TreeType::BulkAppendTree(0),
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                );
+                // Worst case: compaction trigger. Buffer fills → serialize
+                // chunk blob → compute dense Merkle root → push to MMR.
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                // Chunk blob worst case depends on epoch_size. For a single
+                // append the value itself is always written. If compaction
+                // triggers, the chunk blob is epoch_size * avg_value_size.
+                // We use value.len() for the per-append write and a capped
+                // compaction overhead.
+                let value_size = value.len() as u32;
+                // Max compaction overhead: 64KB safe bound for chunk blob
+                const MAX_COMPACTION_BLOB: u32 = 65536;
+                // Dense Merkle root: epoch_size hashes. Buffer hash: 1.
+                // MMR push: up to 64 merges.
+                // epoch hashes + buffer + MMR
+                const MAX_HASH_CALLS: u32 = 1024 + 1 + 65;
+                // Writes: buffer entry + chunk blob + MMR nodes
+                const MAX_WRITES: u32 = 1 + 1 + 65;
+                const MAX_READS: u32 = 64; // MMR sibling reads
+                item_cost.add_cost(OperationCost {
+                    seek_count: MAX_WRITES + MAX_READS,
+                    storage_cost: StorageCost {
+                        added_bytes: value_size + MAX_COMPACTION_BLOB,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (33 * MAX_READS) as u64,
+                    hash_node_calls: MAX_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::DenseTreeInsert { value } => {
+                // Cost of updating parent element in the Merk
+                let item_cost = GroveDb::worst_case_merk_replace_tree(
+                    key,
+                    TreeType::DenseAppendOnlyFixedSizeTree(0),
+                    in_parent_tree_type,
+                    worst_case_layer_element_estimates,
+                    propagate,
+                    grove_version,
+                );
+                // Worst-case: 1 value write + full root hash recomputation.
+                // compute_root_hash visits ALL filled positions: each does
+                // 1 read + 2 hashes (value_hash + node_hash).
+                // Max height = 15 (u16 count), so max positions = 2^15-1 = 32767.
+                // Using practical max: height 8 → 255 positions.
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+                let value_size = value.len() as u32;
+                const MAX_COUNT: u32 = 255; // practical worst case (height 8)
+                                            // 2 hash calls per node (value_hash + node_hash)
+                const MAX_HASH_CALLS: u32 = MAX_COUNT * 2;
+                item_cost.add_cost(OperationCost {
+                    seek_count: 1 + MAX_COUNT, // 1 write + MAX_COUNT reads
+                    storage_cost: StorageCost {
+                        added_bytes: value_size,
+                        replaced_bytes: 0,
+                        removed_bytes: StorageRemovedBytes::NoStorageRemoval,
+                    },
+                    storage_loaded_bytes: (value_size as u64) * (MAX_COUNT as u64),
+                    hash_node_calls: MAX_HASH_CALLS,
+                    sinsemilla_hash_calls: 0,
+                })
+            }
+            GroveOp::ReplaceNonMerkTreeRoot { meta, .. } => GroveDb::worst_case_merk_replace_tree(
+                key,
+                meta.to_tree_type(),
+                in_parent_tree_type,
+                worst_case_layer_element_estimates,
+                propagate,
+                grove_version,
+            ),
+            GroveOp::InsertNonMerkTree { flags, meta, .. } => GroveDb::worst_case_merk_insert_tree(
+                key,
+                flags,
+                meta.to_tree_type(),
+                in_parent_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
         }
     }
 }
@@ -163,7 +322,13 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn insert(&mut self, op: &QualifiedGroveDbOp, _tree_type: TreeType) -> CostResult<(), Error> {
         let mut worst_case_cost = OperationCost::default();
         let mut inserted_path = op.path.clone();
-        inserted_path.push(op.key.clone());
+        let key = cost_return_on_error_no_add!(
+            worst_case_cost,
+            op.key
+                .clone()
+                .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
+        );
+        inserted_path.push(key);
         // There is no need to pay for getting a merk, because we know the merk to be
         // empty at this point.
         // There is however a hash call that creates the prefix
@@ -332,6 +497,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 65791,
                 hash_node_calls: 8, // todo: verify why
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -387,6 +553,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 6,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -442,6 +609,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 4,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -508,6 +676,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 2236894,
                 hash_node_calls: 74,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -572,6 +741,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 65964,
                 hash_node_calls: 266,
+                sinsemilla_hash_calls: 0,
             }
         );
     }

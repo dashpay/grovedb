@@ -115,11 +115,10 @@ mod immediate_storage {
             .unwrap()
             .expect("cannot commit transaction");
 
-        // ... and no longer accessible at all after transaciton got commited
+        // ... and no longer accessible at all after transaction got committed
         assert!(context_ayya_after_no_tx
             .get_aux(b"key1")
             .unwrap()
-            .ok()
             .expect("cannot get from aux cf")
             .is_none());
     }
@@ -204,11 +203,10 @@ mod immediate_storage {
             .unwrap()
             .expect("cannot commit transaction");
 
-        // ... and no longer accessible at all after transaciton got commited
+        // ... and no longer accessible at all after transaction got committed
         assert!(context_ayya_after_no_tx
             .get_root(b"key1")
             .unwrap()
-            .ok()
             .expect("cannot get from roots cf")
             .is_none());
     }
@@ -470,7 +468,7 @@ mod immediate_storage {
 
         let _ = storage.commit_transaction(tx).unwrap();
 
-        // Test uncommited changes
+        // Test uncommitted changes
         {
             let tx = storage.start_transaction();
             let context_tx = storage
@@ -519,7 +517,7 @@ mod immediate_storage {
             assert!(!iter.valid().unwrap());
         }
 
-        // Test commited data stay intact
+        // Test committed data stay intact
         {
             let expected: [(&'static [u8], &'static [u8]); 4] = [
                 (b"key0", b"value0"),
@@ -747,7 +745,7 @@ mod batch_no_transaction {
             .put(b"key3", b"ayybvalue3", None, None)
             .expect("should not error");
 
-        // DB batches are not commited yet, so these operations are missing from
+        // DB batches are not committed yet, so these operations are missing from
         // StorageBatch
         assert_eq!(batch.len(), 2);
 
@@ -760,7 +758,7 @@ mod batch_no_transaction {
             .unwrap()
             .expect("cannot commit db batch");
 
-        // DB batches are "commited", but actually staged in multi-context batch to do
+        // DB batches are "committed", but actually staged in multi-context batch to do
         // it in a single run to the database
         assert_eq!(batch.len(), 6);
 
@@ -899,7 +897,7 @@ mod batch_transaction {
             .is_none());
 
         // Batches data won't be visible either in transaction and outside of it until
-        // batch is commited
+        // batch is committed
 
         let batch = StorageBatch::new();
         let context_ayya_batch = storage
@@ -953,7 +951,7 @@ mod batch_transaction {
             .unwrap()
             .expect("cannot commit batch");
 
-        // Commited batch data is accessible in transaction but not outside
+        // Committed batch data is accessible in transaction but not outside
         assert_eq!(
             context_ayya_tx
                 .get_aux(b"key2")
@@ -1013,7 +1011,7 @@ mod batch_transaction {
         db_batch_a.put(b"key1", b"value1", None, None).unwrap();
         db_batch_b.put(b"key2", b"value2", None, None).unwrap();
 
-        // Until db batches are commited our multi-context batch should be empty
+        // Until db batches are committed our multi-context batch should be empty
         assert_eq!(batch.len(), 0);
 
         context_ayya
@@ -1038,13 +1036,13 @@ mod batch_transaction {
             .expect("cannot get data")
             .is_none());
 
-        // Commited batch's data should be visible in transaction
+        // Committed batch's data should be visible in transaction
         storage
             .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit multi-context batch");
 
-        // Obtaining new contexts outside a commited batch but still within a
+        // Obtaining new contexts outside a committed batch but still within a
         // transaction
         let context_ayya = storage
             .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &transaction)
@@ -1062,7 +1060,7 @@ mod batch_transaction {
             Some(b"value2".to_vec())
         );
 
-        // And still no data in the database until transaction is commited
+        // And still no data in the database until transaction is committed
         let other_transaction = storage.start_transaction();
         let context_ayya = storage
             .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &other_transaction)

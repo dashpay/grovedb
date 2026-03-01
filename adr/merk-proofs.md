@@ -10,8 +10,8 @@ Every node contains a value_hash, kv_hash and a node_hash.
 
 ```rust
 value_hash = Hash(value)
-kv_hash = Hash(key, value_hash)
-node_hash = Hash(kv_hash, left_child_node_hash, right_child_node_hash)
+kv_hash = Hash(varint(key.len()) || key || value_hash)
+node_hash = Hash(kv_hash || left_child_node_hash || right_child_node_hash)
 ```
 
 The root hash of the merk structure is the node_hash of the root node. 
@@ -335,10 +335,10 @@ The root hash of the merk structure is node_hash of the root node, and the node_
 
 ```
 
-node_hash = Hash(kv_hash, left_child_node_hash, right_child_node_hash)
+node_hash = Hash(kv_hash || left_child_node_hash || right_child_node_hash)
 
 where:
-kv_hash = Hash(key, value_hash)
+kv_hash = Hash(varint(key.len()) || key || value_hash)
 ```
 
 In our merk implementation, the Hash function is the blake3 hashing algorithm see: [https://github.com/BLAKE3-team/BLAKE3/](https://github.com/BLAKE3-team/BLAKE3/)

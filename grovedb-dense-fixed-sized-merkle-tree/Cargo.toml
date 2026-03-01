@@ -1,0 +1,17 @@
+[package]
+name = "grovedb-dense-fixed-sized-merkle-tree"
+version = "4.0.0"
+authors = ["Samuel Westrich <sam@dash.org>"]
+edition = "2021"
+license = "MIT"
+description = "Dense (fixed-size, power-of-2) Merkle tree root computation using Blake3"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+
+[dependencies]
+blake3 = "1.8.1"
+bincode = { version = "2.0.1", features = ["derive"] }
+thiserror = "2.0"
+grovedb-costs = { version = "4.0.0", path = "../costs" }
+grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
+grovedb-storage = { version = "4.0.0", path = "../storage" }

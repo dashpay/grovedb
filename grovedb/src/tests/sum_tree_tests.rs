@@ -2,11 +2,10 @@
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
     use grovedb_merk::{
+        element::costs::ElementCostExtensions,
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
-        TreeFeatureType,
         TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
     };
     use grovedb_storage::StorageBatch;
@@ -235,6 +234,81 @@ mod tests {
             .unwrap(),
             Err(Error::InvalidInput("cannot add sum item to non sum tree"))
         ));
+        assert!(matches!(
+            db.insert(
+                [TEST_LEAF, b"sumkey"].as_ref(),
+                b"k2",
+                Element::ItemWithSumItem(b"value".to_vec(), 10, None),
+                None,
+                None,
+                grove_version
+            )
+            .unwrap(),
+            Err(Error::InvalidInput("cannot add sum item to non sum tree"))
+        ));
+    }
+
+    #[test]
+    fn test_item_with_sum_item_updates_sum_tree_sum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sum_mixed",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        db.insert(
+            [TEST_LEAF, b"sum_mixed"].as_ref(),
+            b"alpha",
+            Element::ItemWithSumItem(b"payload".to_vec(), 6, None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum");
+
+        let assert_sum = |expected_sum: i64| {
+            let element = db
+                .get([TEST_LEAF].as_ref(), b"sum_mixed", None, grove_version)
+                .unwrap()
+                .expect("should fetch sum tree");
+            match element {
+                Element::SumTree(_, sum, _) => assert_eq!(sum, expected_sum),
+                _ => panic!("expected sum tree"),
+            }
+        };
+
+        assert_sum(6);
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"sum_mixed".to_vec()],
+            b"alpha".to_vec(),
+            Element::ItemWithSumItem(b"updated".to_vec(), -9, Some(vec![5])),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("should replace item with sum");
+
+        assert_sum(-9);
+
+        db.delete(
+            [TEST_LEAF, b"sum_mixed"].as_ref(),
+            b"alpha",
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should delete item");
+
+        assert_sum(0);
     }
 
     #[test]
@@ -1788,7 +1862,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let (root_hash, parent, result_set) =
+        let (_root_hash, parent, result_set) =
             GroveDb::verify_query_get_parent_tree_info(&proof, &path_query, grove_version)
                 .expect("should verify proof");
 
@@ -1806,5 +1880,453 @@ mod tests {
             "expected SumItem(1), got: {:?}",
             element
         );
+    }
+
+    #[test]
+    fn test_count_sum_tree_sum_propagates_to_sum_tree_parent() {
+        // Test that sums from CountSumTree propagate correctly to SumTree parent
+        //
+        // Tree structure:
+        //   TEST_LEAF
+        //     └── sum_tree_parent (SumTree)
+        //           ├── count_sum_child (CountSumTree)
+        //           │     ├── sum_item_1 = 100
+        //           │     ├── sum_item_2 = 200
+        //           │     └── sum_item_3 = -50
+        //           └── direct_sum_item = 25
+        //
+        // Expected: sum_tree_parent sum = 100 + 200 + (-50) + 25 = 275
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create parent SumTree
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sum_tree_parent",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_tree_parent");
+
+        // Create child CountSumTree inside the SumTree
+        db.insert(
+            [TEST_LEAF, b"sum_tree_parent"].as_ref(),
+            b"count_sum_child",
+            Element::new_count_sum_tree(None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert count_sum_child");
+
+        // Insert sum items into CountSumTree
+        db.insert(
+            [TEST_LEAF, b"sum_tree_parent", b"count_sum_child"].as_ref(),
+            b"sum_item_1",
+            Element::new_sum_item(100),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_item_1");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree_parent", b"count_sum_child"].as_ref(),
+            b"sum_item_2",
+            Element::new_sum_item(200),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_item_2");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree_parent", b"count_sum_child"].as_ref(),
+            b"sum_item_3",
+            Element::new_sum_item(-50),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_item_3");
+
+        // Insert a direct sum item into the parent SumTree
+        db.insert(
+            [TEST_LEAF, b"sum_tree_parent"].as_ref(),
+            b"direct_sum_item",
+            Element::new_sum_item(25),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert direct_sum_item");
+
+        // Verify CountSumTree child has correct count and sum
+        let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
+        let child_merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"sum_tree_parent", b"count_sum_child"]
+                    .as_ref()
+                    .into(),
+                &transaction,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("should open count_sum_child");
+
+        let child_aggregate = child_merk
+            .aggregate_data()
+            .expect("expected to get aggregate data");
+        assert_eq!(
+            child_aggregate,
+            AggregateData::CountAndSum(3, 250),
+            "CountSumTree should have count=3, sum=250"
+        );
+
+        // Verify parent SumTree has the propagated sum
+        let parent = db
+            .get(
+                [TEST_LEAF].as_ref(),
+                b"sum_tree_parent",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should get sum_tree_parent");
+
+        assert_eq!(
+            parent.sum_value_or_default(),
+            275, // 100 + 200 + (-50) + 25 = 275
+            "SumTree parent should have sum=275 (propagated from CountSumTree + direct item)"
+        );
+    }
+
+    #[test]
+    fn test_count_sum_tree_sum_propagates_to_big_sum_tree_parent() {
+        // Test that sums from CountSumTree propagate correctly to BigSumTree parent
+        // Uses separate CountSumTrees each with a large value to demonstrate
+        // BigSumTree can hold sums exceeding i64::MAX
+        //
+        // Tree structure:
+        //   TEST_LEAF
+        //     └── big_sum_tree_parent (BigSumTree)
+        //           ├── count_sum_child_1 (CountSumTree)
+        //           │     └── sum_item_a = i64::MAX - 100
+        //           ├── count_sum_child_2 (CountSumTree)
+        //           │     └── sum_item_b = i64::MAX - 200
+        //           └── direct_sum_item = 1000
+        //
+        // Expected: big_sum_tree sum = (i64::MAX-100) + (i64::MAX-200) + 1000
+        //         which exceeds i64::MAX, demonstrating BigSumTree capability
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create parent BigSumTree
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"big_sum_tree_parent",
+            Element::empty_big_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert big_sum_tree_parent");
+
+        // Create first child CountSumTree
+        db.insert(
+            [TEST_LEAF, b"big_sum_tree_parent"].as_ref(),
+            b"count_sum_child_1",
+            Element::new_count_sum_tree(None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert count_sum_child_1");
+
+        // Create second child CountSumTree
+        db.insert(
+            [TEST_LEAF, b"big_sum_tree_parent"].as_ref(),
+            b"count_sum_child_2",
+            Element::new_count_sum_tree(None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert count_sum_child_2");
+
+        // Insert sum item into first CountSumTree (large value)
+        db.insert(
+            [TEST_LEAF, b"big_sum_tree_parent", b"count_sum_child_1"].as_ref(),
+            b"sum_item_a",
+            Element::new_sum_item(SumValue::MAX - 100),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_item_a");
+
+        // Insert sum item into second CountSumTree (large value)
+        db.insert(
+            [TEST_LEAF, b"big_sum_tree_parent", b"count_sum_child_2"].as_ref(),
+            b"sum_item_b",
+            Element::new_sum_item(SumValue::MAX - 200),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_item_b");
+
+        // Insert a direct sum item into the parent BigSumTree
+        db.insert(
+            [TEST_LEAF, b"big_sum_tree_parent"].as_ref(),
+            b"direct_sum_item",
+            Element::new_sum_item(1000),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert direct_sum_item");
+
+        // Verify first CountSumTree child
+        let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
+        let child1_merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"big_sum_tree_parent", b"count_sum_child_1"]
+                    .as_ref()
+                    .into(),
+                &transaction,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("should open count_sum_child_1");
+
+        let child1_aggregate = child1_merk
+            .aggregate_data()
+            .expect("expected to get aggregate data");
+        assert_eq!(
+            child1_aggregate,
+            AggregateData::CountAndSum(1, SumValue::MAX - 100),
+            "CountSumTree child_1 should have count=1, sum=MAX-100"
+        );
+
+        // Verify second CountSumTree child
+        let child2_merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"big_sum_tree_parent", b"count_sum_child_2"]
+                    .as_ref()
+                    .into(),
+                &transaction,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("should open count_sum_child_2");
+
+        let child2_aggregate = child2_merk
+            .aggregate_data()
+            .expect("expected to get aggregate data");
+        assert_eq!(
+            child2_aggregate,
+            AggregateData::CountAndSum(1, SumValue::MAX - 200),
+            "CountSumTree child_2 should have count=1, sum=MAX-200"
+        );
+
+        // Verify parent BigSumTree has the propagated sum
+        let parent = db
+            .get(
+                [TEST_LEAF].as_ref(),
+                b"big_sum_tree_parent",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should get big_sum_tree_parent");
+
+        // Total exceeds i64::MAX, demonstrating BigSumTree capability
+        let expected_total: i128 =
+            (SumValue::MAX - 100) as i128 + (SumValue::MAX - 200) as i128 + 1000i128;
+
+        assert_eq!(
+            parent.big_sum_value_or_default(),
+            expected_total,
+            "BigSumTree parent should have correct propagated sum from CountSumTrees"
+        );
+
+        // Verify the sum actually exceeds i64::MAX
+        assert!(
+            expected_total > i64::MAX as i128,
+            "Expected total should exceed i64::MAX to demonstrate BigSumTree"
+        );
+    }
+
+    #[test]
+    fn test_sum_item_proof_generation_and_verification() {
+        // Regression test: SumItem was silently dropped during proof generation
+        // because the match in prove_subqueries only handled Element::Item,
+        // causing SumItem to fall through to `_ => continue`.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a SumTree and insert SumItems
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key1",
+            Element::new_sum_item(42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item 1");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key2",
+            Element::new_sum_item(-10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item 2");
+
+        // Prove a query for the sum items
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sum_tree".to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof for sum items");
+
+        let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof containing sum items");
+
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        // Both SumItems must appear in the result set
+        assert_eq!(
+            result_set.len(),
+            2,
+            "both sum items should be in the proof result set"
+        );
+
+        let elem1 = Element::deserialize(&result_set[0].value, grove_version)
+            .expect("should deserialize first element");
+        let elem2 = Element::deserialize(&result_set[1].value, grove_version)
+            .expect("should deserialize second element");
+        assert!(matches!(elem1, Element::SumItem(42, _)));
+        assert!(matches!(elem2, Element::SumItem(-10, _)));
+    }
+
+    #[test]
+    fn test_item_with_sum_item_proof_generation_and_verification() {
+        // Regression test: ItemWithSumItem was silently dropped during proof
+        // generation for the same reason as SumItem.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a SumTree and insert ItemWithSumItem elements
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key1",
+            Element::new_item_with_sum_item(b"payload1".to_vec(), 100),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum item 1");
+
+        db.insert(
+            [TEST_LEAF, b"sum_tree"].as_ref(),
+            b"key2",
+            Element::new_item_with_sum_item(b"payload2".to_vec(), 200),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum item 2");
+
+        // Prove a query for the items
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"sum_tree".to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof for item with sum items");
+
+        let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof containing item with sum items");
+
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        // Both ItemWithSumItem elements must appear in the result set
+        assert_eq!(
+            result_set.len(),
+            2,
+            "both item-with-sum-items should be in the proof result set"
+        );
+
+        let elem1 = Element::deserialize(&result_set[0].value, grove_version)
+            .expect("should deserialize first element");
+        let elem2 = Element::deserialize(&result_set[1].value, grove_version)
+            .expect("should deserialize second element");
+        assert!(matches!(elem1, Element::ItemWithSumItem(_, 100, _)));
+        assert!(matches!(elem2, Element::ItemWithSumItem(_, 200, _)));
     }
 }

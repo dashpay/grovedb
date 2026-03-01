@@ -387,6 +387,7 @@ where
         .wrap_with_cost(cost)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn apply_sorted_without_costs<K: AsRef<[u8]>>(
         self,
         batch: &MerkBatch<K>,

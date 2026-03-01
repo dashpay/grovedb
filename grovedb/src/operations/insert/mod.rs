@@ -1,28 +1,23 @@
 //! Insert operations
 
-#[cfg(feature = "minimal")]
 use std::{collections::HashMap, option::Option::None};
 
-#[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
+    CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
-use grovedb_merk::{tree::NULL_HASH, Merk, MerkOptions};
+use grovedb_element::reference_path::path_from_reference_path_type;
+use grovedb_merk::{
+    element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions, ElementExt},
+    tree::NULL_HASH,
+    Merk, MerkOptions,
+};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
-use grovedb_storage::{Storage, StorageBatch};
+use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::util::TxRef;
-#[cfg(feature = "minimal")]
-use crate::{
-    reference_path::path_from_reference_path_type, Element, Error, GroveDb, Transaction,
-    TransactionArg,
-};
+use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
-#[cfg(feature = "minimal")]
 #[derive(Clone)]
 /// Insert options
 pub struct InsertOptions {
@@ -34,7 +29,6 @@ pub struct InsertOptions {
     pub base_root_storage_is_free: bool,
 }
 
-#[cfg(feature = "minimal")]
 impl Default for InsertOptions {
     fn default() -> Self {
         InsertOptions {
@@ -45,7 +39,6 @@ impl Default for InsertOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
 impl InsertOptions {
     fn checks_for_override(&self) -> bool {
         self.validate_insertion_does_not_override_tree || self.validate_insertion_does_not_override
@@ -58,7 +51,6 @@ impl InsertOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
 impl GroveDb {
     /// Insert a GroveDB element given a path to the subtree and the key to
     /// insert at
@@ -239,7 +231,7 @@ impl GroveDb {
         match element {
             Element::Reference(ref reference_path, ..) => {
                 let path = path.to_vec(); // TODO: need for support for references in path library
-                let reference_path = cost_return_on_error!(
+                let reference_path = cost_return_on_error_into!(
                     &mut cost,
                     path_from_reference_path_type(reference_path.clone(), &path, Some(key))
                         .wrap_with_cost(OperationCost::default())
@@ -255,10 +247,12 @@ impl GroveDb {
                     )
                 );
 
-                let referenced_element_value_hash =
-                    cost_return_on_error!(&mut cost, referenced_item.value_hash(grove_version));
+                let referenced_element_value_hash = cost_return_on_error_into!(
+                    &mut cost,
+                    referenced_item.value_hash(grove_version)
+                );
 
-                cost_return_on_error!(
+                cost_return_on_error_into!(
                     &mut cost,
                     element.insert_reference(
                         &mut subtree_to_insert_into,
@@ -272,14 +266,17 @@ impl GroveDb {
             Element::Tree(ref value, _)
             | Element::SumTree(ref value, ..)
             | Element::BigSumTree(ref value, ..)
-            | Element::CountTree(ref value, ..) => {
+            | Element::CountTree(ref value, ..)
+            | Element::CountSumTree(ref value, ..)
+            | Element::ProvableCountTree(ref value, ..)
+            | Element::ProvableCountSumTree(ref value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
                     ))
                     .wrap_with_cost(cost);
                 } else {
-                    cost_return_on_error!(
+                    cost_return_on_error_into!(
                         &mut cost,
                         element.insert_subtree(
                             &mut subtree_to_insert_into,
@@ -291,8 +288,45 @@ impl GroveDb {
                     );
                 }
             }
-            _ => {
-                cost_return_on_error!(
+            // CommitmentTree uses BulkAppendTree internally; the initial child
+            // hash must include the empty sinsemilla root so V1 proof
+            // verification works even before the first append.
+            Element::CommitmentTree(..) => {
+                let empty_bulk_root =
+                    grovedb_bulk_append_tree::compute_state_root(&NULL_HASH, &NULL_HASH);
+                let empty_state_root = grovedb_commitment_tree::compute_commitment_tree_state_root(
+                    &grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
+                    &empty_bulk_root,
+                );
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        empty_state_root,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    )
+                );
+            }
+            // MmrTree, BulkAppendTree, DenseAppendOnlyFixedSizeTree: initial
+            // insert uses NULL_HASH since these trees start empty.
+            Element::MmrTree(..)
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        NULL_HASH,
+                        Some(options.as_merk_options()),
+                        grove_version
+                    )
+                );
+            }
+            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                cost_return_on_error_into!(
                     &mut cost,
                     element.insert(
                         &mut subtree_to_insert_into,
@@ -462,7 +496,6 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use grovedb_costs::{
@@ -856,6 +889,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 2,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -923,6 +957,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 156,
                 hash_node_calls: 8,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1006,6 +1041,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 232,
                 hash_node_calls: 10,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1085,6 +1121,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 237,
                 hash_node_calls: 10,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1146,6 +1183,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 2,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1206,6 +1244,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 3, // todo: verify this
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1267,6 +1306,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 3, // todo: verify this
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1331,6 +1371,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 3,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1411,6 +1452,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 152, // todo: verify this
                 hash_node_calls: 8,        // todo: verify this
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1492,6 +1534,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 162, // todo: verify this
                 hash_node_calls: 8,        // todo: verify this
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1557,6 +1600,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 0,
                 hash_node_calls: 2,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1651,6 +1695,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 152, // todo: verify this
                 hash_node_calls: 8,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1747,6 +1792,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 160, // todo: verify this
                 hash_node_calls: 8,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1816,6 +1862,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 77,
                 hash_node_calls: 2,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1870,6 +1917,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 230, // todo verify this
                 hash_node_calls: 8,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1924,6 +1972,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 266, // todo verify this
                 hash_node_calls: 9,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -1990,6 +2039,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 487, // todo verify this
                 hash_node_calls: 11,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -2044,6 +2094,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 276, // todo verify this
                 hash_node_calls: 9,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -2098,6 +2149,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 231,
                 hash_node_calls: 8,
+                sinsemilla_hash_calls: 0,
             }
         );
     }
@@ -2186,6 +2238,7 @@ mod tests {
                 },
                 storage_loaded_bytes: 227,
                 hash_node_calls: 9, // todo: verify this
+                sinsemilla_hash_calls: 0,
             }
         );
     }

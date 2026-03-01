@@ -1,133 +1,58 @@
 //! Merk proofs
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod branch;
 #[cfg(feature = "minimal")]
 pub mod chunk;
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub mod encoding;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree;
 
+// Re-export Op and Node from grovedb-query
+// Re-export hex_to_ascii for use in verify.rs
+pub use grovedb_query::hex_to_ascii;
+// Re-export encode_into from grovedb-query
 #[cfg(feature = "minimal")]
-pub use encoding::encode_into;
+pub use grovedb_query::proofs::encode_into;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use encoding::Decoder;
+pub use grovedb_query::proofs::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::Query;
-#[cfg(feature = "minimal")]
-pub use tree::Tree;
-
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::{tree::CryptoHash, TreeFeatureType};
+pub use tree::{execute, Tree};
 
+/// Decoder iterates over proof bytes, yielding Op values with merk Error type.
+///
+/// This wraps grovedb-query's Decoder, converting its error type to merk's
+/// Error.
 #[cfg(any(feature = "minimal", feature = "verify"))]
-/// A proof operator, executed to verify the data in a Merkle proof.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Op {
-    /// Pushes a node on the stack.
-    /// Signifies ascending node keys
-    Push(Node),
-
-    /// Pushes a node on the stack
-    /// Signifies descending node keys
-    PushInverted(Node),
-
-    /// Pops the top stack item as `parent`. Pops the next top stack item as
-    /// `child`. Attaches `child` as the left child of `parent`. Pushes the
-    /// updated `parent` back on the stack.
-    Parent,
-
-    /// Pops the top stack item as `child`. Pops the next top stack item as
-    /// `parent`. Attaches `child` as the right child of `parent`. Pushes the
-    /// updated `parent` back on the stack.
-    Child,
-
-    /// Pops the top stack item as `parent`. Pops the next top stack item as
-    /// `child`. Attaches `child` as the right child of `parent`. Pushes the
-    /// updated `parent` back on the stack.
-    ParentInverted,
-
-    /// Pops the top stack item as `child`. Pops the next top stack item as
-    /// `parent`. Attaches `child` as the left child of `parent`. Pushes the
-    /// updated `parent` back on the stack.
-    ChildInverted,
+pub struct Decoder<'a> {
+    inner: grovedb_query::proofs::Decoder<'a>,
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-/// A selected piece of data about a single tree node, to be contained in a
-/// `Push` operator in a proof.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Node {
-    /// Represents the hash of a tree node.
-    Hash(CryptoHash),
-
-    /// Represents the hash of the key/value pair of a tree node.
-    KVHash(CryptoHash),
-
-    /// Represents the key/value_hash pair of a tree node
-    /// same as the Node::KV but the value is not required by the proof
-    KVDigest(Vec<u8>, CryptoHash),
-
-    /// Represents the key and value of a tree node.
-    KV(Vec<u8>, Vec<u8>),
-
-    /// Represents the key, value and value_hash of a tree node
-    KVValueHash(Vec<u8>, Vec<u8>, CryptoHash),
-
-    /// Represents, the key, value, value_hash and feature_type of a tree node
-    /// Used by Sum trees
-    KVValueHashFeatureType(Vec<u8>, Vec<u8>, CryptoHash, TreeFeatureType),
-
-    /// Represents the key, value of some referenced node and value_hash of
-    /// current tree node
-    KVRefValueHash(Vec<u8>, Vec<u8>, CryptoHash),
-}
-
-use std::fmt;
-
-#[cfg(any(feature = "minimal", feature = "verify"))]
-impl fmt::Display for Node {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let node_string = match self {
-            Node::Hash(hash) => format!("Hash(HASH[{}])", hex::encode(hash)),
-            Node::KVHash(kv_hash) => format!("KVHash(HASH[{}])", hex::encode(kv_hash)),
-            Node::KV(key, value) => {
-                format!("KV({}, {})", hex_to_ascii(key), hex_to_ascii(value))
-            }
-            Node::KVValueHash(key, value, value_hash) => format!(
-                "KVValueHash({}, {}, HASH[{}])",
-                hex_to_ascii(key),
-                hex_to_ascii(value),
-                hex::encode(value_hash)
-            ),
-            Node::KVDigest(key, value_hash) => format!(
-                "KVDigest({}, HASH[{}])",
-                hex_to_ascii(key),
-                hex::encode(value_hash)
-            ),
-            Node::KVRefValueHash(key, value, value_hash) => format!(
-                "KVRefValueHash({}, {}, HASH[{}])",
-                hex_to_ascii(key),
-                hex_to_ascii(value),
-                hex::encode(value_hash)
-            ),
-            Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => format!(
-                "KVValueHashFeatureType({}, {}, HASH[{}], {:?})",
-                hex_to_ascii(key),
-                hex_to_ascii(value),
-                hex::encode(value_hash),
-                feature_type
-            ),
-        };
-        write!(f, "{}", node_string)
+impl<'a> Decoder<'a> {
+    /// Create a new Decoder from proof bytes
+    pub const fn new(proof_bytes: &'a [u8]) -> Self {
+        Decoder {
+            inner: grovedb_query::proofs::Decoder::new(proof_bytes),
+        }
     }
 }
 
-fn hex_to_ascii(hex_value: &[u8]) -> String {
-    if hex_value.len() == 1 && hex_value[0] < b"0"[0] {
-        hex::encode(hex_value)
-    } else {
-        String::from_utf8(hex_value.to_vec()).unwrap_or_else(|_| hex::encode(hex_value))
+#[cfg(any(feature = "minimal", feature = "verify"))]
+impl Iterator for Decoder<'_> {
+    type Item = Result<Op, crate::error::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|result| result.map_err(Into::into))
     }
+}
+
+/// Re-export encoding module for backward compatibility
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod encoding {
+    pub use grovedb_query::proofs::encode_into;
+
+    pub use super::Decoder;
 }

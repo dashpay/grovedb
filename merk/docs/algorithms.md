@@ -1,6 +1,6 @@
 # Merk - A High-Performance Merkle AVL Tree
 
-**Matt Bell ([@mappum](https://twitter.com/mappum))** • [Nomic Hodlings, Inc.](https://nomic.io)
+**Matt Bell ([@mappum](https://twitter.com/mappum))** • [Nomic Holdings, Inc.](https://nomic.io)
 
 v0.0.4 - _August 5, 2020_
 
@@ -23,8 +23,8 @@ In many Merkle tree designs, only leaf nodes contain key/value pairs (inner node
 Each node contains a "kv hash", which is the hash of its key/value pair, in addition to its child hashes. The hash of the node is just the hash of the concatenation of these three hashes:
 
 ```
-kv_hash = H(key, value)
-node_hash = H(kv_hash, left_child_hash, right_child_hash)
+kv_hash = H(varint(key.len()) || key || H(value))
+node_hash = H(kv_hash || left_child_hash || right_child_hash)
 ```
 
 Note that the `left_child_hash` and/or `right_child_hash` values may be null since it is possible for the node to have no children or only one child.
@@ -109,7 +109,7 @@ Note that this can be computed in a streaming fashion, e.g. while downloading th
 
 Efficient proof generation is important since nodes will likely receive a high volume of queries and constantly be serving proofs, essentially providing an API service to end-user application clients, as well as servicing demand for replication when new nodes come onto the network.
 
-Nodes can generate proofs for a set of keys by traversing through the tree from the root and building up the required proof branches. Much like the batch operator aglorithm, this algorithm takes a batch of sorted, unique keys as input.
+Nodes can generate proofs for a set of keys by traversing through the tree from the root and building up the required proof branches. Much like the batch operator algorithm, this algorithm takes a batch of sorted, unique keys as input.
 
 _Simplified pseudocode for proof generation (based on an in-order traversal):_
 
@@ -361,4 +361,4 @@ Stack:
   3
 ```
 
-Now after going through all these steps, we have sufficient knowlege of the tree's structure and data to compute node hashes in order to verify. At the end, we will have computed a hash for node 5 (the root), and we verify by comparing this hash to the one we expected.
+Now after going through all these steps, we have sufficient knowledge of the tree's structure and data to compute node hashes in order to verify. At the end, we will have computed a hash for node 5 (the root), and we verify by comparing this hash to the one we expected.

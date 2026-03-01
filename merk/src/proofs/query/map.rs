@@ -2,30 +2,24 @@
 
 #![allow(unstable_name_collisions)]
 
-#[cfg(feature = "minimal")]
 use std::{
     collections::{btree_map, btree_map::Iter, BTreeMap},
     ops::{Bound, RangeBounds},
 };
 
-#[cfg(feature = "minimal")]
 use super::super::Node;
-#[cfg(feature = "minimal")]
 use crate::error::Error;
 
-#[cfg(feature = "minimal")]
 /// `MapBuilder` allows a consumer to construct a `Map` by inserting the nodes
 /// contained in a proof, in key-order.
 pub struct MapBuilder(Map);
 
-#[cfg(feature = "minimal")]
 impl Default for MapBuilder {
     fn default() -> Self {
         MapBuilder::new()
     }
 }
 
-#[cfg(feature = "minimal")]
 impl MapBuilder {
     /// Creates a new `MapBuilder` with an empty internal `Map`.
     pub fn new() -> Self {
@@ -40,7 +34,10 @@ impl MapBuilder {
     /// `Hash`).
     pub fn insert(&mut self, node: &Node) -> Result<(), Error> {
         match node {
-            Node::KV(key, value) | Node::KVValueHash(key, value, ..) => {
+            Node::KV(key, value)
+            | Node::KVValueHash(key, value, ..)
+            | Node::KVCount(key, value, _)
+            | Node::KVValueHashFeatureType(key, value, ..) => {
                 if let Some((prev_key, _)) = self.0.entries.last_key_value() {
                     if key <= prev_key {
                         return Err(Error::KeyOrderingError(
@@ -65,7 +62,6 @@ impl MapBuilder {
     }
 }
 
-#[cfg(feature = "minimal")]
 /// `Map` stores data extracted from a proof (which has already been verified
 /// against a known root hash), and allows a consumer to access the data by
 /// looking up individual keys using the `get` method, or iterating over ranges
@@ -76,7 +72,6 @@ pub struct Map {
     right_edge: bool,
 }
 
-#[cfg(feature = "minimal")]
 impl Map {
     /// Gets the value for a single key, or `None` if the key was proven to not
     /// exist in the tree. If the proof does not include the data and also does
@@ -120,7 +115,6 @@ impl Map {
     }
 }
 
-#[cfg(feature = "minimal")]
 /// Returns `None` for `Bound::Unbounded`, or the inner key value for
 /// `Bound::Included` and `Bound::Excluded`.
 fn bound_to_inner<T>(bound: Bound<T>) -> Option<T> {
@@ -130,7 +124,6 @@ fn bound_to_inner<T>(bound: Bound<T>) -> Option<T> {
     }
 }
 
-#[cfg(feature = "minimal")]
 fn bound_to_vec(bound: Bound<&&[u8]>) -> Bound<Vec<u8>> {
     match bound {
         Bound::Unbounded => Bound::Unbounded,
@@ -139,7 +132,6 @@ fn bound_to_vec(bound: Bound<&&[u8]>) -> Bound<Vec<u8>> {
     }
 }
 
-#[cfg(feature = "minimal")]
 fn bounds_to_vec<'a, R: RangeBounds<&'a [u8]>>(bounds: R) -> impl RangeBounds<Vec<u8>> {
     (
         bound_to_vec(bounds.start_bound()),
@@ -147,7 +139,6 @@ fn bounds_to_vec<'a, R: RangeBounds<&'a [u8]>>(bounds: R) -> impl RangeBounds<Ve
     )
 }
 
-#[cfg(feature = "minimal")]
 /// An iterator over (key, value) entries as extracted from a verified proof. If
 /// during iteration we encounter a gap in the data (e.g. the proof did not
 /// include all nodes within the range), the iterator will yield an error.
@@ -158,7 +149,6 @@ pub struct Range<'a> {
     prev_key: Option<Vec<u8>>,
 }
 
-#[cfg(feature = "minimal")]
 impl Range<'_> {
     /// Returns an error if the proof does not properly prove the end of the
     /// range.
@@ -195,7 +185,6 @@ impl Range<'_> {
     }
 }
 
-#[cfg(feature = "minimal")]
 impl<'a> Iterator for Range<'a> {
     type Item = Result<(&'a [u8], &'a [u8]), Error>;
 
@@ -236,7 +225,6 @@ impl<'a> Iterator for Range<'a> {
     }
 }
 
-#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
     use super::*;

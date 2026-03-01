@@ -11,5 +11,13 @@ members = [
     "path",
     "grovedbg-types",
     "grovedb-version",
-    "grovedb-epoch-based-storage-flags"
+    "grovedb-epoch-based-storage-flags",
+    "grovedb-element",
+    "grovedb-commitment-tree",
+    "grovedb-merkle-mountain-range",
+    "grovedb-bulk-append-tree",
+    "grovedb-dense-fixed-sized-merkle-tree",
+    "grovedb-bulk-append-tree",
+    "grovedb-commitment-tree",
+    "grovedb-query",
 ]

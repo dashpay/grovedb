@@ -1,6 +1,9 @@
 //! Merk reference walker
 
 #[cfg(feature = "minimal")]
+use std::cmp::Ordering;
+
+#[cfg(feature = "minimal")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
@@ -52,7 +55,7 @@ where
         left: bool,
         value_defined_cost_fn: Option<&V>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<RefWalker<S>>, Error>
+    ) -> CostResult<Option<RefWalker<'_, S>>, Error>
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
@@ -78,5 +81,87 @@ where
 
         let child = self.tree.child_mut(left).unwrap();
         Ok(Some(RefWalker::new(child, self.source.clone()))).wrap_with_cost(cost)
+    }
+
+    /// Finds the traversal path (sequence of left/right) to reach a specific
+    /// key.
+    ///
+    /// Traverses the tree from the current position, comparing the target key
+    /// with each node's key and recording the path taken until the key is
+    /// found.
+    ///
+    /// # Arguments
+    /// * `target_key` - The key to find
+    /// * `grove_version` - The grove version for compatibility
+    ///
+    /// # Returns
+    /// * `Ok(Some(path))` - If the key was found, with the traversal path
+    ///   (true=left, false=right)
+    /// * `Ok(None)` - If the key was not found
+    pub fn find_key_path(
+        &mut self,
+        target_key: &[u8],
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Vec<bool>>, Error> {
+        let mut cost = OperationCost::default();
+        let mut path = Vec::new();
+
+        self.find_key_path_internal(target_key, grove_version, &mut path, &mut cost)
+            .map(|found| if found { Some(path) } else { None })
+            .wrap_with_cost(cost)
+    }
+
+    fn find_key_path_internal(
+        &mut self,
+        target_key: &[u8],
+        grove_version: &GroveVersion,
+        path: &mut Vec<bool>,
+        cost: &mut OperationCost,
+    ) -> Result<bool, Error> {
+        let current_key = self.tree.key();
+        match target_key.cmp(current_key) {
+            Ordering::Equal => {
+                // Found the key
+                Ok(true)
+            }
+            Ordering::Less => {
+                // Target is smaller, go left
+                let maybe_left = self
+                    .walk(
+                        true,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .unwrap_add_cost(cost);
+
+                match maybe_left {
+                    Ok(Some(mut left_walker)) => {
+                        path.push(true);
+                        left_walker.find_key_path_internal(target_key, grove_version, path, cost)
+                    }
+                    Ok(None) => Ok(false),
+                    Err(e) => Err(e),
+                }
+            }
+            Ordering::Greater => {
+                // Target is larger, go right
+                let maybe_right = self
+                    .walk(
+                        false,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .unwrap_add_cost(cost);
+
+                match maybe_right {
+                    Ok(Some(mut right_walker)) => {
+                        path.push(false);
+                        right_walker.find_key_path_internal(target_key, grove_version, path, cost)
+                    }
+                    Ok(None) => Ok(false),
+                    Err(e) => Err(e),
+                }
+            }
+        }
     }
 }

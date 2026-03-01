@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use grovedb_costs::{
-    cost_return_on_error_no_add,
+    cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
@@ -53,7 +53,7 @@ where
                     let mut updated_new_element_with_old_flags = new_element.clone();
                     updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
                     // There are no storage flags, we can just hash new element
-                    let new_serialized_bytes = cost_return_on_error_no_add!(
+                    let new_serialized_bytes = cost_return_on_error_into_no_add!(
                         cost,
                         updated_new_element_with_old_flags.serialize(grove_version)
                     );
@@ -93,7 +93,7 @@ where
             let mut updated_new_element_with_old_flags = original_new_element.clone();
             updated_new_element_with_old_flags.set_flags(maybe_old_flags.clone());
 
-            let serialized_with_old_flags = cost_return_on_error_no_add!(
+            let serialized_with_old_flags = cost_return_on_error_into_no_add!(
                 cost,
                 updated_new_element_with_old_flags.serialize(grove_version)
             );
@@ -150,8 +150,10 @@ where
                 return Ok(val_hash).wrap_with_cost(cost);
             } else {
                 // There are no storage flags, we can just hash new element
-                let new_serialized_bytes =
-                    cost_return_on_error_no_add!(cost, new_element_cloned.serialize(grove_version));
+                let new_serialized_bytes = cost_return_on_error_into_no_add!(
+                    cost,
+                    new_element_cloned.serialize(grove_version)
+                );
 
                 new_storage_cost = KV::node_value_byte_cost_size(
                     key.len() as u32,

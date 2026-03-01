@@ -51,6 +51,8 @@ pub struct TempMerk {
     batch: &'static StorageBatch,
     merk: Merk<PrefixedRocksDbTransactionContext<'static>>,
     tx: &'static <RocksDbStorage as Storage<'static>>::Transaction,
+    /// The tree type to preserve across commits
+    pub tree_type: TreeType,
 }
 
 #[cfg(feature = "full")]
@@ -58,6 +60,11 @@ impl TempMerk {
     /// Opens a `TempMerk` at the given file path, creating a new one if it
     /// does not exist.
     pub fn new(grove_version: &GroveVersion) -> Self {
+        Self::new_with_tree_type(grove_version, TreeType::NormalTree)
+    }
+
+    /// Opens a `TempMerk` with a specific tree type.
+    pub fn new_with_tree_type(grove_version: &GroveVersion, tree_type: TreeType) -> Self {
         let storage = Box::leak(Box::new(TempStorage::new()));
         let batch = Box::leak(Box::new(StorageBatch::new()));
         let tx = Box::leak(Box::new(storage.start_transaction()));
@@ -68,7 +75,7 @@ impl TempMerk {
 
         let merk = Merk::open_base(
             context,
-            TreeType::NormalTree,
+            tree_type,
             None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )
@@ -79,6 +86,7 @@ impl TempMerk {
             merk,
             batch,
             tx,
+            tree_type,
         }
     }
 
@@ -107,7 +115,7 @@ impl TempMerk {
             .unwrap();
         self.merk = Merk::open_base(
             context,
-            TreeType::NormalTree,
+            self.tree_type,
             None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,
         )

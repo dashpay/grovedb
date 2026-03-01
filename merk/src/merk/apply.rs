@@ -347,7 +347,6 @@ where
         let maybe_walker = self
             .tree
             .take()
-            .take()
             .map(|tree| Walker::new(tree, self.source()));
 
         Walker::apply_to(

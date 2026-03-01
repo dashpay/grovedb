@@ -181,7 +181,7 @@ impl<T: Visualize> Visualize for Option<T> {
     }
 }
 
-/// `visulize` shortcut to write straight into stderr offhand
+/// `visualize` shortcut to write straight into stderr offhand
 pub fn visualize_stderr<T: Visualize + ?Sized>(value: &T) {
     let mut out = std::io::stderr();
     let drawer = Drawer::new(&mut out);

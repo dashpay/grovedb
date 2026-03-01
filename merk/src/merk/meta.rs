@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn meta_storage_works_uncommited() {
+    fn meta_storage_works_uncommitted() {
         let version = GroveVersion::latest();
         let mut merk = TempMerk::new(&version);
 

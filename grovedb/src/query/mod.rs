@@ -1,5 +1,10 @@
 //! Queries
 
+mod grove_branch_query_result;
+mod grove_trunk_query_result;
+mod path_branch_chunk_query;
+mod path_trunk_chunk_query;
+
 use std::{
     borrow::{Cow, Cow::Borrowed},
     cmp::Ordering,
@@ -8,12 +13,20 @@ use std::{
 
 use bincode::{Decode, Encode};
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grove_branch_query_result::GroveBranchQueryResult;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
+#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::Query;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use path_branch_chunk_query::PathBranchChunkQuery;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use path_trunk_chunk_query::PathTrunkChunkQuery;
 
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -161,7 +174,7 @@ impl PathQuery {
         self.query
             .query
             .terminal_keys(self.path.clone(), max_results, &mut result)
-            .map_err(Error::MerkError)?;
+            .map_err(Error::QueryError)?;
         Ok(result)
     }
 
@@ -305,11 +318,133 @@ impl PathQuery {
         }
     }
 
+    pub fn should_add_parent_tree_at_path(
+        &self,
+        path: &[&[u8]],
+        grove_version: &GroveVersion,
+    ) -> Result<bool, Error> {
+        check_grovedb_v0!(
+            "should_add_parent_tree_at_path",
+            grove_version
+                .grovedb_versions
+                .path_query_methods
+                .should_add_parent_tree_at_path
+        );
+
+        fn recursive_should_add_parent_tree_at_path(query: &Query, path: &[&[u8]]) -> bool {
+            if path.is_empty() {
+                return query.add_parent_tree_on_subquery;
+            }
+
+            let key = path[0];
+            let path_after_top_removed = &path[1..];
+
+            if let Some(conditional_branches) = &query.conditional_subquery_branches {
+                for (query_item, subquery_branch) in conditional_branches {
+                    if query_item.contains(key) {
+                        if let Some(subquery_path) = &subquery_branch.subquery_path {
+                            if path_after_top_removed.len() <= subquery_path.len() {
+                                if path_after_top_removed
+                                    .iter()
+                                    .zip(subquery_path)
+                                    .all(|(a, b)| *a == b.as_slice())
+                                {
+                                    return if path_after_top_removed.len() == subquery_path.len() {
+                                        subquery_branch.subquery.as_ref().is_some_and(|subquery| {
+                                            subquery.add_parent_tree_on_subquery
+                                        })
+                                    } else {
+                                        false
+                                    };
+                                }
+                            } else if path_after_top_removed
+                                .iter()
+                                .take(subquery_path.len())
+                                .zip(subquery_path)
+                                .all(|(a, b)| *a == b.as_slice())
+                            {
+                                if let Some(subquery) = &subquery_branch.subquery {
+                                    return recursive_should_add_parent_tree_at_path(
+                                        subquery,
+                                        &path_after_top_removed[subquery_path.len()..],
+                                    );
+                                }
+                            }
+                        } else if let Some(subquery) = &subquery_branch.subquery {
+                            return recursive_should_add_parent_tree_at_path(
+                                subquery,
+                                path_after_top_removed,
+                            );
+                        }
+
+                        return false;
+                    }
+                }
+            }
+
+            if let Some(subquery_path) = &query.default_subquery_branch.subquery_path {
+                if path_after_top_removed.len() <= subquery_path.len() {
+                    if path_after_top_removed
+                        .iter()
+                        .zip(subquery_path)
+                        .all(|(a, b)| *a == b.as_slice())
+                    {
+                        return if path_after_top_removed.len() == subquery_path.len() {
+                            query
+                                .default_subquery_branch
+                                .subquery
+                                .as_ref()
+                                .is_some_and(|subquery| subquery.add_parent_tree_on_subquery)
+                        } else {
+                            false
+                        };
+                    }
+                } else if path_after_top_removed
+                    .iter()
+                    .take(subquery_path.len())
+                    .zip(subquery_path)
+                    .all(|(a, b)| *a == b.as_slice())
+                {
+                    if let Some(subquery) = &query.default_subquery_branch.subquery {
+                        return recursive_should_add_parent_tree_at_path(
+                            subquery,
+                            &path_after_top_removed[subquery_path.len()..],
+                        );
+                    }
+                }
+            } else if let Some(subquery) = &query.default_subquery_branch.subquery {
+                return recursive_should_add_parent_tree_at_path(subquery, path_after_top_removed);
+            }
+
+            false
+        }
+
+        let self_path_len = self.path.len();
+        let given_path_len = path.len();
+
+        Ok(match given_path_len.cmp(&self_path_len) {
+            Ordering::Less => false,
+            Ordering::Equal => {
+                if path.iter().zip(&self.path).all(|(a, b)| *a == b.as_slice()) {
+                    self.query.query.add_parent_tree_on_subquery
+                } else {
+                    false
+                }
+            }
+            Ordering::Greater => {
+                if !self.path.iter().zip(path).all(|(a, b)| a.as_slice() == *b) {
+                    return Ok(false);
+                }
+                recursive_should_add_parent_tree_at_path(&self.query.query, &path[self_path_len..])
+            }
+        })
+    }
+
     pub fn query_items_at_path(
         &self,
         path: &[&[u8]],
         grove_version: &GroveVersion,
-    ) -> Result<Option<SinglePathSubquery>, Error> {
+    ) -> Result<Option<SinglePathSubquery<'_>>, Error> {
         check_grovedb_v0!(
             "query_items_at_path",
             grove_version
@@ -499,6 +634,7 @@ impl HasSubquery<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SinglePathSubquery<'a> {
     /// Items
+    #[allow(clippy::owned_cow)]
     pub items: Cow<'a, Vec<QueryItem>>,
     /// Default subquery branch
     pub has_subquery: HasSubquery<'a>,
@@ -559,11 +695,11 @@ impl<'a> SinglePathSubquery<'a> {
         }
     }
 
-    pub fn from_path_query(path_query: &PathQuery) -> SinglePathSubquery {
+    pub fn from_path_query(path_query: &PathQuery) -> SinglePathSubquery<'_> {
         Self::from_query(&path_query.query.query)
     }
 
-    pub fn from_query(query: &Query) -> SinglePathSubquery {
+    pub fn from_query(query: &Query) -> SinglePathSubquery<'_> {
         let has_subquery = if query.default_subquery_branch.subquery.is_some()
             || query.default_subquery_branch.subquery_path.is_some()
         {
@@ -1288,6 +1424,7 @@ mod tests {
             },
             left_to_right: true,
             conditional_subquery_branches: None,
+            add_parent_tree_on_subquery: false,
         };
 
         // Constructing the PathQuery
@@ -1305,6 +1442,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -1469,6 +1607,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: None,
@@ -1540,6 +1679,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: Some(conditional_subquery_branches),
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: None,
@@ -1589,6 +1729,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 })),
             },
         )]);
@@ -1606,6 +1747,7 @@ mod tests {
                         },
                         left_to_right: true,
                         conditional_subquery_branches: None,
+                        add_parent_tree_on_subquery: false,
                     })),
                 },
             ),
@@ -1623,6 +1765,7 @@ mod tests {
                             inner_conditional_subquery_branches.clone(),
                         ),
                         left_to_right: true,
+                        add_parent_tree_on_subquery: false,
                     })),
                 },
             ),
@@ -1639,6 +1782,7 @@ mod tests {
                     },
                     conditional_subquery_branches: Some(conditional_subquery_branches.clone()),
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: None,
@@ -1767,6 +1911,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -1789,6 +1934,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: false,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(10),
                 offset: Some(2),
@@ -1811,6 +1957,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(5),
                 offset: None,
@@ -1842,6 +1989,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -1885,6 +2033,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -1907,6 +2056,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: false,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(100),
                 offset: Some(10),
@@ -1931,6 +2081,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 })),
             },
         );
@@ -1943,6 +2094,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: false,
+                    add_parent_tree_on_subquery: false,
                 })),
             },
         );
@@ -1955,6 +2107,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: Some(conditional_branches),
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(50),
                 offset: Some(5),
@@ -1981,10 +2134,12 @@ mod tests {
                             default_subquery_branch: SubqueryBranch::default(),
                             conditional_subquery_branches: None,
                             left_to_right: true,
+                            add_parent_tree_on_subquery: false,
                         })),
                     },
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: None,
                 offset: None,
@@ -2007,6 +2162,7 @@ mod tests {
                     default_subquery_branch: SubqueryBranch::default(),
                     conditional_subquery_branches: None,
                     left_to_right: true,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(20),
                 offset: None,
@@ -2017,5 +2173,242 @@ mod tests {
         let decoded: PathQuery = decode_from_slice(&encoded, standard()).unwrap().0;
 
         assert_eq!(path_query, decoded);
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_empty_path() {
+        let grove_version = GroveVersion::latest();
+
+        // Test with add_parent_tree_on_subquery = true
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(vec![], query);
+
+        // Empty path should return the query's add_parent_tree_on_subquery value
+        let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
+        assert!(result.unwrap());
+
+        // Test with add_parent_tree_on_subquery = false
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = false;
+        let path_query = PathQuery::new_unsized(vec![], query);
+
+        let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_exact_match() {
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec(), b"subtree".to_vec()], query);
+
+        // Exact path match
+        let path = vec![b"root".as_ref(), b"subtree".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(result.unwrap());
+
+        // Different path of same length
+        let path = vec![b"root".as_ref(), b"other".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_shorter_path() {
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec(), b"subtree".to_vec(), b"leaf".to_vec()],
+            query,
+        );
+
+        // Shorter path should return false
+        let path = vec![b"root".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+
+        let path = vec![b"root".as_ref(), b"subtree".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_with_subqueries() {
+        let grove_version = GroveVersion::latest();
+
+        // Create a nested query structure
+        let mut inner_query = Query::new();
+        inner_query.add_parent_tree_on_subquery = true;
+        inner_query.insert_key(b"inner_key".to_vec());
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = false;
+        query.insert_key(b"key1".to_vec());
+        query.default_subquery_branch = SubqueryBranch {
+            subquery_path: Some(vec![b"subpath".to_vec()]),
+            subquery: Some(Box::new(inner_query)),
+        };
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        // Test path leading to the inner query
+        let path = vec![b"root".as_ref(), b"key1".as_ref(), b"subpath".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(result.unwrap()); // Should return inner query's value
+
+        // Test root path
+        let path = vec![b"root".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap()); // Should return root query's value
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_conditional_subqueries() {
+        let grove_version = GroveVersion::latest();
+
+        // Create conditional subqueries
+        let mut conditional_branches = IndexMap::new();
+
+        let mut branch1_query = Query::new();
+        branch1_query.add_parent_tree_on_subquery = true;
+        conditional_branches.insert(
+            QueryItem::Key(b"branch1".to_vec()),
+            SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(branch1_query)),
+            },
+        );
+
+        let mut branch2_query = Query::new();
+        branch2_query.add_parent_tree_on_subquery = false;
+        conditional_branches.insert(
+            QueryItem::Key(b"branch2".to_vec()),
+            SubqueryBranch {
+                subquery_path: Some(vec![b"nested".to_vec()]),
+                subquery: Some(Box::new(branch2_query)),
+            },
+        );
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = false;
+        query.conditional_subquery_branches = Some(conditional_branches);
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        // Test path to branch1
+        let path = vec![b"root".as_ref(), b"branch1".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(result.unwrap());
+
+        // Test path to branch2 with nested path
+        let path = vec![b"root".as_ref(), b"branch2".as_ref(), b"nested".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_deep_nesting() {
+        let grove_version = GroveVersion::latest();
+
+        // Create deeply nested query structure
+        let mut level3_query = Query::new();
+        level3_query.add_parent_tree_on_subquery = true;
+
+        let mut level2_query = Query::new();
+        level2_query.add_parent_tree_on_subquery = false;
+        level2_query.insert_key(b"level3".to_vec());
+        level2_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(level3_query)),
+        };
+
+        let mut level1_query = Query::new();
+        level1_query.add_parent_tree_on_subquery = false;
+        level1_query.insert_key(b"level2".to_vec());
+        level1_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(level2_query)),
+        };
+
+        let mut root_query = Query::new();
+        root_query.add_parent_tree_on_subquery = false;
+        root_query.insert_key(b"level1".to_vec());
+        root_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(level1_query)),
+        };
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], root_query);
+
+        // Test various depths
+        let path = vec![b"root".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+
+        let path = vec![b"root".as_ref(), b"level1".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+
+        let path = vec![b"root".as_ref(), b"level1".as_ref(), b"level2".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+
+        let path = vec![
+            b"root".as_ref(),
+            b"level1".as_ref(),
+            b"level2".as_ref(),
+            b"level3".as_ref(),
+        ];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_nonexistent_path() {
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        query.insert_key(b"existing".to_vec());
+
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        // Path that doesn't exist in the query structure
+        let path = vec![b"root".as_ref(), b"nonexistent".as_ref()];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+
+        // Longer path that doesn't match
+        let path = vec![
+            b"root".as_ref(),
+            b"existing".as_ref(),
+            b"but_no_subquery".as_ref(),
+        ];
+        let result = path_query.should_add_parent_tree_at_path(&path, grove_version);
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_should_add_parent_tree_at_path_version_gating() {
+        // Test with latest version
+        let grove_version = GroveVersion::latest();
+
+        let mut query = Query::new();
+        query.add_parent_tree_on_subquery = true;
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let result = path_query.should_add_parent_tree_at_path(&[b"root".as_ref()], grove_version);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        // Test with mismatched path
+        let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
     }
 }

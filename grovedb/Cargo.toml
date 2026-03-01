@@ -1,8 +1,12 @@
 [package]
 name = "grovedb"
 description = "Fully featured database using balanced hierarchical authenticated data structures"
-version = "3.0.0"
-authors = ["Samuel Westrich <sam@dash.org>", "Wisdom Ogwu <wisdom@dash.org", "Evgeny Fomin <evgeny.fomin@dash.org>"]
+version = "4.0.0"
+authors = [
+    "Samuel Westrich <sam@dash.org>",
+    "Wisdom Ogwu <wisdom@dash.org",
+    "Evgeny Fomin <evgeny.fomin@dash.org>",
+]
 edition = "2021"
 license = "MIT"
 homepage = "https://www.grovedb.org"
@@ -11,39 +15,50 @@ readme = "../README.md"
 documentation = "https://docs.rs/grovedb"
 
 [dependencies]
-grovedb-costs = { version = "3.0.0", path = "../costs" , optional = true }
-grovedbg-types = { version = "3.0.0", path = "../grovedbg-types", optional = true }
-grovedb-merk = { version = "3.0.0", path = "../merk", optional = true, default-features = false }
-grovedb-path = { version = "3.0.0", path = "../path" }
-grovedb-storage = { version = "3.0.0", path = "../storage", optional = true }
-grovedb-version = { version = "3.0.0", path = "../grovedb-version" }
-grovedb-visualize = { version = "3.0.0", path = "../visualize", optional = true }
+grovedb-costs = { version = "4.0.0", path = "../costs", optional = true }
+grovedbg-types = { version = "4.0.0", path = "../grovedbg-types", optional = true }
+grovedb-merk = { version = "4.0.0", path = "../merk", optional = true, default-features = false }
+grovedb-path = { version = "4.0.0", path = "../path" }
+grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
+grovedb-version = { version = "4.0.0", path = "../grovedb-version" }
+grovedb-visualize = { version = "4.0.0", path = "../visualize", optional = true }
+grovedb-element = { version = "4.0.0", path = "../grovedb-element" }
+grovedb-commitment-tree = { version = "4.0.0", path = "../grovedb-commitment-tree", optional = true }
+grovedb-merkle-mountain-range = { version = "4.0.0", path = "../grovedb-merkle-mountain-range", optional = true, features = ["storage"] }
+grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-tree", optional = true }
+grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree", optional = true }
+grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
 
-axum = { version = "=0.7.5", features = ["macros"], optional = true }
-bincode = { version = "=2.0.0-rc.3" }
-bincode_derive = { version = "=2.0.0-rc.3" }
+axum = { version = "0.8", features = ["macros"], optional = true }
+bincode = { version = "=2.0.1" }
+bincode_derive = { version = "=2.0.1" }
 blake3 = "1.8.1"
 hex = "0.4.3"
 indexmap = "2.7.0"
-integer-encoding = { version = "4.0.0", optional = true }
+integer-encoding = { version = "4.1.0", optional = true }
 intmap = { version = "3.0.1", optional = true }
 itertools = { version = "0.14.0", optional = true }
-tempfile = { version = "3.17.1", optional = true }
-thiserror = { version = "2.0.12", optional = true }
-tokio-util = { version = "0.7.13", optional = true }
-tokio = { version = "1.43.0", features = ["rt-multi-thread", "net"], optional = true }
-tower-http = { version = "0.6.2", features = ["fs"], optional = true }
-zip-extensions = { version = "0.6.2", optional = true }
+tempfile = { version = "3.23.0", optional = true }
+thiserror = { version = "2.0.17", optional = true }
+tokio-util = { version = "0.7.17", optional = true }
+tokio = { version = "1.48.0", features = [
+    "rt-multi-thread",
+    "net",
+], optional = true }
+tower-http = { version = "0.6.8", features = ["fs"], optional = true }
+zip-extensions = { version = "0.13.0", optional = true }
 serde = { version = "1.0.219", features = ["derive"], optional = true }
 
 [dev-dependencies]
-grovedb-epoch-based-storage-flags = { version = "3.0.0", path = "../grovedb-epoch-based-storage-flags" }
+grovedb-epoch-based-storage-flags = { version = "4.0.0", path = "../grovedb-epoch-based-storage-flags" }
 
 criterion = "0.5.1"
 hex = "0.4.3"
 pretty_assertions = "1.4.0"
 rand = "0.9.0"
+rand_distr = "0.5"
 assert_matches = "1.5.0"
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "time", "sync"] }
 
 [[bench]]
 name = "insertion_benchmark"
@@ -53,16 +68,23 @@ harness = false
 name = "proof_generation_benchmark"
 harness = false
 
+[[bench]]
+name = "branch_chunk_queries"
+harness = false
+
 [features]
 default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
 serde = ["dep:serde", "grovedb-merk/serde", "indexmap/serde"]
-full = [
-    "grovedb-merk/full",
-    "minimal",
-]
+full = ["grovedb-merk/full", "minimal"]
 minimal = [
     "grovedb-merk/minimal",
+    "grovedb-commitment-tree",
+    "grovedb-commitment-tree/server",
+    "grovedb-commitment-tree/storage",
+    "grovedb-merkle-mountain-range",
+    "grovedb-bulk-append-tree",
+    "grovedb-dense-fixed-sized-merkle-tree",
     "thiserror",
     "tempfile",
     "grovedb-storage/rocksdb_storage",
@@ -72,16 +94,18 @@ minimal = [
     "grovedb-costs",
     "intmap",
 ]
-visualize = [
-    "grovedb-visualize",
-]
+visualize = ["grovedb-visualize"]
 verify = [
     "grovedb-merk/verify",
     "grovedb-costs",
     "thiserror",
     "integer-encoding",
+    "grovedb-merkle-mountain-range",
+    "grovedb-bulk-append-tree",
+    "grovedb-dense-fixed-sized-merkle-tree",
 ]
 estimated_costs = ["full"]
+zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client", "grovedb-commitment-tree/storage"]
 grovedbg = [
     "grovedbg-types",
     "tokio",
@@ -91,10 +115,10 @@ grovedbg = [
     "axum",
     "tower-http",
     "zip-extensions",
-    "tempfile"
+    "tempfile",
 ]
 
 [build-dependencies]
-hex-literal = "0.4.1"
+hex-literal = "1.1.0"
 reqwest = { version = "0.12", features = ["blocking"] }
 sha2 = "0.10.8"

@@ -10,8 +10,8 @@ exclude = ["index.node"]
 crate-type = ["cdylib"]
 
 [dependencies]
-grovedb = { version = "3.0.0", path = "../grovedb", features = ["full", "estimated_costs"] }
-grovedb-version =  { version = "3.0.0", path = "../grovedb-version" }
+grovedb = { version = "4.0.0", path = "../grovedb", features = ["full", "estimated_costs"] }
+grovedb-version =  { version = "4.0.0", path = "../grovedb-version" }
 
 [dependencies.neon]
 version = "0.10.1"

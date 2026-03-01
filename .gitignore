@@ -7,3 +7,4 @@ node_modules
 .DS_Store?
 tutorials/target
 tutorial-storage
+docs/book/output

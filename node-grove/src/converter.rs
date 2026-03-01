@@ -35,12 +35,19 @@ fn element_to_string(element: Element) -> String {
     match element {
         Element::Item(..) => "item".to_string(),
         Element::SumItem(..) => "sum_item".to_string(),
+        Element::ItemWithSumItem(..) => "item_with_sum_item".to_string(),
         Element::Reference(..) => "reference".to_string(),
         Element::Tree(..) => "tree".to_string(),
         Element::SumTree(..) => "sum_tree".to_string(),
         Element::BigSumTree(..) => "big_sum_tree".to_string(),
         Element::CountTree(..) => "count_tree".to_string(),
         Element::CountSumTree(..) => "count_sum_tree".to_string(),
+        Element::ProvableCountTree(..) => "provable_count_tree".to_string(),
+        Element::ProvableCountSumTree(..) => "provable_count_sum_tree".to_string(),
+        Element::CommitmentTree(..) => "commitment_tree".to_string(),
+        Element::MmrTree(..) => "mmr_tree".to_string(),
+        Element::BulkAppendTree(..) => "bulk_append_tree".to_string(),
+        Element::DenseAppendOnlyFixedSizeTree(..) => "dense_tree".to_string(),
     }
 }
 
@@ -72,6 +79,11 @@ pub fn js_object_to_element<'a, C: Context<'a>>(
             let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
             Ok(Element::new_tree(Some(tree_vec)))
         }
+        "provable_count_tree" => {
+            let js_buffer: Handle<JsBuffer> = js_object.get(cx, "value")?;
+            let tree_vec = js_buffer_to_vec_u8(js_buffer, cx);
+            Ok(Element::new_provable_count_tree(Some(tree_vec)))
+        }
         _ => cx.throw_error(format!("Unexpected element type {element_string}")),
     }
 }
@@ -92,12 +104,22 @@ pub fn element_to_js_object<'a, C: Context<'a>>(
         }
         // TODO: Fix bindings
         Element::SumItem(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::ItemWithSumItem(item, ..) => {
+            let js_buffer = JsBuffer::external(cx, item);
+            js_buffer.upcast()
+        }
         Element::Reference(..) => nested_vecs_to_js(vec![], cx)?,
         Element::Tree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::SumTree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::BigSumTree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::CountTree(..) => nested_vecs_to_js(vec![], cx)?,
         Element::CountSumTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::ProvableCountTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::ProvableCountSumTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::CommitmentTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::MmrTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::BulkAppendTree(..) => nested_vecs_to_js(vec![], cx)?,
+        Element::DenseAppendOnlyFixedSizeTree(..) => nested_vecs_to_js(vec![], cx)?,
     };
 
     js_object.set(cx, "value", js_value)?;
@@ -261,4 +283,15 @@ pub fn js_path_query_to_path_query<'a, C: Context<'a>>(
     let path = js_array_of_buffers_to_vec(js_path_query.get(cx, "path")?, cx)?;
     let query = js_object_to_sized_query(js_path_query.get(cx, "query")?, cx)?;
     Ok(PathQuery::new(path, query))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn element_to_string_identifies_item_with_sum_item() {
+        let element = Element::ItemWithSumItem(b"node".to_vec(), 4, Some(vec![1]));
+        assert_eq!(element_to_string(element), "item_with_sum_item");
+    }
 }

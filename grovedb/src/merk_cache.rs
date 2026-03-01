@@ -101,7 +101,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         // `MerkHandle`'s references. We use `UnsafeCell` to connect lifetimes and check
         // in compile time that `MerkHandle`s won't outlive the cache, even though we
         // don't hold any references to it, but `&mut` reference would make this borrow
-        // exclusive for the whole time of `MerkHandle`, so it shall go intially through
+        // exclusive for the whole time of `MerkHandle`, so it shall go initially through
         // a shared reference.
         //
         // Borrowing rules are covered using a borrow flag of each Merk:
@@ -124,7 +124,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
         .wrap_with_cost(cost)
     }
 
-    /// Consumes `MerkCache` into accumulated batch of uncommited operations
+    /// Consumes `MerkCache` into accumulated batch of uncommitted operations
     /// with subtrees' root hash  propagation done.
     pub(crate) fn into_batch(mut self) -> CostResult<Box<StorageBatch>, Error> {
         let mut cost = Default::default();
@@ -169,7 +169,7 @@ impl<'db, 'b, B: AsRef<[u8]>> MerkCache<'db, 'b, B> {
     }
 }
 
-/// Wrapper over `Merk` tree to manage unqiue borrow dynamically.
+/// Wrapper over `Merk` tree to manage unique borrow dynamically.
 #[derive(Clone)]
 pub(crate) struct MerkHandle<'db, 'c> {
     merk: *mut TxMerk<'db>,
@@ -199,6 +199,7 @@ impl<'db> MerkHandle<'db, '_> {
 
 #[cfg(test)]
 mod tests {
+    use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
     use grovedb_path::SubtreePath;
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
@@ -213,7 +214,7 @@ mod tests {
     #[should_panic]
     fn cant_borrow_twice() {
         let version = GroveVersion::latest();
-        let db = make_test_grovedb(&version);
+        let db = make_test_grovedb(version);
         let tx = db.start_transaction();
 
         let cache = MerkCache::new(&db, &tx, version);
@@ -237,7 +238,7 @@ mod tests {
     #[test]
     fn subtrees_are_propagated() {
         let version = GroveVersion::latest();
-        let db = make_deep_tree(&version);
+        let db = make_deep_tree(version);
         let tx = db.start_transaction();
 
         let path = SubtreePath::from(&[TEST_LEAF, b"innertree"]);
@@ -247,11 +248,11 @@ mod tests {
             let batch = StorageBatch::new();
 
             let mut merk = db
-                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), &version)
+                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), version)
                 .unwrap()
                 .unwrap();
 
-            item.insert(&mut merk, b"k1", None, &version)
+            item.insert(&mut merk, b"k1", None, version)
                 .unwrap()
                 .unwrap();
 
@@ -262,7 +263,7 @@ mod tests {
 
         let mut merk = cache.get_merk(path.derive_owned()).unwrap().unwrap();
 
-        merk.for_merk(|m| item.insert(m, b"k1", None, &version).unwrap().unwrap());
+        merk.for_merk(|m| item.insert(m, b"k1", None, version).unwrap().unwrap());
 
         drop(merk);
 

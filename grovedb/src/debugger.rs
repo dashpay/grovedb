@@ -11,6 +11,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::po
 use grovedb_merk::{
     debugger::NodeDbg,
     proofs::{Decoder, Node, Op},
+    tree::value_hash,
     TreeFeatureType,
 };
 use grovedb_path::SubtreePath;
@@ -32,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
 
 use crate::{
-    operations::proof::{GroveDBProof, LayerProof, ProveOptions},
+    operations::proof::{GroveDBProof, LayerProof, MerkOnlyLayerProof, ProofBytes, ProveOptions},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     GroveDb,
@@ -53,7 +54,7 @@ where
         let grovedbg_www = grovedbg_tmp.path().join("grovedbg_www");
 
         fs::write(&grovedbg_zip, GROVEDBG_ZIP).expect("cannot crate grovedbg.zip");
-        zip_extensions::read::zip_extract(&grovedbg_zip, &grovedbg_www)
+        zip_extensions::inflate::zip_extract::zip_extract(&grovedbg_zip, &grovedbg_www)
             .expect("cannot extract grovedbg contents");
 
         let cancellation_token = CancellationToken::new();
@@ -144,13 +145,19 @@ impl AppState {
         self.sessions.write().await.remove(&id);
     }
 
-    async fn get_snapshot(&self, id: SessionId) -> Result<RwLockReadGuard<GroveDb>, AppError> {
+    async fn get_checkpointed_grovedb(
+        &self,
+        id: SessionId,
+    ) -> Result<RwLockReadGuard<GroveDb>, AppError> {
         self.verify_running()?;
         let mut lock = self.sessions.write().await;
         if let Some(session) = lock.get_mut(&id) {
             session.last_access = Instant::now();
             Ok(RwLockReadGuard::map(lock.downgrade(), |l| {
-                &l.get(&id).as_ref().expect("checked above").snapshot
+                &l.get(&id)
+                    .as_ref()
+                    .expect("checked above")
+                    .checkpointed_grovedb
             }))
         } else {
             Err(AppError::NoSession)
@@ -161,7 +168,7 @@ impl AppState {
 struct Session {
     last_access: Instant,
     _tempdir: tempfile::TempDir,
-    snapshot: GroveDb,
+    checkpointed_grovedb: GroveDb,
 }
 
 impl Session {
@@ -171,11 +178,11 @@ impl Session {
         grovedb
             .create_checkpoint(&path)
             .map_err(|e| AppError::Any(e.to_string()))?;
-        let snapshot = GroveDb::open(path).map_err(|e| AppError::Any(e.to_string()))?;
+        let checkpointed_grovedb = GroveDb::open(path).map_err(|e| AppError::Any(e.to_string()))?;
         Ok(Session {
             last_access: Instant::now(),
             _tempdir: tempdir,
-            snapshot,
+            checkpointed_grovedb,
         })
     }
 }
@@ -226,7 +233,7 @@ async fn fetch_node(
         request: NodeFetchRequest { path, key },
     }): Json<WithSession<NodeFetchRequest>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
     let transaction = db.start_transaction();
 
     let merk = db
@@ -254,7 +261,7 @@ async fn fetch_root_node(
         request: (),
     }): Json<WithSession<()>>,
 ) -> Result<Json<Option<NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
     let transaction = db.start_transaction();
 
     let merk = db
@@ -283,12 +290,12 @@ async fn prove_path_query(
         request: json_path_query,
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<grovedbg_types::Proof>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 
     let grovedb_proof = db
-        .prove_internal(&path_query, None, GroveVersion::latest())
+        .prove_query_non_serialized(&path_query, None, GroveVersion::latest())
         .unwrap()?;
     Ok(Json(proof_to_grovedbg(grovedb_proof)?))
 }
@@ -300,7 +307,7 @@ async fn fetch_with_path_query(
         request: json_path_query,
     }): Json<WithSession<PathQuery>>,
 ) -> Result<Json<Vec<grovedbg_types::NodeUpdate>>, AppError> {
-    let db = state.get_snapshot(session_id).await?;
+    let db = state.get_checkpointed_grovedb(session_id).await?;
 
     let path_query = path_query_to_grovedb(json_path_query);
 
@@ -361,11 +368,15 @@ fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, crate
             root_layer: proof_layer_to_grovedbg(p.root_layer)?,
             prove_options: prove_options_to_grovedbg(p.prove_options),
         }),
+        GroveDBProof::V1(p) => Ok(grovedbg_types::Proof {
+            root_layer: v1_proof_layer_to_grovedbg(p.root_layer)?,
+            prove_options: prove_options_to_grovedbg(p.prove_options),
+        }),
     }
 }
 
 fn proof_layer_to_grovedbg(
-    proof_layer: LayerProof,
+    proof_layer: MerkOnlyLayerProof,
 ) -> Result<grovedbg_types::ProofLayer, crate::Error> {
     Ok(grovedbg_types::ProofLayer {
         merk_proof: merk_proof_to_grovedbg(&proof_layer.merk_proof)?,
@@ -373,6 +384,25 @@ fn proof_layer_to_grovedbg(
             .lower_layers
             .into_iter()
             .map(|(k, v)| proof_layer_to_grovedbg(v).map(|layer| (k, layer)))
+            .collect::<Result<BTreeMap<Vec<u8>, grovedbg_types::ProofLayer>, crate::Error>>()?,
+    })
+}
+
+fn v1_proof_layer_to_grovedbg(
+    proof_layer: LayerProof,
+) -> Result<grovedbg_types::ProofLayer, crate::Error> {
+    let merk_bytes = match &proof_layer.merk_proof {
+        ProofBytes::Merk(bytes) => bytes.as_slice(),
+        // Non-Merk proofs (MMR, BulkAppendTree, DenseTree) cannot be
+        // decoded into Merk proof ops; return an empty op list.
+        _ => &[],
+    };
+    Ok(grovedbg_types::ProofLayer {
+        merk_proof: merk_proof_to_grovedbg(merk_bytes)?,
+        lower_layers: proof_layer
+            .lower_layers
+            .into_iter()
+            .map(|(k, v)| v1_proof_layer_to_grovedbg(v).map(|layer| (k, layer)))
             .collect::<Result<BTreeMap<Vec<u8>, grovedbg_types::ProofLayer>, crate::Error>>()?,
     })
 }
@@ -403,6 +433,20 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
         Node::Hash(hash) => MerkProofNode::Hash(hash),
         Node::KVHash(hash) => MerkProofNode::KVHash(hash),
         Node::KVDigest(key, hash) => MerkProofNode::KVDigest(key, hash),
+        Node::KVDigestCount(key, hash, count) => {
+            // KVDigestCount is like KVDigest but with count for ProvableCountTree
+            // Use KVValueHashFeatureType for debug display since grovedbg_types may not
+            // have KVDigestCount
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                grovedbg_types::Element::Item {
+                    value: vec![],
+                    element_flags: None,
+                },
+                hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
+            )
+        }
         Node::KV(key, value) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
             MerkProofNode::KV(key, element_to_grovedbg(element))
@@ -427,6 +471,12 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 TreeFeatureType::CountedSummedMerkNode(count, sum) => {
                     grovedbg_types::TreeFeatureType::CountedSummedMerkNode(count, sum)
                 }
+                TreeFeatureType::ProvableCountedMerkNode(count) => {
+                    grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count)
+                }
+                TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                    grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+                }
             };
             MerkProofNode::KVValueHashFeatureType(
                 key,
@@ -438,6 +488,36 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
         Node::KVRefValueHash(key, value, hash) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
             MerkProofNode::KVRefValueHash(key, element_to_grovedbg(element), hash)
+        }
+        Node::KVCount(key, value, count) => {
+            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            let val_hash = value_hash(&value).unwrap();
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                element_to_grovedbg(element),
+                val_hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
+            )
+        }
+        Node::KVHashCount(hash, count) => MerkProofNode::KVValueHashFeatureType(
+            vec![],
+            grovedbg_types::Element::Item {
+                value: vec![],
+                element_flags: None,
+            },
+            hash,
+            grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
+        ),
+        Node::KVRefValueHashCount(key, value, hash, count) => {
+            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            // Note: Treating as KVValueHashFeatureType for debug display purposes
+            // since grovedbg_types may not have KVRefValueHashCount
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                element_to_grovedbg(element),
+                hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
+            )
         }
     })
 }
@@ -477,6 +557,7 @@ fn query_to_grovedb(query: Query) -> crate::Query {
             query.conditional_subquery_branches,
         ),
         left_to_right: query.left_to_right,
+        add_parent_tree_on_subquery: false,
     }
 }
 
@@ -612,6 +693,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             value,
             element_flags,
         },
+        crate::Element::ItemWithSumItem(value, sum_value, element_flags) => {
+            grovedbg_types::Element::ItemWithSumItem {
+                value,
+                sum_item_value: sum_value,
+                element_flags,
+            }
+        }
         crate::Element::SumTree(root_key, sum, element_flags) => grovedbg_types::Element::Sumtree {
             root_key,
             sum,
@@ -636,6 +724,39 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 root_key,
                 count,
                 sum,
+                element_flags,
+            }
+        }
+        crate::Element::ProvableCountTree(root_key, count, element_flags) => {
+            grovedbg_types::Element::ProvableCountTree {
+                root_key,
+                count,
+                element_flags,
+            }
+        }
+        crate::Element::ProvableCountSumTree(root_key, count, sum, element_flags) => {
+            grovedbg_types::Element::ProvableCountSumTree {
+                root_key,
+                count,
+                sum,
+                element_flags,
+            }
+        }
+        crate::Element::CommitmentTree(_, _, element_flags) => grovedbg_types::Element::Subtree {
+            root_key: None,
+            element_flags,
+        },
+        crate::Element::MmrTree(_, element_flags) => grovedbg_types::Element::Subtree {
+            root_key: None,
+            element_flags,
+        },
+        crate::Element::BulkAppendTree(_, _, element_flags) => grovedbg_types::Element::Subtree {
+            root_key: None,
+            element_flags,
+        },
+        crate::Element::DenseAppendOnlyFixedSizeTree(_, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: None,
                 element_flags,
             }
         }
@@ -682,8 +803,37 @@ fn node_to_update(
             TreeFeatureType::CountedSummedMerkNode(count, sum) => {
                 grovedbg_types::TreeFeatureType::CountedSummedMerkNode(count, sum)
             }
+            TreeFeatureType::ProvableCountedMerkNode(count) => {
+                grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count)
+            }
+            TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+            }
         },
         value_hash,
         kv_digest_hash,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn element_to_grovedbg_converts_item_with_sum_item() {
+        let flags = Some(vec![1, 2, 3]);
+        let element = crate::Element::ItemWithSumItem(b"dbg".to_vec(), -5, flags.clone());
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ItemWithSumItem {
+                value,
+                sum_item_value,
+                element_flags,
+            } => {
+                assert_eq!(value, b"dbg");
+                assert_eq!(sum_item_value, -5);
+                assert_eq!(element_flags, flags);
+            }
+            _ => panic!("unexpected debugger conversion"),
+        }
+    }
 }

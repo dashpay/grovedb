@@ -1,237 +1,117 @@
 //! Query
 //! Implements functions in Element for querying
-
-use std::fmt;
-
-#[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostContext, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_into_no_add,
+    cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
-use grovedb_merk::proofs::query::query_item::QueryItem;
-#[cfg(feature = "minimal")]
-use grovedb_merk::proofs::query::SubqueryBranch;
-#[cfg(feature = "minimal")]
-use grovedb_merk::proofs::Query;
-#[cfg(feature = "minimal")]
+use grovedb_element::Element;
+use grovedb_merk::{
+    element::{decode::ElementDecodeExtensions, get::ElementFetchFromStorageExtensions},
+    error::MerkErrorExt,
+    proofs::{query::query_item::QueryItem, Query},
+};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
-#[cfg(feature = "minimal")]
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
-use crate::operations::proof::util::hex_to_ascii;
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::operations::proof::util::path_as_slices_hex_to_ascii;
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::Element;
-#[cfg(feature = "minimal")]
 use crate::{
-    element::helpers::raw_decode,
+    element::{path_query_push_args::PathQueryPushArgs, query_options::QueryOptions},
+    operations::proof::util::path_as_slices_hex_to_ascii,
     query_result_type::{
-        KeyElementPair, QueryResultElement, QueryResultElements, QueryResultType,
+        Path, QueryResultElement, QueryResultElements, QueryResultType,
         QueryResultType::{
             QueryElementResultType, QueryKeyElementPairResultType,
             QueryPathKeyElementTrioResultType,
         },
     },
-    Error, PathQuery, TransactionArg,
+    Error, PathQuery, SizedQuery, TransactionArg,
 };
-#[cfg(feature = "minimal")]
-use crate::{query_result_type::Path, SizedQuery};
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(Copy, Clone, Debug)]
-pub struct QueryOptions {
-    pub allow_get_raw: bool,
-    pub allow_cache: bool,
-    /// Should we decrease the limit of elements found when we have no
-    /// subelements in the subquery? This should generally be set to true,
-    /// as having it false could mean very expensive queries. The queries
-    /// would be expensive because we could go through many many trees where the
-    /// sub elements have no matches, hence the limit would not decrease and
-    /// hence we would continue on the increasingly expensive query.
-    pub decrease_limit_on_range_with_no_sub_elements: bool,
-    pub error_if_intermediate_path_tree_not_present: bool,
+pub trait ElementQueryExtensions {
+    fn get_query(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        query: &Query,
+        query_options: QueryOptions,
+        result_type: QueryResultType,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<QueryResultElements, Error>;
+    fn get_query_values(
+        storage: &RocksDbStorage,
+        merk_path: &[&[u8]],
+        query: &Query,
+        query_options: QueryOptions,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<Element>, Error>;
+    fn get_query_apply_function(
+        storage: &RocksDbStorage,
+        path: &[&[u8]],
+        sized_query: &SizedQuery,
+        query_options: QueryOptions,
+        result_type: QueryResultType,
+        transaction: TransactionArg,
+        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(QueryResultElements, u16), Error>;
+    fn get_path_query(
+        storage: &RocksDbStorage,
+        path_query: &PathQuery,
+        query_options: QueryOptions,
+        result_type: QueryResultType,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(QueryResultElements, u16), Error>;
+    /// Returns a vector of elements, and the number of skipped elements
+    fn get_sized_query(
+        storage: &RocksDbStorage,
+        path: &[&[u8]],
+        sized_query: &SizedQuery,
+        query_options: QueryOptions,
+        result_type: QueryResultType,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(QueryResultElements, u16), Error>;
+    /// Push arguments to path query
+    fn path_query_push(
+        args: PathQueryPushArgs,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Takes a sized query and a key and returns subquery key and subquery as
+    /// tuple
+    fn subquery_paths_and_value_for_sized_query(
+        sized_query: &SizedQuery,
+        key: &[u8],
+    ) -> (Option<Path>, Option<Query>);
+    /// `decrease_limit_on_range_with_no_sub_elements` should generally be set
+    /// to true, as having it false could mean very expensive queries.
+    /// The queries would be expensive because we could go through many
+    /// trees where the sub elements have no matches, hence the limit would
+    /// not decrease and hence we would continue on the increasingly
+    /// expensive query.
+    // TODO: refactor
+    fn query_item(
+        storage: &RocksDbStorage,
+        item: &QueryItem,
+        results: &mut Vec<QueryResultElement>,
+        path: &[&[u8]],
+        sized_query: &SizedQuery,
+        transaction: TransactionArg,
+        limit: &mut Option<u16>,
+        offset: &mut Option<u16>,
+        query_options: QueryOptions,
+        result_type: QueryResultType,
+        add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+    fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error>;
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-impl fmt::Display for QueryOptions {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "QueryOptions {{")?;
-        writeln!(f, "  allow_get_raw: {}", self.allow_get_raw)?;
-        writeln!(f, "  allow_cache: {}", self.allow_cache)?;
-        writeln!(
-            f,
-            "  decrease_limit_on_range_with_no_sub_elements: {}",
-            self.decrease_limit_on_range_with_no_sub_elements
-        )?;
-        writeln!(
-            f,
-            "  error_if_intermediate_path_tree_not_present: {}",
-            self.error_if_intermediate_path_tree_not_present
-        )?;
-        write!(f, "}}")
-    }
-}
-
-#[cfg(any(feature = "minimal", feature = "verify"))]
-impl Default for QueryOptions {
-    fn default() -> Self {
-        QueryOptions {
-            allow_get_raw: false,
-            allow_cache: true,
-            decrease_limit_on_range_with_no_sub_elements: true,
-            error_if_intermediate_path_tree_not_present: true,
-        }
-    }
-}
-
-#[cfg(feature = "minimal")]
-/// Path query push arguments
-pub struct PathQueryPushArgs<'db, 'ctx, 'a>
-where
-    'db: 'ctx,
-{
-    pub storage: &'db RocksDbStorage,
-    pub transaction: TransactionArg<'db, 'ctx>,
-    pub key: Option<&'a [u8]>,
-    pub element: Element,
-    pub path: &'a [&'a [u8]],
-    pub subquery_path: Option<Path>,
-    pub subquery: Option<Query>,
-    pub left_to_right: bool,
-    pub query_options: QueryOptions,
-    pub result_type: QueryResultType,
-    pub results: &'a mut Vec<QueryResultElement>,
-    pub limit: &'a mut Option<u16>,
-    pub offset: &'a mut Option<u16>,
-}
-
-#[cfg(feature = "minimal")]
-fn format_query(query: &Query, indent: usize) -> String {
-    let indent_str = " ".repeat(indent);
-    let mut output = format!("{}Query {{\n", indent_str);
-
-    output += &format!("{}  items: [\n", indent_str);
-    for item in &query.items {
-        output += &format!("{}    {},\n", indent_str, item);
-    }
-    output += &format!("{}  ],\n", indent_str);
-
-    output += &format!(
-        "{}  default_subquery_branch: {}\n",
-        indent_str,
-        format_subquery_branch(&query.default_subquery_branch, indent + 2)
-    );
-
-    if let Some(ref branches) = query.conditional_subquery_branches {
-        output += &format!("{}  conditional_subquery_branches: {{\n", indent_str);
-        for (item, branch) in branches {
-            output += &format!(
-                "{}    {}: {},\n",
-                indent_str,
-                item,
-                format_subquery_branch(branch, indent + 4)
-            );
-        }
-        output += &format!("{}  }},\n", indent_str);
-    }
-
-    output += &format!("{}  left_to_right: {}\n", indent_str, query.left_to_right);
-    output += &format!("{}}}", indent_str);
-
-    output
-}
-
-#[cfg(feature = "minimal")]
-fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
-    let indent_str = " ".repeat(indent);
-    let mut output = "SubqueryBranch {{\n".to_string();
-
-    if let Some(ref path) = branch.subquery_path {
-        output += &format!("{}  subquery_path: {:?},\n", indent_str, path);
-    }
-
-    if let Some(ref subquery) = branch.subquery {
-        output += &format!(
-            "{}  subquery: {},\n",
-            indent_str,
-            format_query(subquery, indent + 2)
-        );
-    }
-
-    output += &format!("{}}}", " ".repeat(indent));
-
-    output
-}
-
-#[cfg(feature = "minimal")]
-impl<'db, 'ctx> fmt::Display for PathQueryPushArgs<'db, 'ctx, '_>
-where
-    'db: 'ctx,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "PathQueryPushArgs {{")?;
-        writeln!(
-            f,
-            "  key: {}",
-            self.key.map_or("None".to_string(), hex_to_ascii)
-        )?;
-        writeln!(f, "  element: {}", self.element)?;
-        writeln!(
-            f,
-            "  path: [{}]",
-            self.path
-                .iter()
-                .map(|p| hex_to_ascii(p))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )?;
-        writeln!(
-            f,
-            "  subquery_path: {}",
-            self.subquery_path
-                .as_ref()
-                .map_or("None".to_string(), |p| format!(
-                    "[{}]",
-                    p.iter()
-                        .map(|e| hex_to_ascii(e.as_slice()))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-        )?;
-        writeln!(
-            f,
-            "  subquery: {}",
-            self.subquery
-                .as_ref()
-                .map_or("None".to_string(), |q| format!("\n{}", format_query(q, 4)))
-        )?;
-        writeln!(f, "  left_to_right: {}", self.left_to_right)?;
-        writeln!(f, "  query_options: {}", self.query_options)?;
-        writeln!(f, "  result_type: {}", self.result_type)?;
-        writeln!(
-            f,
-            "  results: [{}]",
-            self.results
-                .iter()
-                .map(|r| format!("{}", r))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )?;
-        writeln!(f, "  limit: {:?}", self.limit)?;
-        writeln!(f, "  offset: {:?}", self.offset)?;
-        write!(f, "}}")
-    }
-}
-
-impl Element {
-    #[cfg(feature = "minimal")]
+impl ElementQueryExtensions for Element {
     /// Returns a vector of result elements based on given query
-    pub fn get_query(
+    fn get_query(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
         query: &Query,
@@ -258,9 +138,8 @@ impl Element {
         .map_ok(|(elements, _)| elements)
     }
 
-    #[cfg(feature = "minimal")]
     /// Get values of result elements coming from given query
-    pub fn get_query_values(
+    fn get_query_values(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
         query: &Query,
@@ -296,10 +175,9 @@ impl Element {
         })
     }
 
-    #[cfg(feature = "minimal")]
     /// Returns a vector of result elements and the number of skipped items
     /// based on given query
-    pub fn get_query_apply_function(
+    fn get_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
@@ -381,10 +259,9 @@ impl Element {
         Ok((QueryResultElements::from_elements(results), skipped)).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "minimal")]
     /// Returns a vector of elements excluding trees, and the number of skipped
     /// elements
-    pub fn get_path_query(
+    fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
         query_options: QueryOptions,
@@ -414,9 +291,8 @@ impl Element {
         )
     }
 
-    #[cfg(feature = "minimal")]
     /// Returns a vector of elements, and the number of skipped elements
-    pub fn get_sized_query(
+    fn get_sized_query(
         storage: &RocksDbStorage,
         path: &[&[u8]],
         sized_query: &SizedQuery,
@@ -442,7 +318,6 @@ impl Element {
         )
     }
 
-    #[cfg(feature = "minimal")]
     /// Push arguments to path query
     fn path_query_push(
         args: PathQueryPushArgs,
@@ -547,7 +422,7 @@ impl Element {
 
                         match result_type {
                             QueryElementResultType => {
-                                if let Some(element) = cost_return_on_error!(
+                                if let Some(element) = cost_return_on_error_into!(
                                     &mut cost,
                                     Element::get_optional_with_absolute_refs(
                                         &subtree,
@@ -561,7 +436,7 @@ impl Element {
                                 }
                             }
                             QueryKeyElementPairResultType => {
-                                if let Some(element) = cost_return_on_error!(
+                                if let Some(element) = cost_return_on_error_into!(
                                     &mut cost,
                                     Element::get_optional_with_absolute_refs(
                                         &subtree,
@@ -578,7 +453,7 @@ impl Element {
                                 }
                             }
                             QueryPathKeyElementTrioResultType => {
-                                if let Some(element) = cost_return_on_error!(
+                                if let Some(element) = cost_return_on_error_into!(
                                     &mut cost,
                                     Element::get_optional_with_absolute_refs(
                                         &subtree,
@@ -667,7 +542,6 @@ impl Element {
         Ok(()).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "minimal")]
     /// Takes a sized query and a key and returns subquery key and subquery as
     /// tuple
     fn subquery_paths_and_value_for_sized_query(
@@ -704,12 +578,10 @@ impl Element {
 
     /// `decrease_limit_on_range_with_no_sub_elements` should generally be set
     /// to true, as having it false could mean very expensive queries.
-    /// The queries would be expensive because we could go through many many
+    /// The queries would be expensive because we could go through many
     /// trees where the sub elements have no matches, hence the limit would
     /// not decrease and hence we would continue on the increasingly
     /// expensive query.
-    #[cfg(feature = "minimal")]
-    // TODO: refactor
     fn query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
@@ -726,10 +598,7 @@ impl Element {
     ) -> CostResult<(), Error> {
         use grovedb_storage::Storage;
 
-        use crate::{
-            error::GroveDbErrorExt,
-            util::{compat, TxRef},
-        };
+        use crate::util::{compat, TxRef};
 
         check_grovedb_v0_with_cost!(
             "query_item",
@@ -764,6 +633,7 @@ impl Element {
                     .flat_map_ok(|subtree| {
                         Element::get(&subtree, key, query_options.allow_cache, grove_version)
                             .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
+                            .map_err(|e| e.into())
                     })
                     .unwrap_add_cost(&mut cost);
 
@@ -836,9 +706,9 @@ impl Element {
                 .iter_is_valid_for_type(&iter, *limit, sized_query.query.left_to_right)
                 .unwrap_add_cost(&mut cost)
             {
-                let element = cost_return_on_error_no_add!(
+                let element = cost_return_on_error_into_no_add!(
                     cost,
-                    raw_decode(
+                    Element::raw_decode(
                         iter.value()
                             .unwrap_add_cost(&mut cost)
                             .expect("if key exists then value should too"),
@@ -895,7 +765,6 @@ impl Element {
         .wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "minimal")]
     fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
         check_grovedb_v0!(
             "basic_push",
@@ -918,10 +787,10 @@ impl Element {
 
         if offset.unwrap_or(0) == 0 {
             match result_type {
-                QueryResultType::QueryElementResultType => {
+                QueryElementResultType => {
                     results.push(QueryResultElement::ElementResultItem(element));
                 }
-                QueryResultType::QueryKeyElementPairResultType => {
+                QueryKeyElementPairResultType => {
                     let key = key.ok_or(Error::CorruptedPath(
                         "basic push must have a key".to_string(),
                     ))?;
@@ -930,7 +799,7 @@ impl Element {
                         element,
                     )));
                 }
-                QueryResultType::QueryPathKeyElementTrioResultType => {
+                QueryPathKeyElementTrioResultType => {
                     let key = key.ok_or(Error::CorruptedPath(
                         "basic push must have a key".to_string(),
                     ))?;
@@ -950,25 +819,17 @@ impl Element {
         }
         Ok(())
     }
-
-    #[cfg(feature = "minimal")]
-    /// Iterator
-    pub fn iterator<I: RawIterator>(mut raw_iter: I) -> CostContext<ElementsIterator<I>> {
-        let mut cost = OperationCost::default();
-        raw_iter.seek_to_first().unwrap_add_cost(&mut cost);
-        ElementsIterator::new(raw_iter).wrap_with_cost(cost)
-    }
 }
 
-#[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::proofs::Query;
+    use grovedb_element::Element;
+    use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, proofs::Query};
     use grovedb_storage::{Storage, StorageBatch};
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        element::{query::QueryOptions, *},
+        element::query::{ElementQueryExtensions, QueryOptions},
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
             QueryResultType::{QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType},
@@ -1695,54 +1556,5 @@ mod tests {
             ]
         );
         assert_eq!(skipped, 1);
-    }
-}
-
-#[cfg(feature = "minimal")]
-pub struct ElementsIterator<I: RawIterator> {
-    raw_iter: I,
-}
-
-#[cfg(feature = "minimal")]
-impl<I: RawIterator> ElementsIterator<I> {
-    pub fn new(raw_iter: I) -> Self {
-        ElementsIterator { raw_iter }
-    }
-
-    pub fn next_element(
-        &mut self,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Option<KeyElementPair>, Error> {
-        let mut cost = OperationCost::default();
-
-        Ok(if self.raw_iter.valid().unwrap_add_cost(&mut cost) {
-            if let Some((key, value)) = self
-                .raw_iter
-                .key()
-                .unwrap_add_cost(&mut cost)
-                .zip(self.raw_iter.value().unwrap_add_cost(&mut cost))
-            {
-                let element = cost_return_on_error_no_add!(cost, raw_decode(value, grove_version));
-                let key_vec = key.to_vec();
-                self.raw_iter.next().unwrap_add_cost(&mut cost);
-                Some((key_vec, element))
-            } else {
-                None
-            }
-        } else {
-            None
-        })
-        .wrap_with_cost(cost)
-    }
-
-    pub fn fast_forward(&mut self, key: &[u8]) -> Result<(), Error> {
-        while self.raw_iter.valid().unwrap() {
-            if self.raw_iter.key().unwrap().unwrap() == key {
-                break;
-            } else {
-                self.raw_iter.next().unwrap();
-            }
-        }
-        Ok(())
     }
 }

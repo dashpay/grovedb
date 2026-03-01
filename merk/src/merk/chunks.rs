@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use ed::Encode;
+use grovedb_costs::CostsExt;
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
@@ -143,16 +144,22 @@ where
 
         let chunk_height = chunk_height(self.height, index).unwrap();
 
-        let chunk = self.merk.walk(|maybe_walker| match maybe_walker {
-            Some(mut walker) => walker.traverse_and_build_chunk(
-                &traversal_instructions,
-                chunk_height,
-                grove_version,
-            ),
-            None => Err(Error::ChunkingError(ChunkError::EmptyTree(
-                "cannot create chunk producer for empty Merk",
-            ))),
-        })?;
+        let tree_type = self.merk.tree_type;
+        let chunk = self
+            .merk
+            .walk(|maybe_walker| match maybe_walker {
+                Some(mut walker) => walker.traverse_and_build_chunk(
+                    &traversal_instructions,
+                    chunk_height,
+                    tree_type,
+                    grove_version,
+                ),
+                None => Err(Error::ChunkingError(ChunkError::EmptyTree(
+                    "cannot create chunk producer for empty Merk",
+                )))
+                .wrap_with_cost(Default::default()),
+            })
+            .unwrap()?;
 
         // now we need to return the next index
         // how do we know if we should return some or none
@@ -302,9 +309,7 @@ where
                 let new_total = replacement_chunk.encoding_length().map_err(|_e| {
                     Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
                 })? + chunk_byte_length
-                    - chunk[iteration_index].encoding_length().map_err(|_e| {
-                        Error::ChunkingError(ChunkError::InternalError("can't get encoding length"))
-                    })?;
+                    - chunk[iteration_index].encoding_length();
 
                 // verify that this chunk doesn't make use exceed the limit
                 if let Some(limit) = limit {
@@ -459,8 +464,12 @@ mod test {
                 Node::KV(..) => counts.kv += 1,
                 Node::KVValueHash(..) => counts.kv_value_hash += 1,
                 Node::KVDigest(..) => counts.kv_digest += 1,
+                Node::KVDigestCount(..) => counts.kv_digest += 1,
                 Node::KVRefValueHash(..) => counts.kv_ref_value_hash += 1,
                 Node::KVValueHashFeatureType(..) => counts.kv_value_hash_feature_type += 1,
+                Node::KVCount(..) => counts.kv += 1,
+                Node::KVHashCount(..) => counts.kv_hash += 1,
+                Node::KVRefValueHashCount(..) => counts.kv_ref_value_hash += 1,
             };
         });
 

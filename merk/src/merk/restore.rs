@@ -105,7 +105,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
         if root_traversal_instruction.is_empty() {
-            let _ = self.merk.set_base_root_key(Some(chunk_tree.key().to_vec()));
+            let _ = self
+                .merk
+                .set_base_root_key(chunk_tree.key().map(|k| k.to_vec()));
         } else {
             // every non root chunk has some associated parent with an placeholder link
             // here we update the placeholder link to represent the true data
@@ -315,7 +317,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .last()
             .expect("rewrite is only called when traversal_instruction is not empty");
 
-        let updated_key = chunk_tree.key();
+        let updated_key = chunk_tree
+            .key()
+            .expect("chunk tree must have a key during restore");
         let updated_sum = chunk_tree.aggregate_data();
 
         if let Some(Link::Reference {
@@ -415,6 +419,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     /// Rebuild restoration state from partial storage state
+    #[allow(dead_code)]
     fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
         // TODO: think about the return type some more
         let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
@@ -512,8 +517,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         if let Some(link) = left_link {
-            let left_tree = link.tree();
-            if left_tree.is_none() {
+            if let Some(left_tree) = link.tree() {
+                self.verify_tree_height(left_tree, left_height, grove_version)?;
+            } else {
                 let left_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
@@ -523,14 +529,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height, grove_version)?;
-            } else {
-                self.verify_tree_height(left_tree.unwrap(), left_height, grove_version)?;
             }
         }
 
         if let Some(link) = right_link {
-            let right_tree = link.tree();
-            if right_tree.is_none() {
+            if let Some(right_tree) = link.tree() {
+                self.verify_tree_height(right_tree, right_height, grove_version)?;
+            } else {
                 let right_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
@@ -540,8 +545,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height, grove_version)?;
-            } else {
-                self.verify_tree_height(right_tree.unwrap(), right_height, grove_version)?;
             }
         }
 

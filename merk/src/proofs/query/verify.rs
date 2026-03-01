@@ -1,26 +1,18 @@
-#[cfg(feature = "minimal")]
-use std::collections::LinkedList;
 use std::fmt;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "minimal")]
-use crate::proofs::{
-    query::{Map, MapBuilder},
-    Op,
-};
+use crate::proofs::query::{Map, MapBuilder};
 use crate::{
     error::Error,
-    proofs::{hex_to_ascii, query::ProofStatus, tree::execute, Decoder, Node, Query},
+    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
     tree::value_hash,
     CryptoHash as MerkHash, CryptoHash,
 };
 
-#[cfg(feature = "minimal")]
-pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), ProofStatus);
-
-#[cfg(feature = "minimal")]
 /// Verify proof against expected hash
+#[cfg(feature = "minimal")]
 #[deprecated]
 #[allow(unused)]
 pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
@@ -64,8 +56,31 @@ impl Default for VerifyOptions {
     }
 }
 
-impl Query {
-    #[cfg(any(feature = "minimal", feature = "verify"))]
+/// Extension trait adding proof verification methods to `Query`.
+///
+/// These methods depend on merk-internal types (Node, Op, Decoder, etc.)
+/// and therefore cannot live in the `grovedb-query` crate.
+pub trait QueryProofVerify {
+    /// Verifies the encoded proof with the given query, returning the root
+    /// hash and verification result.
+    fn execute_proof(
+        &self,
+        bytes: &[u8],
+        limit: Option<u16>,
+        left_to_right: bool,
+    ) -> CostResult<(MerkHash, ProofVerificationResult), Error>;
+
+    /// Verifies the encoded proof with the given query and expected hash.
+    fn verify_proof(
+        &self,
+        bytes: &[u8],
+        limit: Option<u16>,
+        left_to_right: bool,
+        expected_hash: MerkHash,
+    ) -> CostResult<ProofVerificationResult, Error>;
+}
+
+impl QueryProofVerify for Query {
     /// Verifies the encoded proof with the given query
     ///
     /// Every key in `keys` is checked to either have a key/value pair in the
@@ -77,7 +92,7 @@ impl Query {
     /// the value of `B`. Keys proven to be absent in the tree will have an
     /// entry of `None`, keys that have a proven value will have an entry of
     /// `Some(value)`.
-    pub fn execute_proof(
+    fn execute_proof(
         &self,
         bytes: &[u8],
         limit: Option<u16>,
@@ -160,8 +175,12 @@ impl Query {
                                 // is lower than the bound
                                 Some(Node::KV(..)) => {}
                                 Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVDigestCount(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
+                                Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVRefValueHashCount(..)) => {}
+                                Some(Node::KVCount(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
@@ -188,8 +207,12 @@ impl Query {
                                 // is greater than the bound
                                 Some(Node::KV(..)) => {}
                                 Some(Node::KVDigest(..)) => {}
+                                Some(Node::KVDigestCount(..)) => {}
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
+                                Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVRefValueHashCount(..)) => {}
+                                Some(Node::KVCount(..)) => {}
 
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
@@ -293,6 +316,11 @@ impl Query {
                     {
                         println!("Processing KVValueHash node");
                     }
+                    // Note: We cannot verify hash(value) == value_hash here because for
+                    // subtrees, value_hash is a combined hash of hash(value) and the
+                    // child subtree's root hash. The security comes from the merkle root
+                    // verification - if the value_hash is wrong, the computed root won't
+                    // match the expected root.
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::KVDigest(key, value_hash) => {
@@ -302,6 +330,16 @@ impl Query {
                     }
                     execute_node(key, None, *value_hash)?;
                 }
+                Node::KVDigestCount(key, value_hash, _count) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigestCount node");
+                    }
+                    // Similar to KVDigest but in a ProvableCountTree context.
+                    // The count is used for hash verification (handled in tree.rs),
+                    // but we don't return a value since this is for absence proofs.
+                    execute_node(key, None, *value_hash)?;
+                }
                 Node::KVRefValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
@@ -309,7 +347,33 @@ impl Query {
                     }
                     execute_node(key, Some(value), *value_hash)?;
                 }
-                Node::Hash(_) | Node::KVHash(_) | Node::KVValueHashFeatureType(..) => {
+                Node::KVCount(key, value, _count) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVCount node");
+                    }
+                    execute_node(key, Some(value), value_hash(value).unwrap())?;
+                }
+                Node::KVValueHashFeatureType(key, value, value_hash, _feature_type) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVValueHashFeatureType node");
+                    }
+                    // Note: Same as KVValueHash - we cannot verify hash(value) == value_hash
+                    // because value_hash may be a combined hash for subtrees. Security comes
+                    // from merkle root verification.
+                    execute_node(key, Some(value), *value_hash)?;
+                }
+                Node::KVRefValueHashCount(key, value, value_hash, _count) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHashCount node");
+                    }
+                    // Similar to KVRefValueHash but in a ProvableCountTree context.
+                    // Security comes from merkle root verification with count.
+                    execute_node(key, Some(value), *value_hash)?;
+                }
+                Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
                             "Proof is missing data for query range. Encountered unexpected node \
@@ -336,8 +400,12 @@ impl Query {
                     // last node in tree was less than queried item
                     Some(Node::KV(..)) => {}
                     Some(Node::KVDigest(..)) => {}
+                    Some(Node::KVDigestCount(..)) => {}
                     Some(Node::KVRefValueHash(..)) => {}
                     Some(Node::KVValueHash(..)) => {}
+                    Some(Node::KVCount(..)) => {}
+                    Some(Node::KVValueHashFeatureType(..)) => {}
+                    Some(Node::KVRefValueHashCount(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items
@@ -361,9 +429,8 @@ impl Query {
         .wrap_with_cost(cost)
     }
 
-    #[cfg(any(feature = "minimal", feature = "verify"))]
     /// Verifies the encoded proof with the given query and expected hash
-    pub fn verify_proof(
+    fn verify_proof(
         &self,
         bytes: &[u8],
         limit: Option<u16>,
@@ -385,8 +452,7 @@ impl Query {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 /// Proved key-value
 pub struct ProvedKeyOptionalValue {
     /// Key
@@ -422,7 +488,6 @@ impl TryFrom<ProvedKeyOptionalValue> for ProvedKeyValue {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProvedKeyOptionalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let key_string = if self.key.len() == 1 && self.key[0] < b"0"[0] {
@@ -444,8 +509,7 @@ impl fmt::Display for ProvedKeyOptionalValue {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 /// Proved key-value
 pub struct ProvedKeyValue {
     /// Key
@@ -456,7 +520,6 @@ pub struct ProvedKeyValue {
     pub proof: CryptoHash,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProvedKeyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -469,7 +532,6 @@ impl fmt::Display for ProvedKeyValue {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(PartialEq, Eq, Debug)]
 /// Proof verification result
 pub struct ProofVerificationResult {
@@ -479,7 +541,6 @@ pub struct ProofVerificationResult {
     pub limit: Option<u16>,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for ProofVerificationResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "ProofVerificationResult {{")?;

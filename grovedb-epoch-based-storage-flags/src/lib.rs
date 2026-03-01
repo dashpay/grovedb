@@ -676,7 +676,7 @@ impl StorageFlags {
     /// Create Storage flags from optional element flags ref
     pub fn map_cow_some_element_flags_ref(
         data: &Option<ElementFlags>,
-    ) -> Result<Option<Cow<Self>>, StorageFlagsError> {
+    ) -> Result<Option<Cow<'_, Self>>, StorageFlagsError> {
         match data {
             None => Ok(None),
             Some(data) => Self::from_slice(data.as_slice()).map(|option| option.map(Cow::Owned)),
@@ -872,7 +872,7 @@ mod storage_flags_tests {
             let right_flag = StorageFlags::new_single_epoch(common_base_index, None);
 
             let added_bytes: BytesAddedInEpoch = 10;
-            let combined_flag = left_flag.clone().combine_added_bytes(
+            let _combined_flag = left_flag.clone().combine_added_bytes(
                 right_flag.clone(),
                 added_bytes,
                 MergingOwnersStrategy::UseOurs,
@@ -902,7 +902,7 @@ mod storage_flags_tests {
             let right_flag = StorageFlags::new_single_epoch(right_base_index, None);
 
             let added_bytes: BytesAddedInEpoch = 10;
-            let combined_flag = left_flag.clone().combine_added_bytes(
+            let _combined_flag = left_flag.clone().combine_added_bytes(
                 right_flag.clone(),
                 added_bytes,
                 MergingOwnersStrategy::UseOurs,
@@ -920,7 +920,7 @@ mod storage_flags_tests {
             let right_flag = StorageFlags::new_single_epoch(right_base_index, None);
 
             let added_bytes: BytesAddedInEpoch = 10;
-            let combined_flag = left_flag.clone().combine_added_bytes(
+            let _combined_flag = left_flag.clone().combine_added_bytes(
                 right_flag.clone(),
                 added_bytes,
                 MergingOwnersStrategy::UseOurs,
@@ -940,7 +940,7 @@ mod storage_flags_tests {
             );
 
             let added_bytes: BytesAddedInEpoch = 10;
-            let combined_flag = left_flag.clone().combine_added_bytes(
+            let _combined_flag = left_flag.clone().combine_added_bytes(
                 right_flag.clone(),
                 added_bytes,
                 MergingOwnersStrategy::UseOurs,
@@ -961,7 +961,7 @@ mod storage_flags_tests {
             );
 
             let added_bytes: BytesAddedInEpoch = 10;
-            let combined_flag = left_flag.clone().combine_added_bytes(
+            let _combined_flag = left_flag.clone().combine_added_bytes(
                 right_flag.clone(),
                 added_bytes,
                 MergingOwnersStrategy::UseOurs,
