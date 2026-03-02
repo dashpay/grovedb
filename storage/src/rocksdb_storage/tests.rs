@@ -1246,7 +1246,7 @@ mod storage_management {
     }
 
     #[test]
-    fn test_checkpoint_open_read_only_and_writes_fail() {
+    fn test_checkpoint_is_independent_snapshot() {
         let db_dir = TempDir::new().expect("cannot create db directory");
         let checkpoint_parent = TempDir::new().expect("cannot create checkpoint directory");
         let checkpoint_dir = checkpoint_parent.path().join("checkpoint");
@@ -1270,9 +1270,23 @@ mod storage_management {
             .create_checkpoint(&checkpoint_dir)
             .expect("checkpoint should be created");
 
-        let checkpoint_storage =
-            RocksDbStorage::checkpoint_rocksdb_with_path(&checkpoint_dir)
-                .expect("checkpoint should open read-only");
+        // Write more data to the original after the checkpoint
+        let tx2 = storage.start_transaction();
+        let context2 = storage
+            .get_immediate_storage_context([b"checkpoint"].as_ref().into(), &tx2)
+            .unwrap();
+        context2
+            .put(b"k2", b"v2", None, None)
+            .unwrap()
+            .expect("put should succeed");
+        storage
+            .commit_transaction(tx2)
+            .unwrap()
+            .expect("tx commit should succeed");
+
+        // Open the checkpoint and verify it has only the pre-checkpoint data
+        let checkpoint_storage = RocksDbStorage::checkpoint_rocksdb_with_path(&checkpoint_dir)
+            .expect("checkpoint should open");
         let checkpoint_tx = checkpoint_storage.start_transaction();
         let checkpoint_context = checkpoint_storage
             .get_immediate_storage_context([b"checkpoint"].as_ref().into(), &checkpoint_tx)
@@ -1283,12 +1297,17 @@ mod storage_management {
                 .get(b"k1")
                 .unwrap()
                 .expect("get should succeed"),
-            Some(b"v1".to_vec())
+            Some(b"v1".to_vec()),
+            "checkpoint should contain data written before checkpoint"
         );
-        assert!(checkpoint_context
-            .put(b"k2", b"v2", None, None)
-            .unwrap()
-            .is_err());
+        assert!(
+            checkpoint_context
+                .get(b"k2")
+                .unwrap()
+                .expect("get should succeed")
+                .is_none(),
+            "checkpoint should NOT contain data written after checkpoint"
+        );
     }
 
     #[test]
