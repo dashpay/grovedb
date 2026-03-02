@@ -148,7 +148,7 @@ impl AppState {
     async fn get_checkpointed_grovedb(
         &self,
         id: SessionId,
-    ) -> Result<RwLockReadGuard<GroveDb>, AppError> {
+    ) -> Result<RwLockReadGuard<'_, GroveDb>, AppError> {
         self.verify_running()?;
         let mut lock = self.sessions.write().await;
         if let Some(session) = lock.get_mut(&id) {
