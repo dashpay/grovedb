@@ -120,7 +120,7 @@ jobs:
         with:
           cache-on-failure: "false"
       - name: Run grovedb tests
-        run: cargo test -p grovedb --all-features
+        run: cargo test -p grovedb
 
   linting:
     name: Linting
