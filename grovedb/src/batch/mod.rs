@@ -3991,6 +3991,7 @@ mod tests {
         );
     }
 
+    /// Tests reference element handling in batch operations, including missing references, in-batch resolution, proof generation, and reference hop limits.
     #[test]
     fn test_references() {
         let grove_version = GroveVersion::latest();

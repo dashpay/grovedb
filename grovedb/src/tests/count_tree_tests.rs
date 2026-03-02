@@ -18,6 +18,7 @@ mod tests {
         Element, GroveDb, PathQuery,
     };
 
+    /// Tests that a count tree behaves like a regular tree in GroveDB.
     #[test]
     fn test_count_tree_behaves_like_regular_tree() {
         let grove_version = GroveVersion::latest();

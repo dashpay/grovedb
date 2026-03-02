@@ -235,6 +235,24 @@ fn generate_random_path(prefix: &str, suffix: &str, len: usize) -> String {
     format!("{}{}{}", prefix, random_string, suffix)
 }
 
+/// Executes a query on the specified path and key, prints the results, and verifies the query proof against the database root hash.
+///
+/// This function constructs a query for a single key at the given path, retrieves and prints the matching elements, generates a cryptographic proof for the query, and verifies the proof against the current root hash of the database. The verification result is printed to the terminal.
+///
+/// # Parameters
+/// - `path`: The path within the database to query, as a slice of byte slices.
+/// - `key`: The key to query for at the specified path.
+/// - `grove_version`: The GroveDb version to use for the query and proof verification.
+///
+/// # Examples
+///
+/// ```ignore
+/// let db = GroveDb::open("some_path").unwrap();
+/// let path = &[b"root", b"subtree"];
+/// let key = b"my_key".to_vec();
+/// let grove_version = GroveVersion::default();
+/// query_db(&db, path, key, &grove_version);
+/// ```
 fn query_db(db: &GroveDb, path: &[&[u8]], key: Vec<u8>, grove_version: &GroveVersion) {
     let path_vec: Vec<Vec<u8>> = path.iter()
         .map(|&slice| slice.to_vec())
@@ -296,4 +314,3 @@ fn sync_db_demo(
 
     Ok(())
 }
-
