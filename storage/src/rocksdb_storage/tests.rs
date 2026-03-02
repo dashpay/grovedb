@@ -1248,7 +1248,8 @@ mod storage_management {
     #[test]
     fn test_checkpoint_open_read_only_and_writes_fail() {
         let db_dir = TempDir::new().expect("cannot create db directory");
-        let checkpoint_dir = TempDir::new().expect("cannot create checkpoint directory");
+        let checkpoint_parent = TempDir::new().expect("cannot create checkpoint directory");
+        let checkpoint_dir = checkpoint_parent.path().join("checkpoint");
 
         let storage = RocksDbStorage::default_rocksdb_with_path(db_dir.path())
             .expect("cannot create storage");
@@ -1266,11 +1267,11 @@ mod storage_management {
             .expect("tx commit should succeed");
 
         storage
-            .create_checkpoint(checkpoint_dir.path())
+            .create_checkpoint(&checkpoint_dir)
             .expect("checkpoint should be created");
 
         let checkpoint_storage =
-            RocksDbStorage::checkpoint_rocksdb_with_path(checkpoint_dir.path())
+            RocksDbStorage::checkpoint_rocksdb_with_path(&checkpoint_dir)
                 .expect("checkpoint should open read-only");
         let checkpoint_tx = checkpoint_storage.start_transaction();
         let checkpoint_context = checkpoint_storage
