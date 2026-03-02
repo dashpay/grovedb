@@ -544,7 +544,7 @@ merupakan payload terenkripsi.
 
 ### Rincian Field Demi Field
 
-**cmx (32 byte)** — Extracted note commitment, elemen base field Pallas.
+**cmx (32 byte)** — Extracted note commitment, elemen medan dasar (base field) Pallas.
 Ini adalah nilai leaf yang ditambahkan ke frontier Sinsemilla. Ia berkomitmen pada
 semua field note (penerima, nilai, keacakan) tanpa mengungkapkannya.
 cmx adalah yang membuat note "dapat ditemukan" di commitment tree.

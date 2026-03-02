@@ -675,7 +675,7 @@ registro almacenado:
    This note can later be spent by proving knowledge of it in ZK
 ```
 
-El paso 5 es la razon por la que `rho` debe almacenarse junto al texto cifrado — sin el,
+El paso 5 es la razon por la que `rho` debe almacenarse junto al texto cifrado — sin él,
 el cliente ligero no puede verificar el enlace de la clave efimera durante el descifrado
 de prueba.
 

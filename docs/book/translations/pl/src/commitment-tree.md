@@ -401,7 +401,7 @@ dowodow autoryzacji wydania.
 
 ### commitment_tree_get_value
 
-Pobiera przechowywana wartosc (cmx || rho || ladunek) po jej globalnej pozycji:
+Pobiera przechowywana wartosc (cmx || rho || ladunek) wedlug globalnej pozycji:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
