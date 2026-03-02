@@ -771,6 +771,7 @@ mod tests {
         GroveDb::open(tmp_dir).expect("empty tree is ok");
     }
 
+    /// Tests insertion, retrieval, and proof generation for elements with and without flags in GroveDB.
     #[test]
     fn test_element_with_flags() {
         let grove_version = GroveVersion::latest();
@@ -1426,6 +1427,7 @@ mod tests {
         .expect("should exist");
     }
 
+    /// Tests that generating and verifying a proof for a query with an invalid root key returns an empty result set and the correct root hash.
     #[test]
     fn test_proof_for_invalid_path_root_key() {
         let grove_version = GroveVersion::latest();
@@ -1446,6 +1448,7 @@ mod tests {
         assert_eq!(result_set.len(), 0);
     }
 
+    /// Verifies that proofs for queries with invalid paths return an empty result set.
     #[test]
     fn test_proof_for_invalid_path() {
         let grove_version = GroveVersion::latest();
@@ -1532,6 +1535,7 @@ mod tests {
         assert_eq!(result_set.len(), 0);
     }
 
+    /// Tests that generating and verifying a proof for a query on an empty subtree returns an empty result set.
     #[test]
     fn test_proof_for_non_existent_data() {
         let grove_version = GroveVersion::latest();
@@ -1558,6 +1562,7 @@ mod tests {
         assert_eq!(result_set.len(), 0);
     }
 
+    /// Tests proof generation and verification for a path query that includes references without subqueries.
     #[test]
     fn test_path_query_proofs_without_subquery_with_reference() {
         let grove_version = GroveVersion::latest();
@@ -1745,6 +1750,7 @@ mod tests {
         );
     }
 
+    /// Tests proof generation and verification for path queries without subqueries in GroveDB.
     #[test]
     fn test_path_query_proofs_without_subquery() {
         let grove_version = GroveVersion::latest();
@@ -1945,6 +1951,7 @@ mod tests {
         );
     }
 
+    /// Tests proof generation and verification for path queries with default subqueries in GroveDB.
     #[test]
     fn test_path_query_proofs_with_default_subquery() {
         let grove_version = GroveVersion::latest();
@@ -2118,6 +2125,7 @@ mod tests {
         compare_result_tuples(result_set, expected_result_set);
     }
 
+    /// Tests proof generation and verification for path queries using subquery paths in GroveDB.
     #[test]
     fn test_path_query_proofs_with_subquery_path() {
         let grove_version = GroveVersion::latest();
@@ -2259,6 +2267,7 @@ mod tests {
         assert_eq!(result_set.len(), 0);
     }
 
+    /// Tests proof generation and verification for a path query with a key and a subquery key.
     #[test]
     fn test_path_query_proofs_with_key_and_subquery() {
         let grove_version = GroveVersion::latest();
@@ -2296,6 +2305,7 @@ mod tests {
         compare_result_tuples(result_set, expected_result_set);
     }
 
+    /// Tests proof generation and verification for path queries with conditional and default subqueries.
     #[test]
     fn test_path_query_proofs_with_conditional_subquery() {
         let grove_version = GroveVersion::latest();
@@ -2408,6 +2418,7 @@ mod tests {
         compare_result_tuples(result_set, expected_result_set);
     }
 
+    /// Tests proof generation and verification for a sized query with conditional and default subqueries.
     #[test]
     fn test_path_query_proofs_with_sized_query() {
         let grove_version = GroveVersion::latest();
@@ -2460,6 +2471,7 @@ mod tests {
         compare_result_tuples(result_set, expected_result_set);
     }
 
+    /// Tests proof generation and verification for a path query with a range subquery and a result limit.
     #[test]
     fn test_path_query_proof_with_range_subquery_and_limit() {
         let grove_version = GroveVersion::latest();
@@ -2524,6 +2536,7 @@ mod tests {
         }
     }
 
+    /// Tests proof generation and verification for a path query with a range subquery and a result limit on a tree containing sum trees.
     #[test]
     fn test_path_query_proof_with_range_subquery_and_limit_with_sum_trees() {
         let grove_version = GroveVersion::latest();
@@ -2616,6 +2629,7 @@ mod tests {
         }
     }
 
+    /// Tests proof generation and verification for path queries with direction flags and subqueries.
     #[test]
     fn test_path_query_proofs_with_direction() {
         let grove_version = GroveVersion::latest();
@@ -3946,6 +3960,7 @@ mod tests {
         ));
     }
 
+    /// Tests detection of corrupted references in GroveDB by verifying that proof verification and database integrity checks fail when a referenced value is modified.
     #[test]
     fn test_grovedb_verify_corrupted_reference() {
         // This test is dedicated to a case when references are out of sync, but

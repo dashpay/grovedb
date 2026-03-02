@@ -156,7 +156,19 @@ where {
         Ok(result).wrap_with_cost(cost)
     }
 
-    /// Prove a path query as either verbose or non-verbose
+    /// Generates a cryptographic proof for a given path query, optionally using provided prove options and transaction context.
+    ///
+    /// Returns a serialized proof as a vector of bytes, which can be used to verify the query result externally. The proof can be generated in verbose or non-verbose mode depending on the prove options.
+    ///
+    /// # Returns
+    /// A cost-tracked result containing the serialized proof bytes or an error if the operation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let proof = grovedb.get_proved_path_query(&path_query, Some(prove_options), transaction, &grove_version)?;
+    /// assert!(!proof.value.is_empty());
+    /// ```
     pub fn get_proved_path_query(
         &self,
         path_query: &PathQuery,
@@ -175,6 +187,21 @@ where {
         self.prove_query(path_query, prove_options, transaction, grove_version)
     }
 
+    /// Resolves an element by following references to their target item, sum, or count elements.
+    ///
+    /// If the provided element is a reference with an absolute path, this method follows the reference and returns the referenced element if it is an item, sum item, sum tree, big sum tree, count tree, or count sum tree. If the element is already one of these types, it is returned as-is. Returns an error if the reference is not absolute, if it does not resolve to a valid item, or if the element is a tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is a tree, if a reference is not absolute, or if a reference does not resolve to a valid item.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let element = Element::Reference(ReferencePathType::AbsolutePathReference(vec![b"root".to_vec()]), ..);
+    /// let resolved = grovedb.follow_element(element, true, &mut cost, None, &grove_version)?;
+    /// assert!(resolved.is_any_item());
+    /// ```
     fn follow_element(
         &self,
         element: Element,

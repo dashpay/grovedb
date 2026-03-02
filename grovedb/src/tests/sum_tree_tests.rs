@@ -20,6 +20,7 @@ mod tests {
         Element, Error, GroveDb, PathQuery,
     };
 
+    /// Tests that a sum tree behaves like a regular tree for insertion, retrieval, and proof generation.
     #[test]
     fn test_sum_tree_behaves_like_regular_tree() {
         let grove_version = GroveVersion::latest();
@@ -121,6 +122,7 @@ mod tests {
         );
     }
 
+    /// Tests that sum items in a sum tree behave like regular items, supporting insertion, retrieval, proof generation, and correct sum aggregation.
     #[test]
     fn test_sum_item_behaves_like_regular_item() {
         let grove_version = GroveVersion::latest();
