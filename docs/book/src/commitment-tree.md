@@ -506,23 +506,6 @@ The default `M = DashMemo` means existing code that doesn't care about memo
 size (like `verify_grovedb`, `commitment_tree_anchor`, `commitment_tree_count`)
 works without specifying `M`.
 
-**Stored entry format**: Each entry in the BulkAppendTree is
-`cmx (32 bytes) || rho (32 bytes) || ciphertext_payload`, where the payload
-layout is:
-
-```text
-epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
-```
-
-The `rho` (nullifier of the spent note) is stored as an unencrypted
-protocol-level field between `cmx` and the ciphertext. Nullifiers are already
-public by design, and storing `rho` alongside the commitment allows light
-clients to recover the nullifier association during trial decryption without
-additional lookups.
-
-For `DashMemo`: `32 + 104 + 80 = 216 bytes` payload, so each entry is
-`32 + 32 + 216 = 280 bytes` total.
-
 **Serialization helpers** (public free functions):
 
 | Function | Description |
@@ -535,6 +518,168 @@ For `DashMemo`: `32 + 104 + 80 = 216 bytes` payload, so each entry is
 `payload.len() == ciphertext_payload_size::<M>()` and returns
 `CommitmentTreeError::InvalidPayloadSize` on mismatch. The typed `append()`
 method serializes internally, so size is always correct by construction.
+
+### Stored Record Layout (280 bytes for DashMemo)
+
+Each entry in the BulkAppendTree stores the complete encrypted note record.
+The full layout, accounting for every byte:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The first two fields (`cmx` and `rho`) are **unencrypted protocol fields** —
+they are public by design. The remaining three fields (`epk_bytes`,
+`enc_ciphertext`, `out_ciphertext`) form the `TransmittedNoteCiphertext` and
+are the encrypted payload.
+
+### Field-by-Field Breakdown
+
+**cmx (32 bytes)** — The extracted note commitment, a Pallas base field
+element. This is the leaf value appended to the Sinsemilla frontier. It
+commits to all note fields (recipient, value, randomness) without revealing
+them. The cmx is what makes the note "findable" in the commitment tree.
+
+**rho (32 bytes)** — The nullifier of the note being spent in this action.
+Nullifiers are already public on the blockchain (they must be to prevent
+double-spending). Storing `rho` alongside the commitment allows light clients
+performing trial decryption to verify `esk = PRF(rseed, rho)` and confirm
+`epk' == epk` without a separate nullifier lookup. This field sits between
+`cmx` and the ciphertext as an unencrypted protocol-level association.
+
+**epk_bytes (32 bytes)** — The ephemeral public key, a serialized Pallas curve
+point. Derived deterministically from the note's `rseed` via:
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+where `g_d = DiversifyHash(d)` is the diversified base point for the
+recipient's diversifier. The `epk` enables the recipient to compute the shared
+secret for decryption: `shared_secret = [ivk] * epk`. It is transmitted in the
+clear because it reveals nothing about sender or recipient without knowing
+either `esk` or `ivk`.
+
+**enc_ciphertext (104 bytes for DashMemo)** — The encrypted note plaintext,
+produced by ChaCha20-Poly1305 AEAD encryption:
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+The symmetric key is derived via ECDH:
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`.
+
+When decrypted by the recipient (using `ivk`), the **note plaintext**
+(88 bytes for DashMemo) contains:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | version | Always `0x02` (Orchard, post-ZIP-212) |
+| 1 | 11 | diversifier (d) | Recipient's diversifier, derives the base point `g_d` |
+| 12 | 8 | value (v) | 64-bit little-endian note value in duffs |
+| 20 | 32 | rseed | Random seed for deterministic derivation of `rcm`, `psi`, `esk` |
+| 52 | 36 | memo | Application-layer memo data (DashMemo: 36 bytes) |
+| **Total** | **88** | | |
+
+The first 52 bytes (version + diversifier + value + rseed) are the **compact
+note** — light clients can trial-decrypt just this portion using the ChaCha20
+stream cipher (without verifying the MAC) to check whether the note belongs to
+them. If it does, they decrypt the full 88 bytes and verify the MAC.
+
+**out_ciphertext (80 bytes)** — The encrypted outgoing data, allowing the
+**sender** to recover the note after the fact. Encrypted with the Outgoing
+Cipher Key:
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+When decrypted by the sender (using `ovk`), the **outgoing plaintext**
+(64 bytes) contains:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | Diversified transmission key (recipient's public key) |
+| 32 | 32 | esk | Ephemeral secret key (Pallas scalar) |
+| **Total** | **64** | | |
+
+With `pk_d` and `esk`, the sender can reconstruct the shared secret, decrypt
+`enc_ciphertext`, and recover the full note. If the sender sets `ovk = null`,
+the outgoing plaintext is filled with random bytes before encryption, making
+recovery impossible even for the sender (non-recoverable output).
+
+### Encryption Scheme: ChaCha20-Poly1305
+
+Both `enc_ciphertext` and `out_ciphertext` use ChaCha20-Poly1305 AEAD (RFC 8439):
+
+| Parameter | Value |
+|-----------|-------|
+| Key size | 256 bits (32 bytes) |
+| Nonce | `[0u8; 12]` (safe because each key is used exactly once) |
+| AAD | Empty |
+| MAC tag | 16 bytes (Poly1305) |
+
+The zero nonce is safe because the symmetric key is derived from a fresh
+Diffie-Hellman exchange per note — each key encrypts exactly one message.
+
+### DashMemo vs ZcashMemo Size Comparison
+
+| Component | DashMemo | ZcashMemo | Notes |
+|-----------|----------|-----------|-------|
+| Memo field | 36 bytes | 512 bytes | Application data |
+| Note plaintext | 88 bytes | 564 bytes | 52 fixed + memo |
+| enc_ciphertext | 104 bytes | 580 bytes | plaintext + 16 MAC |
+| Ciphertext payload (epk+enc+out) | 216 bytes | 692 bytes | Transmitted per note |
+| Full stored record (cmx+rho+payload) | **280 bytes** | **756 bytes** | BulkAppendTree entry |
+
+DashMemo's smaller memo (36 vs 512 bytes) reduces each stored record by
+476 bytes — significant when storing millions of notes.
+
+### Trial Decryption Flow (Light Client)
+
+A light client scanning for its own notes performs this sequence for each
+stored record:
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+Step 5 is why `rho` must be stored alongside the ciphertext — without it,
+the light client cannot verify the ephemeral key binding during trial
+decryption.
 
 ## Client-Side Witness Generation
 

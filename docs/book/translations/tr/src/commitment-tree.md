@@ -34,7 +34,7 @@ CommitmentTree, **tum verileri ayni alt agac yolundaki veri ad alaninda** depola
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32 bytes) || ciphertext (216 bytes)     │  │
+│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +211,7 @@ CommitmentTree tum verilerini alt agac yolundaki tek bir **veri ad alaninda** de
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || ciphertext)     │
+│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -250,10 +250,10 @@ CommitmentTree dort islem saglar. Ekleme islemi, sifreli metin (ciphertext) yuk 
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +280,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||ciphertext to BulkAppendTree
+        Append cmx||rho||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -299,10 +299,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -333,7 +333,7 @@ Step 4: Return frontier.anchor() as orchard::tree::Anchor
 
 ### commitment_tree_get_value
 
-Global konumuna gore depolanmis bir degeri (cmx || payload) getirir:
+Global konumuna gore depolanmis bir degeri (cmx || rho || payload) getirir:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -365,6 +365,7 @@ CommitmentTree, `GroveOp::CommitmentTreeInsert` varyanti araciligiyla toplu ekle
 ```rust
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
+    rho: [u8; 32],      // nullifier of the spent note
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -373,10 +374,10 @@ Bu islemi olusturan iki yapici:
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
 ```
 
 Ayni agaci hedefleyen birden fazla ekleme tek bir toplu islemde desteklenir. `execute_ops_on_path` veri deposuna erisemedigi icin, tum CommitmentTree islemleri `apply_body`'den once on islenmelidir.
@@ -394,8 +395,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, payload):
-           - ct.append_raw(cmx, payload) — validates size, appends to both
+        d. For each (cmx, rho, payload):
+           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -424,14 +425,6 @@ pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
 
 Varsayilan `M = DashMemo`, memo boyutuyla ilgilenmeyen mevcut kodun (`verify_grovedb`, `commitment_tree_anchor`, `commitment_tree_count` gibi) `M` belirtmeden calismasi anlamina gelir.
 
-**Depolanan girdi formati**: BulkAppendTree'deki her girdi `cmx (32 bayt) || ciphertext_payload` seklindedir, burada yuk duzenlemesi su sekildedir:
-
-```text
-epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
-```
-
-`DashMemo` icin: `32 + 104 + 80 = 216 bayt` yuk, dolayisiyla her girdi toplam `32 + 216 = 248 bayt`tir.
-
 **Serilestirme yardimcilari** (genel serbest fonksiyonlar):
 
 | Fonksiyon | Aciklama |
@@ -441,6 +434,135 @@ epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
 | `deserialize_ciphertext::<M>(data)` | Baytlari `TransmittedNoteCiphertext<M>`'ye geri serilestirir |
 
 **Yuk dogrulamasi**: `append_raw()` metodu `payload.len() == ciphertext_payload_size::<M>()` degerini dogrular ve uyumsuzlukta `CommitmentTreeError::InvalidPayloadSize` dondurur. Tipli `append()` metodu dahili olarak seriestirir, dolayisiyla boyut her zaman yapim geregi dogrudur.
+
+### Depolanan Kayit Duzeni (DashMemo icin 280 bayt)
+
+BulkAppendTree'deki her girdi tam sifreli not kaydini depolar. Her baytin hesaba katildigi tam duzen:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Ilk iki alan (`cmx` ve `rho`) **sifrelenmemis protokol alanlaridir** -- tasarim geregi kamusaldir. Kalan uc alan (`epk_bytes`, `enc_ciphertext`, `out_ciphertext`) `TransmittedNoteCiphertext`'i olusturur ve sifreli yuktur.
+
+### Alan Alan Dokumu
+
+**cmx (32 bayt)** -- Cikarilmis not taahhut, bir Pallas temel alan elemani. Bu, Sinsemilla frontier'ine eklenen yaprak degeridir. Alici, deger, rastgelelik gibi tum not alanlarina bunlari ortaya cikarmadan taahhut eder. cmx, notu taahhut agacinda "bulunabilir" kilan seydir.
+
+**rho (32 bayt)** -- Bu aksiyonda harcanan notun mubtili (nullifier). Mubtiller zaten blok zincirinde kamusaldir (cift harcamayi onlemek icin olmak zorundadir). `rho`'yu taahhut ile birlikte depolamak, deneme sifre cozme yapan hafif istemcilerin `esk = PRF(rseed, rho)` dogrulamasini ve ayri bir mubtil aramasina gerek kalmadan `epk' == epk` onaylamasini saglar. Bu alan, `cmx` ile sifreli metin arasinda sifrelenmemis protokol duzeyi bir iliskilendirme olarak yer alir.
+
+**epk_bytes (32 bayt)** -- Gecici acik anahtar, serilesmis bir Pallas egrisi noktasi. Notun `rseed`'inden deterministik olarak turetilir:
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+Burada `g_d = DiversifyHash(d)`, alicinin diversifier'i icin cesitlendirilmis temel noktadir. `epk`, alicinin sifre cozme icin paylasilan sirri hesaplamasini saglar: `shared_secret = [ivk] * epk`. `esk` veya `ivk`'yi bilmeden gonderen veya alici hakkinda hicbir sey ortaya cikarmadigindan acik metin olarak iletilir.
+
+**enc_ciphertext (DashMemo icin 104 bayt)** -- ChaCha20-Poly1305 AEAD sifrelemesi ile uretilen sifreli not duz metni:
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+Simetrik anahtar ECDH ile turetilir:
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`.
+
+Alici tarafindan (`ivk` kullanilarak) sifre cozuldugunde, **not duz metni** (DashMemo icin 88 bayt) sunlari icerir:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | version | Always `0x02` (Orchard, post-ZIP-212) |
+| 1 | 11 | diversifier (d) | Recipient's diversifier, derives the base point `g_d` |
+| 12 | 8 | value (v) | 64-bit little-endian note value in duffs |
+| 20 | 32 | rseed | Random seed for deterministic derivation of `rcm`, `psi`, `esk` |
+| 52 | 36 | memo | Application-layer memo data (DashMemo: 36 bytes) |
+| **Total** | **88** | | |
+
+Ilk 52 bayt (version + diversifier + value + rseed) **kompakt nottur** -- hafif istemciler ChaCha20 akis sifresi kullanarak (MAC dogrulamasi yapmadan) yalnizca bu kismi deneme olarak sifre cozerek notun kendilerine ait olup olmadigini kontrol edebilir. Eger oylense, tam 88 bayti cozer ve MAC'i dogrularlar.
+
+**out_ciphertext (80 bayt)** -- **Gonderenin** notu sonradan kurtaracagini saglayan sifreli giden veriler. Giden Sifre Anahtari ile sifrelenir:
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+Gonderen tarafindan (`ovk` kullanilarak) sifre cozuldugunde, **giden duz metin** (64 bayt) sunlari icerir:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | Diversified transmission key (recipient's public key) |
+| 32 | 32 | esk | Ephemeral secret key (Pallas scalar) |
+| **Total** | **64** | | |
+
+`pk_d` ve `esk` ile gonderen paylasilan sirri yeniden olusturabilir, `enc_ciphertext`'i cozebilir ve tam notu kurtarabilir. Gonderen `ovk = null` ayarlarsa, giden duz metin sifreleme oncesi rastgele baytlarla doldurulur ve gonderen icin bile kurtarma imkansiz hale gelir (kurtarilamaz cikti).
+
+### Sifreleme Semasi: ChaCha20-Poly1305
+
+Hem `enc_ciphertext` hem de `out_ciphertext` ChaCha20-Poly1305 AEAD (RFC 8439) kullanir:
+
+| Parameter | Value |
+|-----------|-------|
+| Key size | 256 bits (32 bytes) |
+| Nonce | `[0u8; 12]` (safe because each key is used exactly once) |
+| AAD | Empty |
+| MAC tag | 16 bytes (Poly1305) |
+
+Sifir nonce guvenlidir cunku simetrik anahtar not basina yeni bir Diffie-Hellman degisiminden turetilir -- her anahtar tam olarak bir mesaji sifreler.
+
+### DashMemo ve ZcashMemo Boyut Karsilastirmasi
+
+| Component | DashMemo | ZcashMemo | Notes |
+|-----------|----------|-----------|-------|
+| Memo field | 36 bytes | 512 bytes | Application data |
+| Note plaintext | 88 bytes | 564 bytes | 52 fixed + memo |
+| enc_ciphertext | 104 bytes | 580 bytes | plaintext + 16 MAC |
+| Ciphertext payload (epk+enc+out) | 216 bytes | 692 bytes | Transmitted per note |
+| Full stored record (cmx+rho+payload) | **280 bytes** | **756 bytes** | BulkAppendTree entry |
+
+DashMemo'nun daha kucuk notu (36'ya karsi 512 bayt) her depolanan kaydi 476 bayt azaltir -- milyonlarca not depolarken onemli bir fark.
+
+### Deneme Sifre Cozme Akisi (Hafif Istemci)
+
+Kendi notlarini tarayan bir hafif istemci her depolanan kayit icin bu sirayi uygular:
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+5. adim, `rho`'nun sifreli metin ile birlikte depolanmasinin gerekcesidir -- onsuz, hafif istemci deneme sifre cozme sirasinda gecici anahtar baglamasini dogrulayamaz.
 
 ## Istemci Tarafi Tanik Olusturma (Client-Side Witness Generation)
 
@@ -615,7 +737,7 @@ Note commitment at position P
 
 **2. Oge erisim ispati (V1 yolu):**
 
-Bireysel ogeler (cmx || payload) konuma gore sorgulanabilir ve bagimsiz BulkAppendTree ile ayni mekanizma olan V1 ispatları (§9.6) kullanilarak ispatlanabilir. V1 ispati, talep edilen konum icin BulkAppendTree dogrulama yolunu, CommitmentTree elementi icin ust Merk ispatina zincirler.
+Bireysel ogeler (cmx || rho || payload) konuma gore sorgulanabilir ve bagimsiz BulkAppendTree ile ayni mekanizma olan V1 ispatları (§9.6) kullanilarak ispatlanabilir. V1 ispati, talep edilen konum icin BulkAppendTree dogrulama yolunu, CommitmentTree elementi icin ust Merk ispatina zincirler.
 
 ## Maliyet Takibi
 
