@@ -773,7 +773,6 @@ fn add_average_case_merk_propagate_v1(
     Ok(())
 }
 
-
 #[cfg(feature = "minimal")]
 /// Add average case cost for propagating a merk
 fn add_average_case_merk_propagate_v0(
