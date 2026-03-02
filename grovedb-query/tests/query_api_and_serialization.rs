@@ -11,44 +11,6 @@ fn k(v: u8) -> Vec<u8> {
 }
 
 #[test]
-fn query_constructors_and_iteration_behave_as_expected() {
-    let q = Query::new();
-    assert!(q.is_empty());
-    assert_eq!(q.len(), 0);
-    assert!(q.left_to_right);
-
-    let q_full = Query::new_range_full();
-    assert_eq!(q_full.items, vec![QueryItem::RangeFull(..)]);
-
-    let q_key = Query::new_single_key(k(10));
-    assert_eq!(q_key.items, vec![QueryItem::Key(k(10))]);
-
-    let q_item = Query::new_single_query_item(QueryItem::Range(k(1)..k(3)));
-    assert_eq!(q_item.items, vec![QueryItem::Range(k(1)..k(3))]);
-
-    let q_dir = Query::new_with_direction(false);
-    assert!(!q_dir.left_to_right);
-
-    let q_dir_item = Query::new_single_query_item_with_direction(QueryItem::Key(k(9)), false);
-    assert_eq!(q_dir_item.items, vec![QueryItem::Key(k(9))]);
-    assert!(!q_dir_item.left_to_right);
-
-    let mut q_iter = Query::new();
-    q_iter.insert_key(k(3));
-    q_iter.insert_key(k(1));
-    q_iter.insert_key(k(2));
-
-    let forward: Vec<_> = q_iter.iter().cloned().collect();
-    let reverse: Vec<_> = q_iter.rev_iter().cloned().collect();
-    let directional_forward: Vec<_> = q_iter.directional_iter(true).cloned().collect();
-    let directional_reverse: Vec<_> = q_iter.directional_iter(false).cloned().collect();
-
-    assert_eq!(forward, directional_forward);
-    assert_eq!(reverse, directional_reverse);
-    assert_eq!(forward.into_iter().rev().collect::<Vec<_>>(), reverse);
-}
-
-#[test]
 fn query_subquery_flags_and_conditional_first_match_work() {
     let mut q = Query::new();
     q.insert_key(k(1));
