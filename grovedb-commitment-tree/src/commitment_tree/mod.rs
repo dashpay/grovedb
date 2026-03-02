@@ -45,7 +45,7 @@ pub struct CommitmentAppendResult {
 // ── Ciphertext serialization helpers ─────────────────────────────────────
 
 /// Compute the expected ciphertext payload size (excluding the 32-byte cmx
-/// prefix) for a given `MemoSize`.
+/// and 32-byte rho prefix) for a given `MemoSize`.
 ///
 /// Layout: `epk_bytes (32) || enc_ciphertext (variable) || out_ciphertext (80)`
 ///
@@ -96,8 +96,8 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 ///
 /// - [`open`](CommitmentTree::open) loads the frontier from storage (or starts
 ///   empty) and reconstructs the `BulkAppendTree` from persisted state
-/// - [`append`](CommitmentTree::append) appends `cmx||ciphertext` to the bulk
-///   tree and `cmx` to the frontier
+/// - [`append`](CommitmentTree::append) appends `cmx||rho||ciphertext` to the
+///   bulk tree and `cmx` to the frontier
 /// - [`save`](CommitmentTree::save) persists the frontier back to storage
 ///
 /// # Authentication model
@@ -224,23 +224,30 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     pub fn append(
         &mut self,
         cmx: [u8; 32],
+        rho: [u8; 32],
         ciphertext: &TransmittedNoteCiphertext<M>,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let payload = serialize_ciphertext(ciphertext);
-        self.append_raw(cmx, &payload)
+        self.append_raw(cmx, rho, &payload)
     }
 
     /// Append a note commitment and raw payload bytes to the commitment tree.
     ///
     /// Validates that `payload.len() == ciphertext_payload_size::<M>()`.
     ///
-    /// 1. Appends `cmx || payload` to the `BulkAppendTree` (data storage)
+    /// 1. Appends `cmx || rho || payload` to the `BulkAppendTree` (data
+    ///    storage)
     /// 2. Appends `cmx` to the Sinsemilla frontier (in-memory)
+    ///
+    /// The `rho` (nullifier) is stored as an unencrypted protocol-level field
+    /// between `cmx` and the ciphertext payload. This allows light clients to
+    /// recover the nullifier association without additional lookups.
     ///
     /// Call [`save`](Self::save) afterwards to persist the updated frontier.
     pub fn append_raw(
         &mut self,
         cmx: [u8; 32],
+        rho: [u8; 32],
         payload: &[u8],
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let mut cost = OperationCost::default();
@@ -262,9 +269,10 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             .wrap_with_cost(cost);
         }
 
-        // 1. Build cmx||payload and append to BulkAppendTree
-        let mut item_value = Vec::with_capacity(32 + payload.len());
+        // 1. Build cmx||rho||payload and append to BulkAppendTree
+        let mut item_value = Vec::with_capacity(64 + payload.len());
         item_value.extend_from_slice(&cmx);
+        item_value.extend_from_slice(&rho);
         item_value.extend_from_slice(payload);
 
         let bulk_result = match self.bulk_tree.append(&item_value) {

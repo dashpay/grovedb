@@ -424,6 +424,14 @@ mod storage_tests {
         TransmittedNoteCiphertext::from_parts(epk_bytes, enc_ciphertext, out_ciphertext)
     }
 
+    /// Create a deterministic 32-byte rho (nullifier) from an index.
+    fn test_rho(index: u8) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[0] = index;
+        bytes[1] = 0xAA; // distinguishes rho from cmx/ciphertext
+        bytes
+    }
+
     /// Default chunk_power for tests (height=1 → capacity=1, epoch_size=2).
     const TEST_CHUNK_POWER: u8 = 1;
 
@@ -456,7 +464,7 @@ mod storage_tests {
         let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
         let mut ct = result.value.expect("open should succeed");
         for i in 0..20u64 {
-            ct.append(test_leaf(i), &test_ciphertext(i as u8))
+            ct.append(test_leaf(i), test_rho(i as u8), &test_ciphertext(i as u8))
                 .value
                 .expect("append should succeed");
         }
@@ -503,7 +511,7 @@ mod storage_tests {
         ct.save().value.expect("save empty should succeed");
 
         // Append and save again (overwrites)
-        ct.append(test_leaf(0), &test_ciphertext(0))
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
             .value
             .expect("append should succeed");
         let expected_root = ct.root_hash();
@@ -601,7 +609,7 @@ mod storage_tests {
             .expect("open should succeed");
 
         for i in 0..500u64 {
-            ct.append(test_leaf(i), &test_ciphertext(i as u8))
+            ct.append(test_leaf(i), test_rho(i as u8), &test_ciphertext(i as u8))
                 .value
                 .expect("append should succeed");
         }
@@ -635,7 +643,7 @@ mod storage_tests {
             .expect("open should succeed");
 
         let r0 = ct
-            .append(test_leaf(0), &test_ciphertext(0))
+            .append(test_leaf(0), test_rho(0), &test_ciphertext(0))
             .value
             .expect("first append");
         assert_eq!(r0.global_position, 0, "first append should be position 0");
@@ -646,7 +654,7 @@ mod storage_tests {
         );
 
         let r1 = ct
-            .append(test_leaf(1), &test_ciphertext(1))
+            .append(test_leaf(1), test_rho(1), &test_ciphertext(1))
             .value
             .expect("second append");
         assert_eq!(r1.global_position, 1, "second append should be position 1");
@@ -675,7 +683,7 @@ mod storage_tests {
             .expect("open should succeed");
 
         // Too small
-        let result = ct.append_raw(test_leaf(0), &[0u8; 10]);
+        let result = ct.append_raw(test_leaf(0), test_rho(0), &[0u8; 10]);
         let err = result.value.expect_err("should reject wrong size");
         let msg = format!("{}", err);
         assert!(
@@ -685,7 +693,7 @@ mod storage_tests {
         );
 
         // Too large
-        let result = ct.append_raw(test_leaf(0), &[0u8; 300]);
+        let result = ct.append_raw(test_leaf(0), test_rho(0), &[0u8; 300]);
         assert!(
             result.value.is_err(),
             "should reject payload that is too large"
@@ -693,7 +701,7 @@ mod storage_tests {
 
         // Exact correct size should succeed
         let expected_size = ciphertext_payload_size::<DashMemo>();
-        let result = ct.append_raw(test_leaf(0), &vec![0u8; expected_size]);
+        let result = ct.append_raw(test_leaf(0), test_rho(0), &vec![0u8; expected_size]);
         assert!(result.value.is_ok(), "correct size should succeed");
     }
 
@@ -766,7 +774,7 @@ mod storage_tests {
             .expect("open should succeed");
 
         // Append one item (goes into buffer since epoch_size = 2 for chunk_power=1)
-        ct.append(test_leaf(0), &test_ciphertext(0))
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
             .value
             .expect("append should succeed");
 
@@ -803,11 +811,11 @@ mod storage_tests {
             .expect("open should succeed");
 
         // chunk_power=1 → epoch_size=2. Append 2 items to trigger compaction.
-        ct.append(test_leaf(0), &test_ciphertext(0))
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
             .value
             .expect("append 0");
         let r = ct
-            .append(test_leaf(1), &test_ciphertext(1))
+            .append(test_leaf(1), test_rho(1), &test_ciphertext(1))
             .value
             .expect("append 1");
         assert!(r.compacted, "second append should trigger compaction");
@@ -845,7 +853,7 @@ mod storage_tests {
             .expect("open should succeed");
 
         let r = ct
-            .append(test_leaf(0), &test_ciphertext(0))
+            .append(test_leaf(0), test_rho(0), &test_ciphertext(0))
             .value
             .expect("append 0");
 
@@ -871,20 +879,20 @@ mod storage_tests {
         assert_eq!(ct.chunk_count(), 0, "no chunks initially");
 
         // Fill one epoch
-        ct.append(test_leaf(0), &test_ciphertext(0))
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
             .value
             .expect("append 0");
-        ct.append(test_leaf(1), &test_ciphertext(1))
+        ct.append(test_leaf(1), test_rho(1), &test_ciphertext(1))
             .value
             .expect("append 1");
 
         assert_eq!(ct.chunk_count(), 1, "one chunk after filling one epoch");
 
         // Fill another epoch
-        ct.append(test_leaf(2), &test_ciphertext(2))
+        ct.append(test_leaf(2), test_rho(2), &test_ciphertext(2))
             .value
             .expect("append 2");
-        ct.append(test_leaf(3), &test_ciphertext(3))
+        ct.append(test_leaf(3), test_rho(3), &test_ciphertext(3))
             .value
             .expect("append 3");
 
@@ -905,7 +913,7 @@ mod storage_tests {
             "empty tree should have empty anchor"
         );
 
-        ct.append(test_leaf(0), &test_ciphertext(0))
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
             .value
             .expect("append 0");
 
@@ -926,7 +934,7 @@ mod storage_tests {
 
         // All 0xFF is not a valid Pallas field element
         let payload = vec![0u8; ciphertext_payload_size::<DashMemo>()];
-        let result = ct.append_raw([0xFF; 32], &payload);
+        let result = ct.append_raw([0xFF; 32], test_rho(0), &payload);
         assert!(
             result.value.is_err(),
             "should reject invalid cmx field element"

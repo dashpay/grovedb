@@ -240,6 +240,14 @@ fn test_cmx(index: u8) -> [u8; 32] {
     bytes
 }
 
+/// Helper: create a deterministic 32-byte rho (nullifier) from an index.
+fn test_rho(index: u8) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    bytes[0] = index;
+    bytes[1] = 0xAA;
+    bytes
+}
+
 /// Helper: create a deterministic test ciphertext for DashMemo.
 fn test_ciphertext(index: u8) -> TransmittedNoteCiphertext<DashMemo> {
     let mut epk_bytes = [0u8; 32];
@@ -336,6 +344,7 @@ fn test_batch_all_four_non_merk_tree_types() {
         QualifiedGroveDbOp::commitment_tree_insert_op_typed(
             vec![b"parent".to_vec(), b"ct".to_vec()],
             test_cmx(1),
+            test_rho(1),
             &test_ciphertext(1),
         ),
         QualifiedGroveDbOp::mmr_tree_append_op(

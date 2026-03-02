@@ -5,8 +5,8 @@
 //! payloads with chunk compaction) and a lightweight Sinsemilla frontier (for
 //! Orchard anchor computation) in a single composite type.
 //!
-//! Items are stored as `cmx (32 bytes) || payload` in the BulkAppendTree data
-//! namespace. The Sinsemilla frontier is also stored in data storage (~1KB,
+//! Items are stored as `cmx (32 bytes) || rho (32 bytes) || payload` in the
+//! BulkAppendTree data namespace. The Sinsemilla frontier is also stored in data storage (~1KB,
 //! O(1) append) under a reserved key (`COMMITMENT_TREE_DATA_KEY`).
 //!
 //! Historical anchors for spend authorization are managed by Platform in a
@@ -64,6 +64,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         cmx: [u8; 32],
+        rho: [u8; 32],
         ciphertext: TransmittedNoteCiphertext<M>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -73,7 +74,7 @@ impl GroveDb {
         P: Into<SubtreePath<'b, B>>,
     {
         let payload = serialize_ciphertext(&ciphertext);
-        self.commitment_tree_insert_raw(path, key, cmx, payload, transaction, grove_version)
+        self.commitment_tree_insert_raw(path, key, cmx, rho, payload, transaction, grove_version)
     }
 
     /// Insert a note commitment into a CommitmentTree subtree using raw payload
@@ -86,6 +87,7 @@ impl GroveDb {
         path: P,
         key: &[u8],
         cmx: [u8; 32],
+        rho: [u8; 32],
         payload: Vec<u8>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
@@ -134,7 +136,8 @@ impl GroveDb {
 
         let append_result = cost_return_on_error!(
             &mut cost,
-            ct.append_raw(cmx, &payload).map(|r| r.map_err(map_ct_err))
+            ct.append_raw(cmx, rho, &payload)
+                .map(|r| r.map_err(map_ct_err))
         );
 
         // 4. Save frontier to storage
@@ -410,15 +413,15 @@ impl GroveDb {
         type TreePath = Vec<Vec<u8>>;
 
         // Group commitment tree insert ops by path (which includes tree key).
-        let mut ct_groups: HashMap<TreePath, Vec<([u8; 32], Vec<u8>)>> = HashMap::new();
+        let mut ct_groups: HashMap<TreePath, Vec<([u8; 32], [u8; 32], Vec<u8>)>> = HashMap::new();
 
         for op in ops.iter() {
-            if let GroveOp::CommitmentTreeInsert { cmx, payload } = &op.op {
+            if let GroveOp::CommitmentTreeInsert { cmx, rho, payload } = &op.op {
                 let tree_path = op.path.to_path();
                 ct_groups
                     .entry(tree_path)
                     .or_default()
-                    .push((*cmx, payload.clone()));
+                    .push((*cmx, *rho, payload.clone()));
             }
         }
 
@@ -483,10 +486,11 @@ impl GroveDb {
             );
 
             // Execute all inserts in order
-            for (cmx, payload) in inserts {
+            for (cmx, rho, payload) in inserts {
                 cost_return_on_error!(
                     &mut cost,
-                    ct.append_raw(*cmx, payload).map(|r| r.map_err(map_ct_err))
+                    ct.append_raw(*cmx, *rho, payload)
+                        .map(|r| r.map_err(map_ct_err))
                 );
             }
 
