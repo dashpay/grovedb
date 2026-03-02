@@ -245,7 +245,7 @@ mod tests {
 
     impl Write for FailWriteWriter {
         fn write(&mut self, _data: &[u8]) -> std::io::Result<usize> {
-            Err(Error::new(ErrorKind::Other, "write failure"))
+            Err(Error::other("write failure"))
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
@@ -263,7 +263,7 @@ mod tests {
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
-            Err(Error::new(ErrorKind::Other, "flush failure"))
+            Err(Error::other("flush failure"))
         }
     }
 
@@ -271,7 +271,7 @@ mod tests {
 
     impl Visualize for AlwaysErrVisualize {
         fn visualize<W: Write>(&self, _drawer: Drawer<W>) -> std::io::Result<Drawer<W>> {
-            Err(Error::new(ErrorKind::Other, "visualize failure"))
+            Err(Error::other("visualize failure"))
         }
     }
 
