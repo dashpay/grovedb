@@ -16,6 +16,7 @@
 - [BulkAppendTree](bulk-append-tree.md)
 - [CommitmentTree](commitment-tree.md)
 - [DenseAppendOnlyFixedSizeTree](dense-tree.md)
+- [การเข้ารหัสเชิงควอนตัม — การวิเคราะห์ภัยคุกคามหลังยุคควอนตัม](quantum-cryptography.md)
 
 ---
 

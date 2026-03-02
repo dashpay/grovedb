@@ -16,6 +16,7 @@
 - [BulkAppendTree](bulk-append-tree.md)
 - [CommitmentTree](commitment-tree.md)
 - [DenseAppendOnlyFixedSizeTree](dense-tree.md)
+- [Kvantova kryptografie — Analyza postkvantovych hrozeb](quantum-cryptography.md)
 
 ---
 
