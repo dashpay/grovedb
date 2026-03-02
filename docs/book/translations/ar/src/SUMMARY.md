@@ -16,6 +16,7 @@
 - [شجرة BulkAppendTree](bulk-append-tree.md)
 - [شجرة CommitmentTree](commitment-tree.md)
 - [شجرة DenseAppendOnlyFixedSizeTree](dense-tree.md)
+- [التشفير الكمي — تحليل التهديدات ما بعد الكم](quantum-cryptography.md)
 
 ---
 
