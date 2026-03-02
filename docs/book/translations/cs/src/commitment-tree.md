@@ -57,7 +57,7 @@ s odlisnymi prefixy klicu:
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32 bytes) || ciphertext (216 bytes)     │  │
+│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -259,7 +259,7 @@ nepouziva.
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || ciphertext)     │
+│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -313,10 +313,10 @@ textu. Vychozi `M = DashMemo` dava 216-bajtovy payload
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -347,7 +347,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||ciphertext to BulkAppendTree
+        Append cmx||rho||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -366,10 +366,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -402,7 +402,7 @@ dukazu autorizace utraceni.
 
 ### commitment_tree_get_value
 
-Ziskava ulozenou hodnotu (cmx || payload) podle jeji globalni pozice:
+Ziskava ulozenou hodnotu (cmx || rho || payload) podle jeji globalni pozice:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -438,6 +438,7 @@ CommitmentTree podporuje davkove vkladani prostrednictvim varianty
 ```rust
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
+    rho: [u8; 32],      // nullifier of the spent note
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -446,10 +447,10 @@ Dva konstruktory vytvaraji tuto operaci:
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
 ```
 
 Vice vkladani cilicich na stejny strom je povoleno v jedine davce. Protoze
@@ -469,8 +470,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, payload):
-           - ct.append_raw(cmx, payload) — validates size, appends to both
+        d. For each (cmx, rho, payload):
+           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -506,16 +507,6 @@ Vychozi `M = DashMemo` znamena, ze existujici kod, ktery se nestara
 o velikost memo (jako `verify_grovedb`, `commitment_tree_anchor`,
 `commitment_tree_count`), funguje bez specifikace `M`.
 
-**Format ulozeneho zaznamu**: Kazdy zaznam v BulkAppendTree je
-`cmx (32 bajtu) || ciphertext_payload`, kde rozlozeni payloadu je:
-
-```text
-epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
-```
-
-Pro `DashMemo`: `32 + 104 + 80 = 216 bajtu` payload, takze kazdy zaznam ma
-`32 + 216 = 248 bajtu` celkem.
-
 **Pomocne funkce serializace** (verejne volne funkce):
 
 | Funkce | Popis |
@@ -528,6 +519,168 @@ Pro `DashMemo`: `32 + 104 + 80 = 216 bajtu` payload, takze kazdy zaznam ma
 `payload.len() == ciphertext_payload_size::<M>()` a vraci
 `CommitmentTreeError::InvalidPayloadSize` pri nesouladu. Typovana metoda
 `append()` serializuje interne, takze velikost je vzdy korektni dle konstrukce.
+
+### Rozlozeni ulozeneho zaznamu (280 bajtu pro DashMemo)
+
+Kazdy zaznam v BulkAppendTree uklada kompletni zasifrovany zaznam poznamky.
+Uplne rozlozeni, zahrnujici kazdy bajt:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Prvni dve pole (`cmx` a `rho`) jsou **nezasifrovana pole protokolu** —
+jsou verejna z navrhu. Zbyvajici tri pole (`epk_bytes`,
+`enc_ciphertext`, `out_ciphertext`) tvori `TransmittedNoteCiphertext` a
+jsou zasifrovany payload.
+
+### Rozklad pole po poli
+
+**cmx (32 bajtu)** — Extrahovany zavazek poznamky, prvek bazoveho tela Pallas.
+Toto je hodnota listu pripojovana k frontiere Sinsemilla. Zavazuje se
+ke vsem polim poznamky (prijemce, hodnota, nahodnost) aniz by je odhalovala.
+cmx je to, co cini poznamku "nalezitelnou" ve stromu zavazku.
+
+**rho (32 bajtu)** — Nullifier poznamky utracene v teto akci.
+Nullifiery jsou jiz verejne na blockchainu (musi byt, aby se zabranilo
+dvojitemu utraceni). Ukladani `rho` vedle zavazku umoznuje light klientum
+provadejicim zkusebni desifrovani overit `esk = PRF(rseed, rho)` a potvrdit
+`epk' == epk` bez oddeleneho vyhledavani nullifiera. Toto pole lezi mezi
+`cmx` a sifrovym textem jako nezasifrovane proviazani na urovni protokolu.
+
+**epk_bytes (32 bajtu)** — Efemerni verejny klic, serializovany bod
+krivky Pallas. Deterministicky odvozen z `rseed` poznamky pres:
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+kde `g_d = DiversifyHash(d)` je diverzifikovany bazovy bod pro
+diverzifikator prijemce. `epk` umoznuje prijemci vypocitat sdileny
+tajny klic pro desifrovani: `shared_secret = [ivk] * epk`. Je prenaseny
+otevrene, protoze nic neodhaluje o odesilateli ci prijemci bez znalosti
+`esk` nebo `ivk`.
+
+**enc_ciphertext (104 bajtu pro DashMemo)** — Zasifrovany otevreny text poznamky,
+produkovany AEAD sifovanim ChaCha20-Poly1305:
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+Symetricky klic je odvozen pres ECDH:
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`.
+
+Po desifrovani prijemcem (pomoci `ivk`) **otevreny text poznamky**
+(88 bajtu pro DashMemo) obsahuje:
+
+| Offset | Velikost | Pole | Popis |
+|--------|------|-------|-------------|
+| 0 | 1 | version | Vzdy `0x02` (Orchard, post-ZIP-212) |
+| 1 | 11 | diversifier (d) | Diverzifikator prijemce, odvozuje bazovy bod `g_d` |
+| 12 | 8 | value (v) | 64-bitova hodnota poznamky little-endian v duff |
+| 20 | 32 | rseed | Nahodne semeno pro deterministicke odvozeni `rcm`, `psi`, `esk` |
+| 52 | 36 | memo | Data memo aplikacni vrstvy (DashMemo: 36 bajtu) |
+| **Celkem** | **88** | | |
+
+Prvnich 52 bajtu (version + diversifier + value + rseed) je **kompaktni
+poznamka** — light klienti mohou zkusebne desifrovat pouze tuto cast pomoci
+proudoveho sifru ChaCha20 (bez overovani MAC), aby zkontrolovali, zda poznamka
+patri jim. Pokud ano, desifruji celych 88 bajtu a overi MAC.
+
+**out_ciphertext (80 bajtu)** — Zasifrovana odchozi data, umoznujici
+**odesilateli** ziskat poznamku zpetne. Zasifrovano Odchozim Sifrovacim
+Klicem:
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+Po desifrovani odesilatelem (pomoci `ovk`) **odchozi otevreny text**
+(64 bajtu) obsahuje:
+
+| Offset | Velikost | Pole | Popis |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | Diverzifikovany prenosovy klic (verejny klic prijemce) |
+| 32 | 32 | esk | Efemerni tajny klic (skalar Pallas) |
+| **Celkem** | **64** | | |
+
+S `pk_d` a `esk` muze odesilatel rekonstruovat sdileny tajny klic, desifrovat
+`enc_ciphertext` a ziskat celou poznamku. Pokud odesilatel nastavi `ovk = null`,
+odchozi otevreny text je vyplnen nahodnymi bajty pred sifovanim, coz
+znemozni obnovu i pro odesilatele (neobnovitelny vystup).
+
+### Schema sifrovani: ChaCha20-Poly1305
+
+Jak `enc_ciphertext`, tak `out_ciphertext` pouzivaji ChaCha20-Poly1305 AEAD (RFC 8439):
+
+| Parametr | Hodnota |
+|-----------|-------|
+| Velikost klice | 256 bitu (32 bajtu) |
+| Nonce | `[0u8; 12]` (bezpecne protoze kazdy klic se pouzije presne jednou) |
+| AAD | Prazdne |
+| MAC znacka | 16 bajtu (Poly1305) |
+
+Nulovy nonce je bezpecny, protoze symetricky klic je odvozen z nove
+Diffieho-Hellmanovy vymeny per poznamka — kazdy klic sifruje presne jednu zpravu.
+
+### Srovnani velikosti DashMemo a ZcashMemo
+
+| Komponenta | DashMemo | ZcashMemo | Poznamky |
+|-----------|----------|-----------|-------|
+| Pole memo | 36 bajtu | 512 bajtu | Data aplikace |
+| Otevreny text poznamky | 88 bajtu | 564 bajtu | 52 pevnych + memo |
+| enc_ciphertext | 104 bajtu | 580 bajtu | otevreny text + 16 MAC |
+| Payload sifroveho textu (epk+enc+out) | 216 bajtu | 692 bajtu | Prenaseno per poznamka |
+| Uplny ulozeny zaznam (cmx+rho+payload) | **280 bajtu** | **756 bajtu** | Zaznam BulkAppendTree |
+
+Mensi memo DashMemo (36 vs 512 bajtu) redukuje kazdy ulozeny zaznam o
+476 bajtu — vyznamne pri ukladani milionu poznamek.
+
+### Prubeh zkusebniho desifrovani (Light Client)
+
+Light klient skenujici sve vlastni poznamky provadi tuto sekvenci pro kazdy
+ulozeny zaznam:
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+Krok 5 je duvodem, proc musi byt `rho` ulozeno vedle sifroveho textu —
+bez nej light klient nemuze overit vazbu efemernich klicu behem zkusebniho
+desifrovani.
 
 ## Generovani svedku na strane klienta
 
@@ -720,7 +873,7 @@ Note commitment at position P
 
 **2. Dukaz ziskani polozky (V1 cesta):**
 
-Jednotlive polozky (cmx || payload) mohou byt dotazovany podle pozice
+Jednotlive polozky (cmx || rho || payload) mohou byt dotazovany podle pozice
 a dokazovany pomoci V1 dukazu (§9.6), stejneho mechanismu pouzivaneho
 samostatnym BulkAppendTree. V1 dukaz zahrnuje autentizacni cestu
 BulkAppendTree pro pozadovanou pozici, zretezenou s rodicovskym Merk

@@ -240,6 +240,14 @@ fn test_cmx(index: u8) -> [u8; 32] {
     bytes
 }
 
+/// Helper: create a deterministic 32-byte rho (nullifier) from an index.
+fn test_rho(index: u8) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    bytes[0] = index;
+    bytes[1] = 0xAA;
+    bytes
+}
+
 /// Helper: create a deterministic test ciphertext for DashMemo.
 fn test_ciphertext(index: u8) -> TransmittedNoteCiphertext<DashMemo> {
     let mut epk_bytes = [0u8; 32];
@@ -336,6 +344,7 @@ fn test_batch_all_four_non_merk_tree_types() {
         QualifiedGroveDbOp::commitment_tree_insert_op_typed(
             vec![b"parent".to_vec(), b"ct".to_vec()],
             test_cmx(1),
+            test_rho(1),
             &test_ciphertext(1),
         ),
         QualifiedGroveDbOp::mmr_tree_append_op(
@@ -420,5 +429,52 @@ fn test_batch_all_four_non_merk_tree_types() {
         issues.is_empty(),
         "expected no issues after mixed batch, got: {:?}",
         issues
+    );
+}
+
+// ===========================================================================
+// Debug formatting coverage for CommitmentTreeInsert
+// ===========================================================================
+
+/// Test that the Debug implementation for QualifiedGroveDbOp correctly
+/// formats a CommitmentTreeInsert op, including hex-encoded cmx and rho
+/// prefixes.
+#[test]
+fn test_commitment_tree_insert_debug_format() {
+    let mut cmx = [0u8; 32];
+    cmx[0] = 0xAB;
+    cmx[1] = 0xCD;
+    cmx[2] = 0xEF;
+    cmx[3] = 0x01;
+
+    let mut rho = [0u8; 32];
+    rho[0] = 0x12;
+    rho[1] = 0x34;
+    rho[2] = 0x56;
+    rho[3] = 0x78;
+
+    let op = QualifiedGroveDbOp::commitment_tree_insert_op(
+        vec![b"pool".to_vec()],
+        cmx,
+        rho,
+        b"payload".to_vec(),
+    );
+
+    let debug_str = format!("{:?}", op);
+
+    assert!(
+        debug_str.contains("abcdef01"),
+        "debug output should contain hex-encoded cmx prefix, got: {}",
+        debug_str
+    );
+    assert!(
+        debug_str.contains("12345678"),
+        "debug output should contain hex-encoded rho prefix, got: {}",
+        debug_str
+    );
+    assert!(
+        debug_str.contains("Commitment Tree Insert"),
+        "debug output should contain op name, got: {}",
+        debug_str
     );
 }

@@ -34,7 +34,7 @@ CommitmentTree จัดเก็บ **ข้อมูลทั้งหมด�
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32 bytes) || ciphertext (216 bytes)     │  │
+│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +211,7 @@ CommitmentTree จัดเก็บข้อมูลทั้งหมดใ�
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || ciphertext)     │
+│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -250,10 +250,10 @@ CommitmentTree มีสี่การดำเนินการ การด�
 ```rust
 // แทรก commitment (typed) — ส่งคืน (sinsemilla_root, position)
 // M ควบคุมการตรวจสอบขนาด ciphertext
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
 
 // แทรก commitment (raw bytes) — ตรวจสอบ payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
 
 // ดึง Orchard Anchor ปัจจุบัน
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +280,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||ciphertext to BulkAppendTree
+        Append cmx||rho||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -299,10 +299,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -332,7 +332,7 @@ type `Anchor` เป็นตัวแทนแบบ Orchard-native ของ S
 
 ### commitment_tree_get_value
 
-ดึงค่าที่จัดเก็บ (cmx || payload) ตามตำแหน่ง global:
+ดึงค่าที่จัดเก็บ (cmx || rho || payload) ตามตำแหน่ง global:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -364,6 +364,7 @@ CommitmentTree รองรับ batch insert ผ่าน variant `GroveOp::Co
 ```rust
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
+    rho: [u8; 32],      // nullifier of the spent note
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -372,10 +373,10 @@ constructor สองตัวสร้าง op นี้:
 
 ```rust
 // Raw constructor — ผู้เรียก serialize payload เอง
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
 
 // Typed constructor — serialize TransmittedNoteCiphertext<M> ภายใน
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
 ```
 
 อนุญาตให้ insert หลายรายการที่เป้าหมายต้นไม้เดียวกันใน batch เดียว เนื่องจาก `execute_ops_on_path` ไม่สามารถเข้าถึง data storage ทุก CommitmentTree op จึงต้องถูก preprocess ก่อน `apply_body`
@@ -393,8 +394,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, payload):
-           - ct.append_raw(cmx, payload) — validates size, appends to both
+        d. For each (cmx, rho, payload):
+           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -423,14 +424,6 @@ pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
 
 ค่าเริ่มต้น `M = DashMemo` หมายความว่าโค้ดที่มีอยู่ที่ไม่สนใจขนาด memo (เช่น `verify_grovedb`, `commitment_tree_anchor`, `commitment_tree_count`) ทำงานได้โดยไม่ต้องระบุ `M`
 
-**รูปแบบ entry ที่จัดเก็บ**: แต่ละ entry ใน BulkAppendTree คือ `cmx (32 ไบต์) || ciphertext_payload` โดย layout ของ payload คือ:
-
-```text
-epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
-```
-
-สำหรับ `DashMemo`: `32 + 104 + 80 = 216 ไบต์` payload ดังนั้นแต่ละ entry คือ `32 + 216 = 248 ไบต์` ทั้งหมด
-
 **Serialization helper** (public free function):
 
 | ฟังก์ชัน | คำอธิบาย |
@@ -440,6 +433,167 @@ epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
 | `deserialize_ciphertext::<M>(data)` | Deserialize bytes กลับเป็น `TransmittedNoteCiphertext<M>` |
 
 **การตรวจสอบ Payload**: method `append_raw()` ตรวจสอบว่า `payload.len() == ciphertext_payload_size::<M>()` และส่งคืน `CommitmentTreeError::InvalidPayloadSize` เมื่อไม่ตรงกัน method `append()` แบบ typed serialize ภายใน ดังนั้นขนาดจะถูกต้องเสมอจากการสร้าง
+
+### Layout ของ Record ที่จัดเก็บ (280 ไบต์สำหรับ DashMemo)
+
+แต่ละ entry ใน BulkAppendTree จัดเก็บ record encrypted note ที่สมบูรณ์
+layout ทั้งหมด โดยนับทุกไบต์:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+สองฟิลด์แรก (`cmx` และ `rho`) เป็น **ฟิลด์โปรโตคอลที่ไม่เข้ารหัส** —
+เป็นสาธารณะโดยการออกแบบ สามฟิลด์ที่เหลือ (`epk_bytes`,
+`enc_ciphertext`, `out_ciphertext`) ประกอบกันเป็น `TransmittedNoteCiphertext` และ
+เป็น payload ที่เข้ารหัส
+
+### รายละเอียดทีละฟิลด์
+
+**cmx (32 ไบต์)** — Extracted note commitment, Pallas base field element
+นี่คือค่า leaf ที่ถูก append ไปยัง Sinsemilla frontier มัน commit ต่อ
+ทุกฟิลด์ของ note (ผู้รับ, มูลค่า, randomness) โดยไม่เปิดเผย
+cmx คือสิ่งที่ทำให้ note "ค้นหาได้" ใน commitment tree
+
+**rho (32 ไบต์)** — Nullifier ของ note ที่ถูกใช้จ่ายใน action นี้
+Nullifier เป็นสาธารณะอยู่แล้วบน blockchain (ต้องเป็นเช่นนั้นเพื่อป้องกัน
+double-spending) การจัดเก็บ `rho` ร่วมกับ commitment ช่วยให้ light client
+ที่ทำ trial decryption สามารถตรวจสอบ `esk = PRF(rseed, rho)` และยืนยัน
+`epk' == epk` โดยไม่ต้องค้นหา nullifier แยกต่างหาก ฟิลด์นี้อยู่ระหว่าง
+`cmx` และ ciphertext เป็นการเชื่อมโยงระดับโปรโตคอลที่ไม่เข้ารหัส
+
+**epk_bytes (32 ไบต์)** — Ephemeral public key, จุดบนเส้นโค้ง Pallas ที่ถูก
+serialize ได้มาอย่าง deterministic จาก `rseed` ของ note ผ่าน:
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+โดยที่ `g_d = DiversifyHash(d)` เป็น diversified base point สำหรับ
+diversifier ของผู้รับ `epk` ช่วยให้ผู้รับคำนวณ shared
+secret สำหรับถอดรหัส: `shared_secret = [ivk] * epk` ส่งแบบเปิดเผยเพราะ
+ไม่เปิดเผยอะไรเกี่ยวกับผู้ส่งหรือผู้รับโดยไม่รู้ `esk` หรือ `ivk`
+
+**enc_ciphertext (104 ไบต์สำหรับ DashMemo)** — Note plaintext ที่เข้ารหัส
+สร้างโดย ChaCha20-Poly1305 AEAD encryption:
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+symmetric key ได้มาผ่าน ECDH:
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`
+
+เมื่อถอดรหัสโดยผู้รับ (ใช้ `ivk`) **note plaintext**
+(88 ไบต์สำหรับ DashMemo) ประกอบด้วย:
+
+| Offset | ขนาด | Field | คำอธิบาย |
+|--------|------|-------|-------------|
+| 0 | 1 | version | เสมอ `0x02` (Orchard, post-ZIP-212) |
+| 1 | 11 | diversifier (d) | diversifier ของผู้รับ, ได้มาซึ่ง base point `g_d` |
+| 12 | 8 | value (v) | มูลค่า note 64-bit little-endian เป็น duff |
+| 20 | 32 | rseed | random seed สำหรับ deterministic derivation ของ `rcm`, `psi`, `esk` |
+| 52 | 36 | memo | ข้อมูล memo ชั้นแอปพลิเคชัน (DashMemo: 36 ไบต์) |
+| **Total** | **88** | | |
+
+52 ไบต์แรก (version + diversifier + value + rseed) คือ **compact
+note** — light client สามารถ trial-decrypt เฉพาะส่วนนี้โดยใช้
+ChaCha20 stream cipher (โดยไม่ตรวจสอบ MAC) เพื่อตรวจสอบว่า note เป็นของ
+พวกเขาหรือไม่ ถ้าใช่ พวกเขาจะถอดรหัสทั้ง 88 ไบต์และตรวจสอบ MAC
+
+**out_ciphertext (80 ไบต์)** — ข้อมูลขาออกที่เข้ารหัส ช่วยให้
+**ผู้ส่ง** กู้คืน note ในภายหลัง เข้ารหัสด้วย Outgoing
+Cipher Key:
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+เมื่อถอดรหัสโดยผู้ส่ง (ใช้ `ovk`) **outgoing plaintext**
+(64 ไบต์) ประกอบด้วย:
+
+| Offset | ขนาด | Field | คำอธิบาย |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | Diversified transmission key (public key ของผู้รับ) |
+| 32 | 32 | esk | Ephemeral secret key (Pallas scalar) |
+| **Total** | **64** | | |
+
+ด้วย `pk_d` และ `esk` ผู้ส่งสามารถสร้าง shared secret ใหม่ ถอดรหัส
+`enc_ciphertext` และกู้คืน note ทั้งหมด ถ้าผู้ส่งตั้ง `ovk = null`
+outgoing plaintext จะถูกเติมด้วยไบต์สุ่มก่อนเข้ารหัส ทำให้
+การกู้คืนเป็นไปไม่ได้แม้สำหรับผู้ส่ง (non-recoverable output)
+
+### รูปแบบเข้ารหัส: ChaCha20-Poly1305
+
+ทั้ง `enc_ciphertext` และ `out_ciphertext` ใช้ ChaCha20-Poly1305 AEAD (RFC 8439):
+
+| พารามิเตอร์ | ค่า |
+|-----------|-------|
+| ขนาด Key | 256 บิต (32 ไบต์) |
+| Nonce | `[0u8; 12]` (ปลอดภัยเพราะแต่ละ key ใช้เพียงครั้งเดียว) |
+| AAD | ว่าง |
+| Tag MAC | 16 ไบต์ (Poly1305) |
+
+nonce ศูนย์ปลอดภัยเพราะ symmetric key ได้มาจาก Diffie-Hellman exchange ใหม่
+ต่อ note — แต่ละ key เข้ารหัสเพียงข้อความเดียว
+
+### การเปรียบเทียบขนาด DashMemo vs ZcashMemo
+
+| ส่วนประกอบ | DashMemo | ZcashMemo | หมายเหตุ |
+|-----------|----------|-----------|-------|
+| ฟิลด์ memo | 36 ไบต์ | 512 ไบต์ | ข้อมูลแอปพลิเคชัน |
+| Note plaintext | 88 ไบต์ | 564 ไบต์ | 52 คงที่ + memo |
+| enc_ciphertext | 104 ไบต์ | 580 ไบต์ | plaintext + 16 MAC |
+| Ciphertext payload (epk+enc+out) | 216 ไบต์ | 692 ไบต์ | ส่งต่อ note |
+| Record ที่จัดเก็บทั้งหมด (cmx+rho+payload) | **280 ไบต์** | **756 ไบต์** | BulkAppendTree entry |
+
+memo ที่เล็กกว่าของ DashMemo (36 vs 512 ไบต์) ลดแต่ละ record ที่จัดเก็บลง
+476 ไบต์ — มีนัยสำคัญเมื่อจัดเก็บ note นับล้าน
+
+### ขั้นตอน Trial Decryption (Light Client)
+
+light client ที่สแกนหา note ของตัวเองทำลำดับนี้สำหรับแต่ละ
+record ที่จัดเก็บ:
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+ขั้นตอนที่ 5 คือเหตุผลที่ `rho` ต้องถูกจัดเก็บร่วมกับ ciphertext — หากไม่มี
+light client ไม่สามารถตรวจสอบ ephemeral key binding ระหว่าง trial
+decryption ได้
 
 ## การสร้าง Witness ฝั่ง Client
 
@@ -614,7 +768,7 @@ Note commitment at position P
 
 **2. Item retrieval proof (V1 path):**
 
-รายการแต่ละตัว (cmx || payload) สามารถ query ตามตำแหน่งและพิสูจน์โดยใช้ V1 proof (9.6) กลไกเดียวกับที่ใช้โดย BulkAppendTree แบบ standalone V1 proof รวม BulkAppendTree authentication path สำหรับตำแหน่งที่ร้องขอ เชื่อมกับ parent Merk proof สำหรับ CommitmentTree element
+รายการแต่ละตัว (cmx || rho || payload) สามารถ query ตามตำแหน่งและพิสูจน์โดยใช้ V1 proof (9.6) กลไกเดียวกับที่ใช้โดย BulkAppendTree แบบ standalone V1 proof รวม BulkAppendTree authentication path สำหรับตำแหน่งที่ร้องขอ เชื่อมกับ parent Merk proof สำหรับ CommitmentTree element
 
 ## การติดตามต้นทุน
 

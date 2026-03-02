@@ -261,6 +261,8 @@ pub enum GroveOp {
     CommitmentTreeInsert {
         /// 32-byte note commitment (must be a valid Pallas field element)
         cmx: [u8; 32],
+        /// 32-byte nullifier (rho) of the spent note
+        rho: [u8; 32],
         /// Payload data (typically encrypted note)
         payload: Vec<u8>,
     },
@@ -535,7 +537,13 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::InsertNonMerkTree { meta, .. } => {
                 format!("Insert Non-Merk Tree ({:?})", meta)
             }
-            GroveOp::CommitmentTreeInsert { .. } => "Commitment Tree Insert".to_string(),
+            GroveOp::CommitmentTreeInsert { cmx, rho, .. } => {
+                format!(
+                    "Commitment Tree Insert (cmx={}, rho={})",
+                    hex::encode(&cmx[..4]),
+                    hex::encode(&rho[..4])
+                )
+            }
             GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
             GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
             GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
@@ -696,12 +704,17 @@ impl QualifiedGroveDbOp {
     /// A commitment tree insert op. `path` includes the tree key as its last
     /// segment (e.g. `vec![b"pool".to_vec()]` for a tree at key `b"pool"` in
     /// the root subtree).
-    pub fn commitment_tree_insert_op(path: Vec<Vec<u8>>, cmx: [u8; 32], payload: Vec<u8>) -> Self {
+    pub fn commitment_tree_insert_op(
+        path: Vec<Vec<u8>>,
+        cmx: [u8; 32],
+        rho: [u8; 32],
+        payload: Vec<u8>,
+    ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: None,
-            op: GroveOp::CommitmentTreeInsert { cmx, payload },
+            op: GroveOp::CommitmentTreeInsert { cmx, rho, payload },
         }
     }
 
@@ -711,10 +724,11 @@ impl QualifiedGroveDbOp {
     pub fn commitment_tree_insert_op_typed<M: grovedb_commitment_tree::MemoSize>(
         path: Vec<Vec<u8>>,
         cmx: [u8; 32],
+        rho: [u8; 32],
         ciphertext: &grovedb_commitment_tree::TransmittedNoteCiphertext<M>,
     ) -> Self {
         let payload = grovedb_commitment_tree::serialize_ciphertext(ciphertext);
-        Self::commitment_tree_insert_op(path, cmx, payload)
+        Self::commitment_tree_insert_op(path, cmx, rho, payload)
     }
 
     /// An MMR tree append op. `path` includes the tree key as its last segment.
@@ -2702,7 +2716,7 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::CommitmentTreeInsert { cmx, payload } => {
+                GroveOp::CommitmentTreeInsert { cmx, rho, payload } => {
                     let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
                     let key = cost_return_on_error_no_add!(
                         cost,
@@ -2717,6 +2731,7 @@ impl GroveDb {
                             path_slices.as_slice(),
                             &key,
                             cmx,
+                            rho,
                             payload.clone(),
                             transaction,
                             grove_version,

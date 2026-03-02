@@ -57,7 +57,7 @@ de chave distintos:
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32 bytes) || ciphertext (216 bytes)     │  │
+│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -257,7 +257,7 @@ mesma coluna usando prefixos de chave distintos. Nenhum namespace aux e usado.
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || ciphertext)     │
+│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -311,10 +311,10 @@ do texto cifrado. O padrao `M = DashMemo` fornece um payload de 216 bytes
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -344,7 +344,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||ciphertext to BulkAppendTree
+        Append cmx||rho||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -363,10 +363,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -399,7 +399,7 @@ de gasto.
 
 ### commitment_tree_get_value
 
-Recupera um valor armazenado (cmx || payload) pela sua posicao global:
+Recupera um valor armazenado (cmx || rho || payload) pela sua posicao global:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -434,6 +434,7 @@ CommitmentTree suporta insercoes em lote atraves da variante `GroveOp::Commitmen
 ```rust
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
+    rho: [u8; 32],      // nullifier of the spent note
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -442,10 +443,10 @@ Dois construtores criam esta op:
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
 ```
 
 Multiplas insercoes direcionadas a mesma arvore sao permitidas em um unico lote. Como
@@ -465,8 +466,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, payload):
-           - ct.append_raw(cmx, payload) — validates size, appends to both
+        d. For each (cmx, rho, payload):
+           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -502,16 +503,6 @@ O padrao `M = DashMemo` significa que codigo existente que nao se preocupa com o
 do memo (como `verify_grovedb`, `commitment_tree_anchor`, `commitment_tree_count`)
 funciona sem especificar `M`.
 
-**Formato da entrada armazenada**: Cada entrada na BulkAppendTree e
-`cmx (32 bytes) || ciphertext_payload`, onde o layout do payload e:
-
-```text
-epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
-```
-
-Para `DashMemo`: `32 + 104 + 80 = 216 bytes` de payload, entao cada entrada tem
-`32 + 216 = 248 bytes` no total.
-
 **Auxiliares de serializacao** (funcoes livres publicas):
 
 | Funcao | Descricao |
@@ -524,6 +515,165 @@ Para `DashMemo`: `32 + 104 + 80 = 216 bytes` de payload, entao cada entrada tem
 `payload.len() == ciphertext_payload_size::<M>()` e retorna
 `CommitmentTreeError::InvalidPayloadSize` em caso de incompatibilidade. O metodo tipado
 `append()` serializa internamente, entao o tamanho esta sempre correto por construcao.
+
+### Layout do Registro Armazenado (280 bytes para DashMemo)
+
+Cada entrada na BulkAppendTree armazena o registro completo de nota encriptada. O layout
+completo, contabilizando cada byte:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Os dois primeiros campos (`cmx` e `rho`) sao **campos de protocolo nao encriptados** —
+eles sao publicos por design. Os tres campos restantes (`epk_bytes`, `enc_ciphertext`,
+`out_ciphertext`) formam o `TransmittedNoteCiphertext` e sao o payload encriptado.
+
+### Detalhamento Campo por Campo
+
+**cmx (32 bytes)** — O compromisso de nota extraido, um elemento de base do campo Pallas.
+Este e o valor de folha adicionado a fronteira Sinsemilla. Ele compromete todos os campos
+da nota (destinatario, valor, aleatoriedade) sem revela-los. O cmx e o que torna a nota
+"encontravel" na arvore de compromissos.
+
+**rho (32 bytes)** — O nullifier da nota sendo gasta nesta acao. Nullifiers ja sao
+publicos na blockchain (eles devem ser para prevenir gasto duplo). Armazenar `rho`
+junto com o compromisso permite que clientes leves realizando trial decryption verifiquem
+`esk = PRF(rseed, rho)` e confirmem `epk' == epk` sem uma consulta separada de nullifier.
+Este campo fica entre `cmx` e o texto cifrado como uma associacao nao encriptada no nivel
+do protocolo.
+
+**epk_bytes (32 bytes)** — A chave publica efemera, um ponto de curva Pallas serializado.
+Derivada deterministicamente do `rseed` da nota via:
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+onde `g_d = DiversifyHash(d)` e o ponto base diversificado para o diversifier do
+destinatario. O `epk` permite que o destinatario compute o segredo compartilhado para
+decriptacao: `shared_secret = [ivk] * epk`. Ele e transmitido em texto claro porque nao
+revela nada sobre o remetente ou destinatario sem conhecer `esk` ou `ivk`.
+
+**enc_ciphertext (104 bytes para DashMemo)** — O texto plano encriptado da nota, produzido
+por encriptacao AEAD ChaCha20-Poly1305:
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+A chave simetrica e derivada via ECDH:
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`.
+
+Quando decriptado pelo destinatario (usando `ivk`), o **texto plano da nota** (88 bytes
+para DashMemo) contem:
+
+| Offset | Tamanho | Campo | Descricao |
+|--------|------|-------|-------------|
+| 0 | 1 | version | Sempre `0x02` (Orchard, pos-ZIP-212) |
+| 1 | 11 | diversifier (d) | Diversifier do destinatario, deriva o ponto base `g_d` |
+| 12 | 8 | value (v) | Valor de nota de 64 bits little-endian em duffs |
+| 20 | 32 | rseed | Semente aleatoria para derivacao deterministica de `rcm`, `psi`, `esk` |
+| 52 | 36 | memo | Dados de memo da camada de aplicacao (DashMemo: 36 bytes) |
+| **Total** | **88** | | |
+
+Os primeiros 52 bytes (version + diversifier + value + rseed) sao a **nota compacta** —
+clientes leves podem fazer trial-decrypt apenas desta porcao usando o cifrador de fluxo
+ChaCha20 (sem verificar o MAC) para verificar se a nota pertence a eles. Se pertencer,
+eles decriptam os 88 bytes completos e verificam o MAC.
+
+**out_ciphertext (80 bytes)** — Os dados de saida encriptados, permitindo que o
+**remetente** recupere a nota apos o fato. Encriptado com a Outgoing Cipher Key:
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+Quando decriptado pelo remetente (usando `ovk`), o **texto plano de saida** (64 bytes)
+contem:
+
+| Offset | Tamanho | Campo | Descricao |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | Chave de transmissao diversificada (chave publica do destinatario) |
+| 32 | 32 | esk | Chave secreta efemera (escalar Pallas) |
+| **Total** | **64** | | |
+
+Com `pk_d` e `esk`, o remetente pode reconstruir o segredo compartilhado, decriptar
+`enc_ciphertext` e recuperar a nota completa. Se o remetente definir `ovk = null`,
+o texto plano de saida e preenchido com bytes aleatorios antes da encriptacao, tornando
+a recuperacao impossivel mesmo para o remetente (saida nao recuperavel).
+
+### Esquema de Encriptacao: ChaCha20-Poly1305
+
+Tanto `enc_ciphertext` quanto `out_ciphertext` usam ChaCha20-Poly1305 AEAD (RFC 8439):
+
+| Parametro | Valor |
+|-----------|-------|
+| Tamanho da chave | 256 bits (32 bytes) |
+| Nonce | `[0u8; 12]` (seguro porque cada chave e usada exatamente uma vez) |
+| AAD | Vazio |
+| Tag MAC | 16 bytes (Poly1305) |
+
+O nonce zero e seguro porque a chave simetrica e derivada de uma troca Diffie-Hellman
+fresca por nota — cada chave encripta exatamente uma mensagem.
+
+### Comparacao de Tamanho DashMemo vs ZcashMemo
+
+| Componente | DashMemo | ZcashMemo | Notas |
+|-----------|----------|-----------|-------|
+| Campo memo | 36 bytes | 512 bytes | Dados da aplicacao |
+| Texto plano da nota | 88 bytes | 564 bytes | 52 fixos + memo |
+| enc_ciphertext | 104 bytes | 580 bytes | texto plano + 16 MAC |
+| Payload do texto cifrado (epk+enc+out) | 216 bytes | 692 bytes | Transmitido por nota |
+| Registro armazenado completo (cmx+rho+payload) | **280 bytes** | **756 bytes** | Entrada BulkAppendTree |
+
+O memo menor do DashMemo (36 vs 512 bytes) reduz cada registro armazenado em 476 bytes —
+significativo ao armazenar milhoes de notas.
+
+### Fluxo de Trial Decryption (Cliente Leve)
+
+Um cliente leve escaneando por suas proprias notas executa esta sequencia para cada
+registro armazenado:
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+O passo 5 e o motivo pelo qual `rho` deve ser armazenado junto com o texto cifrado — sem
+ele, o cliente leve nao pode verificar a vinculacao da chave efemera durante o trial
+decryption.
 
 ## Geracao de Testemunho do Lado do Cliente
 
@@ -717,7 +867,7 @@ Note commitment at position P
 
 **2. Prova de recuperacao de item (caminho V1):**
 
-Itens individuais (cmx || payload) podem ser consultados por posicao e provados usando
+Itens individuais (cmx || rho || payload) podem ser consultados por posicao e provados usando
 provas V1 (secao 9.6), o mesmo mecanismo usado pela BulkAppendTree independente. A prova
 V1 inclui o caminho de autenticacao da BulkAppendTree para a posicao solicitada,
 encadeado a prova da Merk pai para o elemento CommitmentTree.

@@ -34,7 +34,7 @@ CommitmentTree lưu **tất cả dữ liệu trong không gian tên data** tại
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32 bytes) || ciphertext (216 bytes)     │  │
+│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +211,7 @@ CommitmentTree lưu tất cả dữ liệu trong một **không gian tên data**
 │                                                                   │
 │  Khóa lưu trữ BulkAppendTree (xem §14.7):                        │
 │    b"m" || pos (u64 BE)  → blob nút MMR                          │
-│    b"b" || index (u64 BE)→ mục buffer (cmx || ciphertext)         │
+│    b"b" || index (u64 BE)→ mục buffer (cmx || rho || ciphertext)   │
 │    b"e" || chunk (u64 BE)→ blob chunk (buffer đã nén)             │
 │    b"M"                  → metadata BulkAppendTree                │
 │                                                                   │
@@ -250,10 +250,10 @@ CommitmentTree cung cấp bốn thao tác. Thao tác chèn là generic trên `M:
 ```rust
 // Chèn một cam kết (typed) — trả về (sinsemilla_root, position)
 // M điều khiển xác thực kích thước ciphertext
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
 
 // Chèn một cam kết (byte thô) — xác thực payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
 
 // Lấy Orchard Anchor hiện tại
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +280,7 @@ Bước 2: Xây dựng ct_path = path ++ [key]
 Bước 3: Mở ngữ cảnh data storage tại ct_path
         Tải CommitmentTree (frontier + BulkAppendTree)
         Tuần tự hóa ciphertext → xác thực kích thước payload khớp M
-        Thêm cmx||ciphertext vào BulkAppendTree
+        Thêm cmx||rho||ciphertext vào BulkAppendTree
         Thêm cmx vào frontier Sinsemilla → lấy sinsemilla_root mới
         Theo dõi chi phí hash Blake3 + Sinsemilla
 
@@ -299,10 +299,10 @@ Bước 7: Commit lô lưu trữ và giao dịch cục bộ
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -332,7 +332,7 @@ Kiểu `Anchor` là biểu diễn gốc Orchard của root Sinsemilla, phù hợ
 
 ### commitment_tree_get_value
 
-Truy xuất giá trị đã lưu (cmx || payload) theo vị trí toàn cục:
+Truy xuất giá trị đã lưu (cmx || rho || payload) theo vị trí toàn cục:
 
 ```text
 Bước 1: Xác thực element tại path/key là CommitmentTree
@@ -364,6 +364,7 @@ CommitmentTree hỗ trợ chèn theo lô qua biến thể `GroveOp::CommitmentTr
 ```rust
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // cam kết note đã trích xuất
+    rho: [u8; 32],      // nullifier của note đã chi tiêu
     payload: Vec<u8>,    // ciphertext tuần tự hóa (216 byte cho DashMemo)
 }
 ```
@@ -372,10 +373,10 @@ Hai constructor tạo thao tác này:
 
 ```rust
 // Constructor thô -- người gọi tuần tự hóa payload thủ công
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
 
 // Constructor typed -- tuần tự hóa TransmittedNoteCiphertext<M> nội bộ
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
 ```
 
 Nhiều lần chèn nhắm cùng cây được cho phép trong một lô duy nhất. Vì `execute_ops_on_path` không có quyền truy cập data storage, tất cả thao tác CommitmentTree phải được tiền xử lý trước `apply_body`.
@@ -393,8 +394,8 @@ Bước 2: Cho mỗi nhóm:
         a. Đọc element hiện có → xác minh CommitmentTree, trích xuất chunk_power
         b. Mở ngữ cảnh lưu trữ giao dịch tại ct_path
         c. Tải CommitmentTree từ data storage (frontier + BulkAppendTree)
-        d. Cho mỗi (cmx, payload):
-           - ct.append_raw(cmx, payload) — xác thực kích thước, thêm vào cả hai
+        d. Cho mỗi (cmx, rho, payload):
+           - ct.append_raw(cmx, rho, payload) — xác thực kích thước, thêm vào cả hai
         e. Lưu frontier đã cập nhật vào data storage
 
 Bước 3: Thay thế tất cả thao tác CTInsert bằng một ReplaceNonMerkTreeRoot mỗi nhóm
@@ -423,14 +424,6 @@ pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
 
 Mặc định `M = DashMemo` có nghĩa mã hiện có không quan tâm kích thước memo (như `verify_grovedb`, `commitment_tree_anchor`, `commitment_tree_count`) hoạt động mà không cần chỉ định `M`.
 
-**Định dạng mục lưu trữ**: Mỗi mục trong BulkAppendTree là `cmx (32 byte) || ciphertext_payload`, trong đó bố cục payload là:
-
-```text
-epk_bytes (32) || enc_ciphertext (thay đổi theo M) || out_ciphertext (80)
-```
-
-Cho `DashMemo`: `32 + 104 + 80 = 216 byte` payload, nên mỗi mục là `32 + 216 = 248 byte` tổng.
-
 **Helper tuần tự hóa** (hàm công khai):
 
 | Hàm | Mô tả |
@@ -440,6 +433,135 @@ Cho `DashMemo`: `32 + 104 + 80 = 216 byte` payload, nên mỗi mục là `32 + 2
 | `deserialize_ciphertext::<M>(data)` | Giải tuần tự hóa byte lại thành `TransmittedNoteCiphertext<M>` |
 
 **Xác thực payload**: Phương thức `append_raw()` xác thực rằng `payload.len() == ciphertext_payload_size::<M>()` và trả về `CommitmentTreeError::InvalidPayloadSize` khi không khớp. Phương thức typed `append()` tuần tự hóa nội bộ, nên kích thước luôn đúng theo thiết kế.
+
+### Bố cục bản ghi lưu trữ (280 byte cho DashMemo)
+
+Mỗi mục trong BulkAppendTree lưu bản ghi note mã hóa hoàn chỉnh. Bố cục đầy đủ, tính đến từng byte:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Hai trường đầu tiên (`cmx` và `rho`) là **trường giao thức không mã hóa** -- chúng công khai theo thiết kế. Ba trường còn lại (`epk_bytes`, `enc_ciphertext`, `out_ciphertext`) tạo thành `TransmittedNoteCiphertext` và là payload mã hóa.
+
+### Phân tích từng trường
+
+**cmx (32 byte)** -- Cam kết note đã trích xuất, phần tử trường cơ sở Pallas. Đây là giá trị lá được thêm vào frontier Sinsemilla. Nó cam kết đến tất cả trường note (người nhận, giá trị, tính ngẫu nhiên) mà không tiết lộ chúng. cmx là thứ làm cho note "có thể tìm thấy" trong cây cam kết.
+
+**rho (32 byte)** -- Nullifier của note đang được chi tiêu trong action này. Nullifier đã công khai trên blockchain (chúng phải công khai để ngăn chi tiêu kép). Lưu `rho` cùng cam kết cho phép client nhẹ thực hiện giải mã thử nghiệm xác minh `esk = PRF(rseed, rho)` và xác nhận `epk' == epk` mà không cần tra cứu nullifier riêng. Trường này nằm giữa `cmx` và ciphertext như một liên kết cấp giao thức không mã hóa.
+
+**epk_bytes (32 byte)** -- Khóa công khai tạm thời, điểm đường cong Pallas đã tuần tự hóa. Được dẫn xuất xác định từ `rseed` của note qua:
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+trong đó `g_d = DiversifyHash(d)` là điểm cơ sở đa dạng hóa cho diversifier của người nhận. `epk` cho phép người nhận tính bí mật chung để giải mã: `shared_secret = [ivk] * epk`. Nó được truyền dạng rõ vì không tiết lộ gì về người gửi hoặc người nhận khi không biết `esk` hoặc `ivk`.
+
+**enc_ciphertext (104 byte cho DashMemo)** -- Bản rõ note đã mã hóa, được tạo bởi mã hóa ChaCha20-Poly1305 AEAD:
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+Khóa đối xứng được dẫn xuất qua ECDH:
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`.
+
+Khi được giải mã bởi người nhận (sử dụng `ivk`), **bản rõ note** (88 byte cho DashMemo) chứa:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | version | Always `0x02` (Orchard, post-ZIP-212) |
+| 1 | 11 | diversifier (d) | Recipient's diversifier, derives the base point `g_d` |
+| 12 | 8 | value (v) | 64-bit little-endian note value in duffs |
+| 20 | 32 | rseed | Random seed for deterministic derivation of `rcm`, `psi`, `esk` |
+| 52 | 36 | memo | Application-layer memo data (DashMemo: 36 bytes) |
+| **Total** | **88** | | |
+
+52 byte đầu tiên (version + diversifier + value + rseed) là **compact note** -- client nhẹ có thể giải mã thử nghiệm chỉ phần này bằng mã hóa luồng ChaCha20 (không xác minh MAC) để kiểm tra note có thuộc về họ không. Nếu có, họ giải mã đầy đủ 88 byte và xác minh MAC.
+
+**out_ciphertext (80 byte)** -- Dữ liệu gửi đi đã mã hóa, cho phép **người gửi** khôi phục note sau đó. Được mã hóa bằng Outgoing Cipher Key:
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+Khi được giải mã bởi người gửi (sử dụng `ovk`), **bản rõ gửi đi** (64 byte) chứa:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | Diversified transmission key (recipient's public key) |
+| 32 | 32 | esk | Ephemeral secret key (Pallas scalar) |
+| **Total** | **64** | | |
+
+Với `pk_d` và `esk`, người gửi có thể tái tạo bí mật chung, giải mã `enc_ciphertext`, và khôi phục toàn bộ note. Nếu người gửi đặt `ovk = null`, bản rõ gửi đi được điền byte ngẫu nhiên trước khi mã hóa, khiến việc khôi phục không thể ngay cả cho người gửi (đầu ra không thể khôi phục).
+
+### Lược đồ mã hóa: ChaCha20-Poly1305
+
+Cả `enc_ciphertext` và `out_ciphertext` đều sử dụng ChaCha20-Poly1305 AEAD (RFC 8439):
+
+| Parameter | Value |
+|-----------|-------|
+| Key size | 256 bits (32 bytes) |
+| Nonce | `[0u8; 12]` (safe because each key is used exactly once) |
+| AAD | Empty |
+| MAC tag | 16 bytes (Poly1305) |
+
+Nonce bằng không an toàn vì khóa đối xứng được dẫn xuất từ trao đổi Diffie-Hellman mới cho mỗi note -- mỗi khóa mã hóa đúng một thông điệp.
+
+### So sánh kích thước DashMemo và ZcashMemo
+
+| Component | DashMemo | ZcashMemo | Notes |
+|-----------|----------|-----------|-------|
+| Memo field | 36 bytes | 512 bytes | Application data |
+| Note plaintext | 88 bytes | 564 bytes | 52 fixed + memo |
+| enc_ciphertext | 104 bytes | 580 bytes | plaintext + 16 MAC |
+| Ciphertext payload (epk+enc+out) | 216 bytes | 692 bytes | Transmitted per note |
+| Full stored record (cmx+rho+payload) | **280 bytes** | **756 bytes** | BulkAppendTree entry |
+
+Memo nhỏ hơn của DashMemo (36 so với 512 byte) giảm mỗi bản ghi lưu trữ 476 byte -- đáng kể khi lưu hàng triệu note.
+
+### Luồng giải mã thử nghiệm (Client nhẹ)
+
+Client nhẹ quét tìm note của mình thực hiện trình tự sau cho mỗi bản ghi lưu trữ:
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+Bước 5 là lý do `rho` phải được lưu cùng ciphertext -- không có nó, client nhẹ không thể xác minh ràng buộc khóa tạm thời trong quá trình giải mã thử nghiệm.
 
 ## Tạo nhân chứng phía client (Client-Side Witness Generation)
 
@@ -614,7 +736,7 @@ Cam kết note tại vị trí P
 
 **2. Chứng minh truy xuất mục (đường V1):**
 
-Các mục riêng lẻ (cmx || payload) có thể được truy vấn theo vị trí và chứng minh sử dụng chứng minh V1 (mục 9.6), cùng cơ chế được sử dụng bởi BulkAppendTree độc lập. Chứng minh V1 bao gồm đường xác thực BulkAppendTree cho vị trí được yêu cầu, chuỗi đến chứng minh Merk cha cho element CommitmentTree.
+Các mục riêng lẻ (cmx || rho || payload) có thể được truy vấn theo vị trí và chứng minh sử dụng chứng minh V1 (mục 9.6), cùng cơ chế được sử dụng bởi BulkAppendTree độc lập. Chứng minh V1 bao gồm đường xác thực BulkAppendTree cho vị trí được yêu cầu, chuỗi đến chứng minh Merk cha cho element CommitmentTree.
 
 ## Theo dõi chi phí
 

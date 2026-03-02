@@ -34,7 +34,7 @@ CommitmentTree는 **모든 데이터를 데이터 네임스페이스**에 같은
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32 bytes) || ciphertext (216 bytes)     │  │
+│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +211,7 @@ CommitmentTree는 모든 데이터를 서브트리 경로의 단일 **데이터 
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || ciphertext)     │
+│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -250,10 +250,10 @@ CommitmentTree는 4개 연산을 제공합니다. 삽입 연산은 암호문 페
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +280,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||ciphertext to BulkAppendTree
+        Append cmx||rho||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -299,10 +299,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -333,7 +333,7 @@ Step 4: Return frontier.anchor() as orchard::tree::Anchor
 
 ### commitment_tree_get_value
 
-전역 위치에 의해 저장된 값(cmx || 페이로드)을 조회합니다:
+전역 위치에 의해 저장된 값(cmx || rho || 페이로드)을 조회합니다:
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -365,6 +365,7 @@ CommitmentTree는 `GroveOp::CommitmentTreeInsert` 변형을 통해 배치 삽입
 ```rust
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
+    rho: [u8; 32],      // nullifier of the spent note
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -373,10 +374,10 @@ GroveOp::CommitmentTreeInsert {
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
 ```
 
 같은 트리를 대상으로 하는 다중 삽입이 단일 배치에서 허용됩니다. `execute_ops_on_path`가 데이터 스토리지에 접근할 수 없으므로, 모든 CommitmentTree 연산은 `apply_body` 전에 전처리되어야 합니다.
@@ -394,8 +395,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, payload):
-           - ct.append_raw(cmx, payload) — validates size, appends to both
+        d. For each (cmx, rho, payload):
+           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -424,14 +425,6 @@ pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
 
 기본값 `M = DashMemo`는 메모 크기에 관심 없는 기존 코드(`verify_grovedb`, `commitment_tree_anchor`, `commitment_tree_count` 등)가 `M`을 지정하지 않고도 작동함을 의미합니다.
 
-**저장 항목 형식**: BulkAppendTree의 각 항목은 `cmx (32 바이트) || ciphertext_payload`이며, 페이로드 레이아웃은:
-
-```text
-epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
-```
-
-`DashMemo`의 경우: `32 + 104 + 80 = 216 바이트` 페이로드이므로 각 항목은 총 `32 + 216 = 248 바이트`입니다.
-
 **직렬화 헬퍼** (공개 자유 함수):
 
 | 함수 | 설명 |
@@ -441,6 +434,135 @@ epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
 | `deserialize_ciphertext::<M>(data)` | 바이트를 `TransmittedNoteCiphertext<M>`으로 역직렬화 |
 
 **페이로드 검증**: `append_raw()` 메서드는 `payload.len() == ciphertext_payload_size::<M>()`를 검증하고 불일치 시 `CommitmentTreeError::InvalidPayloadSize`를 반환합니다. 타입이 지정된 `append()` 메서드는 내부적으로 직렬화하므로, 크기가 항상 정확합니다.
+
+### 저장 레코드 레이아웃 (DashMemo의 경우 280 바이트)
+
+BulkAppendTree의 각 항목은 완전한 암호화된 노트 레코드를 저장합니다. 모든 바이트를 반영한 전체 레이아웃:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+처음 두 필드(`cmx`와 `rho`)는 **암호화되지 않은 프로토콜 필드**입니다 -- 설계상 공개됩니다. 나머지 세 필드(`epk_bytes`, `enc_ciphertext`, `out_ciphertext`)는 `TransmittedNoteCiphertext`를 구성하며 암호화된 페이로드입니다.
+
+### 필드별 분석
+
+**cmx (32 바이트)** -- 추출된 노트 커밋먼트, Pallas 기본 필드 엘리먼트입니다. 이것은 Sinsemilla 프론티어에 추가되는 리프 값입니다. 수신자, 값, 무작위성 등 모든 노트 필드에 대해 이들을 드러내지 않고 커밋합니다. cmx는 노트를 커밋먼트 트리에서 "찾을 수 있게" 만드는 것입니다.
+
+**rho (32 바이트)** -- 이 액션에서 지출되는 노트의 무효화자(nullifier)입니다. 무효화자는 이미 블록체인에서 공개됩니다(이중 지출을 방지하기 위해 반드시 공개되어야 합니다). `rho`를 커밋먼트와 함께 저장하면, 시행 복호화를 수행하는 경량 클라이언트가 `esk = PRF(rseed, rho)`를 검증하고 별도의 무효화자 조회 없이 `epk' == epk`를 확인할 수 있습니다. 이 필드는 `cmx`와 암호문 사이에 암호화되지 않은 프로토콜 수준의 연관으로 위치합니다.
+
+**epk_bytes (32 바이트)** -- 임시 공개 키, 직렬화된 Pallas 곡선 점입니다. 노트의 `rseed`로부터 결정적으로 도출됩니다:
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+여기서 `g_d = DiversifyHash(d)`는 수신자의 다이버시파이어(diversifier)에 대한 다양화된 기본 점입니다. `epk`는 수신자가 복호화를 위한 공유 비밀을 계산할 수 있게 합니다: `shared_secret = [ivk] * epk`. `esk`나 `ivk` 중 하나를 알지 못하면 발신자나 수신자에 대해 아무것도 드러내지 않으므로 평문으로 전송됩니다.
+
+**enc_ciphertext (DashMemo의 경우 104 바이트)** -- ChaCha20-Poly1305 AEAD 암호화로 생성된 암호화된 노트 평문:
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+대칭 키는 ECDH를 통해 도출됩니다:
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`.
+
+수신자가 (`ivk`를 사용하여) 복호화하면, **노트 평문** (DashMemo의 경우 88 바이트)에는 다음이 포함됩니다:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 1 | version | Always `0x02` (Orchard, post-ZIP-212) |
+| 1 | 11 | diversifier (d) | Recipient's diversifier, derives the base point `g_d` |
+| 12 | 8 | value (v) | 64-bit little-endian note value in duffs |
+| 20 | 32 | rseed | Random seed for deterministic derivation of `rcm`, `psi`, `esk` |
+| 52 | 36 | memo | Application-layer memo data (DashMemo: 36 bytes) |
+| **Total** | **88** | | |
+
+처음 52 바이트(version + diversifier + value + rseed)는 **컴팩트 노트**입니다 -- 경량 클라이언트는 ChaCha20 스트림 암호를 사용하여 이 부분만 시행 복호화하여(MAC을 검증하지 않고) 노트가 자신의 것인지 확인할 수 있습니다. 맞다면, 전체 88 바이트를 복호화하고 MAC을 검증합니다.
+
+**out_ciphertext (80 바이트)** -- **발신자**가 사후에 노트를 복구할 수 있게 하는 암호화된 발신 데이터입니다. 발신 암호 키(Outgoing Cipher Key)로 암호화됩니다:
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+발신자가 (`ovk`를 사용하여) 복호화하면, **발신 평문** (64 바이트)에는 다음이 포함됩니다:
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | Diversified transmission key (recipient's public key) |
+| 32 | 32 | esk | Ephemeral secret key (Pallas scalar) |
+| **Total** | **64** | | |
+
+`pk_d`와 `esk`를 사용하여 발신자는 공유 비밀을 재구성하고, `enc_ciphertext`를 복호화하고, 전체 노트를 복구할 수 있습니다. 발신자가 `ovk = null`로 설정하면, 발신 평문은 암호화 전에 랜덤 바이트로 채워져 발신자조차 복구가 불가능해집니다(복구 불가능 출력).
+
+### 암호화 체계: ChaCha20-Poly1305
+
+`enc_ciphertext`와 `out_ciphertext` 모두 ChaCha20-Poly1305 AEAD(RFC 8439)를 사용합니다:
+
+| Parameter | Value |
+|-----------|-------|
+| Key size | 256 bits (32 bytes) |
+| Nonce | `[0u8; 12]` (safe because each key is used exactly once) |
+| AAD | Empty |
+| MAC tag | 16 bytes (Poly1305) |
+
+제로 논스는 대칭 키가 노트당 새로운 Diffie-Hellman 교환에서 도출되기 때문에 안전합니다 -- 각 키는 정확히 하나의 메시지만 암호화합니다.
+
+### DashMemo와 ZcashMemo 크기 비교
+
+| Component | DashMemo | ZcashMemo | Notes |
+|-----------|----------|-----------|-------|
+| Memo field | 36 bytes | 512 bytes | Application data |
+| Note plaintext | 88 bytes | 564 bytes | 52 fixed + memo |
+| enc_ciphertext | 104 bytes | 580 bytes | plaintext + 16 MAC |
+| Ciphertext payload (epk+enc+out) | 216 bytes | 692 bytes | Transmitted per note |
+| Full stored record (cmx+rho+payload) | **280 bytes** | **756 bytes** | BulkAppendTree entry |
+
+DashMemo의 더 작은 메모(36 대 512 바이트)는 각 저장 레코드를 476 바이트 줄입니다 -- 수백만 개의 노트를 저장할 때 상당한 차이입니다.
+
+### 시행 복호화 흐름 (경량 클라이언트)
+
+각 저장 레코드에 대해 자신의 노트를 스캔하는 경량 클라이언트는 다음 시퀀스를 수행합니다:
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+5단계가 `rho`를 암호문과 함께 저장해야 하는 이유입니다 -- 이것이 없으면 경량 클라이언트는 시행 복호화 중 임시 키 바인딩을 검증할 수 없습니다.
 
 ## 클라이언트 측 증인 생성
 
@@ -615,7 +737,7 @@ Note commitment at position P
 
 **2. 항목 조회 증명 (V1 경로):**
 
-개별 항목(cmx || 페이로드)은 위치로 쿼리하고 V1 증명(9.6절)을 사용하여 증명할 수 있습니다. 독립형 BulkAppendTree와 같은 메커니즘입니다. V1 증명은 요청된 위치에 대한 BulkAppendTree 인증 경로를 포함하며, CommitmentTree 엘리먼트에 대한 부모 Merk 증명과 연결됩니다.
+개별 항목(cmx || rho || 페이로드)은 위치로 쿼리하고 V1 증명(9.6절)을 사용하여 증명할 수 있습니다. 독립형 BulkAppendTree와 같은 메커니즘입니다. V1 증명은 요청된 위치에 대한 BulkAppendTree 인증 경로를 포함하며, CommitmentTree 엘리먼트에 대한 부모 Merk 증명과 연결됩니다.
 
 ## 비용 추적
 

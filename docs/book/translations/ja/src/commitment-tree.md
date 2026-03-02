@@ -34,7 +34,7 @@ CommitmentTree は同じサブツリーパスの**データ名前空間にすべ
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32 bytes) || ciphertext (216 bytes)     │  │
+│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +211,7 @@ CommitmentTree はサブツリーパスの単一の**データ名前空間**に�
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || ciphertext)     │
+│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -250,10 +250,10 @@ CommitmentTree は4つの操作を提供します。挿入操作は `M: MemoSize
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +280,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||ciphertext to BulkAppendTree
+        Append cmx||rho||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -299,10 +299,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -332,7 +332,7 @@ Step 4: Return frontier.anchor() as orchard::tree::Anchor
 
 ### commitment_tree_get_value
 
-グローバル位置による格納値（cmx || payload）の取得：
+グローバル位置による格納値（cmx || rho || payload）の取得：
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -364,6 +364,7 @@ CommitmentTree は `GroveOp::CommitmentTreeInsert` バリアントによるバ�
 ```rust
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
+    rho: [u8; 32],      // nullifier of the spent note
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -372,10 +373,10 @@ GroveOp::CommitmentTreeInsert {
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
 ```
 
 同じツリーへの複数の挿入は単一バッチ内で許可されます。`execute_ops_on_path` がデータストレージにアクセスできないため、すべての CommitmentTree 操作は `apply_body` の前に前処理される必要があります。
@@ -393,8 +394,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, payload):
-           - ct.append_raw(cmx, payload) — validates size, appends to both
+        d. For each (cmx, rho, payload):
+           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -423,14 +424,6 @@ pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
 
 デフォルトの `M = DashMemo` により、メモサイズを気にしない既存コード（`verify_grovedb`、`commitment_tree_anchor`、`commitment_tree_count` など）は `M` を指定せずに動作します。
 
-**格納エントリ形式**：BulkAppendTree の各エントリは `cmx (32バイト) || ciphertext_payload` であり、ペイロードレイアウトは：
-
-```text
-epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
-```
-
-`DashMemo` の場合：`32 + 104 + 80 = 216バイト` ペイロードなので、各エントリは合計 `32 + 216 = 248バイト` です。
-
 **シリアライゼーションヘルパー**（公開フリー関数）：
 
 | 関数 | 説明 |
@@ -440,6 +433,161 @@ epk_bytes (32) || enc_ciphertext (variable by M) || out_ciphertext (80)
 | `deserialize_ciphertext::<M>(data)` | バイトを `TransmittedNoteCiphertext<M>` にデシリアライズ |
 
 **ペイロード検証**：`append_raw()` メソッドは `payload.len() == ciphertext_payload_size::<M>()` を検証し、不一致の場合は `CommitmentTreeError::InvalidPayloadSize` を返します。型付き `append()` メソッドは内部でシリアライズするため、サイズは常に構造的に正しくなります。
+
+### 格納レコードレイアウト（DashMemo の場合 280 バイト）
+
+BulkAppendTree の各エントリは完全な暗号化ノートレコードを格納します。すべてのバイトを考慮した完全なレイアウト：
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  Offset   Size   Field                                              │
+├─────────────────────────────────────────────────────────────────────┤
+│  0        32     cmx — extracted note commitment (Pallas base field)│
+│  32       32     rho — nullifier of the spent note                  │
+│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Total:   280 bytes                                                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+最初の2つのフィールド（`cmx` と `rho`）は**暗号化されていないプロトコルフィールド**です
+— 設計上公開されています。残りの3つのフィールド（`epk_bytes`、`enc_ciphertext`、
+`out_ciphertext`）は `TransmittedNoteCiphertext` を構成し、暗号化されたペイロードです。
+
+### フィールドごとの詳細
+
+**cmx（32バイト）** — 抽出されたノートコミットメント、Pallas 基本体元。これは
+Sinsemilla フロンティアに追加されるリーフ値です。受取人、値、乱数などすべてのノート
+フィールドを明かすことなくコミットします。cmx はノートをコミットメントツリー内で
+「発見可能」にするものです。
+
+**rho（32バイト）** — このアクションで支出されるノートのナリファイア（nullifier）。
+ナリファイアはブロックチェーン上で既に公開されています（二重支出を防ぐためにそうでなけ
+ればなりません）。`rho` をコミットメントと共に格納することで、試行復号
+（trial decryption）を行うライトクライアントが `esk = PRF(rseed, rho)` を検証し、
+別個のナリファイア検索なしで `epk' == epk` を確認できます。このフィールドは `cmx` と
+暗号文の間に、暗号化されていないプロトコルレベルの関連付けとして配置されます。
+
+**epk_bytes（32バイト）** — エフェメラル公開鍵、シリアライズされた Pallas 曲線点。
+ノートの `rseed` から決定的に導出されます：
+
+```text
+rseed → esk = ToScalar(PRF^expand(rseed, [4] || rho))
+esk   → epk = [esk] * g_d     (scalar multiplication on Pallas)
+epk   → epk_bytes = Serialize(epk)
+```
+
+ここで `g_d = DiversifyHash(d)` は受取人のダイバーシファイアの多様化基点です。`epk`
+により受取人は復号用の共有秘密を計算できます：`shared_secret = [ivk] * epk`。`esk`
+または `ivk` を知らなければ送信者や受取人について何も明かさないため、平文で送信されます。
+
+**enc_ciphertext（DashMemo の場合 104 バイト）** — 暗号化されたノート平文、
+ChaCha20-Poly1305 AEAD 暗号化により生成：
+
+```text
+enc_ciphertext = ChaCha20-Poly1305.Encrypt(key, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (88 bytes) || MAC tag (16 bytes) = 104 bytes
+```
+
+対称鍵は ECDH を通じて導出されます：
+`key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk_bytes)`。
+
+受取人（`ivk` を使用）が復号すると、**ノート平文**（DashMemo の場合 88 バイト）は以下を
+含みます：
+
+| オフセット | サイズ | フィールド | 説明 |
+|--------|------|-------|-------------|
+| 0 | 1 | version | 常に `0x02`（Orchard、ZIP-212 以降） |
+| 1 | 11 | diversifier (d) | 受取人のダイバーシファイア、基点 `g_d` を導出 |
+| 12 | 8 | value (v) | 64ビットリトルエンディアンのノート値（duffs 単位） |
+| 20 | 32 | rseed | `rcm`、`psi`、`esk` の決定的導出のためのランダムシード |
+| 52 | 36 | memo | アプリケーション層のメモデータ（DashMemo：36バイト） |
+| **合計** | **88** | | |
+
+最初の52バイト（version + diversifier + value + rseed）は**コンパクトノート**です
+— ライトクライアントは ChaCha20 ストリーム暗号（MAC 検証なし）を使用してこの部分のみを
+試行復号し、ノートが自分のものかどうかを確認できます。該当する場合、完全な88バイトを
+復号して MAC を検証します。
+
+**out_ciphertext（80バイト）** — 暗号化された送信データ。**送信者**が事後にノートを
+復元できるようにします。Outgoing Cipher Key で暗号化：
+
+```text
+ock = BLAKE2b-256("Zcash_Orchardock", ovk || cv_net || cmx || epk)
+out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
+               = ciphertext (64 bytes) || MAC tag (16 bytes) = 80 bytes
+```
+
+送信者（`ovk` を使用）が復号すると、**送信平文**（64バイト）は以下を含みます：
+
+| オフセット | サイズ | フィールド | 説明 |
+|--------|------|-------|-------------|
+| 0 | 32 | pk_d | 多様化転送鍵（受取人の公開鍵） |
+| 32 | 32 | esk | エフェメラル秘密鍵（Pallas スカラー） |
+| **合計** | **64** | | |
+
+`pk_d` と `esk` を使用して、送信者は共有秘密を再構築し、`enc_ciphertext` を復号して
+完全なノートを復元できます。送信者が `ovk = null` を設定した場合、送信平文は暗号化前に
+ランダムバイトで埋められ、送信者でさえ復元が不可能になります（非復元可能な出力）。
+
+### 暗号化スキーム：ChaCha20-Poly1305
+
+`enc_ciphertext` と `out_ciphertext` の両方が ChaCha20-Poly1305 AEAD（RFC 8439）を
+使用します：
+
+| パラメータ | 値 |
+|-----------|-------|
+| 鍵サイズ | 256ビット（32バイト） |
+| Nonce | `[0u8; 12]`（各鍵が正確に1回使用されるため安全） |
+| AAD | 空 |
+| MAC タグ | 16バイト（Poly1305） |
+
+ゼロ nonce が安全なのは、対称鍵がノートごとの新しい Diffie-Hellman 交換から導出される
+ためです — 各鍵は正確に1つのメッセージを暗号化します。
+
+### DashMemo と ZcashMemo のサイズ比較
+
+| コンポーネント | DashMemo | ZcashMemo | 備考 |
+|-----------|----------|-----------|-------|
+| メモフィールド | 36バイト | 512バイト | アプリケーションデータ |
+| ノート平文 | 88バイト | 564バイト | 52固定 + メモ |
+| enc_ciphertext | 104バイト | 580バイト | 平文 + 16 MAC |
+| 暗号文ペイロード（epk+enc+out） | 216バイト | 692バイト | ノートあたりの送信量 |
+| 完全格納レコード（cmx+rho+payload） | **280バイト** | **756バイト** | BulkAppendTree エントリ |
+
+DashMemo の小さいメモ（36 対 512 バイト）により、各格納レコードが 476 バイト削減
+されます — 数百万のノートを格納する際に重要です。
+
+### 試行復号フロー（ライトクライアント）
+
+自分のノートをスキャンするライトクライアントは、各格納レコードに対して次のシーケンスを
+実行します：
+
+```text
+1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+
+2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
+
+3. Derive key = BLAKE2b-256("Zcash_OrchardKDF", shared_secret || epk)
+
+4. Trial-decrypt compact note (first 52 bytes of enc_ciphertext):
+   → version (1) || diversifier (11) || value (8) || rseed (32)
+
+5. Reconstruct esk = PRF(rseed, rho)    ← rho is needed here!
+   Verify: [esk] * g_d == epk           ← confirms this is our note
+
+6. If match: decrypt full enc_ciphertext (88 bytes + 16 MAC):
+   → compact_note (52) || memo (36)
+   Verify MAC tag for authenticity
+
+7. Reconstruct full Note from (diversifier, value, rseed, rho)
+   This note can later be spent by proving knowledge of it in ZK
+```
+
+ステップ5が、`rho` を暗号文と共に格納する必要がある理由です — これがなければ、ライト
+クライアントは試行復号中にエフェメラル鍵バインディングを検証できません。
 
 ## クライアントサイドの証人生成
 
@@ -614,7 +762,7 @@ Note commitment at position P
 
 **2. アイテム取得証明（V1 パス）：**
 
-個別のアイテム（cmx || payload）は位置でクエリでき、V1 証明（§9.6）を使用して証明できます。これはスタンドアロンの BulkAppendTree と同じメカニズムです。V1 証明には、要求された位置の BulkAppendTree 認証パスが含まれ、CommitmentTree エレメントの親 Merk 証明に連鎖します。
+個別のアイテム（cmx || rho || payload）は位置でクエリでき、V1 証明（§9.6）を使用して証明できます。これはスタンドアロンの BulkAppendTree と同じメカニズムです。V1 証明には、要求された位置の BulkAppendTree 認証パスが含まれ、CommitmentTree エレメントの親 Merk 証明に連鎖します。
 
 ## コスト追跡
 
