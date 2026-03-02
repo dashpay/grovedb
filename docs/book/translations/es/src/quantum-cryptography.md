@@ -56,9 +56,11 @@ siguiente clasifica cada primitiva según su vulnerabilidad cuántica:
 | **ChaCha20-Poly1305** | Cifra enc_ciphertext y out_ciphertext (claves de 256 bits) | 128-bit búsqueda de clave (seguro, pero la ruta de derivación de clave a través de ECDH no lo es) |
 | **PRF^expand** (BLAKE2b-512) | Deriva esk, rcm, psi de rseed | 128-bit seguridad PRF |
 
-### Infraestructura de GroveDB: Completamente Segura ante Computación Cuántica
+### Infraestructura de GroveDB: Considerada Segura ante Computación Cuántica bajo las Suposiciones Actuales
 
-Todas las estructuras de datos propias de GroveDB dependen exclusivamente de hashing Blake3:
+Todas las estructuras de datos propias de GroveDB dependen exclusivamente de hashing
+Blake3, que se considera resistente al cuántico bajo las suposiciones criptográficas
+actuales:
 
 - **Árboles AVL Merk** — hashes de nodos, combined_value_hash, propagación de hash hijo
 - **Árboles MMR** — hashes de nodos internos, cálculo de picos, derivación de raíz
@@ -67,10 +69,12 @@ Todas las estructuras de datos propias de GroveDB dependen exclusivamente de has
 - **Prefijos de rutas de subárboles** — hashing Blake3 de segmentos de ruta
 - **Pruebas V1** — cadenas de autenticación a través de la jerarquía Merk
 
-**No se necesitan cambios.** Las pruebas de árboles Merk de GroveDB, las verificaciones
-de consistencia de MMR, las raíces de épocas de BulkAppendTree y todas las cadenas de
-autenticación de pruebas V1 permanecen seguras contra computadoras cuánticas. La
-infraestructura basada en hash es la parte más sólida del sistema post-cuántico.
+**No se necesitan cambios basándose en los ataques conocidos.** Las pruebas de árboles
+Merk de GroveDB, las verificaciones de consistencia de MMR, las raíces de épocas de
+BulkAppendTree y todas las cadenas de autenticación de pruebas V1 se consideran seguras
+contra computadoras cuánticas. La infraestructura basada en hash es la parte más sólida
+del sistema post-cuántico, aunque las evaluaciones podrían evolucionar con nuevas
+técnicas criptoanalíticas.
 
 ## Amenazas Retroactivas vs. en Tiempo Real
 

@@ -48,9 +48,10 @@ GroveDB 和基于 Orchard 的隐私协议混合使用了椭圆曲线原语和对
 | **ChaCha20-Poly1305** | 加密 enc_ciphertext 和 out_ciphertext（256 位密钥） | 128 位密钥搜索（安全，但通过 ECDH 的密钥派生路径不安全） |
 | **PRF^expand**（BLAKE2b-512） | 从 rseed 派生 esk、rcm、psi | 128 位 PRF 安全性 |
 
-### GroveDB 基础设施：完全量子安全
+### GroveDB 基础设施：在当前密码学假设下被认为量子安全
 
-GroveDB 自身的所有数据结构完全依赖 Blake3 哈希：
+GroveDB 自身的所有数据结构完全依赖 Blake3 哈希，在当前密码学假设下被认为
+具有量子抗性：
 
 - **Merk AVL 树** — 节点哈希、combined_value_hash、子哈希传播
 - **MMR 树** — 内部节点哈希、峰值计算、根派生
@@ -59,9 +60,10 @@ GroveDB 自身的所有数据结构完全依赖 Blake3 哈希：
 - **子树路径前缀** — 路径段的 Blake3 哈希
 - **V1 证明** — 通过 Merk 层级结构的认证链
 
-**无需更改。** GroveDB 的 Merk 树证明、MMR 一致性检查、BulkAppendTree 纪元
-根以及所有 V1 证明认证链在面对量子计算机时仍然安全。基于哈希的基础设施是
-系统在后量子时代最坚固的部分。
+**基于已知攻击无需更改。** GroveDB 的 Merk 树证明、MMR 一致性检查、BulkAppendTree
+纪元根以及所有 V1 证明认证链被认为在面对量子计算机时仍然安全。基于哈希的基础
+设施是系统在后量子时代最坚固的部分，但随着新的密码分析技术的出现，评估可能会
+发生变化。
 
 ## 追溯性威胁与实时威胁
 

@@ -56,9 +56,10 @@ A tabela abaixo classifica cada primitiva pela sua vulnerabilidade quântica:
 | **ChaCha20-Poly1305** | Encripta enc_ciphertext e out_ciphertext (chaves de 256 bits) | Busca de chave de 128 bits (seguro, mas o caminho de derivação de chave via ECDH não é) |
 | **PRF^expand** (BLAKE2b-512) | Deriva esk, rcm, psi a partir de rseed | Segurança PRF de 128 bits |
 
-### Infraestrutura do GroveDB: Totalmente Segura contra Quântico
+### Infraestrutura do GroveDB: Considerada Segura contra Quântico sob as Suposições Atuais
 
-Todas as estruturas de dados próprias do GroveDB dependem exclusivamente de hashing Blake3:
+Todas as estruturas de dados próprias do GroveDB dependem exclusivamente de hashing
+Blake3, que é considerado resistente ao quântico sob as suposições criptográficas atuais:
 
 - **Árvores AVL Merk** — hashes de nós, combined_value_hash, propagação de hash filho
 - **Árvores MMR** — hashes de nós internos, computação de picos, derivação de raiz
@@ -67,11 +68,12 @@ Todas as estruturas de dados próprias do GroveDB dependem exclusivamente de has
 - **Prefixos de caminho de subárvores** — hashing Blake3 de segmentos de caminho
 - **Provas V1** — cadeias de autenticação através da hierarquia Merk
 
-**Nenhuma alteração necessária.** As provas de árvore Merk do GroveDB,
-verificações de consistência MMR, raízes de época da BulkAppendTree e todas
-as cadeias de autenticação de provas V1 permanecem seguras contra computadores
-quânticos. A infraestrutura baseada em hash é a parte mais forte do sistema
-pós-quântico.
+**Nenhuma alteração necessária com base nos ataques conhecidos.** As provas de árvore
+Merk do GroveDB, verificações de consistência MMR, raízes de época da BulkAppendTree
+e todas as cadeias de autenticação de provas V1 são consideradas seguras contra
+computadores quânticos. A infraestrutura baseada em hash é a parte mais forte do
+sistema pós-quântico, embora as avaliações possam evoluir com novas técnicas
+criptoanalíticas.
 
 ## Ameaças Retroativas vs em Tempo Real
 

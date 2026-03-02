@@ -38,9 +38,10 @@ GroveDB ve Orchard tabanlı korumalı protokol, eliptik eğri ile simetrik/hash 
 | **ChaCha20-Poly1305** | enc_ciphertext ve out_ciphertext şifreleme (256 bit anahtarlar) | 128 bit anahtar arama (güvenli, ancak ECDH üzerinden anahtar türetim yolu güvenli değil) |
 | **PRF^expand** (BLAKE2b-512) | rseed'den esk, rcm, psi türetimi | 128 bit PRF güvenliği |
 
-### GroveDB Altyapısı: Tamamen Kuantuma Karşı Güvenli
+### GroveDB Altyapısı: Mevcut Kriptografik Varsayımlar Altında Kuantuma Karşı Güvenli
 
-GroveDB'nin kendi veri yapıları yalnızca Blake3 hashlemesine dayanır:
+GroveDB'nin kendi veri yapıları yalnızca Blake3 hashlemesine dayanır ve mevcut
+kriptografik varsayımlar altında kuantuma karşı dayanıklı olarak kabul edilir:
 
 - **Merk AVL ağaçları** -- düğüm hashleri, combined_value_hash, çocuk hash yayılımı
 - **MMR ağaçları** -- iç düğüm hashleri, tepe hesabı, kök türetimi
@@ -49,7 +50,11 @@ GroveDB'nin kendi veri yapıları yalnızca Blake3 hashlemesine dayanır:
 - **Alt ağaç yol önekleri** -- yol segmentlerinin Blake3 hashlemesi
 - **V1 ispatlar** -- Merk hiyerarşisi üzerinden doğrulama zincirleri
 
-**Değişiklik gerekmez.** GroveDB'nin Merk ağacı ispatları, MMR tutarlılık kontrolleri, BulkAppendTree dönem kökleri ve tüm V1 ispat doğrulama zincirleri kuantum bilgisayarlara karşı güvenli kalır. Hash tabanlı altyapı, sistemin kuantum sonrası en güçlü parçasıdır.
+**Bilinen saldırılara dayalı olarak değişiklik gerekmez.** GroveDB'nin Merk ağacı
+ispatları, MMR tutarlılık kontrolleri, BulkAppendTree dönem kökleri ve tüm V1 ispat
+doğrulama zincirleri kuantum bilgisayarlara karşı güvenli kabul edilir. Hash tabanlı
+altyapı, sistemin kuantum sonrası en güçlü parçasıdır; ancak değerlendirmeler yeni
+kriptoanalitik tekniklerle değişebilir.
 
 ## Geriye Dönük ve Gerçek Zamanlı Tehditler
 

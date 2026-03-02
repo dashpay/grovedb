@@ -55,21 +55,23 @@ klasifikuje kazdy primitiv podle jeho kvantove zranitelnosti:
 | **ChaCha20-Poly1305** | Sifruje enc_ciphertext a out_ciphertext (256-bit klice) | 128-bit key search (bezpecne, ale cesta odvozovani klice pres ECDH neni) |
 | **PRF^expand** (BLAKE2b-512) | Odvozuje esk, rcm, psi z rseed | 128-bit PRF security |
 
-### Infrastruktura GroveDB: Plne kvantove bezpecna
+### Infrastruktura GroveDB: Považována za kvantově bezpečnou za současných předpokladů
 
-Vsechny datove struktury GroveDB se spolehaji vyhradne na hashovani Blake3:
+Všechny datové struktury GroveDB se spoléhají výhradně na hashování Blake3,
+které je za současných kryptografických předpokladů považováno za kvantově odolné:
 
-- **Merk AVL trees** — hashe uzlu, combined_value_hash, propagace child hash
-- **MMR trees** — hashe internich uzlu, vypocet spicek, odvozovani root
-- **BulkAppendTree** — hashove retezce bufferu, dense Merkle roots, epoch MMR
+- **Merk AVL stromy** — hashe uzlů, combined_value_hash, propagace child hash
+- **MMR stromy** — hashe interních uzlů, výpočet špiček, odvozování root
+- **BulkAppendTree** — hashové řetězce bufferů, dense Merkle roots, epoch MMR
 - **CommitmentTree state root** — `blake3("ct_state" || sinsemilla_root || bulk_state_root)`
-- **Subtree path prefixes** — Blake3 hashovani segmentu cest
-- **V1 proofs** — retezce autentizace skrze hierarchii Merk
+- **Subtree path prefixes** — Blake3 hashování segmentů cest
+- **V1 proofs** — řetězce autentizace skrze hierarchii Merk
 
-**Nejsou potreba zadne zmeny.** Dukazy Merk tree GroveDB, kontroly konzistence
-MMR, rooty epoch BulkAppendTree a vsechny retezce autentizace dukazu V1
-zustavaji bezpecne proti kvantovym pocitacum. Infrastruktura zalozena na
-hashich je nejsilnejsi cast systemu v postkvantovem svete.
+**Na základě známých útoků nejsou potřeba žádné změny.** Důkazy Merk tree GroveDB,
+kontroly konzistence MMR, rooty epoch BulkAppendTree a všechny řetězce autentizace
+důkazů V1 jsou považovány za bezpečné proti kvantovým počítačům. Infrastruktura
+založená na hashích je nejsilnější část systému v postkvantovém světě, i když se
+hodnocení mohou vyvíjet s novými kryptoanalytickými technikami.
 
 ## Retroaktivni vs hrozby v realnem case
 

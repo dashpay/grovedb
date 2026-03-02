@@ -56,10 +56,11 @@ ci-dessous classe chaque primitive selon sa vulnérabilité quantique :
 | **ChaCha20-Poly1305** | Chiffre enc_ciphertext et out_ciphertext (clés de 256 bits) | 128-bit recherche de clé (sûr, mais le chemin de dérivation de clé via ECDH ne l'est pas) |
 | **PRF^expand** (BLAKE2b-512) | Dérive esk, rcm, psi à partir de rseed | 128-bit sécurité PRF |
 
-### Infrastructure de GroveDB : Entièrement Sûre face au Quantique
+### Infrastructure de GroveDB : Considérée Sûre face au Quantique sous les Hypothèses Actuelles
 
 Toutes les structures de données propres à GroveDB reposent exclusivement sur le
-hachage Blake3 :
+hachage Blake3, considéré comme résistant au quantique sous les hypothèses
+cryptographiques actuelles :
 
 - **Arbres AVL Merk** — hachages de noeuds, combined_value_hash, propagation du hash enfant
 - **Arbres MMR** — hachages de noeuds internes, calcul des sommets, dérivation de la racine
@@ -68,11 +69,12 @@ hachage Blake3 :
 - **Préfixes de chemins de sous-arbres** — hachage Blake3 des segments de chemin
 - **Preuves V1** — chaînes d'authentification à travers la hiérarchie Merk
 
-**Aucun changement nécessaire.** Les preuves d'arbres Merk de GroveDB, les vérifications
-de cohérence de MMR, les racines d'époques de BulkAppendTree et toutes les chaînes
-d'authentification de preuves V1 restent sécurisées contre les ordinateurs quantiques.
-L'infrastructure basée sur le hachage est la partie la plus solide du système
-post-quantique.
+**Aucun changement nécessaire sur la base des attaques connues.** Les preuves d'arbres
+Merk de GroveDB, les vérifications de cohérence de MMR, les racines d'époques de
+BulkAppendTree et toutes les chaînes d'authentification de preuves V1 sont considérées
+comme sécurisées contre les ordinateurs quantiques. L'infrastructure basée sur le hachage
+est la partie la plus solide du système post-quantique, bien que les évaluations puissent
+évoluer avec de nouvelles techniques cryptanalytiques.
 
 ## Menaces Rétroactives vs. en Temps Réel
 
