@@ -1585,3 +1585,344 @@ mod storage_flags_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod storage_flags_additional_tests {
+    use std::{borrow::Cow, collections::BTreeMap};
+
+    use grovedb_costs::storage_cost::removal::StorageRemovedBytes;
+    use integer_encoding::VarInt;
+    use intmap::IntMap;
+
+    use crate::{error::StorageFlagsError, MergingOwnersStrategy, StorageFlags};
+
+    fn owner(byte: u8) -> [u8; 32] {
+        [byte; 32]
+    }
+
+    #[test]
+    fn owner_id_setter_only_changes_owned_variants() {
+        let mut non_owned = StorageFlags::SingleEpoch(1);
+        non_owned.set_owner_id(owner(9));
+        assert_eq!(non_owned.owner_id(), None);
+
+        let mut owned = StorageFlags::SingleEpochOwned(1, owner(1));
+        owned.set_owner_id(owner(2));
+        assert_eq!(owned.owner_id(), Some(&owner(2)));
+    }
+
+    #[test]
+    fn combine_added_bytes_owner_strategy_behaviors() {
+        let ours = StorageFlags::SingleEpochOwned(1, owner(1));
+        let theirs = StorageFlags::SingleEpochOwned(1, owner(2));
+
+        let err = ours
+            .clone()
+            .combine_added_bytes(theirs.clone(), 5, MergingOwnersStrategy::RaiseIssue)
+            .expect_err("expected owner conflict");
+        assert!(matches!(
+            err,
+            StorageFlagsError::MergingStorageFlagsFromDifferentOwners(_)
+        ));
+
+        let keep_ours = ours
+            .clone()
+            .combine_added_bytes(theirs.clone(), 5, MergingOwnersStrategy::UseOurs)
+            .expect("expected merge");
+        assert_eq!(keep_ours.owner_id(), Some(&owner(1)));
+
+        let keep_theirs = ours
+            .combine_added_bytes(theirs, 5, MergingOwnersStrategy::UseTheirs)
+            .expect("expected merge");
+        assert_eq!(keep_theirs.owner_id(), Some(&owner(2)));
+    }
+
+    #[test]
+    fn combine_added_and_removed_reject_older_rhs_base_epoch() {
+        let ours = StorageFlags::SingleEpoch(3);
+        let theirs = StorageFlags::SingleEpoch(2);
+
+        let add_err = ours
+            .clone()
+            .combine_added_bytes(theirs.clone(), 1, MergingOwnersStrategy::UseOurs)
+            .expect_err("expected base epoch mismatch");
+        assert!(matches!(
+            add_err,
+            StorageFlagsError::MergingStorageFlagsWithDifferentBaseEpoch(_)
+        ));
+
+        let rem_err = ours
+            .combine_removed_bytes(
+                theirs,
+                &StorageRemovedBytes::NoStorageRemoval,
+                MergingOwnersStrategy::UseOurs,
+            )
+            .expect_err("expected base epoch mismatch");
+        assert!(matches!(
+            rem_err,
+            StorageFlagsError::MergingStorageFlagsWithDifferentBaseEpoch(_)
+        ));
+    }
+
+    #[test]
+    fn combine_removed_bytes_exercises_error_paths() {
+        let ours = StorageFlags::MultiEpochOwned(1, BTreeMap::from([(3, 10)]), owner(1));
+        let theirs = StorageFlags::SingleEpochOwned(2, owner(1));
+
+        let mut one = IntMap::new();
+        one.insert(3, 1);
+        let mut two = IntMap::new();
+        two.insert(3, 1);
+        let mut by_identifier = BTreeMap::new();
+        by_identifier.insert(owner(1), one);
+        by_identifier.insert(owner(2), two);
+        let err = ours
+            .clone()
+            .combine_removed_bytes(
+                theirs.clone(),
+                &StorageRemovedBytes::SectionedStorageRemoval(by_identifier),
+                MergingOwnersStrategy::UseOurs,
+            )
+            .expect_err("expected multiple identifiers to fail");
+        assert!(matches!(
+            err,
+            StorageFlagsError::MergingStorageFlagsFromDifferentOwners(_)
+        ));
+
+        let mut by_identifier = BTreeMap::new();
+        by_identifier.insert(owner(2), IntMap::from_iter([(3, 1)]));
+        let err = ours
+            .clone()
+            .combine_removed_bytes(
+                theirs.clone(),
+                &StorageRemovedBytes::SectionedStorageRemoval(by_identifier),
+                MergingOwnersStrategy::UseOurs,
+            )
+            .expect_err("expected wrong identifier to fail");
+        assert!(matches!(
+            err,
+            StorageFlagsError::MergingStorageFlagsFromDifferentOwners(_)
+        ));
+
+        let mut by_identifier = BTreeMap::new();
+        by_identifier.insert(owner(1), IntMap::from_iter([(4, 1)]));
+        let err = ours
+            .clone()
+            .combine_removed_bytes(
+                theirs.clone(),
+                &StorageRemovedBytes::SectionedStorageRemoval(by_identifier),
+                MergingOwnersStrategy::UseOurs,
+            )
+            .expect_err("expected missing epoch to fail");
+        assert!(matches!(
+            err,
+            StorageFlagsError::RemovingAtEpochWithNoAssociatedStorage(_)
+        ));
+
+        let mut by_identifier = BTreeMap::new();
+        by_identifier.insert(owner(1), IntMap::from_iter([(3, 100)]));
+        let err = ours
+            .combine_removed_bytes(
+                theirs,
+                &StorageRemovedBytes::SectionedStorageRemoval(by_identifier),
+                MergingOwnersStrategy::UseOurs,
+            )
+            .expect_err("expected underflow to fail");
+        assert!(matches!(err, StorageFlagsError::StorageFlagsOverflow(_)));
+    }
+
+    #[test]
+    fn optional_combine_and_defaults_and_type_byte_paths() {
+        let theirs = StorageFlags::SingleEpoch(5);
+        let from_none = StorageFlags::optional_combine_added_bytes(
+            None,
+            theirs.clone(),
+            11,
+            MergingOwnersStrategy::UseOurs,
+        )
+        .expect("expected success");
+        assert_eq!(from_none, theirs);
+
+        assert_eq!(StorageFlags::optional_default(), None);
+        assert_eq!(StorageFlags::optional_default_as_ref(), None);
+        assert_eq!(StorageFlags::optional_default_as_cow(), None);
+        assert_eq!(StorageFlags::SingleEpoch(0).type_byte(), 0);
+        assert_eq!(
+            StorageFlags::MultiEpoch(0, BTreeMap::from([(1, 4)])).type_byte(),
+            1
+        );
+        assert_eq!(StorageFlags::SingleEpochOwned(0, owner(1)).type_byte(), 2);
+        assert_eq!(
+            StorageFlags::MultiEpochOwned(0, BTreeMap::from([(1, 4)]), owner(1)).type_byte(),
+            3
+        );
+    }
+
+    #[test]
+    fn serialize_roundtrip_and_size_consistency() {
+        let flags = [
+            StorageFlags::SingleEpoch(42),
+            StorageFlags::MultiEpoch(1, BTreeMap::from([(2, 130)])),
+            StorageFlags::SingleEpochOwned(5, owner(9)),
+            StorageFlags::MultiEpochOwned(6, BTreeMap::from([(7, 200)]), owner(3)),
+        ];
+
+        for flag in flags {
+            let serialized = flag.serialize();
+            let deserialized = StorageFlags::deserialize(&serialized)
+                .expect("deserialize should succeed")
+                .expect("should contain flags");
+            assert_eq!(flag, deserialized);
+            assert_eq!(flag.serialized_size(), serialized.len() as u32);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "this should not be empty")]
+    fn serialize_panics_for_empty_epoch_map() {
+        let flags = StorageFlags::MultiEpoch(1, BTreeMap::new());
+        let _ = flags.serialize();
+    }
+
+    #[test]
+    fn deserialization_error_paths() {
+        assert!(matches!(
+            StorageFlags::deserialize_single_epoch(&[0, 1]).expect_err("expected size error"),
+            StorageFlagsError::StorageFlagsWrongSize(_)
+        ));
+        assert!(matches!(
+            StorageFlags::deserialize_multi_epoch(&[1, 0, 1, 0, 2])
+                .expect_err("expected size error"),
+            StorageFlagsError::StorageFlagsWrongSize(_)
+        ));
+        assert!(matches!(
+            StorageFlags::deserialize_single_epoch_owned(&[2; 34])
+                .expect_err("expected size error"),
+            StorageFlagsError::StorageFlagsWrongSize(_)
+        ));
+        assert!(matches!(
+            StorageFlags::deserialize_multi_epoch_owned(&[3; 37]).expect_err("expected size error"),
+            StorageFlagsError::StorageFlagsWrongSize(_)
+        ));
+        assert!(matches!(
+            StorageFlags::deserialize(&[9, 0, 0]).expect_err("expected unknown type"),
+            StorageFlagsError::DeserializeUnknownStorageFlagsType(_)
+        ));
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_with_truncated_varint_fails() {
+        let mut bytes = vec![1, 0, 1, 0, 2];
+        bytes.push(0x80);
+        let err = StorageFlags::deserialize_multi_epoch(&bytes).expect_err("expected varint error");
+        assert!(matches!(err, StorageFlagsError::StorageFlagsWrongSize(_)));
+    }
+
+    #[test]
+    fn deserialize_multi_epoch_owned_with_truncated_varint_fails() {
+        let mut bytes = vec![3];
+        bytes.extend(owner(1));
+        bytes.extend(1u16.to_be_bytes());
+        bytes.extend(2u16.to_be_bytes());
+        bytes.push(0x80);
+        let err =
+            StorageFlags::deserialize_multi_epoch_owned(&bytes).expect_err("expected varint error");
+        assert!(matches!(err, StorageFlagsError::StorageFlagsWrongSize(_)));
+    }
+
+    #[test]
+    fn map_helpers_cover_owned_ref_and_cow_paths() {
+        let flags = StorageFlags::SingleEpochOwned(7, owner(4));
+        let serialized = flags.serialize();
+        let some_flags = Some(serialized.clone());
+
+        assert_eq!(
+            StorageFlags::from_slice(&serialized).expect("from_slice must work"),
+            Some(flags.clone())
+        );
+        assert_eq!(
+            StorageFlags::from_element_flags_ref(&serialized)
+                .expect("from_element_flags_ref must work"),
+            Some(flags.clone())
+        );
+        assert_eq!(
+            StorageFlags::map_some_element_flags_ref(&some_flags).expect("map_some should work"),
+            Some(flags.clone())
+        );
+
+        let mapped_cow =
+            StorageFlags::map_cow_some_element_flags_ref(&some_flags).expect("map_cow should work");
+        assert!(matches!(mapped_cow, Some(Cow::Owned(_))));
+        assert_eq!(
+            StorageFlags::map_owned_to_element_flags(Some(flags.clone())),
+            serialized
+        );
+        assert_eq!(
+            StorageFlags::map_to_some_element_flags(Some(&flags)),
+            Some(serialized.clone())
+        );
+        assert_eq!(
+            StorageFlags::map_cow_to_some_element_flags(Some(Cow::Owned(flags.clone()))),
+            Some(serialized.clone())
+        );
+        let borrowed = Some(Cow::Borrowed(&flags));
+        assert_eq!(
+            StorageFlags::map_borrowed_cow_to_some_element_flags(&borrowed),
+            Some(serialized.clone())
+        );
+        assert_eq!(flags.to_some_element_flags(), Some(serialized.clone()));
+        assert_eq!(flags.to_element_flags(), serialized.clone());
+        assert_eq!(
+            StorageFlags::map_owned_to_element_flags(None),
+            Vec::<u8>::new()
+        );
+        assert_eq!(StorageFlags::map_to_some_element_flags(None), None);
+        assert_eq!(StorageFlags::map_cow_to_some_element_flags(None), None);
+        let none_flags: Option<Vec<u8>> = None;
+        assert_eq!(
+            StorageFlags::map_some_element_flags_ref(&none_flags).expect("none should work"),
+            None
+        );
+        assert_eq!(
+            StorageFlags::map_cow_some_element_flags_ref(&none_flags).expect("none should work"),
+            None
+        );
+    }
+
+    #[test]
+    fn split_storage_removed_bytes_zero_value_for_multi_epoch_returns_none() {
+        let flags = StorageFlags::MultiEpoch(1, BTreeMap::from([(2, 15)]));
+        let (key_removal, value_removal) = flags.split_storage_removed_bytes(0, 0);
+        assert_eq!(key_removal, StorageRemovedBytes::NoStorageRemoval);
+        assert_eq!(value_removal, StorageRemovedBytes::NoStorageRemoval);
+    }
+
+    #[test]
+    fn display_and_into_optional_cow_are_covered() {
+        let flag = StorageFlags::MultiEpochOwned(8, BTreeMap::from([(9, 44)]), owner(7));
+        let as_string = flag.to_string();
+        assert!(as_string.contains("MultiEpochOwned"));
+        assert!(as_string.contains("BaseEpoch: 8"));
+
+        let cow = flag
+            .clone()
+            .into_optional_cow()
+            .expect("should produce Some");
+        assert_eq!(cow.into_owned(), flag);
+    }
+
+    #[test]
+    fn approximate_size_matches_expected_formula() {
+        assert_eq!(StorageFlags::approximate_size(false, None), 3);
+        assert_eq!(StorageFlags::approximate_size(true, None), 35);
+        assert_eq!(StorageFlags::approximate_size(true, Some((2, 3))), 45);
+    }
+
+    #[test]
+    fn varint_based_epoch_map_size_is_accounted_for() {
+        let bytes = 300u32.encode_var_vec();
+        let flags = StorageFlags::MultiEpoch(1, BTreeMap::from([(2, 300)]));
+        // 1 type byte + 2 base epoch bytes + (2 epoch bytes + varint bytes)
+        assert_eq!(flags.serialized_size(), 3 + 2 + bytes.len() as u32);
+    }
+}
