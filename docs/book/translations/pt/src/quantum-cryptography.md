@@ -28,7 +28,7 @@ bem parametrizada.
 
 | Algoritmo | Alvos | Aceleração | Impacto prático |
 |-----------|-------|------------|-----------------|
-| **Shor** | Logaritmo discreto ECC, fatoração RSA | Exponencial (tempo polinomial) | **Quebra total** de ECC |
+| **Shor** | Logaritmo discreto ECC, fatoração RSA | Tempo polinomial (aceleração exponencial sobre clássico) | **Quebra total** de ECC |
 | **Grover** | Busca de chave simétrica, pré-imagem de hash | Quadrática (reduz bits da chave pela metade) | 256 bits → 128 bits (ainda seguro) |
 
 ## Primitivas Criptográficas do GroveDB

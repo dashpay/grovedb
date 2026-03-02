@@ -26,7 +26,7 @@ tetapi tidak memecahkan kriptografi simetris yang terparameterisasi dengan baik.
 
 | Algoritma | Target | Percepatan | Dampak praktis |
 |-----------|--------|------------|----------------|
-| **Shor** | ECC discrete log, RSA factoring | Eksponensial (waktu polinomial) | **Pemecahan total** ECC |
+| **Shor** | ECC discrete log, RSA factoring | Waktu polinomial (percepatan eksponensial dibanding klasik) | **Pemecahan total** ECC |
 | **Grover** | Pencarian kunci simetris, hash preimage | Kuadratik (membelah dua bit kunci) | 256-bit → 128-bit (masih aman) |
 
 ## Primitif Kriptografis GroveDB

@@ -25,7 +25,7 @@ well-parameterized symmetric cryptography.
 
 | Algorithm | Targets | Speedup | Practical impact |
 |-----------|---------|---------|------------------|
-| **Shor's** | ECC discrete log, RSA factoring | Exponential (polynomial time) | **Total break** of ECC |
+| **Shor's** | ECC discrete log, RSA factoring | Polynomial time (exponential speedup over classical) | **Total break** of ECC |
 | **Grover's** | Symmetric key search, hash preimage | Quadratic (halves key bits) | 256-bit → 128-bit (still safe) |
 
 ## GroveDB's Cryptographic Primitives
@@ -53,9 +53,10 @@ by its quantum vulnerability:
 | **ChaCha20-Poly1305** | Encrypts enc_ciphertext and out_ciphertext (256-bit keys) | 128-bit key search (safe, but key derivation path through ECDH is not) |
 | **PRF^expand** (BLAKE2b-512) | Derives esk, rcm, psi from rseed | 128-bit PRF security |
 
-### GroveDB Infrastructure: Fully Quantum-Safe
+### GroveDB Infrastructure: Believed Quantum-Safe Under Current Assumptions
 
-All of GroveDB's own data structures rely exclusively on Blake3 hashing:
+All of GroveDB's own data structures rely exclusively on Blake3 hashing, which
+is believed to be quantum-resistant under current cryptographic assumptions:
 
 - **Merk AVL trees** — node hashes, combined_value_hash, child hash propagation
 - **MMR trees** — internal node hashes, peak computation, root derivation
@@ -64,10 +65,11 @@ All of GroveDB's own data structures rely exclusively on Blake3 hashing:
 - **Subtree path prefixes** — Blake3 hashing of path segments
 - **V1 proofs** — authentication chains through Merk hierarchy
 
-**No changes needed.** GroveDB's Merk tree proofs, MMR consistency checks,
-BulkAppendTree epoch roots, and all V1 proof authentication chains remain secure
-against quantum computers. The hash-based infrastructure is the strongest part
-of the system post-quantum.
+**No changes needed based on known attacks.** GroveDB's Merk tree proofs, MMR
+consistency checks, BulkAppendTree epoch roots, and all V1 proof authentication
+chains are believed to remain secure against quantum computers. Hash-based
+infrastructure is the strongest part of the system post-quantum, though
+assessments may evolve with new cryptanalytic techniques.
 
 ## Retroactive vs Real-Time Threats
 

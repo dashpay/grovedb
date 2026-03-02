@@ -1,101 +1,101 @@
-# Kuantum Kriptografi -- Kuantum Sonrasi Tehdit Analizi
+# Kuantum Kriptografi -- Kuantum Sonrası Tehdit Analizi
 
-Bu bolum, kuantum bilgisayarlarin GroveDB'de kullanilan kriptografik temel bilesenleri ve bunun uzerine insa edilen korunmali islem protokollerini (Orchard, Dash Platform) nasil etkileyecegini analiz eder. Hangi bilesenlerin savunmasiz, hangilerinin guvenli oldugunu, "simdi topla, sonra coz" kavramininin depolanan veriler icin ne anlama geldigini ve hibrit KEM tasarimlari dahil hangi azaltma stratejilerinin mevcut oldugunu kapsar.
+Bu bölüm, kuantum bilgisayarların GroveDB'de kullanılan kriptografik temel bileşenleri ve bunun üzerine inşa edilen korumalı işlem protokollerini (Orchard, Dash Platform) nasıl etkileyeceğini analiz eder. Hangi bileşenlerin savunmasız, hangilerinin güvenli olduğunu, "şimdi topla, sonra çöz" kavramının depolanan veriler için ne anlama geldiğini ve hibrit KEM tasarımları dahil hangi azaltma stratejilerinin mevcut olduğunu kapsar.
 
-## Onemli Iki Kuantum Algoritmasi
+## Önemli İki Kuantum Algoritması
 
-Pratikte kriptografi ile ilgili yalnizca iki kuantum algoritmasi vardir:
+Pratikte kriptografi ile ilgili yalnızca iki kuantum algoritması vardır:
 
-**Shor algoritmasi** ayrik logaritma problemini (ve tamsayi carpanlarini ayirmayi) polinom zamanda cozer. Pallas gibi 255 bitlik bir eliptik egri icin yaklasik 510 mantiksal kubit gerektirir -- ancak hata duzeltme yuku ile gercek gereksinim yaklasik 4 milyon fiziksel kubittir. Shor algoritmasi, anahtar boyutundan bagimsiz olarak tum eliptik egri kriptografisini **tamamen kirar**.
+**Shor algoritması** ayrık logaritma problemini (ve tamsayı çarpanlarını ayırmayı) polinom zamanda çözer. Pallas gibi 255 bitlik bir eliptik eğri için yaklaşık 510 mantıksal kübit gerektirir -- ancak hata düzeltme yükü ile gerçek gereksinim yaklaşık 4 milyon fiziksel kübittir. Shor algoritması, anahtar boyutundan bağımsız olarak tüm eliptik eğri kriptografisini **tamamen kırar**.
 
-**Grover algoritmasi** kaba kuvvet aramasi icin ikinci dereceden hizlanma saglar. 256 bitlik bir simetrik anahtar etkin olarak 128 bit olur. Ancak, 128 bitlik bir anahtar uzayi icin Grover'in devre derinligi hala 2^64 kuantum islemidir -- bircok kriptograf, dekoherans sinirlari nedeniyle bunun gercek donanim uzerinde asla pratik olmayacagina inanmaktadir. Grover guvenlik marjlarini azaltir ancak iyi parametrelenmis simetrik kriptografiyi kirmaz.
+**Grover algoritması** kaba kuvvet araması için ikinci dereceden hızlanma sağlar. 256 bitlik bir simetrik anahtar etkin olarak 128 bit olur. Ancak, 128 bitlik bir anahtar uzayı için Grover'ın devre derinliği hâlâ 2^64 kuantum işlemidir -- birçok kriptograf, dekoherans sınırları nedeniyle bunun gerçek donanım üzerinde asla pratik olmayacağına inanmaktadır. Grover güvenlik marjlarını azaltır ancak iyi parametrelenmiş simetrik kriptografiyi kırmaz.
 
-| Algoritma | Hedefler | Hizlanma | Pratik etki |
+| Algoritma | Hedefler | Hızlanma | Pratik etki |
 |-----------|---------|---------|------------------|
-| **Shor** | ECC ayrik logaritma, RSA carpanlarina ayirma | Ustel (polinom zaman) | ECC'nin **tamamen kirilmasi** |
-| **Grover** | Simetrik anahtar arama, hash on-goruntu | Ikinci dereceden (anahtar bitlerini yariya indirir) | 256 bit -> 128 bit (hala guvenli) |
+| **Shor** | ECC ayrık logaritma, RSA çarpanlarına ayırma | Üstel (polinom zaman) | ECC'nin **tamamen kırılması** |
+| **Grover** | Simetrik anahtar arama, hash ön-görüntü | İkinci dereceden (anahtar bitlerini yarıya indirir) | 256 bit -> 128 bit (hâlâ güvenli) |
 
-## GroveDB'nin Kriptografik Temel Bilesenleri
+## GroveDB'nin Kriptografik Temel Bileşenleri
 
-GroveDB ve Orchard tabanli korumali protokol, eliptik egri ile simetrik/hash tabanli temel bilesenlerin bir karisimini kullanir. Asagidaki tablo, her bir temel bileseni kuantum savunmasizligina gore siniflandirir:
+GroveDB ve Orchard tabanlı korumalı protokol, eliptik eğri ile simetrik/hash tabanlı temel bileşenlerin bir karışımını kullanır. Aşağıdaki tablo, her bir temel bileşeni kuantum savunmasızlığına göre sınıflandırır:
 
-### Kuantuma Karsi Savunmasiz (Shor algoritmasi -- kuantum sonrasi 0 bit)
+### Kuantuma Karşı Savunmasız (Shor algoritması -- kuantum sonrası 0 bit)
 
-| Temel bilesen | Kullanim yeri | Ne kirilir |
+| Temel bileşen | Kullanım yeri | Ne kırılır |
 |-----------|-----------|-------------|
-| **Pallas ECDLP** | Not taahhutleri (cmx), gecici anahtarlar (epk/esk), goruntuuleme anahtarlari (ivk), odeme anahtarlari (pk_d), nullifier turetimi | Herhangi bir ozel anahtari kamusal karsiliginden kurtar |
-| **ECDH anahtar anlasma** (Pallas) | Not sifreli metinleri icin simetrik sifreleme anahtari turetimi | Paylasilan sirri kurtar -> tum notlari coz |
-| **Sinsemilla hash** | CommitmentTree Merkle yollari, devre ici hashleme | Carpisma direnci ECDLP'ye baglidir; Pallas kirildiginda zayiflar |
-| **Halo 2 IPA** | ZK ispat sistemi (Pasta egrileri uzerinde polinom taahhut) | Yanlis ifadeler icin ispat sahteciligi (sahtecilik, yetkisiz harcama) |
-| **Pedersen taahhutleri** | Islem tutarlarini gizleyen deger taahhutleri (cv_net) | Gizli tutarlari kurtar; bakiye ispatlarini sahtelestir |
+| **Pallas ECDLP** | Not taahhütleri (cmx), geçici anahtarlar (epk/esk), görüntüleme anahtarları (ivk), ödeme anahtarları (pk_d), nullifier türetimi | Herhangi bir özel anahtarı kamusal karşılığından kurtar |
+| **ECDH anahtar anlaşma** (Pallas) | Not şifreli metinleri için simetrik şifreleme anahtarı türetimi | Paylaşılan sırrı kurtar -> tüm notları çöz |
+| **Sinsemilla hash** | CommitmentTree Merkle yolları, devre içi hashleme | Çarpışma direnci ECDLP'ye bağlıdır; Pallas kırıldığında zayıflar |
+| **Halo 2 IPA** | ZK ispat sistemi (Pasta eğrileri üzerinde polinom taahhüt) | Yanlış ifadeler için ispat sahteciliği (sahtecilik, yetkisiz harcama) |
+| **Pedersen taahhütleri** | İşlem tutarlarını gizleyen değer taahhütleri (cv_net) | Gizli tutarları kurtar; bakiye ispatlarını sahtecilikle oluştur |
 
-### Kuantuma Karsi Guvenli (Grover algoritmasi -- kuantum sonrasi 128+ bit)
+### Kuantuma Karşı Güvenli (Grover algoritması -- kuantum sonrası 128+ bit)
 
-| Temel bilesen | Kullanim yeri | Kuantum sonrasi guvenlik |
+| Temel bileşen | Kullanım yeri | Kuantum sonrası güvenlik |
 |-----------|-----------|----------------------|
-| **Blake3** | Merk agaci dugum hashleri, MMR dugumleri, BulkAppendTree durum kokleri, alt agac yol onekleri | 128 bit on-goruntu, 128 bit ikinci on-goruntu |
-| **BLAKE2b-256** | Simetrik anahtar turetimi icin KDF, giden sifre anahtari, PRF^expand | 128 bit on-goruntu |
-| **ChaCha20-Poly1305** | enc_ciphertext ve out_ciphertext sifreleme (256 bit anahtarlar) | 128 bit anahtar arama (guvenli, ancak ECDH uzerinden anahtar turetim yolu guvenli degil) |
-| **PRF^expand** (BLAKE2b-512) | rseed'den esk, rcm, psi turetimi | 128 bit PRF guvenligi |
+| **Blake3** | Merk ağacı düğüm hashleri, MMR düğümleri, BulkAppendTree durum kökleri, alt ağaç yol önekleri | 128 bit ön-görüntü, 128 bit ikinci ön-görüntü |
+| **BLAKE2b-256** | Simetrik anahtar türetimi için KDF, giden şifre anahtarı, PRF^expand | 128 bit ön-görüntü |
+| **ChaCha20-Poly1305** | enc_ciphertext ve out_ciphertext şifreleme (256 bit anahtarlar) | 128 bit anahtar arama (güvenli, ancak ECDH üzerinden anahtar türetim yolu güvenli değil) |
+| **PRF^expand** (BLAKE2b-512) | rseed'den esk, rcm, psi türetimi | 128 bit PRF güvenliği |
 
-### GroveDB Altyapisi: Tamamen Kuantuma Karsi Guvenli
+### GroveDB Altyapısı: Tamamen Kuantuma Karşı Güvenli
 
-GroveDB'nin kendi veri yapilari yalnizca Blake3 hashlemesine dayanir:
+GroveDB'nin kendi veri yapıları yalnızca Blake3 hashlemesine dayanır:
 
-- **Merk AVL agaclari** -- dugum hashleri, combined_value_hash, cocuk hash yayilimi
-- **MMR agaclari** -- ic dugum hashleri, tepe hesabi, kok turetimi
-- **BulkAppendTree** -- tampon hash zincirleri, yogun Merkle kokleri, donem MMR
-- **CommitmentTree durum koku** -- `blake3("ct_state" || sinsemilla_root || bulk_state_root)`
-- **Alt agac yol onekleri** -- yol segmentlerinin Blake3 hashlemesi
-- **V1 ispatlar** -- Merk hiyerarsisi uzerinden dogrulama zincirleri
+- **Merk AVL ağaçları** -- düğüm hashleri, combined_value_hash, çocuk hash yayılımı
+- **MMR ağaçları** -- iç düğüm hashleri, tepe hesabı, kök türetimi
+- **BulkAppendTree** -- tampon hash zincirleri, yoğun Merkle kökleri, dönem MMR
+- **CommitmentTree durum kökü** -- `blake3("ct_state" || sinsemilla_root || bulk_state_root)`
+- **Alt ağaç yol önekleri** -- yol segmentlerinin Blake3 hashlemesi
+- **V1 ispatlar** -- Merk hiyerarşisi üzerinden doğrulama zincirleri
 
-**Degisiklik gerekmez.** GroveDB'nin Merk agaci ispatlar, MMR tutarlilik kontrolleri, BulkAppendTree donem kokleri ve tum V1 ispat dogrulama zincirleri kuantum bilgisayarlara karsi guvenli kalir. Hash tabanli altyapi, sistemin kuantum sonrasi en guclu parçasidir.
+**Değişiklik gerekmez.** GroveDB'nin Merk ağacı ispatları, MMR tutarlılık kontrolleri, BulkAppendTree dönem kökleri ve tüm V1 ispat doğrulama zincirleri kuantum bilgisayarlara karşı güvenli kalır. Hash tabanlı altyapı, sistemin kuantum sonrası en güçlü parçasıdır.
 
-## Geriye Donuk ve Gercek Zamanli Tehditler
+## Geriye Dönük ve Gerçek Zamanlı Tehditler
 
-Bu ayrım, neyin ne zaman duzeltilmesi gerektigini onceliklendirmek icin kritiktir.
+Bu ayrım, neyin ne zaman düzeltilmesi gerektiğini önceliklendirmek için kritiktir.
 
-**Geriye donuk tehditler** halihazirda depolanan verileri tehlikeye atar. Bir saldirgan bugun verileri kaydeder ve kuantum bilgisayarlar kullanilabilir hale geldiginde cozer. Bu tehditler **sonradan azaltilamaz** -- veri zincir uzerinde oldugunda yeniden sifrelenemez veya geri alinamaz.
+**Geriye dönük tehditler** halihazırda depolanan verileri tehlikeye atar. Bir saldırgan bugün verileri kaydeder ve kuantum bilgisayarlar kullanılabilir hale geldiğinde çözer. Bu tehditler **sonradan azaltılamaz** -- veri zincir üzerinde olduğunda yeniden şifrelenemez veya geri alınamaz.
 
-**Gercek zamanli tehditler** yalnizca gelecekte olusturulan islemleri etkiler. Kuantum bilgisayara sahip bir saldirgan imza veya ispat sahteciligi yapabilir, ancak yalnizca yeni islemler icin. Eski islemler ag tarafindan zaten dogrulanmis ve onaylanmistir.
+**Gerçek zamanlı tehditler** yalnızca gelecekte oluşturulan işlemleri etkiler. Kuantum bilgisayara sahip bir saldırgan imza veya ispat sahteciliği yapabilir, ancak yalnızca yeni işlemler için. Eski işlemler ağ tarafından zaten doğrulanmış ve onaylanmıştır.
 
-| Tehdit | Tur | Aciga cikan | Aciliyet |
+| Tehdit | Tür | Açığa çıkan | Aciliyet |
 |--------|------|---------------|---------|
-| **Not cozme** (enc_ciphertext) | **Geriye donuk** | Not icerikleri: alici, tutar, not, rseed | **Yuksek** -- kalici depolama |
-| **Deger taahhut acma** (cv_net) | **Geriye donuk** | Islem tutarlari (ancak gonderen/alici degil) | **Orta** -- yalnizca tutarlar |
-| **Gonderen kurtarma verileri** (out_ciphertext) | **Geriye donuk** | Gonderenin gonderilen notlar icin kurtarma anahtarlari | **Yuksek** -- kalici depolama |
-| Harcama yetkilendirme sahteciligi | Gercek zamanli | Yeni harcama imzalari sahtelestirebilir | Dusuk -- QC gelmeden once yukselt |
-| Halo 2 ispat sahteciligi | Gercek zamanli | Yeni ispatlar sahtelestirebilir (sahtecilik) | Dusuk -- QC gelmeden once yukselt |
-| Sinsemilla carpismasi | Gercek zamanli | Yeni Merkle yollari sahtelestirebilir | Dusuk -- ispat sahteciligi kapsaminda |
-| Baglama imza sahteciligi | Gercek zamanli | Yeni bakiye ispatları sahtelestirebilir | Dusuk -- QC gelmeden once yukselt |
+| **Not çözme** (enc_ciphertext) | **Geriye dönük** | Not içerikleri: alıcı, tutar, not, rseed | **Yüksek** -- kalıcı depolama |
+| **Değer taahhüt açma** (cv_net) | **Geriye dönük** | İşlem tutarları (ancak gönderen/alıcı değil) | **Orta** -- yalnızca tutarlar |
+| **Gönderen kurtarma verileri** (out_ciphertext) | **Geriye dönük** | Göndereninağönderilen notlar için kurtarma anahtarları | **Yüksek** -- kalıcı depolama |
+| Harcama yetkilendirme sahteciliği | Gerçek zamanlı | Yeni harcama imzaları sahteleyebilir | Düşük -- QC gelmeden önce yükselt |
+| Halo 2 ispat sahteciliği | Gerçek zamanlı | Yeni ispatlar sahteleyebilir (sahtecilik) | Düşük -- QC gelmeden önce yükselt |
+| Sinsemilla çarpışması | Gerçek zamanlı | Yeni Merkle yolları sahteleyebilir | Düşük -- ispat sahteciliği kapsamında |
+| Bağlama imza sahteciliği | Gerçek zamanlı | Yeni bakiye ispatları sahteleyebilir | Düşük -- QC gelmeden önce yükselt |
 
-### Tam Olarak Ne Aciga Cikar?
+### Tam Olarak Ne Açığa Çıkar?
 
-**Not sifreleme kirilirsa** (birincil HNDL tehdidi):
+**Not şifreleme kırılırsa** (birincil HNDL tehdidi):
 
-Kuantum saldirgan, Shor algoritmasi araciligiyla depolanan `epk`'dan `esk`'yi kurtarir, ECDH paylasilan sirri hesaplar, simetrik anahtari tureterek `enc_ciphertext`'i cozer. Bu, tam not duz metnini ortaya cikarir:
+Kuantum saldırgan, Shor algoritması aracılığıyla depolanan `epk`'dan `esk`'yi kurtarır, ECDH paylaşılan sırrı hesaplar, simetrik anahtarı türeterek `enc_ciphertext`'i çözer. Bu, tam not düz metnini ortaya çıkarır:
 
-| Alan | Boyut | Ne ortaya cikarir |
+| Alan | Boyut | Ne ortaya çıkarır |
 |-------|------|----------------|
-| version | 1 byte | Protokol surumu (hassas degil) |
-| diversifier | 11 bytes | Alicinin adres bileseni |
-| value | 8 bytes | Kesin islem tutari |
-| rseed | 32 bytes | Nullifier baglantisini etkinlestirir (islem grafi anonimligini kaldirir) |
-| memo | 36 bytes (DashMemo) | Uygulama verileri, potansiyel olarak tanimlayici |
+| version | 1 byte | Protokol sürümü (hassas değil) |
+| diversifier | 11 bytes | Alıcının adres bileşeni |
+| value | 8 bytes | Kesin işlem tutarı |
+| rseed | 32 bytes | Nullifier bağlantısını etkinleştirir (işlem grafı anonimliğini kaldırır) |
+| memo | 36 bytes (DashMemo) | Uygulama verileri, potansiyel olarak tanımlayıcı |
 
-`rseed` ve `rho` (sifre metni ile birlikte depolanan) ile saldirgan `esk = PRF(rseed, rho)` hesaplayabilir ve gecici anahtar baglamasini dogrulayabilir. Diversifier ile birlestirildiginde, tum islem gecmisi boyunca girisleri ciktilara baglar -- **korumali havuzun tam anonimlik kaybı**.
+`rseed` ve `rho` (şifre metni ile birlikte depolanan) ile saldırgan `esk = PRF(rseed, rho)` hesaplayabilir ve geçici anahtar bağlamasını doğrulayabilir. Diversifier ile birleştirildiğinde, tüm işlem geçmişi boyunca girişleri çıktılara bağlar -- **korumalı havuzun tam anonimlik kaybı**.
 
-**Yalnizca deger taahhutleri kirilirsa** (ikincil HNDL tehdidi):
+**Yalnızca değer taahhütleri kırılırsa** (ikincil HNDL tehdidi):
 
-Saldirgan, ECDLP'yi cozerek `cv_net = [v]*V + [rcv]*R`'den `v`'yi kurtarir. Bu, **islem tutarlarini ortaya cikarir ancak gonderen veya alici kimliklerini degil**. Saldirgan "birisi birisine 5.0 Dash gonderdi" gorur ancak not sifrelemeyi de kirmadan tutari herhangi bir adrese veya kimlige baglayamaz.
+Saldırgan, ECDLP'yi çözerek `cv_net = [v]*V + [rcv]*R`'den `v`'yi kurtarır. Bu, **işlem tutarlarını ortaya çıkarır ancak gönderen veya alıcı kimliklerini değil**. Saldırgan "birisi birisine 5.0 Dash gönderdi" görür ancak not şifrelemeyi de kırmadan tutarı herhangi bir adrese veya kimliğe bağlayamaz.
 
-Tek basina, baglanti olmadan tutarlar sinirli kullanima sahiptir. Ancak dis verilerle (zamanlama, bilinen faturalar, kamusal taleplerle eslesen tutarlar) birlestirildiginde korelasyon saldirilari mumkun hale gelir.
+Tek başına, bağlantı olmadan tutarlar sınırlı kullanıma sahiptir. Ancak dış verilerle (zamanlama, bilinen faturalar, kamusal taleplerle eşleşen tutarlar) birleştirildiğinde korelasyon saldırıları mümkün hale gelir.
 
-## "Simdi Topla, Sonra Coz" Saldirisi
+## "Şimdi Topla, Sonra Çöz" Saldırısı
 
 Bu, en acil ve pratik kuantum tehdididir.
 
-**Saldiri modeli:** Devlet duzeyinde bir saldirgan (veya yeterli depolama alani olan herhangi bir taraf) bugun zincir uzerindeki tum korumali islem verilerini kaydeder. Bu veriler blokzincirde herkese acik ve degistirilemezdir. Saldirgan kriptografik olarak ilgili bir kuantum bilgisayar (CRQC) bekler, ardindan:
+**Saldırı modeli:** Devlet düzeyinde bir saldırgan (veya yeterli depolama alanı olan herhangi bir taraf) bugün zincir üzerindeki tüm korumalı işlem verilerini kaydeder. Bu veriler blokzincirde herkese açık ve değiştirilemezdir. Saldırgan kriptografik olarak ilgili bir kuantum bilgisayar (CRQC) bekler, ardından:
 
 ```text
 Step 1: Read stored record from CommitmentTree BulkAppendTree:
@@ -118,30 +118,30 @@ Step 6: With rseed + rho, link nullifiers to note commitments:
         → full transaction graph reconstruction
 ```
 
-**Temel icerik:** Simetrik sifreleme (ChaCha20-Poly1305) tamamen kuantuma karsi guvenlidir. Savunmasizlik tamamen **anahtar turetim yolunda** -- simetrik anahtar ECDH paylasilan sirrindan turetilir ve ECDH Shor algoritmasi tarafindan kirilir. Saldirgan sifrelemeyi kirmaz; anahtari kurtarir.
+**Temel içerik:** Simetrik şifreleme (ChaCha20-Poly1305) tamamen kuantuma karşı güvenlidir. Savunmasızlık tamamen **anahtar türetim yolunda** -- simetrik anahtar ECDH paylaşılan sırrından türetilir ve ECDH Shor algoritması tarafından kırılır. Saldırgan şifrelemeyi kırmaz; anahtarı kurtarır.
 
-**Geriye donukluk:** Bu saldiri **tamamen geriye donuktur**. Bir CRQC mevcut oldugunda zincir uzerinde depolanan her sifrelenmis not cozulebilir. Veriler sonradan yeniden sifrelenemez veya korunamaz. Bu nedenle veriler depolanmadan once, sonra degil, ele alinmalidir.
+**Geriye dönüklük:** Bu saldırı **tamamen geriye dönüktür**. Bir CRQC mevcut olduğunda zincir üzerinde depolanan her şifrelenmiş not çözülebilir. Veriler sonradan yeniden şifrelenemez veya korunamaz. Bu nedenle veriler depolanmadan önce, sonra değil, ele alınmalıdır.
 
 ## Azaltma: Hibrit KEM (ML-KEM + ECDH)
 
-HNDL'ye karsi savunma, simetrik sifreleme anahtarini **iki bagimsiz anahtar anlasma mekanizmasindan** turetmektir, boylece yalnizca birini kirmak yetersiz kalir. Buna hibrit KEM denir.
+HNDL'ye karşı savunma, simetrik şifreleme anahtarını **iki bağımsız anahtar anlaşma mekanizmasından** türetmektir, böylece yalnızca birini kırmak yetersiz kalır. Buna hibrit KEM denir.
 
 ### ML-KEM-768 (CRYSTALS-Kyber)
 
-ML-KEM, Modul Hatali Ogrenme (MLWE) problemine dayanan NIST standartlastirilmis (FIPS 203, Agustos 2024) kuantum sonrasi anahtar kapsulleme mekanizmasidir.
+ML-KEM, Modül Hatalı Öğrenme (MLWE) problemine dayanan NIST standartlaştırılmış (FIPS 203, Ağustos 2024) kuantum sonrası anahtar kapsülleme mekanizmasıdır.
 
 | Parametre | ML-KEM-512 | ML-KEM-768 | ML-KEM-1024 |
 |-----------|-----------|-----------|------------|
-| Acik anahtar (ek) | 800 bytes | **1,184 bytes** | 1,568 bytes |
-| Sifre metni (ct) | 768 bytes | **1,088 bytes** | 1,568 bytes |
-| Paylasilan sir | 32 bytes | 32 bytes | 32 bytes |
+| Açık anahtar (ek) | 800 bytes | **1,184 bytes** | 1,568 bytes |
+| Şifre metni (ct) | 768 bytes | **1,088 bytes** | 1,568 bytes |
+| Paylaşılan sır | 32 bytes | 32 bytes | 32 bytes |
 | NIST Kategorisi | 1 (128 bit) | **3 (192 bit)** | 5 (256 bit) |
 
-**ML-KEM-768** onerilen secimdir -- X-Wing, Signal'in PQXDH'si ve Chrome/Firefox TLS hibrit anahtar degisiminde kullanilan parametre setidir. Kategori 3, gelecekteki kafes kriptanaliz gelismelerine karsi rahat bir marj saglar.
+**ML-KEM-768** önerilen seçimdir -- X-Wing, Signal'in PQXDH'si ve Chrome/Firefox TLS hibrit anahtar değişiminde kullanılan parametre setidir. Kategori 3, gelecekteki kafes kriptanaliz gelişmelerine karşı rahat bir marj sağlar.
 
-### Hibrit Semanin Calismasi
+### Hibrit Şemanın Çalışması
 
-**Mevcut akis (savunmasiz):**
+**Mevcut akış (savunmasız):**
 
 ```text
 Sender:
@@ -152,7 +152,7 @@ Sender:
   enc_ciphertext = ChaCha20(K_enc, note_plaintext)
 ```
 
-**Hibrit akis (kuantuma direncli):**
+**Hibrit akış (kuantuma dirençli):**
 
 ```text
 Sender:
@@ -171,7 +171,7 @@ Sender:
   enc_ciphertext = ChaCha20(K_enc, note_plaintext)  // unchanged
 ```
 
-**Alici sifre cozme:**
+**Alıcı şifre çözme:**
 
 ```text
 Recipient:
@@ -181,22 +181,22 @@ Recipient:
   note_plaintext = ChaCha20.Decrypt(K_enc, enc_ciphertext)
 ```
 
-### Guvenlik Garantisi
+### Güvenlik Garantisi
 
-Birlesik KEM, **herhangi bir** bilesen KEM guvenliyse IND-CCA2 guvenlidir. Bu, PRF (BLAKE2b uygun) kullanan KEM birlestiricileri icin [Giacon, Heuer ve Poettering (2018)](https://eprint.iacr.org/2018/024) tarafindan resmi olarak kanitlanmistir ve [X-Wing guvenlik kaniti](https://eprint.iacr.org/2024/039) tarafindan bagimsiz olarak kanitlanmistir.
+Birleşik KEM, **herhangi bir** bileşen KEM güvenliyse IND-CCA2 güvenlidir. Bu, PRF (BLAKE2b uygun) kullanan KEM birleştiricileri için [Giacon, Heuer ve Poettering (2018)](https://eprint.iacr.org/2018/024) tarafından resmi olarak kanıtlanmıştır ve [X-Wing güvenlik kanıtı](https://eprint.iacr.org/2024/039) tarafından bağımsız olarak kanıtlanmıştır.
 
-| Senaryo | ECDH | ML-KEM | Birlesik anahtar | Durum |
+| Senaryo | ECDH | ML-KEM | Birleşik anahtar | Durum |
 |----------|------|--------|-------------|--------|
-| Klasik dunya | Guvenli | Guvenli | **Guvenli** | Ikisi de sagam |
-| Kuantum ECC'yi kirar | **Kirilmis** | Guvenli | **Guvenli** | ML-KEM korur |
-| Kafes gelismeleri ML-KEM'i kirar | Guvenli | **Kirilmis** | **Guvenli** | ECDH korur (bugunku gibi) |
-| Ikisi de kirilmis | Kirilmis | Kirilmis | **Kirilmis** | Iki es zamanli atilim gerektirir |
+| Klasik dünya | Güvenli | Güvenli | **Güvenli** | İkisi de sağlam |
+| Kuantum ECC'yi kırar | **Kırılmış** | Güvenli | **Güvenli** | ML-KEM korur |
+| Kafes gelişmeleri ML-KEM'i kırar | Güvenli | **Kırılmış** | **Güvenli** | ECDH korur (bugünkü gibi) |
+| İkisi de kırılmış | Kırılmış | Kırılmış | **Kırılmış** | İki eş zamanlı atılım gerektirir |
 
 ### Boyut Etkisi
 
-Hibrit KEM, depolanan her nota ML-KEM-768 sifre metnini (1,088 bytes) ekler ve gonderenin kurtarma icin ML-KEM paylasilan sirri icermesi amaciyla giden sifre metnini genisletir:
+Hibrit KEM, depolanan her nota ML-KEM-768 şifre metnini (1,088 bytes) ekler ve göndereninağkurtarma için ML-KEM paylaşılan sırrı içermesi amacıyla giden şifre metnini genişletir:
 
-**Not basina depolanan kayit:**
+**Not başına depolanan kayıt:**
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
@@ -213,9 +213,9 @@ Hibrit KEM, depolanan her nota ML-KEM-768 sifre metnini (1,088 bytes) ekler ve g
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Olcekte depolama:**
+**Ölçekte depolama:**
 
-| Not sayisi | Mevcut (280 B) | Hibrit (1,400 B) | Fark |
+| Not sayısı | Mevcut (280 B) | Hibrit (1,400 B) | Fark |
 |-------|----------------|------------------|-------|
 | 100,000 | 26.7 MB | 133 MB | +106 MB |
 | 1,000,000 | 267 MB | 1.33 GB | +1.07 GB |
@@ -228,11 +228,11 @@ Current:  diversifier (11) + pk_d (32) = 43 bytes
 Hybrid:   diversifier (11) + pk_d (32) + ek_pq (1,184) = 1,227 bytes
 ```
 
-1,184 byte ML-KEM acik anahtari, gonderenlerin kapsulleme yapabilmesi icin adrese dahil edilmelidir. Yaklasik 1,960 Bech32m karakter ile buyuktur ancak bir QR koduna (maksimum ~2,953 alfanumerik karakter) hala sigar.
+1,184 byte ML-KEM açık anahtarı, gönderenlerin kapsülleme yapabilmesi için adrese dahil edilmelidir. Yaklaşık 1,960 Bech32m karakter ile büyüktür ancak bir QR koduna (maksimum ~2,953 alfanümerik karakter) hâlâ sığar.
 
-### Anahtar Yonetimi
+### Anahtar Yönetimi
 
-ML-KEM anahtar cifti, harcama anahtarindan deterministik olarak turetilir:
+ML-KEM anahtar çifti, harcama anahtarından deterministik olarak türetilir:
 
 ```text
 SpendingKey (sk) [32 bytes]
@@ -247,128 +247,128 @@ SpendingKey (sk) [32 bytes]
               dk_pq: 2,400 bytes (private, part of viewing key)
 ```
 
-**Yedekleme degisikligi gerekmez.** Mevcut 24 kelimelik tohum cumlesi ML-KEM anahtarini kapsar cunku harcama anahtarindan deterministik olarak turetilir. Cuzdan kurtarma eskisi gibi calisir.
+**Yedekleme değişikliği gerekmez.** Mevcut 24 kelimelik tohum cümlesi ML-KEM anahtarını kapsar çünkü harcama anahtarından deterministik olarak türetilir. Cüzdan kurtarma eskisi gibi çalışır.
 
-**Cesitlendirilmis adresler** hepsi ayni `ek_pq`'yu paylasiyor cunku ML-KEM'de Pallas skaler carpimi gibi dogal bir cesitlendirme mekanizmasi yok. Bu, bir kullanicinin iki adresine sahip bir gozlemcinin `ek_pq`'yu karsilastirarak bunlari baglayabilecegi anlamina gelir.
+**Çeşitlendirilmiş adresler** hepsi aynı `ek_pq`'yu paylaşıyor çünkü ML-KEM'de Pallas skaler çarpımı gibi doğal bir çeşitlendirme mekanizması yok. Bu, bir kullanıcının iki adresine sahip bir gözlemcinin `ek_pq`'yu karşılaştırarak bunları bağlayabileceği anlamına gelir.
 
-### Deneme Sifre Cozme Performansi
+### Deneme Şifre Çözme Performansı
 
-| Adim | Mevcut | Hibrit | Fark |
+| Adım | Mevcut | Hibrit | Fark |
 |------|---------|--------|-------|
 | Pallas ECDH | ~100 us | ~100 us | -- |
 | ML-KEM-768 Decaps | -- | ~40 us | +40 us |
 | BLAKE2b KDF | ~0.5 us | ~1 us | -- |
 | ChaCha20 (52 bytes) | ~0.1 us | ~0.1 us | -- |
-| **Not basina toplam** | **~101 us** | **~141 us** | **+%40 ek yuk** |
+| **Not başına toplam** | **~101 us** | **~141 us** | **+%40 ek yük** |
 
-100,000 not tarama: ~10.1 sn -> ~14.1 sn. Ek yuk anlamlidir ancak engelleyici degildir. ML-KEM kapsulden cikarma, (eliptik egri islemlerinin aksine) yiginlama avantaji olmadan sabit zamanlidir, bu nedenle dogrusal olarak olceklenir.
+100,000 not tarama: ~10.1 sn -> ~14.1 sn. Ek yük anlamlıdır ancak engelleyici değildir. ML-KEM kapsülden çıkarma, (eliptik eğri işlemlerinin aksine) yığınlama avantajı olmadan sabit zamanlıdır, bu nedenle doğrusal olarak ölçeklenir.
 
-### ZK Devreleri Uzerindeki Etkisi
+### ZK Devreleri Üzerindeki Etkisi
 
-**Yok.** Hibrit KEM tamamen tasima/sifreleme katmanindadir. Halo 2 devresi not varligini, nullifier dogrulugunu ve deger dengesini kanitlar -- sifreleme hakkinda hicbir sey kanitlamaz. Ispat anahtarlari, dogrulama anahtarlari veya devre kisitlamalarinda degisiklik yoktur.
+**Yok.** Hibrit KEM tamamen taşıma/şifreleme katmanındadır. Halo 2 devresi not varlığını, nullifier doğruluğunu ve değer dengesini kanıtlar -- şifreleme hakkında hiçbir şey kanıtlamaz. İspat anahtarları, doğrulama anahtarları veya devre kısıtlamalarında değişiklik yoktur.
 
-### Sektorle Karsilastirma
+### Sektörle Karşılaştırma
 
-| Sistem | Yaklasim | Durum |
+| Sistem | Yaklaşım | Durum |
 |--------|----------|--------|
-| **Signal** (PQXDH) | X25519 + ML-KEM-768, tum kullanicilar icin zorunlu | **Yayinlanmis** (2023) |
-| **Chrome/Firefox TLS** | X25519 + ML-KEM-768 hibrit anahtar degisimi | **Yayinlanmis** (2024) |
-| **X-Wing** (IETF taslagi) | X25519 + ML-KEM-768, amaca yonelik birlestirici | Taslak standart |
-| **Zcash** | Kuantum kurtarilabilirlik taslak ZIP (fon kurtarma, sifreleme degil) | Yalnizca tartisma |
-| **Dash Platform** | Pallas ECDH + ML-KEM-768 (onerilmis) | Tasarim asamasi |
+| **Signal** (PQXDH) | X25519 + ML-KEM-768, tüm kullanıcılar için zorunlu | **Yayınlanmış** (2023) |
+| **Chrome/Firefox TLS** | X25519 + ML-KEM-768 hibrit anahtar değişimi | **Yayınlanmış** (2024) |
+| **X-Wing** (IETF taslağı) | X25519 + ML-KEM-768, amaca yönelik birleştirici | Taslak standart |
+| **Zcash** | Kuantum kurtarılabilirlik taslak ZIP (fon kurtarma, şifreleme değil) | Yalnızca tartışma |
+| **Dash Platform** | Pallas ECDH + ML-KEM-768 (önerilmiş) | Tasarım aşaması |
 
-## Ne Zaman Yayinlanmali
+## Ne Zaman Yayınlanmalı
 
-### Zaman Cizelgesi Sorusu
+### Zaman Çizelgesi Sorusu
 
-- **Mevcut durum (2026):** Hicbir kuantum bilgisayar 255 bit ECC'yi kiramaz. Gosterilmis en buyuk kuantum carpanlarina ayirma: ~50 bit. Fark: buyukluk siralari.
-- **Yakin vadeli (2030-2035):** IBM, Google, Quantinuum'dan donanim yol haritalari milyonlarca kubiti hedefliyor. ML-KEM uygulamalari ve parametre setleri olgunlasmis olacak.
-- **Orta vadeli (2035-2050):** Cogu tahmin CRQC varisini bu pencereye koyar. Bugun toplanan HNDL verileri risk altindadir.
-- **Uzun vadeli (2050+):** Kriptograflar arasindaki uzlasma: buyuk olcekli kuantum bilgisayarlar "eger" degil "ne zaman" meselesidir.
+- **Mevcut durum (2026):** Hiçbir kuantum bilgisayar 255 bit ECC'yi kıramaz. Gösterilmiş en büyük kuantum çarpanlarına ayırma: ~50 bit. Fark: büyüklük sıraları.
+- **Yakın vadeli (2030-2035):** IBM, Google, Quantinuum'dan donanım yol haritaları milyonlarca kübiti hedefliyor. ML-KEM uygulamaları ve parametre setleri olgunlaşmış olacak.
+- **Orta vadeli (2035-2050):** Çoğu tahmin CRQC varışını bu pencereye koyar. Bugün toplanan HNDL verileri risk altındadır.
+- **Uzun vadeli (2050+):** Kriptograflar arasındaki uzlaşma: büyük ölçekli kuantum bilgisayarlar "eğer" değil "ne zaman" meselesidir.
 
-### Onerilen Strateji
+### Önerilen Strateji
 
-**1. Simdi yukseltme icin tasarlayin.** Depolanan kayit formati, `TransmittedNoteCiphertext` yapisi ve BulkAppendTree giris duzeni surumlu ve genisletilebilir olsun. Dusuk maliyetlidir ve daha sonra hibrit KEM ekleme secenegini korur.
+**1. Şimdi yükseltilebilirlik için tasarlayın.** Depolanan kayıt formatı, `TransmittedNoteCiphertext` yapısı ve BulkAppendTree giriş düzeni sürümlü ve genişletilebilir olsun. Düşük maliyetlidir ve daha sonra hibrit KEM ekleme seçeneğini korur.
 
-**2. Hazir oldugunda hibrit KEM'i yayinlayin, zorunlu kılın.** Iki havuz (klasik ve hibrit) sunmayin. Anonimlik setini bolmek korumali islemlerin amacini bozar -- daha kucuk bir grupta saklanan kullanicilar daha az ozeldir, daha fazla degil. Yayinlandiginda her not hibrit semayi kullanir.
+**2. Hazır olduğunda hibrit KEM'i yayınlayın, zorunlu kılın.** İki havuz (klasik ve hibrit) sunmayın. Anonimlik setini bölmek korumalı işlemlerin amacını bozar -- daha küçük bir grupta saklanan kullanıcılar daha az özeldir, daha fazla değil. Yayınlandığında her not hibrit şemayı kullanır.
 
-**3. 2028-2030 penceresini hedefleyin.** Bu, herhangi bir gercekci kuantum tehditten cok once ancak ML-KEM uygulamalari ve parametre boyutlari stabilize olduktan sonradir. Ayrica Zcash ve Signal'in yayinlama deneyiminden ogrenmeye izin verir.
+**3. 2028-2030 penceresini hedefleyin.** Bu, herhangi bir gerçekçi kuantum tehditten çok önce ancak ML-KEM uygulamaları ve parametre boyutları stabilize olduktan sonradır. Ayrıca Zcash ve Signal'in yayınlama deneyiminden öğrenmeye izin verir.
 
-**4. Tetikleyici olaylari izleyin:**
-- NIST veya NSA'nin kuantum sonrasi goc son tarihleri dayatmasi
-- Kuantum donanımında onemli ilerlemeler (hata duzeltme ile >100,000 fiziksel kubit)
-- Kafes problemlerine karsi kriptanalitik ilerlemeler (ML-KEM secimini etkiler)
+**4. Tetikleyici olayları izleyin:**
+- NIST veya NSA'nın kuantum sonrası göç son tarihleri dayatması
+- Kuantum donanımında önemli ilerlemeler (hata düzeltme ile >100,000 fiziksel kübit)
+- Kafes problemlerine karşı kriptanalitik ilerlemeler (ML-KEM seçimini etkiler)
 
-### Acil Eylem Gerektirmeyen Sey
+### Acil Eylem Gerektirmeyen Şey
 
-| Bilesen | Neden bekleyebilir |
+| Bileşen | Neden bekleyebilir |
 |-----------|----------------|
-| Harcama yetkilendirme imzalari | Sahtecilik gercek zamanlidir, geriye donuk degildir. CRQC gelmeden ML-DSA/SLH-DSA'ya yukselt. |
-| Halo 2 ispat sistemi | Ispat sahteciligi gercek zamanlidir. Gerektiginde STARK tabanli sisteme gec. |
-| Sinsemilla carpisma direnci | Yalnizca yeni saldirilar icin yararli, geriye donuk degil. Ispat sistemi gocu kapsaminda. |
-| GroveDB Merk/MMR/Blake3 altyapisi | **Mevcut kriptografik varsayimlar altinda zaten kuantum guvenli.** Bilinen saldirilara dayali olarak herhangi bir eylem gerekli degildir. |
+| Harcama yetkilendirme imzaları | Sahtecilik gerçek zamanlıdır, geriye dönük değildir. CRQC gelmeden ML-DSA/SLH-DSA'ya yükselt. |
+| Halo 2 ispat sistemi | İspat sahteciliği gerçek zamanlıdır. Gerektiğinde STARK tabanlı sisteme geç. |
+| Sinsemilla çarpışma direnci | Yalnızca yeni saldırılar için yararlı, geriye dönük değil. İspat sistemi göçü kapsamında. |
+| GroveDB Merk/MMR/Blake3 altyapısı | **Mevcut kriptografik varsayımlar altında zaten kuantum güvenli.** Bilinen saldırılara dayalı olarak herhangi bir eylem gerekli değildir. |
 
-## Kuantum Sonrasi Alternatifler Referansi
+## Kuantum Sonrası Alternatifler Referansı
 
-### Sifreleme Icin (ECDH yerine)
+### Şifreleme İçin (ECDH yerine)
 
-| Sema | Tur | Acik anahtar | Sifre metni | NIST Kategorisi | Notlar |
+| Şema | Tür | Açık anahtar | Şifre metni | NIST Kategorisi | Notlar |
 |--------|------|-----------|-----------|---------------|-------|
-| ML-KEM-768 | Lattice (MLWE) | 1,184 B | 1,088 B | 3 (192 bit) | FIPS 203, sektor standardi |
-| ML-KEM-512 | Lattice (MLWE) | 800 B | 768 B | 1 (128 bit) | Daha kucuk, dusuk marj |
-| ML-KEM-1024 | Lattice (MLWE) | 1,568 B | 1,568 B | 5 (256 bit) | Hibrit icin asiri |
+| ML-KEM-768 | Lattice (MLWE) | 1,184 B | 1,088 B | 3 (192 bit) | FIPS 203, sektör standardı |
+| ML-KEM-512 | Lattice (MLWE) | 800 B | 768 B | 1 (128 bit) | Daha küçük, düşük marj |
+| ML-KEM-1024 | Lattice (MLWE) | 1,568 B | 1,568 B | 5 (256 bit) | Hibrit için aşırı |
 
-### Imzalar Icin (RedPallas/Schnorr yerine)
+### İmzalar İçin (RedPallas/Schnorr yerine)
 
-| Sema | Tur | Acik anahtar | Imza | NIST Kategorisi | Notlar |
+| Şema | Tür | Açık anahtar | İmza | NIST Kategorisi | Notlar |
 |--------|------|-----------|----------|---------------|-------|
-| ML-DSA-65 (Dilithium) | Lattice | 1,952 B | 3,293 B | 3 | FIPS 204, hizli |
-| SLH-DSA (SPHINCS+) | Hash-based | 32-64 B | 7,856-49,856 B | 1-5 | FIPS 205, muhafazakar |
-| XMSS/LMS | Hash-based (stateful) | 60 B | 2,500 B | varies | Durumlu -- yeniden kullanım = kirilma |
+| ML-DSA-65 (Dilithium) | Lattice | 1,952 B | 3,293 B | 3 | FIPS 204, hızlı |
+| SLH-DSA (SPHINCS+) | Hash tabanlı | 32-64 B | 7,856-49,856 B | 1-5 | FIPS 205, muhafazakâr |
+| XMSS/LMS | Hash tabanlı (durumlu) | 60 B | 2,500 B | değişken | Durumlu -- yeniden kullanım = kırılma |
 
-### ZK Ispatlar Icin (Halo 2 yerine)
+### ZK İspatlar İçin (Halo 2 yerine)
 
-| Sistem | Varsayim | Ispat boyutu | Kuantum sonrasi | Notlar |
+| Sistem | Varsayım | İspat boyutu | Kuantum sonrası | Notlar |
 |--------|-----------|-----------|-------------|-------|
-| STARKs | Hash fonksiyonlari (carpisma direnci) | ~100-400 KB | **Yes** | StarkNet tarafindan kullanilir |
-| Plonky3 | FRI (hash tabanli polinom taahhut) | ~50-200 KB | **Yes** | Aktif gelistirme |
-| Halo 2 (mevcut) | Pasta egrileri uzerinde ECDLP | ~5 KB | **No** | Mevcut Orchard sistemi |
-| Lattice SNARKs | MLWE | Arastirma | **Yes** | Uretime hazir degil |
+| STARKs | Hash fonksiyonları (çarpışma direnci) | ~100-400 KB | **Evet** | StarkNet tarafından kullanılır |
+| Plonky3 | FRI (hash tabanlı polinom taahhüt) | ~50-200 KB | **Evet** | Aktif geliştirme |
+| Halo 2 (mevcut) | Pasta eğrileri üzerinde ECDLP | ~5 KB | **Hayır** | Mevcut Orchard sistemi |
+| Lattice SNARKs | MLWE | Araştırma | **Evet** | Üretime hazır değil |
 
 ### Rust Crate Ekosistemi
 
-| Crate | Kaynak | FIPS 203 | Dogrulanmis | Notlar |
+| Crate | Kaynak | FIPS 203 | Doğrulanmış | Notlar |
 |-------|--------|----------|----------|-------|
-| `libcrux-ml-kem` | Cryspen | Yes | Resmi olarak dogrulanmis (hax/F*) | En yuksek guvence |
-| `ml-kem` | RustCrypto | Yes | Sabit zamanli, denetlenmemis | Ekosistem uyumlulugu |
-| `fips203` | integritychain | Yes | Sabit zamanli | Saf Rust, no_std |
+| `libcrux-ml-kem` | Cryspen | Evet | Resmi olarak doğrulanmış (hax/F*) | En yüksek güvence |
+| `ml-kem` | RustCrypto | Evet | Sabit zamanlı, denetlenmemiş | Ekosistem uyumluluğu |
+| `fips203` | integritychain | Evet | Sabit zamanlı | Saf Rust, no_std |
 
-## Ozet
+## Özet
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  GROVEDB + ORCHARD ICIN KUANTUM TEHDIT OZETI                       │
+│  GROVEDB + ORCHARD İÇİN KUANTUM TEHDİT ÖZETİ                      │
 │                                                                     │
-│  MEVCUT VARSAYIMLAR ALTINDA GUVENLI (hash tabanli):                 │
-│    ✓ Blake3 Merk agaclari, MMR, BulkAppendTree                     │
+│  MEVCUT VARSAYIMLAR ALTINDA GÜVENLİ (hash tabanlı):                │
+│    ✓ Blake3 Merk ağaçları, MMR, BulkAppendTree                     │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 simetrik sifreleme                          │
-│    ✓ Tum GroveDB kanit dogrulama zincirleri                         │
+│    ✓ ChaCha20-Poly1305 simetrik şifreleme                          │
+│    ✓ Tüm GroveDB kanıt doğrulama zincirleri                        │
 │                                                                     │
-│  VERI DEPOLANMADAN ONCE DUZELT (geriye donuk HNDL):                │
-│    ✗ Not sifreleme (ECDH anahtar anlasmasi) → Hibrit KEM           │
-│    ✗ Deger taahhutleri (Pedersen) → tutarlar aciga cikar            │
+│  VERİ DEPOLANMADAN ÖNCE DÜZELT (geriye dönük HNDL):               │
+│    ✗ Not şifreleme (ECDH anahtar anlaşması) → Hibrit KEM          │
+│    ✗ Değer taahhütleri (Pedersen) → tutarlar açığa çıkar           │
 │                                                                     │
-│  KUANTUM BILGISAYARLAR GELMEDEN ONCE DUZELT                         │
-│  (yalnizca gercek zamanli):                                         │
-│    ~ Harcama yetkilendirmesi → ML-DSA / SLH-DSA                    │
-│    ~ ZK kanitlari → STARKs / Plonky3                               │
-│    ~ Sinsemilla → hash tabanli Merkle agaci                         │
+│  KUANTUM BİLGİSAYARLAR GELMEDEN ÖNCE DÜZELT                        │
+│  (yalnızca gerçek zamanlı):                                         │
+│    ~ Harcama yetkilendirmesi → ML-DSA / SLH-DSA                   │
+│    ~ ZK kanıtları → STARKs / Plonky3                               │
+│    ~ Sinsemilla → hash tabanlı Merkle ağacı                        │
 │                                                                     │
-│  ONERILEN ZAMAN CIZELGESI:                                          │
-│    2026-2028: Yukseltilebilirlik icin tasarla, formatlari versionla │
-│    2028-2030: Not sifreleme icin zorunlu hibrit KEM yayinla         │
-│    2035+: Gerekirse imza ve ispat sistemini tasi                    │
+│  ÖNERİLEN ZAMAN ÇİZELGESİ:                                         │
+│    2026-2028: Yükseltilebilirlik için tasarla, formatları versionla │
+│    2028-2030: Not şifreleme için zorunlu hibrit KEM yayınla        │
+│    2035+: Gerekirse imza ve ispat sistemini taşı                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

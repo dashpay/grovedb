@@ -12,7 +12,7 @@ Chỉ có hai thuật toán lượng tử liên quan đến mật mã trong th�
 
 | Thuật toán | Mục tiêu | Tăng tốc | Tác động thực tế |
 |-----------|---------|---------|------------------|
-| **Shor** | ECC logarit rời rạc, phân tích RSA | Theo hàm mũ (thời gian đa thức) | **Phá hoàn toàn** ECC |
+| **Shor** | ECC logarit rời rạc, phân tích RSA | Thời gian đa thức (tăng tốc theo hàm mũ so với cổ điển) | **Phá hoàn toàn** ECC |
 | **Grover** | Tìm kiếm khóa đối xứng, tiền ảnh hash | Bậc hai (giảm đôi bit khóa) | 256 bit → 128 bit (vẫn an toàn) |
 
 ## Các thành phần mật mã cơ bản của GroveDB
@@ -306,7 +306,7 @@ Quét 100,000 ghi chú: ~10.1 giây → ~14.1 giây. Chi phí thêm có ý nghĩ
 | Chữ ký ủy quyền chi tiêu | Giả mạo là thời gian thực, không hồi tố. Nâng cấp lên ML-DSA/SLH-DSA trước khi CRQC đến. |
 | Hệ thống chứng minh Halo 2 | Giả mạo chứng minh là thời gian thực. Di chuyển sang hệ thống dựa trên STARK khi cần. |
 | Khả năng chống va chạm Sinsemilla | Chỉ hữu ích cho các cuộc tấn công mới, không hồi tố. Bao hàm bởi việc di chuyển hệ thống chứng minh. |
-| Hạ tầng GroveDB Merk/MMR/Blake3 | **Đã an toàn trước lượng tử.** Không cần hành động, bây giờ hay bất cứ khi nào. |
+| Hạ tầng GroveDB Merk/MMR/Blake3 | **Được coi là an toàn trước lượng tử theo các giả định mật mã hiện tại.** Không cần hành động dựa trên các cuộc tấn công đã biết. |
 
 ## Tham chiếu các phương án thay thế hậu lượng tử
 

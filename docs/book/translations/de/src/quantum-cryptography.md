@@ -28,7 +28,7 @@ parametrisierte symmetrische Kryptographie nicht.
 
 | Algorithmus | Ziele | Beschleunigung | Praktische Auswirkung |
 |-------------|-------|----------------|----------------------|
-| **Shor** | ECC diskreter Logarithmus, RSA-Faktorisierung | Exponentiell (polynomiale Zeit) | **Vollstaendige Brechung** von ECC |
+| **Shor** | ECC diskreter Logarithmus, RSA-Faktorisierung | Polynomiale Zeit (exponentielle Beschleunigung gegenueber klassisch) | **Vollstaendige Brechung** von ECC |
 | **Grover** | Symmetrische Schluesselsuche, Hash-Preimage | Quadratisch (halbiert Schluessel-Bits) | 256-bit → 128-bit (immer noch sicher) |
 
 ## Kryptographische Primitive von GroveDB

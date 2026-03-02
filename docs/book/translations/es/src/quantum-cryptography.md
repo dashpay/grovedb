@@ -28,7 +28,7 @@ rompe la criptografía simétrica bien parametrizada.
 
 | Algoritmo | Objetivos | Aceleración | Impacto práctico |
 |-----------|-----------|-------------|------------------|
-| **Shor** | Logaritmo discreto ECC, factorización RSA | Exponencial (tiempo polinomial) | **Ruptura total** de ECC |
+| **Shor** | Logaritmo discreto ECC, factorización RSA | Tiempo polinomial (aceleración exponencial sobre clásico) | **Ruptura total** de ECC |
 | **Grover** | Búsqueda de claves simétricas, preimagen de hash | Cuadrática (reduce bits de clave a la mitad) | 256-bit → 128-bit (aún seguro) |
 
 ## Primitivas Criptográficas de GroveDB

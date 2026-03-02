@@ -28,7 +28,7 @@ sparametryzowanej kryptografii symetrycznej.
 
 | Algorytm | Cele | Przyspieszenie | Praktyczny wpływ |
 |----------|------|----------------|------------------|
-| **Shor** | ECC discrete log, RSA factoring | Wykładnicze (czas wielomianowy) | **Całkowite złamanie** ECC |
+| **Shor** | ECC discrete log, RSA factoring | Czas wielomianowy (wykładnicze przyspieszenie nad klasycznym) | **Całkowite złamanie** ECC |
 | **Grover** | Przeszukiwanie kluczy symetrycznych, hash preimage | Kwadratowe (połowi bity klucza) | 256-bit → 128-bit (nadal bezpieczne) |
 
 ## Prymitywy kryptograficzne GroveDB

@@ -27,7 +27,7 @@ kryptografii.
 
 | Algoritmus | Cile | Zrychleni | Prakticky dopad |
 |-----------|------|-----------|-----------------|
-| **Shor** | ECC discrete log, RSA factoring | Exponencialni (polynomialni cas) | **Uplne prolomeni** ECC |
+| **Shor** | ECC discrete log, RSA factoring | Polynomiální čas (exponenciální zrychlení oproti klasickému) | **Uplne prolomeni** ECC |
 | **Grover** | Hledani symetrickych klicu, hash preimage | Kvadraticke (puleni bitu klice) | 256-bit → 128-bit (stale bezpecne) |
 
 ## Kryptograficke primitivy GroveDB
