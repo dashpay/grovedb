@@ -306,7 +306,7 @@ SpendingKey (sk) [32 bytes]
 | Harcama yetkilendirme imzalari | Sahtecilik gercek zamanlidir, geriye donuk degildir. CRQC gelmeden ML-DSA/SLH-DSA'ya yukselt. |
 | Halo 2 ispat sistemi | Ispat sahteciligi gercek zamanlidir. Gerektiginde STARK tabanli sisteme gec. |
 | Sinsemilla carpisma direnci | Yalnizca yeni saldirilar icin yararli, geriye donuk degil. Ispat sistemi gocu kapsaminda. |
-| GroveDB Merk/MMR/Blake3 altyapisi | **Zaten kuantuma karsi guvenli.** Simdi veya hicbir zaman eylem gerekmez. |
+| GroveDB Merk/MMR/Blake3 altyapisi | **Mevcut kriptografik varsayimlar altinda zaten kuantum guvenli.** Bilinen saldirilara dayali olarak herhangi bir eylem gerekli degildir. |
 
 ## Kuantum Sonrasi Alternatifler Referansi
 
@@ -347,27 +347,28 @@ SpendingKey (sk) [32 bytes]
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
+│  GROVEDB + ORCHARD ICIN KUANTUM TEHDIT OZETI                       │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
-│    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
+│  MEVCUT VARSAYIMLAR ALTINDA GUVENLI (hash tabanli):                 │
+│    ✓ Blake3 Merk agaclari, MMR, BulkAppendTree                     │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 symmetric encryption                        │
-│    ✓ All GroveDB proof authentication chains                        │
+│    ✓ ChaCha20-Poly1305 simetrik sifreleme                          │
+│    ✓ Tum GroveDB kanit dogrulama zincirleri                         │
 │                                                                     │
-│  FIX BEFORE DATA IS STORED (retroactive HNDL):                     │
-│    ✗ Note encryption (ECDH key agreement) → Hybrid KEM             │
-│    ✗ Value commitments (Pedersen) → amounts revealed                │
+│  VERI DEPOLANMADAN ONCE DUZELT (geriye donuk HNDL):                │
+│    ✗ Not sifreleme (ECDH anahtar anlasmasi) → Hibrit KEM           │
+│    ✗ Deger taahhutleri (Pedersen) → tutarlar aciga cikar            │
 │                                                                     │
-│  FIX BEFORE QUANTUM COMPUTERS ARRIVE (real-time only):              │
-│    ~ Spend authorization → ML-DSA / SLH-DSA                        │
-│    ~ ZK proofs → STARKs / Plonky3                                  │
-│    ~ Sinsemilla → hash-based Merkle tree                            │
+│  KUANTUM BILGISAYARLAR GELMEDEN ONCE DUZELT                         │
+│  (yalnizca gercek zamanli):                                         │
+│    ~ Harcama yetkilendirmesi → ML-DSA / SLH-DSA                    │
+│    ~ ZK kanitlari → STARKs / Plonky3                               │
+│    ~ Sinsemilla → hash tabanli Merkle agaci                         │
 │                                                                     │
-│  RECOMMENDED TIMELINE:                                              │
-│    2026-2028: Design for upgradability, version stored formats      │
-│    2028-2030: Deploy mandatory hybrid KEM for note encryption       │
-│    2035+: Migrate signatures and proof system if needed             │
+│  ONERILEN ZAMAN CIZELGESI:                                          │
+│    2026-2028: Yukseltilebilirlik icin tasarla, formatlari versionla │
+│    2028-2030: Not sifreleme icin zorunlu hibrit KEM yayinla         │
+│    2035+: Gerekirse imza ve ispat sistemini tasi                    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

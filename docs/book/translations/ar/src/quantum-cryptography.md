@@ -38,7 +38,7 @@
 | **ChaCha20-Poly1305** | تشفير enc_ciphertext و out_ciphertext (مفاتيح 256 بت) | 128 بت بحث عن المفتاح (آمن، لكن مسار اشتقاق المفتاح عبر ECDH ليس كذلك) |
 | **PRF^expand** (BLAKE2b-512) | اشتقاق esk، rcm، psi من rseed | 128 بت أمان PRF |
 
-### بنية GroveDB التحتية: آمنة كمياً بالكامل
+### بنية GroveDB التحتية: تُعتبر آمنة كمياً وفق الافتراضات الحالية
 
 تعتمد جميع هياكل بيانات GroveDB الخاصة حصرياً على تجزئة Blake3:
 
@@ -49,7 +49,7 @@
 - **بادئات مسارات الأشجار الفرعية** — تجزئة Blake3 لأجزاء المسار
 - **إثباتات V1** — سلاسل المصادقة عبر تسلسل Merk
 
-**لا حاجة لتغييرات.** تظل إثباتات شجرة Merk في GroveDB، وفحوصات اتساق MMR، وجذور حقب BulkAppendTree، وجميع سلاسل مصادقة إثباتات V1 آمنة ضد الحواسيب الكمية. البنية التحتية القائمة على التجزئة هي الجزء الأقوى في النظام ما بعد الكم.
+**لا حاجة لتغييرات في الوقت الحالي.** تُعتبر إثباتات شجرة Merk في GroveDB، وفحوصات اتساق MMR، وجذور حقب BulkAppendTree، وجميع سلاسل مصادقة إثباتات V1 آمنة ضد الحواسيب الكمية بموجب الافتراضات الحالية. البنية التحتية القائمة على التجزئة هي الجزء الأقوى في النظام ما بعد الكم.
 
 ## التهديدات بأثر رجعي مقابل التهديدات الآنية
 
@@ -306,7 +306,7 @@ SpendingKey (sk) [32 bytes]
 | توقيعات تفويض الإنفاق | التزوير آني وليس بأثر رجعي. الترقية إلى ML-DSA/SLH-DSA قبل وصول CRQC. |
 | نظام إثبات Halo 2 | تزوير الإثباتات آني. الترحيل إلى نظام قائم على STARK عند الحاجة. |
 | مقاومة تصادم Sinsemilla | مفيد فقط للهجمات الجديدة، ليس بأثر رجعي. مشمول في ترحيل نظام الإثبات. |
-| بنية GroveDB التحتية Merk/MMR/Blake3 | **آمنة كمياً بالفعل.** لا حاجة لإجراء، الآن أو أبداً. |
+| بنية GroveDB التحتية Merk/MMR/Blake3 | **تُعتبر آمنة كمياً بموجب الافتراضات والمعايير الحالية.** لا حاجة لإجراء في الوقت الحالي. |
 
 ## مرجع بدائل ما بعد الكم
 
@@ -347,27 +347,27 @@ SpendingKey (sk) [32 bytes]
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
+│  ملخص التهديد الكمي لـ GROVEDB + ORCHARD                            │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
+│  آمن وفق الافتراضات الحالية (مبني على التجزئة):                      │
 │    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 symmetric encryption                        │
-│    ✓ All GroveDB proof authentication chains                        │
+│    ✓ تشفير متماثل ChaCha20-Poly1305                                │
+│    ✓ جميع سلاسل مصادقة إثبات GroveDB                                │
 │                                                                     │
-│  FIX BEFORE DATA IS STORED (retroactive HNDL):                     │
-│    ✗ Note encryption (ECDH key agreement) → Hybrid KEM             │
-│    ✗ Value commitments (Pedersen) → amounts revealed                │
+│  يجب الإصلاح قبل تخزين البيانات (HNDL بأثر رجعي):                   │
+│    ✗ تشفير الملاحظات (اتفاقية مفاتيح ECDH) → KEM هجين             │
+│    ✗ التزامات القيمة (Pedersen) → كشف المبالغ                       │
 │                                                                     │
-│  FIX BEFORE QUANTUM COMPUTERS ARRIVE (real-time only):              │
-│    ~ Spend authorization → ML-DSA / SLH-DSA                        │
-│    ~ ZK proofs → STARKs / Plonky3                                  │
-│    ~ Sinsemilla → hash-based Merkle tree                            │
+│  يجب الإصلاح قبل وصول الحواسيب الكمية (في الوقت الفعلي فقط):        │
+│    ~ تفويض الإنفاق → ML-DSA / SLH-DSA                              │
+│    ~ إثباتات المعرفة الصفرية → STARKs / Plonky3                    │
+│    ~ Sinsemilla → شجرة Merkle مبنية على التجزئة                     │
 │                                                                     │
-│  RECOMMENDED TIMELINE:                                              │
-│    2026-2028: Design for upgradability, version stored formats      │
-│    2028-2030: Deploy mandatory hybrid KEM for note encryption       │
-│    2035+: Migrate signatures and proof system if needed             │
+│  الجدول الزمني الموصى به:                                            │
+│    2026-2028: التصميم لقابلية الترقية، إصدار تنسيقات التخزين        │
+│    2028-2030: نشر KEM الهجين الإلزامي لتشفير الملاحظات              │
+│    2035+: ترحيل التوقيعات ونظام الإثبات إذا لزم الأمر              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

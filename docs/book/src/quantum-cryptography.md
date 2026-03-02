@@ -385,7 +385,7 @@ It also allows learning from Zcash's and Signal's deployment experience.
 | Spend authorization signatures | Forgery is real-time, not retroactive. Upgrade to ML-DSA/SLH-DSA before CRQC arrives. |
 | Halo 2 proof system | Proof forgery is real-time. Migrate to STARK-based system when needed. |
 | Sinsemilla collision resistance | Only useful for new attacks, not retroactive. Subsumed by proof system migration. |
-| GroveDB Merk/MMR/Blake3 infrastructure | **Already quantum-safe.** No action needed, now or ever. |
+| GroveDB Merk/MMR/Blake3 infrastructure | **Already quantum-safe** under current cryptographic assumptions. No action needed based on known attacks. |
 
 ## Post-Quantum Alternatives Reference
 
@@ -428,7 +428,7 @@ It also allows learning from Zcash's and Signal's deployment experience.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
+│  SAFE UNDER CURRENT ASSUMPTIONS (hash-based):                        │
 │    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
 │    ✓ ChaCha20-Poly1305 symmetric encryption                        │

@@ -379,7 +379,7 @@ und bewahrt die Option, spaeter ein hybrides KEM hinzuzufuegen.
 
 **2. Hybrides KEM bereitstellen, wenn bereit, und obligatorisch machen.** Keine zwei
 Pools anbieten (klassisch und hybrid). Die Aufteilung der Anonymitaetsmenge
-untergaebt den Zweck geschuetzter Transaktionen — Benutzer, die sich in einer
+untergraebt den Zweck geschuetzter Transaktionen — Benutzer, die sich in einer
 kleineren Gruppe verstecken, haben weniger Privatsphaere, nicht mehr. Bei der
 Bereitstellung nutzt jede Note das hybride Schema.
 
@@ -402,7 +402,7 @@ und Signal zu lernen.
 | Ausgabenautorisierungssignaturen | Faelschung ist in Echtzeit, nicht retroaktiv. Auf ML-DSA/SLH-DSA aktualisieren, bevor CRQC ankommt. |
 | Halo 2-Beweissystem | Beweisfaelschung ist in Echtzeit. Bei Bedarf auf STARK-basiertes System migrieren. |
 | Sinsemilla-Kollisionsresistenz | Nur fuer neue Angriffe nuetzlich, nicht retroaktiv. Durch Migration des Beweissystems subsumiert. |
-| GroveDB Merk/MMR/Blake3-Infrastruktur | **Bereits quantensicher.** Keine Aktion erforderlich, weder jetzt noch jemals. |
+| GroveDB Merk/MMR/Blake3-Infrastruktur | **Unter aktuellen kryptografischen Annahmen bereits quantensicher.** Keine Aktion basierend auf bekannten Angriffen erforderlich. |
 
 ## Referenz der Post-Quanten-Alternativen
 
@@ -445,7 +445,7 @@ und Signal zu lernen.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  ZUSAMMENFASSUNG DER QUANTENBEDROHUNGEN FUER GROVEDB + ORCHARD     │
 │                                                                     │
-│  JETZT UND FUER IMMER SICHER (hash-basiert):                       │
+│  SICHER UNTER AKTUELLEN ANNAHMEN (hash-basiert):                   │
 │    ✓ Blake3 Merk-Baeume, MMR, BulkAppendTree                       │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
 │    ✓ Symmetrische Verschluesselung ChaCha20-Poly1305               │

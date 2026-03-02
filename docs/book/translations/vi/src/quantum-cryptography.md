@@ -1,101 +1,101 @@
-# Mat ma luong tu -- Phan tich moi de doa hau luong tu
+# Mật mã lượng tử — Phân tích mối đe dọa hậu lượng tử
 
-Chuong nay phan tich cach may tinh luong tu se anh huong den cac thanh phan mat ma co ban duoc su dung trong GroveDB va cac giao thuc giao dich duoc bao ve xay dung tren do (Orchard, Dash Platform). No bao gom cac thanh phan nao de bi ton thuong, thanh phan nao an toan, "thu hoach bay gio, giai ma sau" co y nghia gi doi voi du lieu da luu tru, va cac chien luoc giam thieu nao ton tai -- bao gom ca thiet ke KEM lai.
+Chương này phân tích cách máy tính lượng tử sẽ ảnh hưởng đến các thành phần mật mã cơ bản được sử dụng trong GroveDB và các giao thức giao dịch được bảo vệ xây dựng trên đó (Orchard, Dash Platform). Nó bao gồm các thành phần nào dễ bị tổn thương, thành phần nào an toàn, "thu hoạch bây giờ, giải mã sau" có ý nghĩa gì đối với dữ liệu đã lưu trữ, và các chiến lược giảm thiểu nào tồn tại — bao gồm cả thiết kế KEM lai.
 
-## Hai thuat toan luong tu quan trong
+## Hai thuật toán lượng tử quan trọng
 
-Chi co hai thuat toan luong tu lien quan den mat ma trong thuc te:
+Chỉ có hai thuật toán lượng tử liên quan đến mật mã trong thực tế:
 
-**Thuat toan Shor** giai quyet van de logarit roi rac (va phan tich thua so nguyen) trong thoi gian da thuc. Doi voi duong cong elliptic 255 bit nhu Pallas, dieu nay yeu cau khoang 510 qubit logic -- nhung voi chi phi sua loi, yeu cau thuc te la khoang 4 trieu qubit vat ly. Thuat toan Shor **pha hoan toan** tat ca mat ma duong cong elliptic bat ke kich thuoc khoa.
+**Thuật toán Shor** giải quyết vấn đề logarit rời rạc (và phân tích thừa số nguyên) trong thời gian đa thức. Đối với đường cong elliptic 255 bit như Pallas, điều này yêu cầu khoảng 510 qubit logic — nhưng với chi phí sửa lỗi, yêu cầu thực tế là khoảng 4 triệu qubit vật lý. Thuật toán Shor **phá hoàn toàn** tất cả mật mã đường cong elliptic bất kể kích thước khóa.
 
-**Thuat toan Grover** cung cap tang toc bac hai cho tim kiem vet can. Khoa doi xung 256 bit thuc te tro thanh 128 bit. Tuy nhien, do sau mach cua Grover tren khong gian khoa 128 bit van la 2^64 phep toan luong tu -- nhieu nha mat ma hoc tin rang dieu nay se khong bao gio thuc te tren phan cung thuc do gioi han mat ket hop. Grover giam bien an toan nhung khong pha mat ma doi xung duoc tham so hoa tot.
+**Thuật toán Grover** cung cấp tăng tốc bậc hai cho tìm kiếm vét cạn. Khóa đối xứng 256 bit thực tế trở thành 128 bit. Tuy nhiên, độ sâu mạch của Grover trên không gian khóa 128 bit vẫn là 2^64 phép toán lượng tử — nhiều nhà mật mã học tin rằng điều này sẽ không bao giờ thực tế trên phần cứng thực do giới hạn mất kết hợp. Grover giảm biên an toàn nhưng không phá mật mã đối xứng được tham số hóa tốt.
 
-| Thuat toan | Muc tieu | Tang toc | Tac dong thuc te |
+| Thuật toán | Mục tiêu | Tăng tốc | Tác động thực tế |
 |-----------|---------|---------|------------------|
-| **Shor** | ECC logarit roi rac, phan tich RSA | Theo ham mu (thoi gian da thuc) | **Pha hoan toan** ECC |
-| **Grover** | Tim kiem khoa doi xung, tien anh hash | Bac hai (giam doi bit khoa) | 256 bit -> 128 bit (van an toan) |
+| **Shor** | ECC logarit rời rạc, phân tích RSA | Theo hàm mũ (thời gian đa thức) | **Phá hoàn toàn** ECC |
+| **Grover** | Tìm kiếm khóa đối xứng, tiền ảnh hash | Bậc hai (giảm đôi bit khóa) | 256 bit → 128 bit (vẫn an toàn) |
 
-## Cac thanh phan mat ma co ban cua GroveDB
+## Các thành phần mật mã cơ bản của GroveDB
 
-GroveDB va giao thuc bao ve dua tren Orchard su dung ket hop cac thanh phan duong cong elliptic va doi xung/dua tren hash. Bang duoi day phan loai moi thanh phan theo tinh de bi ton thuong luong tu:
+GroveDB và giao thức bảo vệ dựa trên Orchard sử dụng kết hợp các thành phần đường cong elliptic và đối xứng/dựa trên hash. Bảng dưới đây phân loại mỗi thành phần theo tính dễ bị tổn thương lượng tử:
 
-### De bi ton thuong truoc luong tu (Thuat toan Shor -- 0 bit hau luong tu)
+### Dễ bị tổn thương trước lượng tử (Thuật toán Shor — 0 bit hậu lượng tử)
 
-| Thanh phan co ban | Noi su dung | Gi bi pha |
+| Thành phần cơ bản | Nơi sử dụng | Gì bị phá |
 |-----------|-----------|-------------|
-| **Pallas ECDLP** | Cam ket ghi chu (cmx), khoa tam thoi (epk/esk), khoa xem (ivk), khoa thanh toan (pk_d), dan xuat nullifier | Khoi phuc bat ky khoa rieng tu nao tu doi tac cong khai |
-| **Thoa thuan khoa ECDH** (Pallas) | Dan xuat khoa ma hoa doi xung cho ban ma ghi chu | Khoi phuc bi mat chung -> giai ma tat ca ghi chu |
-| **Hash Sinsemilla** | Duong dan Merkle cua CommitmentTree, bam trong mach | Kha nang chong va cham phu thuoc vao ECDLP; suy yeu khi Pallas bi pha |
-| **Halo 2 IPA** | He thong chung minh ZK (cam ket da thuc tren duong cong Pasta) | Gia mao chung minh cho menh de sai (gia mao, chi tieu trai phep) |
-| **Cam ket Pedersen** | Cam ket gia tri (cv_net) an so tien giao dich | Khoi phuc so tien an; gia mao chung minh can bang |
+| **Pallas ECDLP** | Cam kết ghi chú (cmx), khóa tạm thời (epk/esk), khóa xem (ivk), khóa thanh toán (pk_d), dẫn xuất nullifier | Khôi phục bất kỳ khóa riêng tư nào từ đối tác công khai |
+| **Thỏa thuận khóa ECDH** (Pallas) | Dẫn xuất khóa mã hóa đối xứng cho bản mã ghi chú | Khôi phục bí mật chung → giải mã tất cả ghi chú |
+| **Hash Sinsemilla** | Đường dẫn Merkle của CommitmentTree, băm trong mạch | Khả năng chống va chạm phụ thuộc vào ECDLP; suy yếu khi Pallas bị phá |
+| **Halo 2 IPA** | Hệ thống chứng minh ZK (cam kết đa thức trên đường cong Pasta) | Giả mạo chứng minh cho mệnh đề sai (giả mạo, chi tiêu trái phép) |
+| **Cam kết Pedersen** | Cam kết giá trị (cv_net) ẩn số tiền giao dịch | Khôi phục số tiền ẩn; giả mạo chứng minh cân bằng |
 
-### An toan truoc luong tu (Thuat toan Grover -- 128+ bit hau luong tu)
+### An toàn trước lượng tử (Thuật toán Grover — 128+ bit hậu lượng tử)
 
-| Thanh phan co ban | Noi su dung | Bao mat hau luong tu |
+| Thành phần cơ bản | Nơi sử dụng | Bảo mật hậu lượng tử |
 |-----------|-----------|----------------------|
-| **Blake3** | Hash nut cay Merk, nut MMR, goc trang thai BulkAppendTree, tien to duong dan cay con | 128 bit tien anh, 128 bit tien anh thu hai |
-| **BLAKE2b-256** | KDF cho dan xuat khoa doi xung, khoa ma di, PRF^expand | 128 bit tien anh |
-| **ChaCha20-Poly1305** | Ma hoa enc_ciphertext va out_ciphertext (khoa 256 bit) | 128 bit tim kiem khoa (an toan, nhung duong dan xuat khoa qua ECDH thi khong) |
-| **PRF^expand** (BLAKE2b-512) | Dan xuat esk, rcm, psi tu rseed | 128 bit bao mat PRF |
+| **Blake3** | Hash nút cây Merk, nút MMR, gốc trạng thái BulkAppendTree, tiền tố đường dẫn cây con | 128 bit tiền ảnh, 128 bit tiền ảnh thứ hai |
+| **BLAKE2b-256** | KDF cho dẫn xuất khóa đối xứng, khóa mã đi, PRF^expand | 128 bit tiền ảnh |
+| **ChaCha20-Poly1305** | Mã hóa enc_ciphertext và out_ciphertext (khóa 256 bit) | 128 bit tìm kiếm khóa (an toàn, nhưng đường dẫn xuất khóa qua ECDH thì không) |
+| **PRF^expand** (BLAKE2b-512) | Dẫn xuất esk, rcm, psi từ rseed | 128 bit bảo mật PRF |
 
-### Ha tang GroveDB: Hoan toan an toan truoc luong tu
+### Hạ tầng GroveDB: an toàn trước lượng tử theo thiết kế
 
-Tat ca cau truc du lieu rieng cua GroveDB chi dua vao bam Blake3:
+Tất cả cấu trúc dữ liệu riêng của GroveDB chỉ dựa vào băm Blake3:
 
-- **Cay Merk AVL** -- hash nut, combined_value_hash, lan truyen hash con
-- **Cay MMR** -- hash nut noi bo, tinh toan dinh, dan xuat goc
-- **BulkAppendTree** -- chuoi hash bo dem, goc Merkle day dac, MMR ky nguyen
-- **Goc trang thai CommitmentTree** -- `blake3("ct_state" || sinsemilla_root || bulk_state_root)`
-- **Tien to duong dan cay con** -- Bam Blake3 cac phan doan duong dan
-- **Chung minh V1** -- chuoi xac thuc qua phan cap Merk
+- **Cây Merk AVL** — hash nút, combined_value_hash, lan truyền hash con
+- **Cây MMR** — hash nút nội bộ, tính toán đỉnh, dẫn xuất gốc
+- **BulkAppendTree** — chuỗi hash bộ đệm, gốc Merkle dày đặc, MMR kỷ nguyên
+- **Gốc trạng thái CommitmentTree** — `blake3("ct_state" || sinsemilla_root || bulk_state_root)`
+- **Tiền tố đường dẫn cây con** — Băm Blake3 các phân đoạn đường dẫn
+- **Chứng minh V1** — chuỗi xác thực qua phân cấp Merk
 
-**Khong can thay doi.** Chung minh cay Merk cua GroveDB, kiem tra tinh nhat quan MMR, goc ky nguyen BulkAppendTree va tat ca chuoi xac thuc chung minh V1 van an toan truoc may tinh luong tu. Ha tang dua tren hash la phan manh nhat cua he thong sau luong tu.
+**Hiện không cần thay đổi.** Chứng minh cây Merk của GroveDB, kiểm tra tính nhất quán MMR, gốc kỷ nguyên BulkAppendTree và tất cả chuỗi xác thực chứng minh V1 vẫn an toàn trước máy tính lượng tử. Hạ tầng dựa trên hash là phần mạnh nhất của hệ thống sau lượng tử.
 
-## De doa hoi to va de doa thoi gian thuc
+## Đe dọa hồi tố và đe dọa thời gian thực
 
-Su phan biet nay rat quan trong de uu tien nhung gi can sua va khi nao.
+Sự phân biệt này rất quan trọng để ưu tiên những gì cần sửa và khi nào.
 
-**De doa hoi to** xam pham du lieu da duoc luu tru. Ke tan cong ghi lai du lieu hom nay va giai ma khi may tinh luong tu kha dung. Nhung de doa nay **khong the giam thieu sau khi xay ra** -- khi du lieu da tren chuoi, no khong the duoc ma hoa lai hoac thu hoi.
+**Đe dọa hồi tố** xâm phạm dữ liệu đã được lưu trữ. Kẻ tấn công ghi lại dữ liệu hôm nay và giải mã khi máy tính lượng tử khả dụng. Những đe dọa này **không thể giảm thiểu sau khi xảy ra** — khi dữ liệu đã trên chuỗi, nó không thể được mã hóa lại hoặc thu hồi.
 
-**De doa thoi gian thuc** chi anh huong den cac giao dich duoc tao trong tuong lai. Ke tan cong co may tinh luong tu co the gia mao chu ky hoac chung minh, nhung chi cho cac giao dich moi. Cac giao dich cu da duoc mang xac minh va xac nhan.
+**Đe dọa thời gian thực** chỉ ảnh hưởng đến các giao dịch được tạo trong tương lai. Kẻ tấn công có máy tính lượng tử có thể giả mạo chữ ký hoặc chứng minh, nhưng chỉ cho các giao dịch mới. Các giao dịch cũ đã được mạng xác minh và xác nhận.
 
-| De doa | Loai | Gi bi lo | Muc do khan cap |
+| Đe dọa | Loại | Gì bị lộ | Mức độ khẩn cấp |
 |--------|------|---------------|---------|
-| **Giai ma ghi chu** (enc_ciphertext) | **Hoi to** | Noi dung ghi chu: nguoi nhan, so tien, ghi nho, rseed | **Cao** -- luu tru vinh vien |
-| **Mo cam ket gia tri** (cv_net) | **Hoi to** | So tien giao dich (nhung khong phai nguoi gui/nhan) | **Trung binh** -- chi so tien |
-| **Du lieu khoi phuc nguoi gui** (out_ciphertext) | **Hoi to** | Khoa khoi phuc cua nguoi gui cho ghi chu da gui | **Cao** -- luu tru vinh vien |
-| Gia mao uy quyen chi tieu | Thoi gian thuc | Co the gia mao chu ky chi tieu moi | Thap -- nang cap truoc khi QC den |
-| Gia mao chung minh Halo 2 | Thoi gian thuc | Co the gia mao chung minh moi (gia mao) | Thap -- nang cap truoc khi QC den |
-| Va cham Sinsemilla | Thoi gian thuc | Co the gia mao duong dan Merkle moi | Thap -- bao ham boi gia mao chung minh |
-| Gia mao chu ky rang buoc | Thoi gian thuc | Co the gia mao chung minh can bang moi | Thap -- nang cap truoc khi QC den |
+| **Giải mã ghi chú** (enc_ciphertext) | **Hồi tố** | Nội dung ghi chú: người nhận, số tiền, ghi nhớ, rseed | **Cao** — lưu trữ vĩnh viễn |
+| **Mở cam kết giá trị** (cv_net) | **Hồi tố** | Số tiền giao dịch (nhưng không phải người gửi/nhận) | **Trung bình** — chỉ số tiền |
+| **Dữ liệu khôi phục người gửi** (out_ciphertext) | **Hồi tố** | Khóa khôi phục của người gửi cho ghi chú đã gửi | **Cao** — lưu trữ vĩnh viễn |
+| Giả mạo ủy quyền chi tiêu | Thời gian thực | Có thể giả mạo chữ ký chi tiêu mới | Thấp — nâng cấp trước khi QC đến |
+| Giả mạo chứng minh Halo 2 | Thời gian thực | Có thể giả mạo chứng minh mới (giả mạo) | Thấp — nâng cấp trước khi QC đến |
+| Va chạm Sinsemilla | Thời gian thực | Có thể giả mạo đường dẫn Merkle mới | Thấp — bao hàm bởi giả mạo chứng minh |
+| Giả mạo chữ ký ràng buộc | Thời gian thực | Có thể giả mạo chứng minh cân bằng mới | Thấp — nâng cấp trước khi QC đến |
 
-### Chinh xac nhung gi bi lo?
+### Chính xác những gì bị lộ?
 
-**Neu ma hoa ghi chu bi pha** (de doa HNDL chinh):
+**Nếu mã hóa ghi chú bị phá** (đe dọa HNDL chính):
 
-Ke tan cong luong tu khoi phuc `esk` tu `epk` da luu tru bang thuat toan Shor, tinh bi mat chia se ECDH, dan xuat khoa doi xung va giai ma `enc_ciphertext`. Dieu nay tiet lo toan bo ban ro ghi chu:
+Kẻ tấn công lượng tử khôi phục `esk` từ `epk` đã lưu trữ bằng thuật toán Shor, tính bí mật chia sẻ ECDH, dẫn xuất khóa đối xứng và giải mã `enc_ciphertext`. Điều này tiết lộ toàn bộ bản rõ ghi chú:
 
-| Truong | Kich thuoc | Tiet lo gi |
+| Trường | Kích thước | Tiết lộ gì |
 |-------|------|----------------|
-| version | 1 byte | Phien ban giao thuc (khong nhay cam) |
-| diversifier | 11 bytes | Thanh phan dia chi nguoi nhan |
-| value | 8 bytes | So tien giao dich chinh xac |
-| rseed | 32 bytes | Cho phep lien ket nullifier (khu an danh do thi giao dich) |
-| memo | 36 bytes (DashMemo) | Du lieu ung dung, co kha nang nhan dang |
+| version | 1 byte | Phiên bản giao thức (không nhạy cảm) |
+| diversifier | 11 bytes | Thành phần địa chỉ người nhận |
+| value | 8 bytes | Số tiền giao dịch chính xác |
+| rseed | 32 bytes | Cho phép liên kết nullifier (khử ẩn danh đồ thị giao dịch) |
+| memo | 36 bytes (DashMemo) | Dữ liệu ứng dụng, có khả năng nhận dạng |
 
-Voi `rseed` va `rho` (luu tru cung ban ma), ke tan cong co the tinh `esk = PRF(rseed, rho)` va xac minh rang buoc khoa tam thoi. Ket hop voi diversifier, dieu nay lien ket dau vao voi dau ra tren toan bo lich su giao dich -- **khu an danh hoan toan ho bao ve**.
+Với `rseed` và `rho` (lưu trữ cùng bản mã), kẻ tấn công có thể tính `esk = PRF(rseed, rho)` và xác minh ràng buộc khóa tạm thời. Kết hợp với diversifier, điều này liên kết đầu vào với đầu ra trên toàn bộ lịch sử giao dịch — **khử ẩn danh hoàn toàn hồ bảo vệ**.
 
-**Neu chi cam ket gia tri bi pha** (de doa HNDL thu cap):
+**Nếu chỉ cam kết giá trị bị phá** (đe dọa HNDL thứ cấp):
 
-Ke tan cong khoi phuc `v` tu `cv_net = [v]*V + [rcv]*R` bang cach giai ECDLP. Dieu nay tiet lo **so tien giao dich nhung khong phai danh tinh nguoi gui hoac nguoi nhan**. Ke tan cong thay "ai do gui 5.0 Dash cho ai do" nhung khong the lien ket so tien voi bat ky dia chi hoac danh tinh nao ma khong dong thoi pha ma hoa ghi chu.
+Kẻ tấn công khôi phục `v` từ `cv_net = [v]*V + [rcv]*R` bằng cách giải ECDLP. Điều này tiết lộ **số tiền giao dịch nhưng không phải danh tính người gửi hoặc người nhận**. Kẻ tấn công thấy "ai đó gửi 5.0 Dash cho ai đó" nhưng không thể liên kết số tiền với bất kỳ địa chỉ hoặc danh tính nào mà không đồng thời phá mã hóa ghi chú.
 
-Tu no, so tien khong co lien ket co ich han che. Nhung ket hop voi du lieu ben ngoai (thoi gian, hoa don da biet, so tien khop voi yeu cau cong khai), cac cuoc tan cong tuong quan tro nen kha thi.
+Tự nó, số tiền không có liên kết có ích hạn chế. Nhưng kết hợp với dữ liệu bên ngoài (thời gian, hóa đơn đã biết, số tiền khớp với yêu cầu công khai), các cuộc tấn công tương quan trở nên khả thi.
 
-## Cuoc tan cong "Thu hoach Bay gio, Giai ma Sau"
+## Cuộc tấn công "Thu hoạch Bây giờ, Giải mã Sau"
 
-Day la de doa luong tu khan cap va thuc te nhat.
+Đây là đe dọa lượng tử khẩn cấp và thực tế nhất.
 
-**Mo hinh tan cong:** Ke tan cong cap nha nuoc (hoac bat ky ben nao co du bo nho) ghi lai tat ca du lieu giao dich duoc bao ve tren chuoi hom nay. Du lieu nay co san cong khai tren blockchain va bat bien. Ke tan cong cho mot may tinh luong tu co lien quan ve mat ma (CRQC), sau do:
+**Mô hình tấn công:** Kẻ tấn công cấp nhà nước (hoặc bất kỳ bên nào có đủ bộ nhớ) ghi lại tất cả dữ liệu giao dịch được bảo vệ trên chuỗi hôm nay. Dữ liệu này có sẵn công khai trên blockchain và bất biến. Kẻ tấn công chờ một máy tính lượng tử có liên quan về mật mã (CRQC), sau đó:
 
 ```text
 Step 1: Read stored record from CommitmentTree BulkAppendTree:
@@ -118,30 +118,30 @@ Step 6: With rseed + rho, link nullifiers to note commitments:
         → full transaction graph reconstruction
 ```
 
-**Hieu biet then chot:** Ma hoa doi xung (ChaCha20-Poly1305) hoan toan an toan truoc luong tu. Lo hong hoan toan nam o **duong dan dan xuat khoa** -- khoa doi xung duoc dan xuat tu bi mat chia se ECDH, va ECDH bi pha boi thuat toan Shor. Ke tan cong khong pha ma hoa; ho khoi phuc khoa.
+**Hiểu biết then chốt:** Mã hóa đối xứng (ChaCha20-Poly1305) hoàn toàn an toàn trước lượng tử. Lỗ hổng hoàn toàn nằm ở **đường dẫn dẫn xuất khóa** — khóa đối xứng được dẫn xuất từ bí mật chia sẻ ECDH, và ECDH bị phá bởi thuật toán Shor. Kẻ tấn công không phá mã hóa; họ khôi phục khóa.
 
-**Tinh hoi to:** Cuoc tan cong nay **hoan toan hoi to**. Moi ghi chu da ma hoa tung luu tru tren chuoi deu co the duoc giai ma khi CRQC ton tai. Du lieu khong the duoc ma hoa lai hoac bao ve sau do. Day la ly do tai sao phai giai quyet truoc khi du lieu duoc luu tru, khong phai sau do.
+**Tính hồi tố:** Cuộc tấn công này **hoàn toàn hồi tố**. Mọi ghi chú đã mã hóa từng lưu trữ trên chuỗi đều có thể được giải mã khi CRQC tồn tại. Dữ liệu không thể được mã hóa lại hoặc bảo vệ sau đó. Đây là lý do tại sao phải giải quyết trước khi dữ liệu được lưu trữ, không phải sau đó.
 
-## Giam thieu: KEM lai (ML-KEM + ECDH)
+## Giảm thiểu: KEM lai (ML-KEM + ECDH)
 
-Phong thu chong HNDL la dan xuat khoa ma hoa doi xung tu **hai co che thoa thuan khoa doc lap**, sao cho chi pha mot cai la khong du. Day duoc goi la KEM lai.
+Phòng thủ chống HNDL là dẫn xuất khóa mã hóa đối xứng từ **hai cơ chế thỏa thuận khóa độc lập**, sao cho chỉ phá một cái là không đủ. Đây được gọi là KEM lai.
 
 ### ML-KEM-768 (CRYSTALS-Kyber)
 
-ML-KEM la co che dong goi khoa hau luong tu duoc NIST chuan hoa (FIPS 203, thang 8 nam 2024) dua tren bai toan Hoc voi Loi Modun (MLWE).
+ML-KEM là cơ chế đóng gói khóa hậu lượng tử được NIST chuẩn hóa (FIPS 203, tháng 8 năm 2024) dựa trên bài toán Học với Lỗi Mô-đun (MLWE).
 
-| Tham so | ML-KEM-512 | ML-KEM-768 | ML-KEM-1024 |
+| Tham số | ML-KEM-512 | ML-KEM-768 | ML-KEM-1024 |
 |-----------|-----------|-----------|------------|
-| Khoa cong khai (ek) | 800 bytes | **1,184 bytes** | 1,568 bytes |
-| Ban ma (ct) | 768 bytes | **1,088 bytes** | 1,568 bytes |
-| Bi mat chia se | 32 bytes | 32 bytes | 32 bytes |
-| Danh muc NIST | 1 (128 bit) | **3 (192 bit)** | 5 (256 bit) |
+| Khóa công khai (ek) | 800 bytes | **1,184 bytes** | 1,568 bytes |
+| Bản mã (ct) | 768 bytes | **1,088 bytes** | 1,568 bytes |
+| Bí mật chia sẻ | 32 bytes | 32 bytes | 32 bytes |
+| Danh mục NIST | 1 (128 bit) | **3 (192 bit)** | 5 (256 bit) |
 
-**ML-KEM-768** la lua chon duoc khuyen nghi -- la bo tham so duoc su dung boi X-Wing, Signal's PQXDH va trao doi khoa lai Chrome/Firefox TLS. Danh muc 3 cung cap bien thoai mai chong lai nhung tien bo phan tich mat ma luoi trong tuong lai.
+**ML-KEM-768** là lựa chọn được khuyến nghị — là bộ tham số được sử dụng bởi X-Wing, PQXDH của Signal và trao đổi khóa lai Chrome/Firefox TLS. Danh mục 3 cung cấp biên thoải mái chống lại những tiến bộ phân tích mật mã lưới trong tương lai.
 
-### Cach hoat dong cua so do lai
+### Cách hoạt động của sơ đồ lai
 
-**Luong hien tai (de bi ton thuong):**
+**Luồng hiện tại (dễ bị tổn thương):**
 
 ```text
 Sender:
@@ -152,7 +152,7 @@ Sender:
   enc_ciphertext = ChaCha20(K_enc, note_plaintext)
 ```
 
-**Luong lai (khang luong tu):**
+**Luồng lai (kháng lượng tử):**
 
 ```text
 Sender:
@@ -171,7 +171,7 @@ Sender:
   enc_ciphertext = ChaCha20(K_enc, note_plaintext)  // unchanged
 ```
 
-**Giai ma phia nguoi nhan:**
+**Giải mã phía người nhận:**
 
 ```text
 Recipient:
@@ -181,22 +181,22 @@ Recipient:
   note_plaintext = ChaCha20.Decrypt(K_enc, enc_ciphertext)
 ```
 
-### Dam bao bao mat
+### Đảm bảo bảo mật
 
-KEM ket hop co bao mat IND-CCA2 neu **bat ky** KEM thanh phan nao an toan. Dieu nay duoc chung minh chinh thuc boi [Giacon, Heuer, and Poettering (2018)](https://eprint.iacr.org/2018/024) cho cac bo ket hop KEM su dung PRF (BLAKE2b du dieu kien), va duoc chung minh doc lap boi [chung minh bao mat X-Wing](https://eprint.iacr.org/2024/039).
+KEM kết hợp có bảo mật IND-CCA2 nếu **bất kỳ** KEM thành phần nào an toàn. Điều này được chứng minh chính thức bởi [Giacon, Heuer, and Poettering (2018)](https://eprint.iacr.org/2018/024) cho các bộ kết hợp KEM sử dụng PRF (BLAKE2b đủ điều kiện), và được chứng minh độc lập bởi [chứng minh bảo mật X-Wing](https://eprint.iacr.org/2024/039).
 
-| Kich ban | ECDH | ML-KEM | Khoa ket hop | Trang thai |
+| Kịch bản | ECDH | ML-KEM | Khóa kết hợp | Trạng thái |
 |----------|------|--------|-------------|--------|
-| The gioi co dien | An toan | An toan | **An toan** | Ca hai nguyen ven |
-| Luong tu pha ECC | **Bi pha** | An toan | **An toan** | ML-KEM bao ve |
-| Tien bo luoi pha ML-KEM | An toan | **Bi pha** | **An toan** | ECDH bao ve (giong nhu hien tai) |
-| Ca hai bi pha | Bi pha | Bi pha | **Bi pha** | Can hai dot pha dong thoi |
+| Thế giới cổ điển | An toàn | An toàn | **An toàn** | Cả hai nguyên vẹn |
+| Lượng tử phá ECC | **Bị phá** | An toàn | **An toàn** | ML-KEM bảo vệ |
+| Tiến bộ lưới phá ML-KEM | An toàn | **Bị phá** | **An toàn** | ECDH bảo vệ (giống như hiện tại) |
+| Cả hai bị phá | Bị phá | Bị phá | **Bị phá** | Cần hai đột phá đồng thời |
 
-### Tac dong kich thuoc
+### Tác động kích thước
 
-KEM lai them ban ma ML-KEM-768 (1,088 bytes) vao moi ghi chu da luu va mo rong ban ma di de bao gom bi mat chia se ML-KEM cho khoi phuc nguoi gui:
+KEM lai thêm bản mã ML-KEM-768 (1,088 bytes) vào mỗi ghi chú đã lưu và mở rộng bản mã đi để bao gồm bí mật chia sẻ ML-KEM cho khôi phục người gửi:
 
-**Ban ghi luu tru moi ghi chu:**
+**Bản ghi lưu trữ mỗi ghi chú:**
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
@@ -213,26 +213,26 @@ KEM lai them ban ma ML-KEM-768 (1,088 bytes) vao moi ghi chu da luu va mo rong b
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-**Luu tru theo quy mo:**
+**Lưu trữ theo quy mô:**
 
-| So ghi chu | Hien tai (280 B) | Lai (1,400 B) | Chenh lech |
+| Số ghi chú | Hiện tại (280 B) | Lai (1,400 B) | Chênh lệch |
 |-------|----------------|------------------|-------|
 | 100,000 | 26.7 MB | 133 MB | +106 MB |
 | 1,000,000 | 267 MB | 1.33 GB | +1.07 GB |
 | 10,000,000 | 2.67 GB | 13.3 GB | +10.7 GB |
 
-**Kich thuoc dia chi:**
+**Kích thước địa chỉ:**
 
 ```text
 Current:  diversifier (11) + pk_d (32) = 43 bytes
 Hybrid:   diversifier (11) + pk_d (32) + ek_pq (1,184) = 1,227 bytes
 ```
 
-Khoa cong khai ML-KEM 1,184 byte phai duoc bao gom trong dia chi de nguoi gui co the thuc hien dong goi. Voi khoang 1,960 ky tu Bech32m, dieu nay lon nhung van vua voi ma QR (toi da ~2,953 ky tu chu so).
+Khóa công khai ML-KEM 1,184 byte phải được bao gồm trong địa chỉ để người gửi có thể thực hiện đóng gói. Với khoảng 1,960 ký tự Bech32m, điều này lớn nhưng vẫn vừa với mã QR (tối đa ~2,953 ký tự chữ số).
 
-### Quan ly khoa
+### Quản lý khóa
 
-Cap khoa ML-KEM duoc dan xuat tat dinh tu khoa chi tieu:
+Cặp khóa ML-KEM được dẫn xuất tất định từ khóa chi tiêu:
 
 ```text
 SpendingKey (sk) [32 bytes]
@@ -247,127 +247,127 @@ SpendingKey (sk) [32 bytes]
               dk_pq: 2,400 bytes (private, part of viewing key)
 ```
 
-**Khong can thay doi sao luu.** Cum tu hat giong 24 tu hien tai bao gom khoa ML-KEM vi no duoc dan xuat tat dinh tu khoa chi tieu. Khoi phuc vi hoat dong nhu truoc.
+**Không cần thay đổi sao lưu.** Cụm từ hạt giống 24 từ hiện tại bao gồm khóa ML-KEM vì nó được dẫn xuất tất định từ khóa chi tiêu. Khôi phục ví hoạt động như trước.
 
-**Dia chi da dang hoa** deu chia se cung `ek_pq` vi ML-KEM khong co co che da dang hoa tu nhien nhu phep nhan vo huong Pallas. Dieu nay co nghia la nguoi quan sat co hai dia chi cua mot nguoi dung co the lien ket chung bang cach so sanh `ek_pq`.
+**Địa chỉ đa dạng hóa** đều chia sẻ cùng `ek_pq` vì ML-KEM không có cơ chế đa dạng hóa tự nhiên như phép nhân vô hướng Pallas. Điều này có nghĩa là người quan sát có hai địa chỉ của một người dùng có thể liên kết chúng bằng cách so sánh `ek_pq`.
 
-### Hieu suat giai ma thu
+### Hiệu suất giải mã thử
 
-| Buoc | Hien tai | Lai | Chenh lech |
+| Bước | Hiện tại | Lai | Chênh lệch |
 |------|---------|--------|-------|
-| Pallas ECDH | ~100 us | ~100 us | -- |
-| ML-KEM-768 Decaps | -- | ~40 us | +40 us |
-| BLAKE2b KDF | ~0.5 us | ~1 us | -- |
-| ChaCha20 (52 bytes) | ~0.1 us | ~0.1 us | -- |
-| **Tong moi ghi chu** | **~101 us** | **~141 us** | **+40% chi phi them** |
+| Pallas ECDH | ~100 us | ~100 us | — |
+| ML-KEM-768 Decaps | — | ~40 us | +40 us |
+| BLAKE2b KDF | ~0.5 us | ~1 us | — |
+| ChaCha20 (52 bytes) | ~0.1 us | ~0.1 us | — |
+| **Tổng mỗi ghi chú** | **~101 us** | **~141 us** | **+40% chi phí thêm** |
 
-Quet 100,000 ghi chu: ~10.1 giay -> ~14.1 giay. Chi phi them co y nghia nhung khong cam. Giai dong goi ML-KEM la thoi gian hang so khong co loi the theo lo (khong giong phep toan duong cong elliptic), nen no tang tuyen tinh.
+Quét 100,000 ghi chú: ~10.1 giây → ~14.1 giây. Chi phí thêm có ý nghĩa nhưng không cản trở. Giải đóng gói ML-KEM là thời gian hằng số không có lợi thế theo lô (không giống phép toán đường cong elliptic), nên nó tăng tuyến tính.
 
-### Tac dong len mach ZK
+### Tác động lên mạch ZK
 
-**Khong co.** KEM lai hoan toan nam trong tang van chuyen/ma hoa. Mach Halo 2 chung minh su ton tai ghi chu, tinh dung nullifier va can bang gia tri -- no khong chung minh bat cu dieu gi ve ma hoa. Khong thay doi khoa chung minh, khoa xac minh hoac rang buoc mach.
+**Không có.** KEM lai hoàn toàn nằm trong tầng vận chuyển/mã hóa. Mạch Halo 2 chứng minh sự tồn tại ghi chú, tính đúng nullifier và cân bằng giá trị — nó không chứng minh bất cứ điều gì về mã hóa. Không thay đổi khóa chứng minh, khóa xác minh hoặc ràng buộc mạch.
 
-### So sanh voi nganh
+### So sánh với ngành
 
-| He thong | Cach tiep can | Trang thai |
+| Hệ thống | Cách tiếp cận | Trạng thái |
 |--------|----------|--------|
-| **Signal** (PQXDH) | X25519 + ML-KEM-768, bat buoc cho tat ca nguoi dung | **Da trien khai** (2023) |
-| **Chrome/Firefox TLS** | X25519 + ML-KEM-768 trao doi khoa lai | **Da trien khai** (2024) |
-| **X-Wing** (ban nhap IETF) | X25519 + ML-KEM-768, bo ket hop chuyen dung | Ban nhap tieu chuan |
-| **Zcash** | Ban nhap ZIP kha nang khoi phuc luong tu (khoi phuc quy, khong phai ma hoa) | Chi thao luan |
-| **Dash Platform** | Pallas ECDH + ML-KEM-768 (de xuat) | Giai doan thiet ke |
+| **Signal** (PQXDH) | X25519 + ML-KEM-768, bắt buộc cho tất cả người dùng | **Đã triển khai** (2023) |
+| **Chrome/Firefox TLS** | X25519 + ML-KEM-768 trao đổi khóa lai | **Đã triển khai** (2024) |
+| **X-Wing** (bản nháp IETF) | X25519 + ML-KEM-768, bộ kết hợp chuyên dụng | Bản nháp tiêu chuẩn |
+| **Zcash** | Bản nháp ZIP khả năng khôi phục lượng tử (khôi phục quỹ, không phải mã hóa) | Chỉ thảo luận |
+| **Dash Platform** | Pallas ECDH + ML-KEM-768 (đề xuất) | Giai đoạn thiết kế |
 
-## Khi nao trien khai
+## Khi nào triển khai
 
-### Cau hoi ve lich trinh
+### Câu hỏi về lịch trình
 
-- **Trang thai hien tai (2026):** Khong co may tinh luong tu nao co the pha ECC 255 bit. Phan tich thua so luong tu lon nhat duoc chung minh: ~50 bit. Khoang cach: nhieu bac do lon.
-- **Ngan han (2030-2035):** Lo trinh phan cung tu IBM, Google, Quantinuum nham toi hang trieu qubit. Cac trien khai ML-KEM va bo tham so se da truong thanh.
-- **Trung han (2035-2050):** Hau het cac uoc tinh dat CRQC den trong khung thoi gian nay. Du lieu HNDL thu thap hom nay co nguy co.
-- **Dai han (2050+):** Dong thuan giua cac nha mat ma hoc: may tinh luong tu quy mo lon la van de "khi nao", khong phai "neu".
+- **Trạng thái hiện tại (2026):** Không có máy tính lượng tử nào có thể phá ECC 255 bit. Phân tích thừa số lượng tử lớn nhất được chứng minh: ~50 bit. Khoảng cách: nhiều bậc độ lớn.
+- **Ngắn hạn (2030-2035):** Lộ trình phần cứng từ IBM, Google, Quantinuum nhắm tới hàng triệu qubit. Các triển khai ML-KEM và bộ tham số sẽ đã trưởng thành.
+- **Trung hạn (2035-2050):** Hầu hết các ước tính đặt CRQC đến trong khung thời gian này. Dữ liệu HNDL thu thập hôm nay có nguy cơ.
+- **Dài hạn (2050+):** Đồng thuận giữa các nhà mật mã học: máy tính lượng tử quy mô lớn là vấn đề "khi nào", không phải "nếu".
 
-### Chien luoc khuyen nghi
+### Chiến lược khuyến nghị
 
-**1. Thiet ke cho kha nang nang cap ngay bay gio.** Dam bao dinh dang ban ghi luu tru, cau truc `TransmittedNoteCiphertext` va bo cuc muc nhap BulkAppendTree co phien ban va co the mo rong. Dieu nay co chi phi thap va bao toan tuy chon them KEM lai sau nay.
+**1. Thiết kế cho khả năng nâng cấp ngay bây giờ.** Đảm bảo định dạng bản ghi lưu trữ, cấu trúc `TransmittedNoteCiphertext` và bố cục mục nhập BulkAppendTree có phiên bản và có thể mở rộng. Điều này có chi phí thấp và bảo toàn tùy chọn thêm KEM lai sau này.
 
-**2. Trien khai KEM lai khi san sang, bat buoc.** Khong cung cap hai ho (co dien va lai). Chia tap an danh lam mat muc dich cua giao dich duoc bao ve -- nguoi dung an trong nhom nho hon it rieng tu hon, khong phai nhieu hon. Khi trien khai, moi ghi chu su dung so do lai.
+**2. Triển khai KEM lai khi sẵn sàng, bắt buộc.** Không cung cấp hai hồ (cổ điển và lai). Chia tập ẩn danh làm mất mục đích của giao dịch được bảo vệ — người dùng ẩn trong nhóm nhỏ hơn ít riêng tư hơn, không phải nhiều hơn. Khi triển khai, mọi ghi chú sử dụng sơ đồ lai.
 
-**3. Nham toi khung thoi gian 2028-2030.** Dieu nay truoc bat ky moi de doa luong tu thuc te nao nhung sau khi cac trien khai ML-KEM va kich thuoc tham so da on dinh. No cung cho phep hoc hoi tu kinh nghiem trien khai cua Zcash va Signal.
+**3. Nhắm tới khung thời gian 2028-2030.** Điều này trước bất kỳ mối đe dọa lượng tử thực tế nào nhưng sau khi các triển khai ML-KEM và kích thước tham số đã ổn định. Nó cũng cho phép học hỏi từ kinh nghiệm triển khai của Zcash và Signal.
 
-**4. Theo doi cac su kien kich hoat:**
-- NIST hoac NSA ap dat thoi han di chuyen hau luong tu
-- Tien bo dang ke trong phan cung luong tu (>100,000 qubit vat ly voi sua loi)
-- Tien bo phan tich mat ma chong lai cac bai toan luoi (se anh huong den lua chon ML-KEM)
+**4. Theo dõi các sự kiện kích hoạt:**
+- NIST hoặc NSA áp đặt thời hạn di chuyển hậu lượng tử
+- Tiến bộ đáng kể trong phần cứng lượng tử (>100,000 qubit vật lý với sửa lỗi)
+- Tiến bộ phân tích mật mã chống lại các bài toán lưới (sẽ ảnh hưởng đến lựa chọn ML-KEM)
 
-### Nhung gi khong can hanh dong khan cap
+### Những gì không cần hành động khẩn cấp
 
-| Thanh phan | Tai sao co the doi |
+| Thành phần | Tại sao có thể đợi |
 |-----------|----------------|
-| Chu ky uy quyen chi tieu | Gia mao la thoi gian thuc, khong hoi to. Nang cap len ML-DSA/SLH-DSA truoc khi CRQC den. |
-| He thong chung minh Halo 2 | Gia mao chung minh la thoi gian thuc. Di chuyen sang he thong dua tren STARK khi can. |
-| Kha nang chong va cham Sinsemilla | Chi huu ich cho cac cuoc tan cong moi, khong hoi to. Bao ham boi viec di chuyen he thong chung minh. |
-| Ha tang GroveDB Merk/MMR/Blake3 | **Da an toan truoc luong tu.** Khong can hanh dong, bay gio hay bat cu khi nao. |
+| Chữ ký ủy quyền chi tiêu | Giả mạo là thời gian thực, không hồi tố. Nâng cấp lên ML-DSA/SLH-DSA trước khi CRQC đến. |
+| Hệ thống chứng minh Halo 2 | Giả mạo chứng minh là thời gian thực. Di chuyển sang hệ thống dựa trên STARK khi cần. |
+| Khả năng chống va chạm Sinsemilla | Chỉ hữu ích cho các cuộc tấn công mới, không hồi tố. Bao hàm bởi việc di chuyển hệ thống chứng minh. |
+| Hạ tầng GroveDB Merk/MMR/Blake3 | **Đã an toàn trước lượng tử.** Không cần hành động, bây giờ hay bất cứ khi nào. |
 
-## Tham chieu cac phuong an thay the hau luong tu
+## Tham chiếu các phương án thay thế hậu lượng tử
 
-### Cho ma hoa (thay the ECDH)
+### Cho mã hóa (thay thế ECDH)
 
-| So do | Loai | Khoa cong khai | Ban ma | Danh muc NIST | Ghi chu |
+| Sơ đồ | Loại | Khóa công khai | Bản mã | Danh mục NIST | Ghi chú |
 |--------|------|-----------|-----------|---------------|-------|
-| ML-KEM-768 | Lattice (MLWE) | 1,184 B | 1,088 B | 3 (192 bit) | FIPS 203, tieu chuan nganh |
-| ML-KEM-512 | Lattice (MLWE) | 800 B | 768 B | 1 (128 bit) | Nho hon, bien thap hon |
-| ML-KEM-1024 | Lattice (MLWE) | 1,568 B | 1,568 B | 5 (256 bit) | Qua muc cho lai |
+| ML-KEM-768 | Lattice (MLWE) | 1,184 B | 1,088 B | 3 (192 bit) | FIPS 203, tiêu chuẩn ngành |
+| ML-KEM-512 | Lattice (MLWE) | 800 B | 768 B | 1 (128 bit) | Nhỏ hơn, biên thấp hơn |
+| ML-KEM-1024 | Lattice (MLWE) | 1,568 B | 1,568 B | 5 (256 bit) | Quá mức cho lai |
 
-### Cho chu ky (thay the RedPallas/Schnorr)
+### Cho chữ ký (thay thế RedPallas/Schnorr)
 
-| So do | Loai | Khoa cong khai | Chu ky | Danh muc NIST | Ghi chu |
+| Sơ đồ | Loại | Khóa công khai | Chữ ký | Danh mục NIST | Ghi chú |
 |--------|------|-----------|----------|---------------|-------|
 | ML-DSA-65 (Dilithium) | Lattice | 1,952 B | 3,293 B | 3 | FIPS 204, nhanh |
-| SLH-DSA (SPHINCS+) | Hash-based | 32-64 B | 7,856-49,856 B | 1-5 | FIPS 205, than trong |
-| XMSS/LMS | Hash-based (stateful) | 60 B | 2,500 B | varies | Co trang thai -- tai su dung = pha |
+| SLH-DSA (SPHINCS+) | Dựa trên hash | 32-64 B | 7,856-49,856 B | 1-5 | FIPS 205, thận trọng |
+| XMSS/LMS | Dựa trên hash (có trạng thái) | 60 B | 2,500 B | khác nhau | Có trạng thái — tái sử dụng = phá |
 
-### Cho chung minh ZK (thay the Halo 2)
+### Cho chứng minh ZK (thay thế Halo 2)
 
-| He thong | Gia dinh | Kich thuoc chung minh | Hau luong tu | Ghi chu |
+| Hệ thống | Giả định | Kích thước chứng minh | Hậu lượng tử | Ghi chú |
 |--------|-----------|-----------|-------------|-------|
-| STARKs | Ham bam (kha nang chong va cham) | ~100-400 KB | **Yes** | Duoc su dung boi StarkNet |
-| Plonky3 | FRI (cam ket da thuc dua tren hash) | ~50-200 KB | **Yes** | Dang phat trien tich cuc |
-| Halo 2 (hien tai) | ECDLP tren duong cong Pasta | ~5 KB | **No** | He thong Orchard hien tai |
-| Lattice SNARKs | MLWE | Nghien cuu | **Yes** | Chua san sang cho san xuat |
+| STARKs | Hàm băm (khả năng chống va chạm) | ~100-400 KB | **Có** | Được sử dụng bởi StarkNet |
+| Plonky3 | FRI (cam kết đa thức dựa trên hash) | ~50-200 KB | **Có** | Đang phát triển tích cực |
+| Halo 2 (hiện tại) | ECDLP trên đường cong Pasta | ~5 KB | **Không** | Hệ thống Orchard hiện tại |
+| Lattice SNARKs | MLWE | Nghiên cứu | **Có** | Chưa sẵn sàng cho sản xuất |
 
-### He sinh thai Rust crate
+### Hệ sinh thái Rust crate
 
-| Crate | Nguon | FIPS 203 | Da xac minh | Ghi chu |
+| Crate | Nguồn | FIPS 203 | Đã xác minh | Ghi chú |
 |-------|--------|----------|----------|-------|
-| `libcrux-ml-kem` | Cryspen | Yes | Xac minh chinh thuc (hax/F*) | Dam bao cao nhat |
-| `ml-kem` | RustCrypto | Yes | Thoi gian hang so, chua kiem toan | Tuong thich he sinh thai |
-| `fips203` | integritychain | Yes | Thoi gian hang so | Rust thuan, no_std |
+| `libcrux-ml-kem` | Cryspen | Có | Xác minh chính thức (hax/F*) | Đảm bảo cao nhất |
+| `ml-kem` | RustCrypto | Có | Thời gian hằng số, chưa kiểm toán | Tương thích hệ sinh thái |
+| `fips203` | integritychain | Có | Thời gian hằng số | Rust thuần, no_std |
 
-## Tom tat
+## Tóm tắt
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
+│  TÓM TẮT MỐI ĐE DỌA LƯỢNG TỬ CHO GROVEDB + ORCHARD               │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
-│    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
+│  AN TOÀN THEO GIẢ ĐỊNH HIỆN TẠI (dựa trên hàm băm):               │
+│    ✓ Cây Blake3 Merk, MMR, BulkAppendTree                          │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 symmetric encryption                        │
-│    ✓ All GroveDB proof authentication chains                        │
+│    ✓ Mã hóa đối xứng ChaCha20-Poly1305                             │
+│    ✓ Tất cả chuỗi xác thực chứng minh GroveDB                     │
 │                                                                     │
-│  FIX BEFORE DATA IS STORED (retroactive HNDL):                     │
-│    ✗ Note encryption (ECDH key agreement) → Hybrid KEM             │
-│    ✗ Value commitments (Pedersen) → amounts revealed                │
+│  SỬA TRƯỚC KHI LƯU TRỮ DỮ LIỆU (HNDL hồi tố):                   │
+│    ✗ Mã hóa ghi chú (thỏa thuận khóa ECDH) → KEM lai             │
+│    ✗ Cam kết giá trị (Pedersen) → số tiền bị lộ                    │
 │                                                                     │
-│  FIX BEFORE QUANTUM COMPUTERS ARRIVE (real-time only):              │
-│    ~ Spend authorization → ML-DSA / SLH-DSA                        │
-│    ~ ZK proofs → STARKs / Plonky3                                  │
-│    ~ Sinsemilla → hash-based Merkle tree                            │
+│  SỬA TRƯỚC KHI MÁY TÍNH LƯỢNG TỬ XUẤT HIỆN (chỉ thời gian thực): │
+│    ~ Ủy quyền chi tiêu → ML-DSA / SLH-DSA                         │
+│    ~ Chứng minh ZK → STARKs / Plonky3                              │
+│    ~ Sinsemilla → cây Merkle dựa trên hàm băm                      │
 │                                                                     │
-│  RECOMMENDED TIMELINE:                                              │
-│    2026-2028: Design for upgradability, version stored formats      │
-│    2028-2030: Deploy mandatory hybrid KEM for note encryption       │
-│    2035+: Migrate signatures and proof system if needed             │
+│  LỊCH TRÌNH KHUYẾN NGHỊ:                                            │
+│    2026-2028: Thiết kế khả năng nâng cấp, phiên bản định dạng     │
+│    2028-2030: Triển khai KEM lai bắt buộc cho mã hóa ghi chú      │
+│    2035+: Di chuyển chữ ký và hệ thống chứng minh nếu cần         │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

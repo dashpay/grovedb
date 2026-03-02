@@ -356,7 +356,7 @@ SpendingKey (sk) [32 bytes]
 | 支出授权签名 | 伪造是实时的，非追溯性的。在 CRQC 到来前升级到 ML-DSA/SLH-DSA。 |
 | Halo 2 证明系统 | 证明伪造是实时的。需要时迁移到基于 STARK 的系统。 |
 | Sinsemilla 碰撞抗性 | 仅对新攻击有用，非追溯性的。被证明系统迁移所包含。 |
-| GroveDB Merk/MMR/Blake3 基础设施 | **已经量子安全。**无需任何行动，现在或将来都不需要。 |
+| GroveDB Merk/MMR/Blake3 基础设施 | **在当前密码学假设下已具备量子安全性。**基于已知攻击无需采取行动。 |
 
 ## 后量子替代方案参考
 
@@ -399,7 +399,7 @@ SpendingKey (sk) [32 bytes]
 ┌─────────────────────────────────────────────────────────────────────┐
 │  GROVEDB + ORCHARD 量子威胁总结                                      │
 │                                                                     │
-│  现在和永远安全（基于哈希）：                                          │
+│  在当前假设下安全（基于哈希）：                                        │
 │    ✓ Blake3 Merk 树、MMR、BulkAppendTree                            │
 │    ✓ BLAKE2b KDF、PRF^expand                                       │
 │    ✓ ChaCha20-Poly1305 对称加密                                     │

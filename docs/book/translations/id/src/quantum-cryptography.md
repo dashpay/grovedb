@@ -54,7 +54,7 @@ setiap primitif berdasarkan kerentanan kuantumnya:
 | **ChaCha20-Poly1305** | Mengenkripsi enc_ciphertext dan out_ciphertext (kunci 256-bit) | 128-bit key search (aman, tetapi jalur penurunan kunci melalui ECDH tidak aman) |
 | **PRF^expand** (BLAKE2b-512) | Menurunkan esk, rcm, psi dari rseed | 128-bit PRF security |
 
-### Infrastruktur GroveDB: Sepenuhnya Aman Kuantum
+### Infrastruktur GroveDB: Dianggap Aman Kuantum Berdasarkan Asumsi Saat Ini
 
 Seluruh struktur data GroveDB bergantung secara eksklusif pada hashing Blake3:
 
@@ -65,10 +65,10 @@ Seluruh struktur data GroveDB bergantung secara eksklusif pada hashing Blake3:
 - **Subtree path prefixes** — hashing Blake3 dari segmen jalur
 - **V1 proofs** — rantai autentikasi melalui hierarki Merk
 
-**Tidak diperlukan perubahan.** Bukti Merk tree GroveDB, pemeriksaan konsistensi
-MMR, root epoch BulkAppendTree, dan semua rantai autentikasi bukti V1 tetap
-aman terhadap komputer kuantum. Infrastruktur berbasis hash adalah bagian
-terkuat dari sistem pasca-kuantum.
+**Tidak diperlukan perubahan saat ini.** Bukti Merk tree GroveDB, pemeriksaan
+konsistensi MMR, root epoch BulkAppendTree, dan semua rantai autentikasi bukti
+V1 dianggap aman terhadap komputer kuantum berdasarkan asumsi saat ini.
+Infrastruktur berbasis hash adalah bagian terkuat dari sistem pasca-kuantum.
 
 ## Ancaman Retroaktif vs Real-Time
 
@@ -395,7 +395,7 @@ Ini juga memungkinkan pembelajaran dari pengalaman penerapan Zcash dan Signal.
 | Tanda tangan otorisasi pengeluaran | Pemalsuan bersifat real-time, bukan retroaktif. Upgrade ke ML-DSA/SLH-DSA sebelum CRQC tiba. |
 | Sistem bukti Halo 2 | Pemalsuan bukti bersifat real-time. Migrasi ke sistem berbasis STARK saat diperlukan. |
 | Ketahanan kolisi Sinsemilla | Hanya berguna untuk serangan baru, bukan retroaktif. Tercakup oleh migrasi sistem bukti. |
-| Infrastruktur GroveDB Merk/MMR/Blake3 | **Sudah aman kuantum.** Tidak diperlukan tindakan, sekarang atau nanti. |
+| Infrastruktur GroveDB Merk/MMR/Blake3 | **Dianggap aman kuantum berdasarkan asumsi dan standar saat ini.** Tidak diperlukan tindakan saat ini. |
 
 ## Referensi Alternatif Pasca-Kuantum
 
@@ -436,27 +436,27 @@ Ini juga memungkinkan pembelajaran dari pengalaman penerapan Zcash dan Signal.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
+│  RINGKASAN ANCAMAN KUANTUM UNTUK GROVEDB + ORCHARD                  │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
+│  AMAN BERDASARKAN ASUMSI SAAT INI (berbasis hash):                  │
 │    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 symmetric encryption                        │
-│    ✓ All GroveDB proof authentication chains                        │
+│    ✓ Enkripsi simetris ChaCha20-Poly1305                           │
+│    ✓ Semua rantai autentikasi bukti GroveDB                         │
 │                                                                     │
-│  FIX BEFORE DATA IS STORED (retroactive HNDL):                     │
-│    ✗ Note encryption (ECDH key agreement) → Hybrid KEM             │
-│    ✗ Value commitments (Pedersen) → amounts revealed                │
+│  PERBAIKI SEBELUM DATA DISIMPAN (HNDL retroaktif):                  │
+│    ✗ Enkripsi catatan (kesepakatan kunci ECDH) → KEM Hibrida       │
+│    ✗ Komitmen nilai (Pedersen) → jumlah terungkap                   │
 │                                                                     │
-│  FIX BEFORE QUANTUM COMPUTERS ARRIVE (real-time only):              │
-│    ~ Spend authorization → ML-DSA / SLH-DSA                        │
-│    ~ ZK proofs → STARKs / Plonky3                                  │
-│    ~ Sinsemilla → hash-based Merkle tree                            │
+│  PERBAIKI SEBELUM KOMPUTER KUANTUM TIBA (waktu nyata saja):         │
+│    ~ Otorisasi pembelanjaan → ML-DSA / SLH-DSA                     │
+│    ~ Bukti ZK → STARKs / Plonky3                                   │
+│    ~ Sinsemilla → pohon Merkle berbasis hash                        │
 │                                                                     │
-│  RECOMMENDED TIMELINE:                                              │
-│    2026-2028: Design for upgradability, version stored formats      │
-│    2028-2030: Deploy mandatory hybrid KEM for note encryption       │
-│    2035+: Migrate signatures and proof system if needed             │
+│  JADWAL YANG DIREKOMENDASIKAN:                                      │
+│    2026-2028: Desain untuk kemampuan upgrade, versi format simpan   │
+│    2028-2030: Terapkan KEM hibrida wajib untuk enkripsi catatan     │
+│    2035+: Migrasi tanda tangan dan sistem bukti jika diperlukan     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

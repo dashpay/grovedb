@@ -16,7 +16,7 @@
 - [Cây BulkAppendTree](bulk-append-tree.md)
 - [Cây CommitmentTree](commitment-tree.md)
 - [Cây DenseAppendOnlyFixedSizeTree](dense-tree.md)
-- [Mat ma luong tu — Phan tich moi de doa hau luong tu](quantum-cryptography.md)
+- [Mật mã lượng tử — Phân tích mối đe dọa hậu lượng tử](quantum-cryptography.md)
 
 ---
 

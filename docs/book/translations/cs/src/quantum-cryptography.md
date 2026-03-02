@@ -84,7 +84,7 @@ je znovu zasifrovat ani stahnout.
 Protivnik s kvantovym pocitacem by mohl padelat podpisy nebo dukazy, ale pouze
 pro nove transakce. Stare transakce jiz byly validovany a potvrzeny siti.
 
-| Hrozba | Typ | Co se odhali | NaIehavost |
+| Hrozba | Typ | Co se odhalí | Naléhavost |
 |--------|-----|-------------|------------|
 | **Desifrovani note** (enc_ciphertext) | **Retroaktivni** | Obsah note: prijemce, castka, memo, rseed | **Vysoka** — ulozeno navzdy |
 | **Otevreni value commitment** (cv_net) | **Retroaktivni** | Castky transakci (ale ne odesilatel/prijemce) | **Stredni** — pouze castky |
@@ -334,7 +334,7 @@ linearne.
 prokazuje existenci note, spravnost nullifier a rovnovahu hodnot — nedokazuje
 nic o sifrovani. Zadne zmeny proving keys, verifying keys ani omezeni obvodu.
 
-### Srovnani s odvstvim
+### Srovnani s odvetvim
 
 | System | Pristup | Status |
 |--------|---------|--------|
@@ -387,7 +387,7 @@ Umoznuje to take ucit se ze zkusenosti s nasazenim Zcash a Signal.
 | Podpisy autorizace utraty | Paddelani je v realnem case, ne retroaktivni. Aktualizace na ML-DSA/SLH-DSA pred prichodem CRQC. |
 | System dukazu Halo 2 | Paddelani dukazu je v realnem case. Migrace na system zalozeny na STARK, az bude potreba. |
 | Odolnost Sinsemilla proti kolizim | Uzitecna pouze pro nove utoky, ne retroaktivni. Zahrnuta v migraci systemu dukazu. |
-| Infrastruktura GroveDB Merk/MMR/Blake3 | **Jiz kvantove bezpecna.** Neni potreba zadnych akci, nyni ani v budoucnu. |
+| Infrastruktura GroveDB Merk/MMR/Blake3 | **Jiz kvantove bezpecna na zaklade soucasnych kryptografickych predpokladu.** Neni potreba zadnych akci na zaklade znamych utoku. |
 
 ## Reference postkvantovych alternativ
 
@@ -424,31 +424,31 @@ Umoznuje to take ucit se ze zkusenosti s nasazenim Zcash a Signal.
 | `ml-kem` | RustCrypto | Ano | Constant-time, neauditovany | Kompatibilita s ekosystemem |
 | `fips203` | integritychain | Ano | Constant-time | Pure Rust, no_std |
 
-## Shrnuty
+## Shrnutí
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
+│  SHRNUTÍ KVANTOVÝCH HROZEB PRO GROVEDB + ORCHARD                    │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
-│    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
+│  BEZPEČNÉ ZA SOUČASNÝCH PŘEDPOKLADŮ (založené na hašování):         │
+│    ✓ Blake3 Merk stromy, MMR, BulkAppendTree                       │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 symmetric encryption                        │
-│    ✓ All GroveDB proof authentication chains                        │
+│    ✓ Symetrické šifrování ChaCha20-Poly1305                        │
+│    ✓ Všechny autentizační řetězce důkazů GroveDB                   │
 │                                                                     │
-│  FIX BEFORE DATA IS STORED (retroactive HNDL):                     │
-│    ✗ Note encryption (ECDH key agreement) → Hybrid KEM             │
-│    ✗ Value commitments (Pedersen) → amounts revealed                │
+│  OPRAVIT PŘED ULOŽENÍM DAT (retroaktivní HNDL):                    │
+│    ✗ Šifrování poznámek (dohoda klíčů ECDH) → Hybridní KEM        │
+│    ✗ Závazky hodnot (Pedersen) → odhalení částek                   │
 │                                                                     │
-│  FIX BEFORE QUANTUM COMPUTERS ARRIVE (real-time only):              │
-│    ~ Spend authorization → ML-DSA / SLH-DSA                        │
-│    ~ ZK proofs → STARKs / Plonky3                                  │
-│    ~ Sinsemilla → hash-based Merkle tree                            │
+│  OPRAVIT PŘED PŘÍCHODEM KVANTOVÝCH POČÍTAČŮ (pouze reálný čas):    │
+│    ~ Autorizace útraty → ML-DSA / SLH-DSA                         │
+│    ~ ZK důkazy → STARKs / Plonky3                                  │
+│    ~ Sinsemilla → hašovací Merkle strom                             │
 │                                                                     │
-│  RECOMMENDED TIMELINE:                                              │
-│    2026-2028: Design for upgradability, version stored formats      │
-│    2028-2030: Deploy mandatory hybrid KEM for note encryption       │
-│    2035+: Migrate signatures and proof system if needed             │
+│  DOPORUČENÝ HARMONOGRAM:                                            │
+│    2026-2028: Návrh pro rozšiřitelnost, verzování formátů          │
+│    2028-2030: Nasazení povinného hybridního KEM pro šifrování      │
+│    2035+: Migrace podpisů a systému důkazů dle potřeby             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

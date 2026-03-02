@@ -16,7 +16,7 @@
 - [El BulkAppendTree](bulk-append-tree.md)
 - [El CommitmentTree](commitment-tree.md)
 - [El DenseAppendOnlyFixedSizeTree](dense-tree.md)
-- [Criptografia Cuantica — Analisis de Amenazas Post-Cuanticas](quantum-cryptography.md)
+- [Criptografía Cuántica — Análisis de Amenazas Post-Cuánticas](quantum-cryptography.md)
 
 ---
 

@@ -38,7 +38,7 @@ GroveDB와 Orchard 기반 차폐 프로토콜은 타원 곡선과 대칭/해시 
 | **ChaCha20-Poly1305** | enc_ciphertext 및 out_ciphertext 암호화 (256비트 키) | 128비트 키 검색 (안전하지만, ECDH를 통한 키 유도 경로는 안전하지 않음) |
 | **PRF^expand** (BLAKE2b-512) | rseed에서 esk, rcm, psi 유도 | 128비트 PRF 보안 |
 
-### GroveDB 인프라: 완전히 양자 안전
+### GroveDB 인프라: 현재 가정 하에 양자 안전으로 간주
 
 GroveDB의 자체 데이터 구조는 전적으로 Blake3 해싱에 의존합니다:
 
@@ -49,7 +49,7 @@ GroveDB의 자체 데이터 구조는 전적으로 Blake3 해싱에 의존합니
 - **서브트리 경로 접두사** -- 경로 세그먼트의 Blake3 해싱
 - **V1 증명** -- Merk 계층 구조를 통한 인증 체인
 
-**변경이 필요하지 않습니다.** GroveDB의 Merk 트리 증명, MMR 일관성 검사, BulkAppendTree 에포크 루트 및 모든 V1 증명 인증 체인은 양자 컴퓨터에 대해 안전합니다. 해시 기반 인프라는 포스트 양자에서 시스템의 가장 강력한 부분입니다.
+**현재 변경이 필요하지 않습니다.** GroveDB의 Merk 트리 증명, MMR 일관성 검사, BulkAppendTree 에포크 루트 및 모든 V1 증명 인증 체인은 현재 가정 하에서 양자 컴퓨터에 대해 안전한 것으로 간주됩니다. 해시 기반 인프라는 포스트 양자에서 시스템의 가장 강력한 부분입니다.
 
 ## 소급적 위협 vs 실시간 위협
 
@@ -306,7 +306,7 @@ SpendingKey (sk) [32 bytes]
 | 지출 인증 서명 | 위조는 실시간이며 소급적이지 않음. CRQC 도착 전 ML-DSA/SLH-DSA로 업그레이드. |
 | Halo 2 증명 시스템 | 증명 위조는 실시간. 필요 시 STARK 기반 시스템으로 마이그레이션. |
 | Sinsemilla 충돌 저항성 | 새로운 공격에만 유용하며 소급적이지 않음. 증명 시스템 마이그레이션에 포함됨. |
-| GroveDB Merk/MMR/Blake3 인프라 | **이미 양자 안전.** 지금이든 언제든 조치 불필요. |
+| GroveDB Merk/MMR/Blake3 인프라 | **현재 가정과 표준 하에서 양자 안전으로 간주됨.** 현재 조치 불필요. |
 
 ## 포스트 양자 대안 참조
 
@@ -347,27 +347,27 @@ SpendingKey (sk) [32 bytes]
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
+│  GROVEDB + ORCHARD 양자 위협 요약                                    │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
+│  현재 가정 하에 안전 (해시 기반):                                      │
 │    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 symmetric encryption                        │
-│    ✓ All GroveDB proof authentication chains                        │
+│    ✓ ChaCha20-Poly1305 대칭 암호화                                   │
+│    ✓ 모든 GroveDB 증명 인증 체인                                      │
 │                                                                     │
-│  FIX BEFORE DATA IS STORED (retroactive HNDL):                     │
-│    ✗ Note encryption (ECDH key agreement) → Hybrid KEM             │
-│    ✗ Value commitments (Pedersen) → amounts revealed                │
+│  데이터 저장 전 수정 필요 (소급적 HNDL):                                │
+│    ✗ 노트 암호화 (ECDH 키 합의) → 하이브리드 KEM                      │
+│    ✗ 값 커밋먼트 (Pedersen) → 금액 노출                               │
 │                                                                     │
-│  FIX BEFORE QUANTUM COMPUTERS ARRIVE (real-time only):              │
-│    ~ Spend authorization → ML-DSA / SLH-DSA                        │
-│    ~ ZK proofs → STARKs / Plonky3                                  │
-│    ~ Sinsemilla → hash-based Merkle tree                            │
+│  양자 컴퓨터 도래 전 수정 필요 (실시간만 해당):                          │
+│    ~ 지출 승인 → ML-DSA / SLH-DSA                                   │
+│    ~ ZK 증명 → STARKs / Plonky3                                    │
+│    ~ Sinsemilla → 해시 기반 머클 트리                                 │
 │                                                                     │
-│  RECOMMENDED TIMELINE:                                              │
-│    2026-2028: Design for upgradability, version stored formats      │
-│    2028-2030: Deploy mandatory hybrid KEM for note encryption       │
-│    2035+: Migrate signatures and proof system if needed             │
+│  권장 일정:                                                          │
+│    2026-2028: 업그레이드 가능성 설계, 저장 형식 버전 관리              │
+│    2028-2030: 노트 암호화를 위한 필수 하이브리드 KEM 배포              │
+│    2035+: 필요 시 서명 및 증명 시스템 마이그레이션                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 

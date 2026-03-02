@@ -396,7 +396,7 @@ distribuzione di Zcash e Signal.
 | Firme di autorizzazione di spesa | La falsificazione e in tempo reale, non retroattiva. Aggiornare a ML-DSA/SLH-DSA prima dell'arrivo del CRQC. |
 | Sistema di prove Halo 2 | La falsificazione di prove e in tempo reale. Migrare a un sistema basato su STARK quando necessario. |
 | Resistenza alle collisioni di Sinsemilla | Utile solo per nuovi attacchi, non retroattivi. Sussunta dalla migrazione del sistema di prove. |
-| Infrastruttura GroveDB Merk/MMR/Blake3 | **Gia sicura contro il quantistico.** Nessuna azione necessaria, ne ora ne mai. |
+| Infrastruttura GroveDB Merk/MMR/Blake3 | **Già sicura sotto le attuali assunzioni crittografiche.** Nessuna azione necessaria in base agli attacchi noti. |
 
 ## Riferimento delle Alternative Post-Quantistiche
 
@@ -439,7 +439,7 @@ distribuzione di Zcash e Signal.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  RIEPILOGO DELLE MINACCE QUANTISTICHE PER GROVEDB + ORCHARD       │
 │                                                                     │
-│  SICURO ORA E PER SEMPRE (basato su hash):                         │
+│  SICURO SOTTO LE ATTUALI ASSUNZIONI (basato su hash):              │
 │    ✓ Alberi Merk Blake3, MMR, BulkAppendTree                       │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
 │    ✓ Cifratura simmetrica ChaCha20-Poly1305                        │

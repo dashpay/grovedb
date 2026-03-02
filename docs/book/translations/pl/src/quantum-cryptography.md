@@ -1,142 +1,142 @@
-# Kryptografia kwantowa — Analiza zagrozen postkwantowych
+# Kryptografia kwantowa — Analiza zagrożeń postkwantowych
 
-Ten rozdzial analizuje, jak komputery kwantowe wplynelby na prymitywy
-kryptograficzne uzywane w GroveDB i protokolach transakcji chronionych
-zbudowanych na nim (Orchard, Dash Platform). Obejmuje on, ktore komponenty sa
-podatne, ktore sa bezpieczne, co oznacza "harvest now, decrypt later" dla
-przechowywanych danych i jakie strategie lagodzenia istnieja — w tym hybrydowe
+Ten rozdział analizuje, jak komputery kwantowe wpłynęłyby na prymitywy
+kryptograficzne używane w GroveDB i protokołach transakcji chronionych
+zbudowanych na nim (Orchard, Dash Platform). Obejmuje on, które komponenty są
+podatne, które są bezpieczne, co oznacza "harvest now, decrypt later" dla
+przechowywanych danych i jakie strategie łagodzenia istnieją — w tym hybrydowe
 projekty KEM.
 
-## Dwa algorytmy kwantowe, ktore maja znaczenie
+## Dwa algorytmy kwantowe, które mają znaczenie
 
-Tylko dwa algorytmy kwantowe sa istotne dla kryptografii w praktyce:
+Tylko dwa algorytmy kwantowe są istotne dla kryptografii w praktyce:
 
-**Algorytm Shora** rozwiazuje problem logarytmu dyskretnego (i faktoryzacji
-liczb calkowitych) w czasie wielomianowym. Dla 255-bitowej krzywej eliptycznej
-jak Pallas wymaga to okolo 510 kubitow logicznych — ale z narzutem korekcji
-bledow rzeczywiste wymaganie wynosi okolo 4 milionow kubitow fizycznych.
-Algorytm Shora **calkowicie lamie** cala kryptografie krzywych eliptycznych
-niezaleznie od rozmiaru klucza.
+**Algorytm Shora** rozwiązuje problem logarytmu dyskretnego (i faktoryzacji
+liczb całkowitych) w czasie wielomianowym. Dla 255-bitowej krzywej eliptycznej
+jak Pallas wymaga to około 510 kubitów logicznych — ale z narzutem korekcji
+błędów rzeczywiste wymaganie wynosi około 4 milionów kubitów fizycznych.
+Algorytm Shora **całkowicie łamie** całą kryptografię krzywych eliptycznych
+niezależnie od rozmiaru klucza.
 
 **Algorytm Grovera** zapewnia kwadratowe przyspieszenie przeszukiwania
-brute-force. 256-bitowy klucz symetryczny efektywnie staje sie 128-bitowym.
-Jednak glebokosc obwodu dla algorytmu Grovera na 128-bitowej przestrzeni kluczy
-wynosi nadal 2^64 operacji kwantowych — wielu kryptografow uwaza, ze nigdy nie
-bedzie to praktyczne na rzeczywistym sprzecie z powodu limitow dekoherencji.
-Algorytm Grovera zmniejsza marginesy bezpieczenstwa, ale nie lamie dobrze
+brute-force. 256-bitowy klucz symetryczny efektywnie staje się 128-bitowym.
+Jednak głębokość obwodu dla algorytmu Grovera na 128-bitowej przestrzeni kluczy
+wynosi nadal 2^64 operacji kwantowych — wielu kryptografów uważa, że nigdy nie
+będzie to praktyczne na rzeczywistym sprzęcie z powodu limitów dekoherencji.
+Algorytm Grovera zmniejsza marginesy bezpieczeństwa, ale nie łamie dobrze
 sparametryzowanej kryptografii symetrycznej.
 
-| Algorytm | Cele | Przyspieszenie | Praktyczny wplyw |
+| Algorytm | Cele | Przyspieszenie | Praktyczny wpływ |
 |----------|------|----------------|------------------|
-| **Shor** | ECC discrete log, RSA factoring | Wykladnicze (czas wielomianowy) | **Calkowite zlamanie** ECC |
-| **Grover** | Przeszukiwanie kluczy symetrycznych, hash preimage | Kwadratowe (polowi bity klucza) | 256-bit → 128-bit (nadal bezpieczne) |
+| **Shor** | ECC discrete log, RSA factoring | Wykładnicze (czas wielomianowy) | **Całkowite złamanie** ECC |
+| **Grover** | Przeszukiwanie kluczy symetrycznych, hash preimage | Kwadratowe (połowi bity klucza) | 256-bit → 128-bit (nadal bezpieczne) |
 
 ## Prymitywy kryptograficzne GroveDB
 
-GroveDB i protokol chroniony oparty na Orchard uzywaja mieszanki prymitywow
-krzywych eliptycznych i symetrycznych/opartych na hashach. Ponizsze tabele
-klasyfikuja kazdy prymityw wedlug jego podatnosci kwantowej:
+GroveDB i protokół chroniony oparty na Orchard używają mieszanki prymitywów
+krzywych eliptycznych i symetrycznych/opartych na hashach. Poniższe tabele
+klasyfikują każdy prymityw według jego podatności kwantowej:
 
-### Podatne na atak kwantowy (algorytm Shora — 0 bitow postkwantowych)
+### Podatne na atak kwantowy (algorytm Shora — 0 bitów postkwantowych)
 
-| Prymityw | Miejsce uzycia | Co zostaje zlamane |
+| Prymityw | Miejsce użycia | Co zostaje złamane |
 |----------|---------------|---------------------|
 | **Pallas ECDLP** | Note commitments (cmx), ephemeral keys (epk/esk), viewing keys (ivk), payment keys (pk_d), nullifier derivation | Odzyskanie dowolnego klucza prywatnego z jego publicznego odpowiednika |
 | **ECDH key agreement** (Pallas) | Wyprowadzanie kluczy szyfrowania symetrycznego dla note ciphertexts | Odzyskanie shared secret → odszyfrowanie wszystkich notes |
-| **Sinsemilla hash** | Sciezki Merkle CommitmentTree, in-circuit hashing | Odpornosc na kolizje zalezy od ECDLP; maleje gdy Pallas zostaje zlamany |
-| **Halo 2 IPA** | System dowodow ZK (polynomial commitment over Pasta curves) | Falszowanie dowodow dla falszywych stwierdzn (falszerstwo, nieautoryzowane wydatki) |
-| **Pedersen commitments** | Value commitments (cv_net) ukrywajace kwoty transakcji | Odzyskanie ukrytych kwot; falszowanie dowodow salda |
+| **Sinsemilla hash** | Ścieżki Merkle CommitmentTree, in-circuit hashing | Odporność na kolizje zależy od ECDLP; maleje, gdy Pallas zostaje złamany |
+| **Halo 2 IPA** | System dowodów ZK (polynomial commitment over Pasta curves) | Fałszowanie dowodów dla fałszywych stwierdzeń (fałszerstwo, nieautoryzowane wydatki) |
+| **Pedersen commitments** | Value commitments (cv_net) ukrywające kwoty transakcji | Odzyskanie ukrytych kwot; fałszowanie dowodów salda |
 
-### Bezpieczne kwantowo (algorytm Grovera — 128+ bitow postkwantowych)
+### Bezpieczne kwantowo (algorytm Grovera — 128+ bitów postkwantowych)
 
-| Prymityw | Miejsce uzycia | Bezpieczenstwo postkwantowe |
+| Prymityw | Miejsce użycia | Bezpieczeństwo postkwantowe |
 |----------|---------------|------------------------------|
-| **Blake3** | Hashe wezlow Merk tree, MMR nodes, BulkAppendTree state roots, subtree path prefixes | 128-bit preimage, 128-bit second-preimage |
+| **Blake3** | Hashe węzłów Merk tree, MMR nodes, BulkAppendTree state roots, subtree path prefixes | 128-bit preimage, 128-bit second-preimage |
 | **BLAKE2b-256** | KDF do wyprowadzania kluczy symetrycznych, outgoing cipher key, PRF^expand | 128-bit preimage |
-| **ChaCha20-Poly1305** | Szyfruje enc_ciphertext i out_ciphertext (klucze 256-bit) | 128-bit key search (bezpieczne, ale sciezka wyprowadzania klucza przez ECDH nie jest) |
+| **ChaCha20-Poly1305** | Szyfruje enc_ciphertext i out_ciphertext (klucze 256-bit) | 128-bit key search (bezpieczne, ale ścieżka wyprowadzania klucza przez ECDH nie jest) |
 | **PRF^expand** (BLAKE2b-512) | Wyprowadza esk, rcm, psi z rseed | 128-bit PRF security |
 
-### Infrastruktura GroveDB: Calkowicie bezpieczna kwantowo
+### Infrastruktura GroveDB: bezpieczna kwantowo z założenia
 
-Wszystkie struktury danych GroveDB opieraja sie wylacznie na hashowaniu Blake3:
+Wszystkie struktury danych GroveDB opierają się wyłącznie na hashowaniu Blake3:
 
-- **Merk AVL trees** — hashe wezlow, combined_value_hash, propagacja child hash
-- **MMR trees** — hashe wezlow wewnetrznych, obliczanie szczytow, wyprowadzanie root
-- **BulkAppendTree** — lancuchy hashowe bufora, dense Merkle roots, epoch MMR
+- **Merk AVL trees** — hashe węzłów, combined_value_hash, propagacja child hash
+- **MMR trees** — hashe węzłów wewnętrznych, obliczanie szczytów, wyprowadzanie root
+- **BulkAppendTree** — łańcuchy hashowe bufora, dense Merkle roots, epoch MMR
 - **CommitmentTree state root** — `blake3("ct_state" || sinsemilla_root || bulk_state_root)`
-- **Subtree path prefixes** — hashowanie Blake3 segmentow sciezki
-- **V1 proofs** — lancuchy uwierzytelniania przez hierarchie Merk
+- **Subtree path prefixes** — hashowanie Blake3 segmentów ścieżki
+- **V1 proofs** — łańcuchy uwierzytelniania przez hierarchię Merk
 
-**Nie sa potrzebne zadne zmiany.** Dowody Merk tree GroveDB, sprawdzanie
-spojnosci MMR, rooty epok BulkAppendTree i wszystkie lancuchy uwierzytelniania
-dowodow V1 pozostaja bezpieczne wobec komputerow kwantowych. Infrastruktura
-oparta na hashach jest najsilniejsza czescia systemu postkwantowego.
+**Obecnie nie są potrzebne żadne zmiany.** Dowody Merk tree GroveDB, sprawdzanie
+spójności MMR, rooty epok BulkAppendTree i wszystkie łańcuchy uwierzytelniania
+dowodów V1 pozostają bezpieczne wobec komputerów kwantowych. Infrastruktura
+oparta na hashach jest najsilniejszą częścią systemu postkwantowego.
 
-## Zagrozenia retroaktywne vs zagrozenia w czasie rzeczywistym
+## Zagrożenia retroaktywne vs zagrożenia w czasie rzeczywistym
 
-To rozroznienie jest kluczowe dla priorytetyzacji tego, co naprawic i kiedy.
+To rozróżnienie jest kluczowe dla priorytetyzacji tego, co naprawić i kiedy.
 
-**Zagrozenia retroaktywne** kompromituja dane, ktore sa juz przechowywane.
+**Zagrożenia retroaktywne** kompromitują dane, które są już przechowywane.
 Przeciwnik rejestruje dane dzisiaj i odszyfrowuje je, gdy komputery kwantowe
-beda dostepne. Te zagrozenia **nie moga byc zlagodzone po fakcie** — gdy dane
-sa na lancuchu, nie mozna ich ponownie zaszyfrowac ani odwolac.
+będą dostępne. Te zagrożenia **nie mogą być złagodzone po fakcie** — gdy dane
+są na łańcuchu, nie można ich ponownie zaszyfrować ani odwołać.
 
-**Zagrozenia w czasie rzeczywistym** wplywaja tylko na transakcje tworzone w
-przyszlosci. Przeciwnik z komputerem kwantowym moze falszowac podpisy lub
-dowody, ale tylko dla nowych transakcji. Stare transakcje zostaly juz
-zwalidowane i potwierdzone przez siec.
+**Zagrożenia w czasie rzeczywistym** wpływają tylko na transakcje tworzone w
+przyszłości. Przeciwnik z komputerem kwantowym może fałszować podpisy lub
+dowody, ale tylko dla nowych transakcji. Stare transakcje zostały już
+zwalidowane i potwierdzone przez sieć.
 
-| Zagrozenie | Typ | Co zostaje ujawnione | Pilnosc |
+| Zagrożenie | Typ | Co zostaje ujawnione | Pilność |
 |-----------|------|----------------------|---------|
-| **Odszyfrowanie note** (enc_ciphertext) | **Retroaktywne** | Zawartosc note: odbiorca, kwota, memo, rseed | **Wysoka** — przechowywane na zawsze |
-| **Otwarcie value commitment** (cv_net) | **Retroaktywne** | Kwoty transakcji (ale nie nadawca/odbiorca) | **Srednia** — tylko kwoty |
-| **Dane odzyskiwania nadawcy** (out_ciphertext) | **Retroaktywne** | Klucze odzyskiwania nadawcy dla wyslanych notes | **Wysoka** — przechowywane na zawsze |
-| Falszowanie autoryzacji wydatkow | W czasie rzeczywistym | Moze falszowac nowe podpisy wydatkow | Niska — aktualizacja przed QC |
-| Falszowanie dowodow Halo 2 | W czasie rzeczywistym | Moze falszowac nowe dowody (falszerstwo) | Niska — aktualizacja przed QC |
-| Kolizja Sinsemilla | W czasie rzeczywistym | Moze falszowac nowe sciezki Merkle | Niska — obejmowane przez falszowanie dowodow |
-| Falszowanie podpisu binding | W czasie rzeczywistym | Moze falszowac nowe dowody salda | Niska — aktualizacja przed QC |
+| **Odszyfrowanie note** (enc_ciphertext) | **Retroaktywne** | Zawartość note: odbiorca, kwota, memo, rseed | **Wysoka** — przechowywane na zawsze |
+| **Otwarcie value commitment** (cv_net) | **Retroaktywne** | Kwoty transakcji (ale nie nadawca/odbiorca) | **Średnia** — tylko kwoty |
+| **Dane odzyskiwania nadawcy** (out_ciphertext) | **Retroaktywne** | Klucze odzyskiwania nadawcy dla wysłanych notes | **Wysoka** — przechowywane na zawsze |
+| Fałszowanie autoryzacji wydatków | W czasie rzeczywistym | Może fałszować nowe podpisy wydatków | Niska — aktualizacja przed QC |
+| Fałszowanie dowodów Halo 2 | W czasie rzeczywistym | Może fałszować nowe dowody (fałszerstwo) | Niska — aktualizacja przed QC |
+| Kolizja Sinsemilla | W czasie rzeczywistym | Może fałszować nowe ścieżki Merkle | Niska — obejmowane przez fałszowanie dowodów |
+| Fałszowanie podpisu binding | W czasie rzeczywistym | Może fałszować nowe dowody salda | Niska — aktualizacja przed QC |
 
-### Co dokladnie zostaje ujawnione?
+### Co dokładnie zostaje ujawnione?
 
-**Jesli szyfrowanie note zostanie zlamane** (glowne zagrozenie HNDL):
+**Jeśli szyfrowanie note zostanie złamane** (główne zagrożenie HNDL):
 
-Przeciwnik kwantowy odzyskuje `esk` z przechowywanego `epk` za pomoca algorytmu
+Przeciwnik kwantowy odzyskuje `esk` z przechowywanego `epk` za pomocą algorytmu
 Shora, oblicza shared secret ECDH, wyprowadza klucz symetryczny i odszyfrowuje
-`enc_ciphertext`. To ujawnia pelny plaintext note:
+`enc_ciphertext`. To ujawnia pełny plaintext note:
 
 | Pole | Rozmiar | Co ujawnia |
 |------|---------|-----------|
-| version | 1 byte | Wersja protokolu (niewrazliwa) |
-| diversifier | 11 bytes | Skladnik adresu odbiorcy |
-| value | 8 bytes | Dokladna kwota transakcji |
-| rseed | 32 bytes | Umozliwia powiazanie nullifier (deanonimizacja grafu transakcji) |
-| memo | 36 bytes (DashMemo) | Dane aplikacji, potencjalnie identyfikujace |
+| version | 1 byte | Wersja protokołu (niewrażliwa) |
+| diversifier | 11 bytes | Składnik adresu odbiorcy |
+| value | 8 bytes | Dokładna kwota transakcji |
+| rseed | 32 bytes | Umożliwia powiązanie nullifier (deanonimizacja grafu transakcji) |
+| memo | 36 bytes (DashMemo) | Dane aplikacji, potencjalnie identyfikujące |
 
-Majac `rseed` i `rho` (przechowywane obok szyfrogramu), przeciwnik moze
-obliczyc `esk = PRF(rseed, rho)` i zweryfikowac powiazanie klucza efemerycznego.
-W polaczeniu z diversifier laczy to wejscia z wyjsciami w calej historii
-transakcji — **pelna deanonimizacja chronionej puli**.
+Mając `rseed` i `rho` (przechowywane obok szyfrogramu), przeciwnik może
+obliczyć `esk = PRF(rseed, rho)` i zweryfikować powiązanie klucza efemerycznego.
+W połączeniu z diversifier łączy to wejścia z wyjściami w całej historii
+transakcji — **pełna deanonimizacja chronionej puli**.
 
-**Jesli tylko value commitments zostana zlamane** (wtorne zagrozenie HNDL):
+**Jeśli tylko value commitments zostaną złamane** (wtórne zagrożenie HNDL):
 
-Przeciwnik odzyskuje `v` z `cv_net = [v]*V + [rcv]*R` poprzez rozwiazanie
-ECDLP. To ujawnia **kwoty transakcji, ale nie tozsamosc nadawcy ani odbiorcy**.
-Przeciwnik widzi "ktos wyslal 5.0 Dash do kogos", ale nie moze powiazac kwoty
-z zadnym adresem ani tozsamoscia bez zlamania rowniez szyfrowania note.
+Przeciwnik odzyskuje `v` z `cv_net = [v]*V + [rcv]*R` poprzez rozwiązanie
+ECDLP. To ujawnia **kwoty transakcji, ale nie tożsamość nadawcy ani odbiorcy**.
+Przeciwnik widzi "ktoś wysłał 5.0 Dash do kogoś", ale nie może powiązać kwoty
+z żadnym adresem ani tożsamością bez złamania również szyfrowania note.
 
-Kwoty bez powiazania same w sobie maja ograniczona przydatnosc. Ale w polaczeniu
-z danymi zewnetrznymi (czas, znane faktury, kwoty pasujace do publicznych
-wniosków), ataki korelacyjne staja sie mozliwe.
+Kwoty bez powiązania same w sobie mają ograniczoną przydatność. Ale w połączeniu
+z danymi zewnętrznymi (czas, znane faktury, kwoty pasujące do publicznych
+wniosków), ataki korelacyjne stają się możliwe.
 
 ## Atak "Harvest Now, Decrypt Later"
 
-To jest najpilniejsze i najbardziej praktyczne zagrozenie kwantowe.
+To jest najpilniejsze i najbardziej praktyczne zagrożenie kwantowe.
 
-**Model ataku:** Przeciwnik na poziomie panstwowym (lub dowolna strona z
-wystarczajaca iloscia pamieci) rejestruje wszystkie dane chronionych transakcji
-on-chain dzisiaj. Dane te sa publicznie dostepne na blockchainie i niezmienne.
+**Model ataku:** Przeciwnik na poziomie państwowym (lub dowolna strona z
+wystarczającą ilością pamięci) rejestruje wszystkie dane chronionych transakcji
+on-chain dzisiaj. Dane te są publicznie dostępne na blockchainie i niezmienne.
 Przeciwnik czeka na kryptograficznie istotny komputer kwantowy (CRQC), a
-nastepnie:
+następnie:
 
 ```text
 Step 1: Read stored record from CommitmentTree BulkAppendTree:
@@ -160,25 +160,25 @@ Step 6: With rseed + rho, link nullifiers to note commitments:
 ```
 
 **Kluczowy wniosek:** Szyfrowanie symetryczne (ChaCha20-Poly1305) jest
-doskonale bezpieczne kwantowo. Podatnosc lezy calkowicie w **sciezce
+doskonale bezpieczne kwantowo. Podatność leży całkowicie w **ścieżce
 wyprowadzania klucza** — klucz symetryczny jest wyprowadzany z shared secret
-ECDH, a ECDH jest lamany przez algorytm Shora. Atakujacy nie lamie szyfrowania;
+ECDH, a ECDH jest łamany przez algorytm Shora. Atakujący nie łamie szyfrowania;
 odzyskuje klucz.
 
-**Retroaktywnosc:** Ten atak jest **calkowicie retroaktywny**. Kazdy
-zaszyfrowany note kiedykolwiek przechowywany on-chain moze byc odszyfrowany,
-gdy CRQC bedzie istnialo. Danych nie mozna ponownie zaszyfrowac ani ochronic
-po fakcie. Dlatego nalezy to rozwiazac zanim dane zostana zapisane, nie po.
+**Retroaktywność:** Ten atak jest **całkowicie retroaktywny**. Każdy
+zaszyfrowany note kiedykolwiek przechowywany on-chain może być odszyfrowany,
+gdy CRQC będzie istniało. Danych nie można ponownie zaszyfrować ani ochronić
+po fakcie. Dlatego należy to rozwiązać, zanim dane zostaną zapisane, nie po.
 
-## Lagodzenie: Hybrydowy KEM (ML-KEM + ECDH)
+## Łagodzenie: Hybrydowy KEM (ML-KEM + ECDH)
 
 Obrona przed HNDL polega na wyprowadzaniu klucza szyfrowania symetrycznego z
-**dwoch niezaleznych mechanizmow uzgadniania kluczy**, tak aby zlamanie tylko
-jednego bylo niewystarczajace. Nazywa sie to hybrydowym KEM.
+**dwóch niezależnych mechanizmów uzgadniania kluczy**, tak aby złamanie tylko
+jednego było niewystarczające. Nazywa się to hybrydowym KEM.
 
 ### ML-KEM-768 (CRYSTALS-Kyber)
 
-ML-KEM to standaryzowany przez NIST (FIPS 203, sierpien 2024) postkwantowy
+ML-KEM to standaryzowany przez NIST (FIPS 203, sierpień 2024) postkwantowy
 mechanizm enkapsulacji kluczy oparty na problemie Module Learning With Errors
 (MLWE).
 
@@ -189,13 +189,13 @@ mechanizm enkapsulacji kluczy oparty na problemie Module Learning With Errors
 | Shared secret | 32 bytes | 32 bytes | 32 bytes |
 | Kategoria NIST | 1 (128-bit) | **3 (192-bit)** | 5 (256-bit) |
 
-**ML-KEM-768** to rekomendowany wybor — jest to zestaw parametrow uzywany przez
-X-Wing, PQXDH Signal i hybrydowa wymiane kluczy TLS Chrome/Firefox. Kategoria 3
-zapewnia komfortowy margines przed przyszlymi postepami kryptoanalizy kratek.
+**ML-KEM-768** to rekomendowany wybór — jest to zestaw parametrów używany przez
+X-Wing, PQXDH Signal i hybrydową wymianę kluczy TLS Chrome/Firefox. Kategoria 3
+zapewnia komfortowy margines przed przyszłymi postępami kryptoanalizy kratek.
 
-### Jak dziala schemat hybrydowy
+### Jak działa schemat hybrydowy
 
-**Obecny przeplyw (podatny):**
+**Obecny przepływ (podatny):**
 
 ```text
 Sender:
@@ -206,7 +206,7 @@ Sender:
   enc_ciphertext = ChaCha20(K_enc, note_plaintext)
 ```
 
-**Przeplyw hybrydowy (odporny kwantowo):**
+**Przepływ hybrydowy (odporny kwantowo):**
 
 ```text
 Sender:
@@ -235,25 +235,25 @@ Recipient:
   note_plaintext = ChaCha20.Decrypt(K_enc, enc_ciphertext)
 ```
 
-### Gwarancja bezpieczenstwa
+### Gwarancja bezpieczeństwa
 
-Polaczony KEM jest bezpieczny IND-CCA2, jesli **ktoryskolwiek** z komponentow
+Połączony KEM jest bezpieczny IND-CCA2, jeśli **którykolwiek** z komponentów
 KEM jest bezpieczny. Jest to formalnie udowodnione przez
 [Giacon, Heuer i Poettering (2018)](https://eprint.iacr.org/2018/024)
-dla kombinatorow KEM uzywajacych PRF (BLAKE2b sie kwalifikuje) i niezaleznie
-przez [dowod bezpieczenstwa X-Wing](https://eprint.iacr.org/2024/039).
+dla kombinatorów KEM używających PRF (BLAKE2b się kwalifikuje) i niezależnie
+przez [dowód bezpieczeństwa X-Wing](https://eprint.iacr.org/2024/039).
 
-| Scenariusz | ECDH | ML-KEM | Polaczony klucz | Status |
+| Scenariusz | ECDH | ML-KEM | Połączony klucz | Status |
 |-----------|------|--------|-----------------|--------|
-| Swiat klasyczny | Bezpieczny | Bezpieczny | **Bezpieczny** | Oba nienaruszone |
-| Kwant lamie ECC | **Zlamany** | Bezpieczny | **Bezpieczny** | ML-KEM chroni |
-| Postepy kratek lamia ML-KEM | Bezpieczny | **Zlamany** | **Bezpieczny** | ECDH chroni (tak jak dzisiaj) |
-| Oba zlamane | Zlamany | Zlamany | **Zlamany** | Wymaga dwoch jednoczesnych przelomow |
+| Świat klasyczny | Bezpieczny | Bezpieczny | **Bezpieczny** | Oba nienaruszone |
+| Kwant łamie ECC | **Złamany** | Bezpieczny | **Bezpieczny** | ML-KEM chroni |
+| Postępy kratek łamią ML-KEM | Bezpieczny | **Złamany** | **Bezpieczny** | ECDH chroni (tak jak dziś) |
+| Oba złamane | Złamany | Złamany | **Złamany** | Wymaga dwóch jednoczesnych przełomów |
 
-### Wplyw na rozmiar
+### Wpływ na rozmiar
 
-Hybrydowy KEM dodaje szyfrogram ML-KEM-768 (1 088 bajtow) do kazdego
-przechowywanego note i rozszerza outgoing ciphertext, aby uwzglednic shared
+Hybrydowy KEM dodaje szyfrogram ML-KEM-768 (1 088 bajtów) do każdego
+przechowywanego note i rozszerza outgoing ciphertext, aby uwzględnić shared
 secret ML-KEM dla odzyskiwania nadawcy:
 
 **Przechowywany rekord na note:**
@@ -288,11 +288,11 @@ Current:  diversifier (11) + pk_d (32) = 43 bytes
 Hybrid:   diversifier (11) + pk_d (32) + ek_pq (1,184) = 1,227 bytes
 ```
 
-1 184-bajtowy klucz publiczny ML-KEM musi byc zawarty w adresie, aby nadawcy
-mogli wykonac enkapsulacje. Przy ~1 960 znakach Bech32m jest to duzy rozmiar,
-ale nadal miesci sie w kodzie QR (maks. ~2 953 znakow alfanumerycznych).
+1 184-bajtowy klucz publiczny ML-KEM musi być zawarty w adresie, aby nadawcy
+mogli wykonać enkapsulację. Przy ~1 960 znakach Bech32m jest to duży rozmiar,
+ale nadal mieści się w kodzie QR (maks. ~2 953 znaków alfanumerycznych).
 
-### Zarzadzanie kluczami
+### Zarządzanie kluczami
 
 Para kluczy ML-KEM jest wyprowadzana deterministycznie z spending key:
 
@@ -309,16 +309,16 @@ SpendingKey (sk) [32 bytes]
               dk_pq: 2,400 bytes (private, part of viewing key)
 ```
 
-**Nie sa potrzebne zmiany w kopiach zapasowych.** Istniejace 24-wyrazowe frazy
-seed obejmuja klucz ML-KEM, poniewaz jest on wyprowadzany ze spending key
-deterministycznie. Odzyskiwanie portfela dziala jak dotychczas.
+**Nie są potrzebne zmiany w kopiach zapasowych.** Istniejące 24-wyrazowe frazy
+seed obejmują klucz ML-KEM, ponieważ jest on wyprowadzany ze spending key
+deterministycznie. Odzyskiwanie portfela działa jak dotychczas.
 
-**Zdywersyfikowane adresy** wspoldziela ten sam `ek_pq`, poniewaz ML-KEM nie
-posiada naturalnego mechanizmu dywersyfikacji jak mnozenie skalarne Pallas.
-Oznacza to, ze obserwator z dwoma adresami uzytkownika moze je powiazac
-porownujac `ek_pq`.
+**Zdywersyfikowane adresy** współdzielą ten sam `ek_pq`, ponieważ ML-KEM nie
+posiada naturalnego mechanizmu dywersyfikacji jak mnożenie skalarne Pallas.
+Oznacza to, że obserwator z dwoma adresami użytkownika może je powiązać,
+porównując `ek_pq`.
 
-### Wydajnosc trial decryption
+### Wydajność trial decryption
 
 | Krok | Obecne | Hybrydowe | Delta |
 |------|--------|-----------|-------|
@@ -326,138 +326,139 @@ porownujac `ek_pq`.
 | ML-KEM-768 Decaps | — | ~40 us | +40 us |
 | BLAKE2b KDF | ~0,5 us | ~1 us | — |
 | ChaCha20 (52 bytes) | ~0,1 us | ~0,1 us | — |
-| **Lacznie na note** | **~101 us** | **~141 us** | **+40% overhead** |
+| **Łącznie na note** | **~101 us** | **~141 us** | **+40% overhead** |
 
-Skanowanie 100 000 notes: ~10,1 s → ~14,1 s. Narzut jest znaczacy, ale nie
-przeszkadza. Dekapsulacja ML-KEM dziala w stalym czasie bez korzysci z
-przetwarzania wsadowego (w przeciwienstwie do operacji na krzywych eliptycznych),
-wiec skaluje sie liniowo.
+Skanowanie 100 000 notes: ~10,1 s → ~14,1 s. Narzut jest znaczący, ale nie
+przeszkadza. Dekapsulacja ML-KEM działa w stałym czasie bez korzyści z
+przetwarzania wsadowego (w przeciwieństwie do operacji na krzywych eliptycznych),
+więc skaluje się liniowo.
 
-### Wplyw na obwody ZK
+### Wpływ na obwody ZK
 
-**Brak.** Hybrydowy KEM jest calkowicie w warstwie transportu/szyfrowania.
-Obwod Halo 2 dowodzi istnienia note, poprawnosci nullifier i rownowagi
-wartosci — nie dowodzi niczego na temat szyfrowania. Brak zmian w proving keys,
+**Brak.** Hybrydowy KEM jest całkowicie w warstwie transportu/szyfrowania.
+Obwód Halo 2 dowodzi istnienia note, poprawności nullifier i równowagi
+wartości — nie dowodzi niczego na temat szyfrowania. Brak zmian w proving keys,
 verifying keys ani ograniczeniach obwodu.
 
-### Porownanie z branza
+### Porównanie z branżą
 
-| System | Podejscie | Status |
+| System | Podejście | Status |
 |--------|-----------|--------|
-| **Signal** (PQXDH) | X25519 + ML-KEM-768, obowiazkowe dla wszystkich uzytkownikow | **Wdrozony** (2023) |
-| **Chrome/Firefox TLS** | X25519 + ML-KEM-768 hybrydowa wymiana kluczy | **Wdrozony** (2024) |
+| **Signal** (PQXDH) | X25519 + ML-KEM-768, obowiązkowe dla wszystkich użytkowników | **Wdrożony** (2023) |
+| **Chrome/Firefox TLS** | X25519 + ML-KEM-768 hybrydowa wymiana kluczy | **Wdrożony** (2024) |
 | **X-Wing** (projekt IETF) | X25519 + ML-KEM-768, dedykowany kombinator | Projekt standardu |
-| **Zcash** | Projekt ZIP odzyskiwania kwantowego (odzyskiwanie srodkow, nie szyfrowanie) | Tylko dyskusja |
+| **Zcash** | Projekt ZIP odzyskiwania kwantowego (odzyskiwanie środków, nie szyfrowanie) | Tylko dyskusja |
 | **Dash Platform** | Pallas ECDH + ML-KEM-768 (proponowany) | Faza projektowa |
 
-## Kiedy wdrozyc
+## Kiedy wdrożyć
 
-### Pytanie o osi czasu
+### Pytanie o oś czasu
 
-- **Stan obecny (2026):** Zaden komputer kwantowy nie moze zlamac 255-bitowego
-  ECC. Najwieksza zademonstrowana faktoryzacja kwantowa: ~50 bitow. Roznica:
-  rzedy wielkosci.
-- **Krotkoterminowo (2030-2035):** Mapy drogowe sprzetu od IBM, Google,
-  Quantinuum celuja w miliony kubitow. Implementacje i zestawy parametrow ML-KEM
-  dojrzeja.
-- **Srednioterminowo (2035-2050):** Wiekszosc szacunkow umieszcza pojawienie sie
-  CRQC w tym oknie. Dane HNDL zbierane dzisiaj sa zagrozone.
-- **Dlugoterminowo (2050+):** Konsensus wsrod kryptografow: komputery kwantowe
-  na duza skale to kwestia "kiedy", a nie "czy".
+- **Stan obecny (2026):** Żaden komputer kwantowy nie może złamać 255-bitowego
+  ECC. Największa zademonstrowana faktoryzacja kwantowa: ~50 bitów. Różnica:
+  rzędy wielkości.
+- **Krótkoterminowo (2030-2035):** Mapy drogowe sprzętu od IBM, Google,
+  Quantinuum celują w miliony kubitów. Implementacje i zestawy parametrów ML-KEM
+  dojrzeją.
+- **Średnioterminowo (2035-2050):** Większość szacunków umieszcza pojawienie się
+  CRQC w tym oknie. Dane HNDL zbierane dzisiaj są zagrożone.
+- **Długoterminowo (2050+):** Konsensus wśród kryptografów: komputery kwantowe
+  na dużą skalę to kwestia "kiedy", a nie "czy".
 
 ### Rekomendowana strategia
 
-**1. Projektuj z mysla o aktualizowalnosci juz teraz.** Upewnij sie, ze format
-przechowywanego rekordu, struktura `TransmittedNoteCiphertext` i uklad wpisow
-BulkAppendTree sa wersjonowane i rozszerzalne. To ma niski koszt i zachowuje
-opcje dodania hybrydowego KEM pozniej.
+**1. Projektuj z myślą o aktualizowalności już teraz.** Upewnij się, że format
+przechowywanego rekordu, struktura `TransmittedNoteCiphertext` i układ wpisów
+BulkAppendTree są wersjonowane i rozszerzalne. To ma niski koszt i zachowuje
+opcję dodania hybrydowego KEM później.
 
-**2. Wdroz hybrydowy KEM gdy bedzie gotowy, uczyni go obowiazkowym.** Nie
-oferuj dwoch puli (klasycznej i hybrydowej). Podzielenie zbioru anonimowosci
-niweczysz cel transakcji chronionych — uzytkownicy ukrywajacy sie w mniejszej
-grupie sa mniej prywatni, nie bardziej. Po wdrozeniu kazdy note uzywa schematu
+**2. Wdróż hybrydowy KEM, gdy będzie gotowy; uczyń go obowiązkowym.** Nie
+oferuj dwóch pul (klasycznej i hybrydowej). Podzielenie zbioru anonimowości
+niweczy cel transakcji chronionych — użytkownicy ukrywający się w mniejszej
+grupie są mniej prywatni, nie bardziej. Po wdrożeniu każdy note używa schematu
 hybrydowego.
 
-**3. Celuj w okno 2028-2030.** Jest to na dlugo przed jakimkolwiek realistycznym
-zagrozeniem kwantowym, ale po ustabilizowaniu implementacji i rozmiarow
-parametrow ML-KEM. Pozwala to rowniez uczyc sie z doswiadczen wdrozeniowych
+**3. Celuj w okno 2028-2030.** Jest to na długo przed jakimkolwiek realistycznym
+zagrożeniem kwantowym, ale po ustabilizowaniu implementacji i rozmiarów
+parametrów ML-KEM. Pozwala to również uczyć się z doświadczeń wdrożeniowych
 Zcash i Signal.
 
-**4. Monitoruj zdarzenia wyzwalajace:**
-- NIST lub NSA narzucajace terminy migracji postkwantowej
-- Znaczace postepy w sprzecie kwantowym (>100 000 kubitow fizycznych z korekcja
-  bledow)
-- Postepy kryptoanalityczne wobec problemow kratek (wplynelyby na wybor ML-KEM)
+**4. Monitoruj zdarzenia wyzwalające:**
+- NIST lub NSA narzucające terminy migracji postkwantowej
+- Znaczące postępy w sprzęcie kwantowym (>100 000 kubitów fizycznych z korekcją
+  błędów)
+- Postępy kryptoanalityczne wobec problemów kratek (wpłynęłyby na wybór ML-KEM)
 
-### Co nie wymaga pilnych dzialan
+### Co nie wymaga pilnych działań
 
-| Komponent | Dlaczego moze poczekac |
+| Komponent | Dlaczego może poczekać |
 |-----------|------------------------|
-| Podpisy autoryzacji wydatkow | Falszowanie jest w czasie rzeczywistym, nie retroaktywne. Aktualizacja do ML-DSA/SLH-DSA przed przyjsciem CRQC. |
-| System dowodow Halo 2 | Falszowanie dowodow jest w czasie rzeczywistym. Migracja do systemu opartego na STARK gdy bedzie potrzebna. |
-| Odpornosc na kolizje Sinsemilla | Przydatna tylko dla nowych atakow, nie retroaktywna. Obejmowana przez migracje systemu dowodow. |
-| Infrastruktura GroveDB Merk/MMR/Blake3 | **Juz bezpieczna kwantowo.** Nie sa potrzebne zadne dzialania, teraz ani w przyszlosci. |
+| Podpisy autoryzacji wydatków | Fałszowanie jest w czasie rzeczywistym, nie retroaktywne. Aktualizacja do ML-DSA/SLH-DSA przed przyjściem CRQC. |
+| System dowodów Halo 2 | Fałszowanie dowodów jest w czasie rzeczywistym. Migracja do systemu opartego na STARK, gdy będzie potrzebna. |
+| Odporność na kolizje Sinsemilla | Przydatna tylko dla nowych ataków, nie retroaktywna. Obejmowana przez migrację systemu dowodów. |
+| Infrastruktura GroveDB Merk/MMR/Blake3 | **Już bezpieczna kwantowo przy obecnych założeniach kryptograficznych.** Nie są potrzebne żadne działania na podstawie znanych ataków. |
 
 ## Referencja alternatyw postkwantowych
 
-### Do szyfrowania (zastepujac ECDH)
+### Do szyfrowania (zastępując ECDH)
 
 | Schemat | Typ | Public key | Ciphertext | Kategoria NIST | Uwagi |
 |---------|-----|-----------|-----------|----------------|-------|
-| ML-KEM-768 | Lattice (MLWE) | 1 184 B | 1 088 B | 3 (192-bit) | FIPS 203, standard branzowy |
-| ML-KEM-512 | Lattice (MLWE) | 800 B | 768 B | 1 (128-bit) | Mniejszy, nizszy margines |
+| ML-KEM-768 | Lattice (MLWE) | 1 184 B | 1 088 B | 3 (192-bit) | FIPS 203, standard branżowy |
+| ML-KEM-512 | Lattice (MLWE) | 800 B | 768 B | 1 (128-bit) | Mniejszy, niższy margines |
 | ML-KEM-1024 | Lattice (MLWE) | 1 568 B | 1 568 B | 5 (256-bit) | Przesada dla hybrydy |
 
-### Do podpisow (zastepujac RedPallas/Schnorr)
+### Do podpisów (zastępując RedPallas/Schnorr)
 
 | Schemat | Typ | Public key | Signature | Kategoria NIST | Uwagi |
 |---------|-----|-----------|----------|----------------|-------|
 | ML-DSA-65 (Dilithium) | Lattice | 1 952 B | 3 293 B | 3 | FIPS 204, szybki |
 | SLH-DSA (SPHINCS+) | Oparty na hashach | 32-64 B | 7 856-49 856 B | 1-5 | FIPS 205, konserwatywny |
-| XMSS/LMS | Oparty na hashach (stateful) | 60 B | 2 500 B | rozne | Stateful — ponowne uzycie = zlamanie |
+| XMSS/LMS | Oparty na hashach (stateful) | 60 B | 2 500 B | różne | Stateful — ponowne użycie = złamanie |
 
-### Do dowodow ZK (zastepujac Halo 2)
+### Do dowodów ZK (zastępując Halo 2)
 
-| System | Zalozenie | Rozmiar dowodu | Postkwantowy | Uwagi |
+| System | Założenie | Rozmiar dowodu | Postkwantowy | Uwagi |
 |--------|----------|---------------|-------------|-------|
-| STARKs | Hash functions (collision resistance) | ~100-400 KB | **Tak** | Uzywany przez StarkNet |
-| Plonky3 | FRI (hash-based polynomial commitment) | ~50-200 KB | **Tak** | Aktywny rozwoj |
+| STARKs | Hash functions (collision resistance) | ~100-400 KB | **Tak** | Używany przez StarkNet |
+| Plonky3 | FRI (hash-based polynomial commitment) | ~50-200 KB | **Tak** | Aktywny rozwój |
 | Halo 2 (obecny) | ECDLP on Pasta curves | ~5 KB | **Nie** | Obecny system Orchard |
 | Lattice SNARKs | MLWE | Badania | **Tak** | Nie gotowy produkcyjnie |
 
-### Ekosystem crate'ow Rust
+### Ekosystem crate'ów Rust
 
-| Crate | Zrodlo | FIPS 203 | Zweryfikowany | Uwagi |
+| Crate | Źródło | FIPS 203 | Zweryfikowany | Uwagi |
 |-------|--------|----------|---------------|-------|
-| `libcrux-ml-kem` | Cryspen | Tak | Formalnie zweryfikowany (hax/F*) | Najwyzsze gwarancje |
-| `ml-kem` | RustCrypto | Tak | Constant-time, nie audytowany | Zgodnosc z ekosystemem |
+| `libcrux-ml-kem` | Cryspen | Tak | Formalnie zweryfikowany (hax/F*) | Najwyższe gwarancje |
+| `ml-kem` | RustCrypto | Tak | Constant-time, nie audytowany | Zgodność z ekosystemem |
 | `fips203` | integritychain | Tak | Constant-time | Pure Rust, no_std |
 
 ## Podsumowanie
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│  QUANTUM THREAT SUMMARY FOR GROVEDB + ORCHARD                      │
+│  PODSUMOWANIE ZAGROŻEŃ KWANTOWYCH DLA GROVEDB + ORCHARD             │
 │                                                                     │
-│  SAFE NOW AND FOREVER (hash-based):                                 │
-│    ✓ Blake3 Merk trees, MMR, BulkAppendTree                        │
+│  BEZPIECZNE PRZY OBECNYCH ZAŁOŻENIACH (oparte na hashach):           │
+│    ✓ Blake3 drzewa Merk, MMR, BulkAppendTree                       │
 │    ✓ BLAKE2b KDF, PRF^expand                                       │
-│    ✓ ChaCha20-Poly1305 symmetric encryption                        │
-│    ✓ All GroveDB proof authentication chains                        │
+│    ✓ Szyfrowanie symetryczne ChaCha20-Poly1305                     │
+│    ✓ Wszystkie łańcuchy uwierzytelniania dowodów GroveDB            │
 │                                                                     │
-│  FIX BEFORE DATA IS STORED (retroactive HNDL):                     │
-│    ✗ Note encryption (ECDH key agreement) → Hybrid KEM             │
-│    ✗ Value commitments (Pedersen) → amounts revealed                │
+│  NAPRAWIĆ PRZED ZAPISANIEM DANYCH (retroaktywne HNDL):              │
+│    ✗ Szyfrowanie notatek (uzgadnianie kluczy ECDH) → Hybrydowy KEM│
+│    ✗ Zobowiązania wartości (Pedersen) → ujawnienie kwot             │
 │                                                                     │
-│  FIX BEFORE QUANTUM COMPUTERS ARRIVE (real-time only):              │
-│    ~ Spend authorization → ML-DSA / SLH-DSA                        │
-│    ~ ZK proofs → STARKs / Plonky3                                  │
-│    ~ Sinsemilla → hash-based Merkle tree                            │
+│  NAPRAWIĆ PRZED POJAWIENIEM SIĘ KOMPUTERÓW KWANTOWYCH (tylko czas  │
+│  rzeczywisty):                                                      │
+│    ~ Autoryzacja wydatków → ML-DSA / SLH-DSA                       │
+│    ~ Dowody ZK → STARKs / Plonky3                                  │
+│    ~ Sinsemilla → drzewo Merkle oparte na hashach                   │
 │                                                                     │
-│  RECOMMENDED TIMELINE:                                              │
-│    2026-2028: Design for upgradability, version stored formats      │
-│    2028-2030: Deploy mandatory hybrid KEM for note encryption       │
-│    2035+: Migrate signatures and proof system if needed             │
+│  ZALECANY HARMONOGRAM:                                              │
+│    2026-2028: Projektowanie pod kątem rozszerzalności               │
+│    2028-2030: Wdrożenie obowiązkowego hybrydowego KEM               │
+│    2035+: Migracja podpisów i systemu dowodów w razie potrzeby      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
