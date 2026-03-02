@@ -125,3 +125,6 @@ where
         T::try_from(value)
     }
 }
+
+#[cfg(test)]
+mod tests;
