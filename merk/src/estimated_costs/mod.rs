@@ -235,3 +235,52 @@ pub fn add_cost_case_merk_patch(
     // then let's add the two block hashes for the node hash call
     cost.hash_node_calls += 2;
 }
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::OperationCost;
+
+    use super::*;
+
+    #[test]
+    fn test_add_cost_case_merk_insert_increments_cost_fields() {
+        let mut cost = OperationCost::default();
+        add_cost_case_merk_insert(&mut cost, 8, 64, TreeType::NormalTree);
+
+        assert_eq!(cost.seek_count, 1);
+        assert!(cost.storage_cost.added_bytes > 0);
+        assert!(cost.hash_node_calls >= 4);
+    }
+
+    #[test]
+    fn test_add_cost_case_merk_insert_layered_includes_combine_hash() {
+        let mut cost_plain = OperationCost::default();
+        add_cost_case_merk_insert(&mut cost_plain, 8, 64, TreeType::NormalTree);
+
+        let mut cost_layered = OperationCost::default();
+        add_cost_case_merk_insert_layered(&mut cost_layered, 8, 64, TreeType::NormalTree);
+
+        assert_eq!(cost_layered.seek_count, 1);
+        assert_eq!(cost_layered.hash_node_calls, cost_plain.hash_node_calls + 1);
+    }
+
+    #[test]
+    fn test_add_cost_case_merk_patch_positive_change_tracks_added_bytes() {
+        let mut cost = OperationCost::default();
+        add_cost_case_merk_patch(&mut cost, 8, 70, 6, TreeType::NormalTree);
+
+        assert_eq!(cost.seek_count, 1);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_cost.added_bytes > 0);
+    }
+
+    #[test]
+    fn test_add_cost_case_merk_patch_negative_change_only_replaces() {
+        let mut cost = OperationCost::default();
+        add_cost_case_merk_patch(&mut cost, 8, 64, -3, TreeType::NormalTree);
+
+        assert_eq!(cost.seek_count, 1);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert_eq!(cost.storage_cost.added_bytes, 0);
+    }
+}

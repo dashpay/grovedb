@@ -1043,3 +1043,146 @@ fn add_average_case_merk_propagate_v0(
     } as u64;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::OperationCost;
+    use grovedb_version::version::GroveVersion;
+
+    use super::*;
+
+    #[test]
+    fn test_estimated_sum_trees_divide_by_zero() {
+        let estimated = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 0,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+        };
+        let err = estimated
+            .estimated_size(GroveVersion::latest())
+            .unwrap_err();
+        assert!(matches!(err, Error::DivideByZero("weights add up to 0")));
+    }
+
+    #[test]
+    fn test_estimated_sum_trees_v0_formula_path() {
+        let estimated = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 3,
+        };
+        let size = estimated.estimated_size(GroveVersion::first()).unwrap();
+        assert_eq!(size, 6);
+    }
+
+    #[test]
+    fn test_layered_flags_size_errors() {
+        let layer = EstimatedLayerSizes::AllItems(4, 10, Some(1));
+        let err = layer.layered_flags_size().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::WrongEstimatedCostsElementTypeForLevel(
+                "this layer does not have costs for trees"
+            )
+        ));
+    }
+
+    #[test]
+    fn test_subtree_with_feature_and_flags_size_mix_missing_subtrees() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: Some((4, 10, Some(1), 1)),
+            references_size: None,
+        };
+        let err = layer
+            .subtree_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::WrongEstimatedCostsElementTypeForLevel(
+                "this layer is a mix but doesn't have subtrees"
+            )
+        ));
+    }
+
+    #[test]
+    fn test_value_with_feature_and_flags_size_mix_without_weights() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: None,
+            references_size: None,
+        };
+        let err = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::WrongEstimatedCostsElementTypeForLevel(
+                "this layer is a mix and does not have items, refs or trees"
+            )
+        ));
+    }
+
+    #[test]
+    fn test_estimated_layer_count_helpers() {
+        assert!(EstimatedLayerCount::ApproximateElements(0).estimated_to_be_empty());
+        assert_eq!(
+            EstimatedLayerCount::ApproximateElements(7).estimate_levels(),
+            3
+        );
+        assert_eq!(
+            EstimatedLayerCount::PotentiallyAtMaxElements.estimate_levels(),
+            32
+        );
+        assert_eq!(
+            EstimatedLayerCount::EstimatedLevel(5, false).estimate_levels(),
+            5
+        );
+    }
+
+    #[test]
+    fn test_add_average_case_merk_propagate_version_mismatch_error() {
+        let mut custom_version = GroveVersion::latest().clone();
+        custom_version
+            .merk_versions
+            .average_case_costs
+            .add_average_case_merk_propagate = 99;
+
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(1, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(5, 20, None),
+        };
+
+        let mut cost = OperationCost::default();
+        let err =
+            add_average_case_merk_propagate(&mut cost, &layer_info, &custom_version).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn test_add_average_case_merk_propagate_all_items_updates_cost() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
+        };
+
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &layer_info, GroveVersion::latest()).unwrap();
+
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_loaded_bytes > 0);
+    }
+}
