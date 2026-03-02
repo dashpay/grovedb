@@ -462,7 +462,8 @@ impl RocksDbStorage {
         let mut iter = self.db.raw_iterator_cf(&cf_handle);
         iter.seek_to_first();
         while iter.valid() {
-            self.db.delete(iter.key().expect("should have key"))?;
+            let key = iter.key().expect("should have key").to_vec();
+            self.db.delete_cf(&cf_handle, key)?;
             iter.next()
         }
         Ok(())
@@ -601,6 +602,7 @@ mod tests {
         rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
         RawIterator, Storage, StorageContext,
     };
+    use grovedb_path::SubtreePath;
 
     #[test]
     fn test_build_prefix() {
@@ -614,6 +616,28 @@ mod tests {
             RocksDbStorage::build_prefix(path_a.as_ref().into()),
             RocksDbStorage::build_prefix(path_a.as_ref().into()),
         );
+    }
+
+    #[test]
+    fn test_build_prefix_for_root_and_storage_context_cost() {
+        struct TestKeyLen(u8);
+        impl WorstKeyLength for TestKeyLen {
+            fn max_length(&self) -> u8 {
+                self.0
+            }
+        }
+
+        assert_eq!(
+            RocksDbStorage::build_prefix(SubtreePath::empty()).unwrap(),
+            SubtreePrefix::default()
+        );
+        assert_eq!(
+            RocksDbStorage::get_storage_context_cost::<TestKeyLen>(&[]),
+            OperationCost::default()
+        );
+
+        let cost = RocksDbStorage::get_storage_context_cost(&[TestKeyLen(70)]);
+        assert_eq!(cost.hash_node_calls, 2);
     }
 
     #[test]
