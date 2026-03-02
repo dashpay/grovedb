@@ -431,3 +431,50 @@ fn test_batch_all_four_non_merk_tree_types() {
         issues
     );
 }
+
+// ===========================================================================
+// Debug formatting coverage for CommitmentTreeInsert
+// ===========================================================================
+
+/// Test that the Debug implementation for QualifiedGroveDbOp correctly
+/// formats a CommitmentTreeInsert op, including hex-encoded cmx and rho
+/// prefixes.
+#[test]
+fn test_commitment_tree_insert_debug_format() {
+    let mut cmx = [0u8; 32];
+    cmx[0] = 0xAB;
+    cmx[1] = 0xCD;
+    cmx[2] = 0xEF;
+    cmx[3] = 0x01;
+
+    let mut rho = [0u8; 32];
+    rho[0] = 0x12;
+    rho[1] = 0x34;
+    rho[2] = 0x56;
+    rho[3] = 0x78;
+
+    let op = QualifiedGroveDbOp::commitment_tree_insert_op(
+        vec![b"pool".to_vec()],
+        cmx,
+        rho,
+        b"payload".to_vec(),
+    );
+
+    let debug_str = format!("{:?}", op);
+
+    assert!(
+        debug_str.contains("abcdef01"),
+        "debug output should contain hex-encoded cmx prefix, got: {}",
+        debug_str
+    );
+    assert!(
+        debug_str.contains("12345678"),
+        "debug output should contain hex-encoded rho prefix, got: {}",
+        debug_str
+    );
+    assert!(
+        debug_str.contains("Commitment Tree Insert"),
+        "debug output should contain op name, got: {}",
+        debug_str
+    );
+}
