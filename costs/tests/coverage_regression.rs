@@ -290,7 +290,7 @@ fn macro_target_ok() -> CostResult<u32, &'static str> {
 
 fn macro_target_err() -> CostResult<u32, &'static str> {
     let mut cost = OperationCost::with_seek_count(2);
-    let _ = cost_return_on_error!(
+    cost_return_on_error!(
         &mut cost,
         CostContext {
             value: Err("boom"),
@@ -302,7 +302,7 @@ fn macro_target_err() -> CostResult<u32, &'static str> {
 
 fn macro_target_into_err() -> CostResult<u32, String> {
     let mut cost = OperationCost::with_seek_count(3);
-    let _ = cost_return_on_error_into!(
+    cost_return_on_error_into!(
         &mut cost,
         CostContext {
             value: Err("boom"),
@@ -314,23 +314,23 @@ fn macro_target_into_err() -> CostResult<u32, String> {
 
 fn macro_target_no_add_err() -> CostResult<u32, &'static str> {
     let cost = OperationCost::with_seek_count(4);
-    let _ = cost_return_on_error_no_add!(cost, Err::<u32, _>("boom"));
+    cost_return_on_error_no_add!(cost, Err::<u32, _>("boom"));
     Ok(0).wrap_with_cost(cost)
 }
 
 fn macro_target_into_no_add_err() -> CostResult<u32, String> {
     let cost = OperationCost::with_seek_count(5);
-    let _ = cost_return_on_error_into_no_add!(cost, Err::<u32, _>("boom"));
+    cost_return_on_error_into_no_add!(cost, Err::<u32, _>("boom"));
     Ok(0).wrap_with_cost(cost)
 }
 
 fn macro_target_default_err() -> CostResult<u32, &'static str> {
-    let _ = cost_return_on_error_default!(Err::<u32, _>("boom"));
+    cost_return_on_error_default!(Err::<u32, _>("boom"));
     Ok(0).wrap_with_cost(OperationCost::with_seek_count(99))
 }
 
 fn macro_target_into_default_err() -> CostResult<u32, String> {
-    let _ = cost_return_on_error_into_default!(Err::<u32, _>("boom"));
+    cost_return_on_error_into_default!(Err::<u32, _>("boom"));
     Ok(0).wrap_with_cost(OperationCost::with_seek_count(99))
 }
 
