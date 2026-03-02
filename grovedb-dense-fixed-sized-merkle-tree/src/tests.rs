@@ -4,6 +4,7 @@ use crate::{
     test_utils::{FailingStorageContext, MemStorageContext},
     tree::position_key,
 };
+use grovedb_query::Query;
 
 // ── DenseFixedSizedMerkleTree tests ──────────────────────────────────
 
@@ -955,4 +956,143 @@ fn test_reset_clears_count() {
     tree.reset();
     assert_eq!(tree.count(), 0);
     assert_eq!(tree.root_hash().unwrap().expect("root hash"), [0u8; 32]);
+}
+
+#[test]
+fn test_verify_rejects_out_of_range_node_value_hash_position() {
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
+    let mut proof = DenseTreeProof::generate(&tree, &[4])
+        .unwrap()
+        .expect("generate should succeed");
+
+    assert!(
+        !proof.node_value_hashes.is_empty(),
+        "proof should contain node_value_hashes"
+    );
+    let (_, hash) = proof.node_value_hashes[0];
+    proof.node_value_hashes[0] = (7, hash); // count=7 -> out of range
+
+    let result = proof.verify_against_expected_root::<Vec<(u16, Vec<u8>)>>(&root, 3, 7);
+    assert!(
+        result.is_err(),
+        "node_value_hash at position == count should be rejected"
+    );
+}
+
+#[test]
+fn test_verify_rejects_out_of_range_node_hash_position() {
+    let tree = make_full_h3_tree();
+    let root = tree.root_hash().unwrap().expect("root hash");
+    let mut proof = DenseTreeProof::generate(&tree, &[4])
+        .unwrap()
+        .expect("generate should succeed");
+
+    assert!(
+        !proof.node_hashes.is_empty(),
+        "proof should contain node_hashes"
+    );
+    let (_, hash) = proof.node_hashes[0];
+    proof.node_hashes[0] = (7, hash); // count=7 -> out of range
+
+    let result = proof.verify_against_expected_root::<Vec<(u16, Vec<u8>)>>(&root, 3, 7);
+    assert!(
+        result.is_err(),
+        "node_hash at position == count should be rejected"
+    );
+}
+
+#[test]
+fn test_root_hash_store_inconsistency_errors_when_value_missing() {
+    // count=1 but no position 0 value in storage.
+    let tree = DenseFixedSizedMerkleTree::from_state(2, 1, MemStorageContext::new())
+        .expect("from_state should succeed");
+    let result = tree.root_hash();
+    assert!(
+        result.unwrap().is_err(),
+        "root_hash should error when a required value is missing from storage"
+    );
+}
+
+#[test]
+fn test_hash_position_beyond_capacity_returns_zero_hash() {
+    let mut tree = DenseFixedSizedMerkleTree::new(2, MemStorageContext::new()).expect("height 2");
+    tree.insert(b"root").unwrap().expect("insert");
+    // height=2 -> capacity=3, so 10 is beyond capacity.
+    let hash = tree
+        .hash_position(10)
+        .unwrap()
+        .expect("hash_position should succeed");
+    assert_eq!(hash, [0u8; 32]);
+}
+
+#[test]
+fn test_try_insert_rollback_on_hash_failure() {
+    // count starts at 1 so try_insert writes at pos=1.
+    // hash recomputation reads pos=0 and will fail.
+    let store = FailingStorageContext::new();
+    store
+        .data
+        .borrow_mut()
+        .insert(position_key(0).to_vec(), b"existing".to_vec());
+
+    let mut tree = DenseFixedSizedMerkleTree::from_state(2, 1, store).expect("from_state");
+    tree.storage.fail_on_get_key.replace(Some(position_key(0)));
+
+    let result = tree.try_insert(b"new");
+    assert!(
+        result.unwrap().is_err(),
+        "try_insert should fail on hash read"
+    );
+    assert_eq!(
+        tree.count(),
+        1,
+        "count should roll back after try_insert hash failure"
+    );
+
+    // After clearing the failure, next insert should still use position 1.
+    tree.storage.fail_on_get_key.replace(None);
+    let inserted = tree
+        .try_insert(b"new")
+        .unwrap()
+        .expect("try_insert should succeed")
+        .expect("tree has capacity");
+    assert_eq!(inserted.1, 1);
+    assert_eq!(tree.count(), 2);
+}
+
+#[test]
+fn test_generate_for_query_rejects_subquery() {
+    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
+    tree.insert(b"v0").unwrap().expect("insert");
+
+    let mut query = Query::new();
+    query.insert_key(vec![0]);
+    query.set_subquery(Query::new());
+
+    let result = DenseTreeProof::generate_for_query(&tree, &query);
+    assert!(
+        result.unwrap().is_err(),
+        "subqueries should be rejected for dense-tree query proofs"
+    );
+}
+
+#[test]
+fn test_verify_for_query_rejects_subquery() {
+    let tree = make_full_h3_tree();
+    let mut base_query = Query::new();
+    base_query.insert_key(vec![4]);
+    let proof = DenseTreeProof::generate_for_query(&tree, &base_query)
+        .unwrap()
+        .expect("generate_for_query should succeed");
+
+    let mut verify_query = Query::new();
+    verify_query.insert_key(vec![4]);
+    verify_query.set_subquery(Query::new());
+
+    let result = proof.verify_for_query::<Vec<(u16, Vec<u8>)>>(&verify_query, tree.height(), 7);
+    assert!(
+        result.is_err(),
+        "verify_for_query should reject queries with subqueries"
+    );
 }
