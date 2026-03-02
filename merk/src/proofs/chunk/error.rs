@@ -108,5 +108,25 @@ mod tests {
             ChunkError::RestorationNotComplete.to_string(),
             "called finalize too early still expecting chunks"
         );
+        assert_eq!(
+            ChunkError::EmptyTree("x").to_string(),
+            "chunk from empty tree: x"
+        );
+        assert_eq!(
+            ChunkError::ExpectedChunkId.to_string(),
+            "expected chunk id when parsing chunk op"
+        );
+        assert_eq!(
+            ChunkError::ExpectedChunk.to_string(),
+            "expected chunk when parsing chunk op"
+        );
+        assert_eq!(
+            ChunkError::UnexpectedChunk.to_string(),
+            "unexpected chunk: cannot verify chunk because verification hash is not in memory"
+        );
+        assert_eq!(
+            ChunkError::InternalError("x").to_string(),
+            "internal error x"
+        );
     }
 }
