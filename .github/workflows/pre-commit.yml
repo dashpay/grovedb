@@ -6,10 +6,6 @@ on:
       - master
       - develop
       - v[0-9]+.[0-9]+-dev
-  push:
-    branches:
-      - master
-      - develop
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
