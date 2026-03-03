@@ -97,3 +97,112 @@ impl From<TreeFeatureType> for AggregateData {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "minimal")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_data_parent_tree_type_all_variants() {
+        assert_eq!(
+            AggregateData::NoAggregateData.parent_tree_type(),
+            TreeType::NormalTree
+        );
+        assert_eq!(AggregateData::Sum(42).parent_tree_type(), TreeType::SumTree);
+        assert_eq!(
+            AggregateData::BigSum(100).parent_tree_type(),
+            TreeType::BigSumTree
+        );
+        assert_eq!(
+            AggregateData::Count(10).parent_tree_type(),
+            TreeType::CountTree
+        );
+        assert_eq!(
+            AggregateData::CountAndSum(5, 20).parent_tree_type(),
+            TreeType::CountSumTree
+        );
+        assert_eq!(
+            AggregateData::ProvableCount(3).parent_tree_type(),
+            TreeType::ProvableCountTree
+        );
+        assert_eq!(
+            AggregateData::ProvableCountAndSum(1, 2).parent_tree_type(),
+            TreeType::ProvableCountSumTree
+        );
+    }
+
+    #[test]
+    fn aggregate_data_as_sum_i64_all_variants() {
+        assert_eq!(AggregateData::NoAggregateData.as_sum_i64(), 0);
+        assert_eq!(AggregateData::Sum(42).as_sum_i64(), 42);
+        assert_eq!(AggregateData::Sum(-10).as_sum_i64(), -10);
+        assert_eq!(AggregateData::BigSum(100).as_sum_i64(), 100);
+        // BigSum overflow => saturates to i64::MAX
+        assert_eq!(
+            AggregateData::BigSum(i64::MAX as i128 + 1).as_sum_i64(),
+            i64::MAX
+        );
+        assert_eq!(AggregateData::Count(99).as_sum_i64(), 0);
+        assert_eq!(AggregateData::CountAndSum(5, 20).as_sum_i64(), 20);
+        assert_eq!(AggregateData::ProvableCount(3).as_sum_i64(), 0);
+        assert_eq!(AggregateData::ProvableCountAndSum(1, -7).as_sum_i64(), -7);
+    }
+
+    #[test]
+    fn aggregate_data_as_count_u64_all_variants() {
+        assert_eq!(AggregateData::NoAggregateData.as_count_u64(), 0);
+        assert_eq!(AggregateData::Sum(42).as_count_u64(), 0);
+        assert_eq!(AggregateData::BigSum(100).as_count_u64(), 0);
+        assert_eq!(AggregateData::Count(99).as_count_u64(), 99);
+        assert_eq!(AggregateData::CountAndSum(5, 20).as_count_u64(), 5);
+        assert_eq!(AggregateData::ProvableCount(3).as_count_u64(), 3);
+        assert_eq!(AggregateData::ProvableCountAndSum(7, -1).as_count_u64(), 7);
+    }
+
+    #[test]
+    fn aggregate_data_as_summed_i128_all_variants() {
+        assert_eq!(AggregateData::NoAggregateData.as_summed_i128(), 0);
+        assert_eq!(AggregateData::Sum(42).as_summed_i128(), 42);
+        assert_eq!(AggregateData::BigSum(i128::MAX).as_summed_i128(), i128::MAX);
+        assert_eq!(AggregateData::Count(99).as_summed_i128(), 0);
+        assert_eq!(AggregateData::CountAndSum(5, -20).as_summed_i128(), -20);
+        assert_eq!(AggregateData::ProvableCount(3).as_summed_i128(), 0);
+        assert_eq!(
+            AggregateData::ProvableCountAndSum(1, 50).as_summed_i128(),
+            50
+        );
+    }
+
+    #[test]
+    fn aggregate_data_from_tree_feature_type_all_variants() {
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::BasicMerkNode),
+            AggregateData::NoAggregateData
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::SummedMerkNode(42)),
+            AggregateData::Sum(42)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::BigSummedMerkNode(100)),
+            AggregateData::BigSum(100)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::CountedMerkNode(10)),
+            AggregateData::Count(10)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::CountedSummedMerkNode(5, 20)),
+            AggregateData::CountAndSum(5, 20)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableCountedMerkNode(3)),
+            AggregateData::ProvableCount(3)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableCountedSummedMerkNode(1, 2)),
+            AggregateData::ProvableCountAndSum(1, 2)
+        );
+    }
+}
