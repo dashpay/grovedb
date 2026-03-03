@@ -103,8 +103,7 @@ mod tests {
 
         let m = make_kv_tree(b"m", b"val_m");
         let m = with_left(m, d);
-        let m = with_right(m, t);
-        m
+        with_right(m, t)
     }
 
     fn build_leaf_keys(keys: &[&[u8]]) -> BTreeMap<Vec<u8>, LeafInfo> {

@@ -135,11 +135,11 @@ mod tests {
         let map = mixed_elements().to_key_elements_btree_map();
         assert_eq!(map.len(), 2);
         assert_eq!(
-            map.get(&b"key_a".to_vec()),
+            map.get(b"key_a".as_slice()),
             Some(&Element::new_item(vec![2]))
         );
         assert_eq!(
-            map.get(&b"key_b".to_vec()),
+            map.get(b"key_b".as_slice()),
             Some(&Element::new_item(vec![3]))
         );
     }
@@ -153,11 +153,11 @@ mod tests {
         let map = mixed_elements().to_key_elements_hash_map();
         assert_eq!(map.len(), 2);
         assert_eq!(
-            map.get(&b"key_a".to_vec()),
+            map.get(b"key_a".as_slice()),
             Some(&Element::new_item(vec![2]))
         );
         assert_eq!(
-            map.get(&b"key_b".to_vec()),
+            map.get(b"key_b".as_slice()),
             Some(&Element::new_item(vec![3]))
         );
     }
@@ -216,14 +216,14 @@ mod tests {
         // Last path segment for first two is "shared", for the third is "other"
         assert_eq!(map.len(), 2);
         let shared_keys = map
-            .get(&b"shared".to_vec())
+            .get(b"shared".as_slice())
             .expect("should have 'shared' entry");
         assert_eq!(shared_keys.len(), 2);
         assert!(shared_keys.contains(&b"k1".to_vec()));
         assert!(shared_keys.contains(&b"k2".to_vec()));
 
         let other_keys = map
-            .get(&b"other".to_vec())
+            .get(b"other".as_slice())
             .expect("should have 'other' entry");
         assert_eq!(other_keys, &vec![b"k3".to_vec()]);
     }
@@ -234,7 +234,7 @@ mod tests {
         // Only one trio present with last path = "child"
         assert_eq!(map.len(), 1);
         let keys = map
-            .get(&b"child".to_vec())
+            .get(b"child".as_slice())
             .expect("should have 'child' entry");
         assert_eq!(keys, &vec![b"key_b".to_vec()]);
     }
@@ -267,7 +267,7 @@ mod tests {
         let shared_inner = map.get(&shared_path).expect("should have shared path");
         assert_eq!(shared_inner.len(), 2);
         assert_eq!(
-            shared_inner.get(&b"k1".to_vec()),
+            shared_inner.get(b"k1".as_slice()),
             Some(&Element::new_item(vec![10]))
         );
         assert_eq!(
@@ -279,7 +279,7 @@ mod tests {
         let other_inner = map.get(&other_path).expect("should have other path");
         assert_eq!(other_inner.len(), 1);
         assert_eq!(
-            other_inner.get(&b"k3".to_vec()),
+            other_inner.get(b"k3".as_slice()),
             Some(&Element::new_item(vec![30]))
         );
     }
@@ -294,11 +294,11 @@ mod tests {
         assert_eq!(map.len(), 2);
 
         let shared_inner = map
-            .get(&b"shared".to_vec())
+            .get(b"shared".as_slice())
             .expect("should have 'shared' key");
         assert_eq!(shared_inner.len(), 2);
         assert_eq!(
-            shared_inner.get(&b"k1".to_vec()),
+            shared_inner.get(b"k1".as_slice()),
             Some(&Element::new_item(vec![10]))
         );
         assert_eq!(
@@ -307,11 +307,11 @@ mod tests {
         );
 
         let other_inner = map
-            .get(&b"other".to_vec())
+            .get(b"other".as_slice())
             .expect("should have 'other' key");
         assert_eq!(other_inner.len(), 1);
         assert_eq!(
-            other_inner.get(&b"k3".to_vec()),
+            other_inner.get(b"k3".as_slice()),
             Some(&Element::new_item(vec![30]))
         );
     }
@@ -326,14 +326,14 @@ mod tests {
         assert_eq!(map.len(), 2);
 
         let shared_elems = map
-            .get(&b"shared".to_vec())
+            .get(b"shared".as_slice())
             .expect("should have 'shared' key");
         assert_eq!(shared_elems.len(), 2);
         assert!(shared_elems.contains(&Element::new_item(vec![10])));
         assert!(shared_elems.contains(&Element::new_item(vec![20])));
 
         let other_elems = map
-            .get(&b"other".to_vec())
+            .get(b"other".as_slice())
             .expect("should have 'other' key");
         assert_eq!(other_elems, &vec![Element::new_item(vec![30])]);
     }
@@ -349,16 +349,16 @@ mod tests {
         assert_eq!(result.key_values.len(), 2);
 
         // Drill into "a" -> "shared" -> {k1, k2}
-        let a_level = match result.key_values.get(&b"a".to_vec()) {
+        let a_level = match result.key_values.get(b"a".as_slice()) {
             Some(BTreeMapLevelResultOrItem::BTreeMapLevelResult(inner)) => inner,
             other => panic!("expected BTreeMapLevelResult at 'a', got: {:?}", other),
         };
-        let shared_level = match a_level.key_values.get(&b"shared".to_vec()) {
+        let shared_level = match a_level.key_values.get(b"shared".as_slice()) {
             Some(BTreeMapLevelResultOrItem::BTreeMapLevelResult(inner)) => inner,
             other => panic!("expected BTreeMapLevelResult at 'shared', got: {:?}", other),
         };
         assert_eq!(shared_level.key_values.len(), 2);
-        match shared_level.key_values.get(&b"k1".to_vec()) {
+        match shared_level.key_values.get(b"k1".as_slice()) {
             Some(BTreeMapLevelResultOrItem::ResultItem(elem)) => {
                 assert_eq!(elem, &Element::new_item(vec![10]));
             }
@@ -366,16 +366,16 @@ mod tests {
         }
 
         // Drill into "b" -> "other" -> {k3}
-        let b_level = match result.key_values.get(&b"b".to_vec()) {
+        let b_level = match result.key_values.get(b"b".as_slice()) {
             Some(BTreeMapLevelResultOrItem::BTreeMapLevelResult(inner)) => inner,
             other => panic!("expected BTreeMapLevelResult at 'b', got: {:?}", other),
         };
-        let other_level = match b_level.key_values.get(&b"other".to_vec()) {
+        let other_level = match b_level.key_values.get(b"other".as_slice()) {
             Some(BTreeMapLevelResultOrItem::BTreeMapLevelResult(inner)) => inner,
             other => panic!("expected BTreeMapLevelResult at 'other', got: {:?}", other),
         };
         assert_eq!(other_level.key_values.len(), 1);
-        match other_level.key_values.get(&b"k3".to_vec()) {
+        match other_level.key_values.get(b"k3".as_slice()) {
             Some(BTreeMapLevelResultOrItem::ResultItem(elem)) => {
                 assert_eq!(elem, &Element::new_item(vec![30]));
             }
@@ -393,12 +393,12 @@ mod tests {
         // Paths: [a, shared] -> previous of last = "a"
         //        [b, other]  -> previous of last = "b"
         assert_eq!(map.len(), 2);
-        let a_keys = map.get(&b"a".to_vec()).expect("should have 'a' entry");
+        let a_keys = map.get(b"a".as_slice()).expect("should have 'a' entry");
         assert_eq!(a_keys.len(), 2);
         assert!(a_keys.contains(&b"k1".to_vec()));
         assert!(a_keys.contains(&b"k2".to_vec()));
 
-        let b_keys = map.get(&b"b".to_vec()).expect("should have 'b' entry");
+        let b_keys = map.get(b"b".as_slice()).expect("should have 'b' entry");
         assert_eq!(b_keys, &vec![b"k3".to_vec()]);
     }
 

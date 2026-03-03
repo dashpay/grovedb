@@ -4549,7 +4549,7 @@ mod tests {
 
         // Should return at least the item from has_items
         assert!(
-            results.len() >= 1,
+            !results.is_empty(),
             "should return at least 1 result, got {}",
             results.len()
         );
