@@ -118,6 +118,9 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
 
         match self.compute_root_hash().unwrap_add_cost(&mut cost) {
             Ok(root_hash) => Ok((root_hash, position)).wrap_with_cost(cost),
+            // codecov:ignore — requires compute_root_hash to fail after put_value
+            // succeeds, which needs a storage fault (get fails on a key that was
+            // just written). Not reachable with any StorageContext implementation.
             Err(e) => {
                 // Roll back count so the tree state remains consistent.
                 // Note: the value remains in the store; the caller is

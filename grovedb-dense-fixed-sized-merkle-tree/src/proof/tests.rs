@@ -1538,5 +1538,24 @@ mod proof_tests {
             let entries = gen_and_verify(&tree, &query);
             assert_eq!(entries.len(), 6);
         }
+
+        #[test]
+        fn verify_rejects_proof_exceeding_capacity() {
+            // height=1 → capacity=1. A proof with 2 entries exceeds capacity,
+            // triggering the DoS prevention check in verify_inner.
+            let bogus_proof = DenseTreeProof {
+                entries: vec![(0, b"a".to_vec()), (0, b"b".to_vec())],
+                node_value_hashes: vec![],
+                node_hashes: vec![],
+            };
+            let err = bogus_proof
+                .verify_and_get_root::<Vec<(u16, Vec<u8>)>>(1, 1)
+                .expect_err("should reject proof exceeding capacity");
+            assert!(
+                matches!(err, crate::DenseMerkleError::InvalidProof(ref msg) if msg.contains("exceeds tree capacity")),
+                "expected capacity error, got: {:?}",
+                err
+            );
+        }
     }
 }

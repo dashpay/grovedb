@@ -1,6 +1,11 @@
 codecov:
   require_ci_to_pass: false
 
+ignore:
+  - "**/test_utils.rs"
+  - "**/tests.rs"
+  - "**/tests/**"
+
 coverage:
   status:
     project:

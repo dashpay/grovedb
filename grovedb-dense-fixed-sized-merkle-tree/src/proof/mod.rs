@@ -138,6 +138,7 @@ macro_rules! cost_return_on_error {
 /// must supply trusted values for both — obtained from an authenticated source
 /// such as the parent `Element` in Merk — when calling the verification
 /// methods.
+// codecov:ignore — derive macro expansion, not testable production logic
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct DenseTreeProof {
     /// The proved (position, value) pairs.
@@ -163,6 +164,9 @@ impl DenseTreeProof {
         let count = tree.count();
 
         // Validate height before the shift to avoid panic on height >= 16
+        // codecov:ignore — defense-in-depth: height is validated by both constructors
+        // (new, from_state) and the field is private, so no tree can reach here
+        // with an invalid height through the public API.
         if let Err(e) = crate::hash::validate_height(height) {
             return Err(e).wrap_with_cost(cost);
         }
