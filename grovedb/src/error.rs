@@ -4,6 +4,8 @@ use std::convert::Infallible;
 
 use grovedb_costs::CostResult;
 
+use crate::PathQuery;
+
 /// GroveDB Errors
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
@@ -24,16 +26,12 @@ pub enum Error {
     #[error("internal error: {0}")]
     /// Internal error
     InternalError(String),
-    #[error("invalid proof: {0}")]
+    #[error("invalid proof: {1}")]
     /// Invalid proof
-    InvalidProof(String),
+    InvalidProof(PathQuery, String),
     #[error("invalid input: {0}")]
     /// Invalid input
     InvalidInput(&'static str),
-
-    #[error("wrong element type: {0}")]
-    /// Invalid element type
-    WrongElementType(&'static str),
 
     // Path errors
     /// The path key not found could represent a valid query, just where the
@@ -140,20 +138,25 @@ pub enum Error {
     /// Path not found in cache for estimated costs
     PathNotFoundInCacheForEstimatedCosts(String),
 
-    // Support errors
     #[error("not supported: {0}")]
     /// Not supported
     NotSupported(String),
 
-    // Merk errors
     #[error("merk error: {0}")]
     /// Merk error
     MerkError(grovedb_merk::error::Error),
 
-    // Version errors
     #[error(transparent)]
     /// Version error
     VersionError(grovedb_version::error::GroveVersionError),
+
+    #[error(transparent)]
+    /// Element error
+    ElementError(grovedb_element::error::ElementError),
+
+    #[error("query error: {0}")]
+    /// Query error
+    QueryError(grovedb_query::error::Error),
 
     #[error("cyclic error")]
     /// Cyclic reference
@@ -162,6 +165,10 @@ pub enum Error {
     #[error("overflow error: {0}")]
     /// Overflow error
     Overflow(&'static str),
+
+    #[error("commitment tree error: {0}")]
+    /// Commitment tree operation error
+    CommitmentTreeError(String),
 }
 
 impl Error {
@@ -169,7 +176,7 @@ impl Error {
         match self {
             Self::MissingReference(s)
             | Self::InternalError(s)
-            | Self::InvalidProof(s)
+            | Self::InvalidProof(_, s)
             | Self::PathKeyNotFound(s)
             | Self::PathNotFound(s)
             | Self::PathParentLayerNotFound(s)
@@ -186,7 +193,8 @@ impl Error {
             | Self::SplitRemovalBytesClientError(s)
             | Self::ClientReturnedNonClientError(s)
             | Self::PathNotFoundInCacheForEstimatedCosts(s)
-            | Self::NotSupported(s) => {
+            | Self::NotSupported(s)
+            | Self::CommitmentTreeError(s) => {
                 s.push_str(", ");
                 s.push_str(append.as_ref());
             }
@@ -216,12 +224,25 @@ impl From<Infallible> for Error {
 
 impl From<grovedb_merk::error::Error> for Error {
     fn from(value: grovedb_merk::Error) -> Self {
-        Error::MerkError(value)
+        match value {
+            grovedb_merk::Error::PathKeyNotFound(e) => Self::PathKeyNotFound(e),
+            grovedb_merk::Error::PathNotFound(e) => Self::PathNotFound(e),
+            grovedb_merk::Error::PathParentLayerNotFound(e) => Self::PathParentLayerNotFound(e),
+            grovedb_merk::Error::ElementError(e) => Self::ElementError(e),
+            grovedb_merk::Error::InvalidInputError(e) => Self::InvalidInput(e),
+            _ => Self::MerkError(value),
+        }
     }
 }
 
 impl From<grovedb_version::error::GroveVersionError> for Error {
     fn from(value: grovedb_version::error::GroveVersionError) -> Self {
         Error::VersionError(value)
+    }
+}
+
+impl From<grovedb_element::error::ElementError> for Error {
+    fn from(value: grovedb_element::error::ElementError) -> Self {
+        Error::ElementError(value)
     }
 }

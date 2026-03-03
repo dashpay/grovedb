@@ -2,12 +2,12 @@
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
+// Re-export from grovedb-query
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use grovedb_query::proofs::{CryptoHash, HASH_LENGTH, NULL_HASH};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use integer_encoding::*;
 
-/// The length of a `Hash` (in bytes).
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub const HASH_LENGTH: usize = 32;
 /// 2x length of a `Hash`
 #[cfg(feature = "minimal")]
 pub const HASH_LENGTH_X2: usize = 64;
@@ -23,14 +23,6 @@ pub const HASH_BLOCK_SIZE: usize = 64;
 /// Hash block size as u32
 #[cfg(feature = "minimal")]
 pub const HASH_BLOCK_SIZE_U32: u32 = 64;
-
-/// A zero-filled `Hash`.
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub const NULL_HASH: CryptoHash = [0; HASH_LENGTH];
-
-/// A cryptographic hash digest.
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub type CryptoHash = [u8; HASH_LENGTH];
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Hashes a value
@@ -140,6 +132,32 @@ pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext
     hash.copy_from_slice(res.as_bytes());
     hash.wrap_with_cost(OperationCost {
         hash_node_calls: 1, // as this will fit on exactly 1 block
+        ..Default::default()
+    })
+}
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Hashes a node for ProvableCountTree, including the aggregate count
+pub fn node_hash_with_count(
+    kv: &CryptoHash,
+    left: &CryptoHash,
+    right: &CryptoHash,
+    count: u64,
+) -> CostContext<CryptoHash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(kv);
+    hasher.update(left);
+    hasher.update(right);
+    hasher.update(&count.to_be_bytes());
+
+    // hashes will always be 2
+    let hashes = 2; // 1 + (hasher.count() - 1) / 64;
+
+    let res = hasher.finalize();
+    let mut hash: CryptoHash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash.wrap_with_cost(OperationCost {
+        hash_node_calls: hashes,
         ..Default::default()
     })
 }

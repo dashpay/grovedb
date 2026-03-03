@@ -166,4 +166,20 @@ mod test {
             ])
         );
     }
+
+    #[test]
+    fn test_chunk_op_decoding_unexpected_marker() {
+        let err = ChunkOp::decode([9u8].as_slice()).unwrap_err();
+        assert!(matches!(err, ed::Error::UnexpectedByte(9)));
+    }
+
+    #[test]
+    fn test_chunk_op_decoding_non_binary_chunk_id_values() {
+        let encoded_chunk_op = vec![0, 4, 1, 2, 0, 255];
+        let decoded_chunk_op = ChunkOp::decode(encoded_chunk_op.as_slice()).unwrap();
+        assert_eq!(
+            decoded_chunk_op,
+            ChunkOp::ChunkId(vec![true, false, false, false])
+        );
+    }
 }

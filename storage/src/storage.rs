@@ -620,6 +620,30 @@ impl std::fmt::Debug for AbstractBatchOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grovedb_costs::{
+        storage_cost::{
+            key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes::BasicStorageRemoval,
+            StorageCost,
+        },
+        ChildrenSizesWithIsSumTree,
+    };
+
+    fn dummy_children_sizes() -> ChildrenSizesWithIsSumTree {
+        None
+    }
+
+    fn removed_bytes_cost(bytes: u32) -> KeyValueStorageCost {
+        KeyValueStorageCost {
+            key_storage_cost: StorageCost {
+                added_bytes: 0,
+                replaced_bytes: 0,
+                removed_bytes: BasicStorageRemoval(bytes),
+            },
+            value_storage_cost: StorageCost::default(),
+            new_node: false,
+            needs_value_verification: false,
+        }
+    }
 
     #[test]
     fn test_debug_output_batch_operation() {
@@ -640,6 +664,97 @@ mod tests {
         assert_eq!(
             format!("{op2:?}"),
             "DeleteRoot { key: \"[hex: 6b657931, str: key1]\" }"
+        );
+    }
+
+    #[test]
+    fn test_storage_batch_put_then_delete_keeps_put_operation() {
+        let batch = StorageBatch::new();
+
+        batch.put(
+            b"key".to_vec(),
+            b"value".to_vec(),
+            dummy_children_sizes(),
+            None,
+        );
+        batch.delete(b"key".to_vec(), None);
+
+        assert_eq!(batch.len(), 1);
+        let operations: Vec<_> = batch.into_iter().collect();
+        assert_eq!(operations.len(), 1);
+        assert!(matches!(operations[0], AbstractBatchOperation::Put { .. }));
+    }
+
+    #[test]
+    fn test_storage_batch_delete_then_put_overwrites_delete() {
+        let batch = StorageBatch::new();
+
+        batch.delete(b"key".to_vec(), Some(removed_bytes_cost(5)));
+        batch.put(
+            b"key".to_vec(),
+            b"value".to_vec(),
+            dummy_children_sizes(),
+            None,
+        );
+
+        assert_eq!(batch.len(), 1);
+        let operations: Vec<_> = batch.into_iter().collect();
+        assert_eq!(operations.len(), 1);
+        assert!(matches!(operations[0], AbstractBatchOperation::Put { .. }));
+    }
+
+    #[test]
+    fn test_storage_batch_duplicate_delete_does_not_replace_cost_info() {
+        let batch = StorageBatch::new();
+
+        batch.delete_aux(b"key".to_vec(), Some(removed_bytes_cost(3)));
+        batch.delete_aux(b"key".to_vec(), Some(removed_bytes_cost(7)));
+
+        let mut operations = batch.into_iter();
+        match operations.next().expect("expected one operation") {
+            AbstractBatchOperation::DeleteAux { cost_info, .. } => {
+                let removed = cost_info.expect("cost info should be set");
+                assert_eq!(removed.combined_removed_bytes(), BasicStorageRemoval(3));
+            }
+            op => panic!("unexpected operation: {op:?}"),
+        }
+        assert!(operations.next().is_none());
+    }
+
+    #[test]
+    fn test_storage_batch_merge_and_iteration_order() {
+        let batch = StorageBatch::new();
+        let other = StorageBatch::new();
+
+        other.put(b"d".to_vec(), b"1".to_vec(), dummy_children_sizes(), None);
+        other.put_root(b"r".to_vec(), b"2".to_vec(), None);
+        other.put_aux(b"a".to_vec(), b"3".to_vec(), None);
+        other.put_meta(b"m".to_vec(), b"4".to_vec(), None);
+        other.delete_meta(b"m_del".to_vec(), Some(removed_bytes_cost(9)));
+
+        batch.merge(other);
+
+        assert_eq!(batch.len(), 5);
+        assert!(!batch.is_empty());
+
+        let variants: Vec<_> = batch
+            .into_iter()
+            .map(|op| match op {
+                AbstractBatchOperation::Put { .. } => "Put",
+                AbstractBatchOperation::PutAux { .. } => "PutAux",
+                AbstractBatchOperation::PutRoot { .. } => "PutRoot",
+                AbstractBatchOperation::PutMeta { .. } => "PutMeta",
+                AbstractBatchOperation::Delete { .. } => "Delete",
+                AbstractBatchOperation::DeleteAux { .. } => "DeleteAux",
+                AbstractBatchOperation::DeleteRoot { .. } => "DeleteRoot",
+                AbstractBatchOperation::DeleteMeta { .. } => "DeleteMeta",
+            })
+            .collect();
+
+        // Iterator traverses maps in this fixed order: meta, aux, roots, data.
+        assert_eq!(
+            variants,
+            vec!["PutMeta", "DeleteMeta", "PutAux", "PutRoot", "Put"]
         );
     }
 }

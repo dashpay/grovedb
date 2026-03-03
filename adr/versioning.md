@@ -30,7 +30,7 @@ pub enum Element {
     - Keeping the old structure (renamed based on version).
     - Implementing a deserializer for the old structure (bincode `Encode` and `Decode`).
     - Implementing a converter from the old structure to the new structure.
-        - This will be possible because all updates are backward compatable.
+        - This will be possible because all updates are backward compatible.
 - We can detect what element structure a piece of state refers to by checking the `TreeFeatureType` of the decoded Merk tree node.
 
 **********************************Versioning Proofs**********************************

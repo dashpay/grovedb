@@ -1,0 +1,33 @@
+[package]
+name = "grovedb-query"
+version = "4.0.0"
+edition = "2021"
+license = "MIT"
+description = "Query primitives for GroveDB"
+homepage = "https://www.grovedb.org/"
+documentation = "https://docs.rs/grovedb-query"
+repository = "https://github.com/dashpay/grovedb"
+
+[dependencies]
+bincode = { version = "=2.0.1" }
+hex = "0.4.3"
+indexmap = "2.2.6"
+thiserror = "2.0.17"
+serde = { version = "1.0.219", features = ["derive"], optional = true }
+ed = { version = "0.2.2" }
+byteorder = { version = "1.5.0" }
+integer-encoding = { version = "4.1.0" }
+
+# Feature-gated deps for merk integration
+grovedb-costs = { version = "4.0.0", path = "../costs", optional = true }
+grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
+
+
+
+[dev-dependencies]
+assert_matches = "1.5.0"
+
+[features]
+default = []
+blockchain = ["grovedb-costs", "grovedb-storage"]
+serde = ["dep:serde", "indexmap/serde"]

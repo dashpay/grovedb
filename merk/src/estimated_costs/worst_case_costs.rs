@@ -239,3 +239,64 @@ pub fn add_average_case_cost_for_is_empty_tree_except(
     cost.storage_loaded_bytes +=
         estimated_prefixed_key_size as u64 * (except_keys_count as u64 + 1);
 }
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::OperationCost;
+
+    use super::*;
+
+    #[test]
+    fn test_add_worst_case_merk_propagate_level_branches() {
+        let mut two_levels = OperationCost::default();
+        add_worst_case_merk_propagate(
+            &mut two_levels,
+            &WorstCaseLayerInformation::NumberOfLevels(2),
+        )
+        .unwrap();
+
+        let mut three_levels = OperationCost::default();
+        add_worst_case_merk_propagate(
+            &mut three_levels,
+            &WorstCaseLayerInformation::NumberOfLevels(3),
+        )
+        .unwrap();
+
+        assert_eq!(two_levels.seek_count, 3);
+        assert_eq!(three_levels.seek_count, 5);
+        assert!(three_levels.storage_cost.replaced_bytes > two_levels.storage_cost.replaced_bytes);
+    }
+
+    #[test]
+    fn test_add_worst_case_merk_propagate_max_elements_u32_max() {
+        let mut cost = OperationCost::default();
+        add_worst_case_merk_propagate(
+            &mut cost,
+            &WorstCaseLayerInformation::MaxElementsNumber(u32::MAX),
+        )
+        .unwrap();
+
+        assert_eq!(cost.seek_count, 34);
+        assert_eq!(cost.hash_node_calls, 68);
+    }
+
+    #[test]
+    fn test_is_empty_tree_except_cost_helpers() {
+        let mut worst_cost = OperationCost::default();
+        add_worst_case_cost_for_is_empty_tree_except(&mut worst_cost, 2);
+        assert_eq!(worst_cost.seek_count, 3);
+        assert!(worst_cost.storage_loaded_bytes > 0);
+
+        let mut average_cost = OperationCost::default();
+        add_average_case_cost_for_is_empty_tree_except(&mut average_cost, 2, 11);
+        assert_eq!(average_cost.seek_count, 3);
+        assert_eq!(average_cost.storage_loaded_bytes, 33);
+    }
+
+    #[test]
+    fn test_add_worst_case_merk_root_hash() {
+        let mut cost = OperationCost::default();
+        add_worst_case_merk_root_hash(&mut cost);
+        assert!(cost.hash_node_calls > 0);
+    }
+}

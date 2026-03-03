@@ -1,0 +1,22 @@
+[package]
+name = "grovedb-bulk-append-tree"
+version = "4.0.0"
+authors = ["Samuel Westrich <sam@dash.org>"]
+edition = "2021"
+license = "MIT"
+description = "BulkAppendTree: two-level authenticated append-only structure for GroveDB"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+readme = "../README.md"
+documentation = "https://docs.rs/grovedb"
+
+[dependencies]
+grovedb-merkle-mountain-range = { version = "4.0.0", path = "../grovedb-merkle-mountain-range", features = ["mem_store", "storage"] }
+grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree" }
+grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
+grovedb-costs = { version = "4.0.0", path = "../costs" }
+grovedb-storage = { version = "4.0.0", path = "../storage" }
+blake3 = "1.8.1"
+bincode = { version = "2.0.1", features = ["derive"] }
+hex = "0.4"
+thiserror = "2.0"

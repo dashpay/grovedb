@@ -1,11 +1,11 @@
-use std::fmt;
+use crate::operations::proof::util::hex_to_ascii;
+use crate::Error;
 use bincode::{Decode, Encode};
 use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
 use grovedb_merk::proofs::query::QueryItem;
 use grovedb_version::check_grovedb_v0;
 use grovedb_version::version::GroveVersion;
-use crate::operations::proof::util::hex_to_ascii;
-use crate::Error;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -36,7 +36,10 @@ impl fmt::Display for AggregateSumPathQuery {
 impl AggregateSumPathQuery {
     /// New path query
     pub const fn new(path: Vec<Vec<u8>>, aggregate_sum_query: AggregateSumQuery) -> Self {
-        Self { path, aggregate_sum_query }
+        Self {
+            path,
+            aggregate_sum_query,
+        }
     }
 
     /// New path query with a single key
@@ -48,10 +51,19 @@ impl AggregateSumPathQuery {
     }
 
     /// New path query with a single query item
-    pub fn new_single_query_item(path: Vec<Vec<u8>>, query_item: QueryItem, sum_limit: u64, limit_of_items_to_check: Option<u16>) -> Self {
+    pub fn new_single_query_item(
+        path: Vec<Vec<u8>>,
+        query_item: QueryItem,
+        sum_limit: u64,
+        limit_of_items_to_check: Option<u16>,
+    ) -> Self {
         Self {
             path,
-            aggregate_sum_query: AggregateSumQuery::new_single_query_item(query_item, sum_limit, limit_of_items_to_check),
+            aggregate_sum_query: AggregateSumQuery::new_single_query_item(
+                query_item,
+                sum_limit,
+                limit_of_items_to_check,
+            ),
         }
     }
 
@@ -62,7 +74,10 @@ impl AggregateSumPathQuery {
     ) -> Result<Self, Error> {
         check_grovedb_v0!(
             "merge",
-            grove_version.grovedb_versions.aggregate_sum_path_query_methods.merge
+            grove_version
+                .grovedb_versions
+                .aggregate_sum_path_query_methods
+                .merge
         );
         if path_queries.is_empty() {
             return Err(Error::InvalidInput(
@@ -78,7 +93,9 @@ impl AggregateSumPathQuery {
 
         // Verify all paths are equal
         if !path_queries.iter().all(|q| &q.path == common_path) {
-            return Err(Error::InvalidInput("all path queries must have the same path"));
+            return Err(Error::InvalidInput(
+                "all path queries must have the same path",
+            ));
         }
 
         // Extract aggregate_sum_query values and clone them

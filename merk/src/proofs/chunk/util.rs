@@ -269,7 +269,7 @@ pub fn chunk_index_from_traversal_instruction(
                 * (1 - *instruction as usize);
         }
 
-        if chunk_count % 2 != 0 {
+        if !chunk_count.is_multiple_of(2) {
             // remove the current chunk from the chunk count
             chunk_count -= 1;
         }

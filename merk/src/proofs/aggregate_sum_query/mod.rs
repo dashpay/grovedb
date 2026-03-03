@@ -1,10 +1,10 @@
-mod merge;
 mod insert;
+mod merge;
 
+use crate::proofs::query::{Key, QueryItem};
+use bincode::{Decode, Encode};
 use std::fmt;
 use std::ops::RangeFull;
-use bincode::{Decode, Encode};
-use crate::proofs::query::{Key, QueryItem};
 
 /// `AggregateSumQuery` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values
@@ -26,7 +26,11 @@ pub struct AggregateSumQuery {
 impl fmt::Display for AggregateSumQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let direction = if self.left_to_right { "→" } else { "←" };
-        writeln!(f, "AggregateSumQuery [direction: {}, sum_limit: {}]", direction, self.sum_limit)?;
+        writeln!(
+            f,
+            "AggregateSumQuery [direction: {}, sum_limit: {}]",
+            direction, self.sum_limit
+        )?;
         writeln!(f, "Items:")?;
         for item in &self.items {
             writeln!(f, "  - {}", item)?;
@@ -45,7 +49,6 @@ impl AggregateSumQuery {
     pub fn new_descending(sum_limit: u64, limit_of_items_to_check: Option<u16>) -> Self {
         Self::new_range_full_descending(sum_limit, limit_of_items_to_check)
     }
-
 
     /// Creates a new query which contains all items.
     pub fn new_range_full(sum_limit: u64, limit_of_items_to_check: Option<u16>) -> Self {
@@ -79,7 +82,11 @@ impl AggregateSumQuery {
     }
 
     /// Creates a new query which contains only one item.
-    pub fn new_single_query_item(query_item: QueryItem, sum_limit: u64, limit_of_items_to_check: Option<u16>) -> Self {
+    pub fn new_single_query_item(
+        query_item: QueryItem,
+        sum_limit: u64,
+        limit_of_items_to_check: Option<u16>,
+    ) -> Self {
         Self {
             items: vec![query_item],
             left_to_right: true,
@@ -89,7 +96,11 @@ impl AggregateSumQuery {
     }
 
     /// Creates a new query which contains multiple items.
-    pub fn new_with_query_items(query_items: Vec<QueryItem>, sum_limit: u64, limit_of_items_to_check: Option<u16>) -> Self {
+    pub fn new_with_query_items(
+        query_items: Vec<QueryItem>,
+        sum_limit: u64,
+        limit_of_items_to_check: Option<u16>,
+    ) -> Self {
         Self {
             items: query_items,
             left_to_right: true,
@@ -99,7 +110,11 @@ impl AggregateSumQuery {
     }
 
     /// Creates a new query which contains multiple items.
-    pub fn new_with_keys(keys: Vec<Key>, sum_limit: u64, limit_of_items_to_check: Option<u16>) -> Self {
+    pub fn new_with_keys(
+        keys: Vec<Key>,
+        sum_limit: u64,
+        limit_of_items_to_check: Option<u16>,
+    ) -> Self {
         Self {
             items: keys.into_iter().map(QueryItem::Key).collect(),
             left_to_right: true,
@@ -109,7 +124,11 @@ impl AggregateSumQuery {
     }
 
     /// Creates a new query which contains multiple keys.
-    pub fn new_with_keys_reversed(keys: Vec<Key>, sum_limit: u64, limit_of_items_to_check: Option<u16>) -> Self {
+    pub fn new_with_keys_reversed(
+        keys: Vec<Key>,
+        sum_limit: u64,
+        limit_of_items_to_check: Option<u16>,
+    ) -> Self {
         Self {
             items: keys.into_iter().map(QueryItem::Key).collect(),
             left_to_right: false,
@@ -132,11 +151,6 @@ impl AggregateSumQuery {
             sum_limit,
             limit_of_items_to_check,
         }
-    }
-
-    /// Get number of query items
-    pub(crate) fn len(&self) -> usize {
-        self.items.len()
     }
 
     /// Iterate through query items

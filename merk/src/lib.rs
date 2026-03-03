@@ -2,6 +2,12 @@
 
 // #![deny(missing_docs)]
 
+// Pre-existing patterns throughout the crate; fix incrementally.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::module_inception)]
+#![allow(unexpected_cfgs)] // fuzz_tests.rs uses cfg(tests) intentionally
+
 /// The top-level store API.
 #[cfg(feature = "minimal")]
 pub mod merk;
@@ -18,7 +24,6 @@ pub use crate::merk::{chunks::ChunkProducer, options::MerkOptions, restore::Rest
 #[cfg(feature = "minimal")]
 pub mod owner;
 /// Algorithms for generating and verifying Merkle proofs.
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod proofs;
 
 /// Various helpers useful for tests or benchmarks.
@@ -26,43 +31,40 @@ pub mod proofs;
 pub mod test_utils;
 
 /// The core tree data structure.
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree;
 
 /// Errors
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod error;
 
 /// Estimated costs
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod estimated_costs;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod element;
 pub mod tree_type;
 #[cfg(feature = "minimal")]
 mod visualize;
 
 #[cfg(feature = "minimal")]
 pub use ed;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use error::Error;
 #[cfg(feature = "minimal")]
 pub use tree::{
     BatchEntry, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,
     HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use tree::{CryptoHash, TreeFeatureType};
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub use tree_type::MaybeTree;
-#[cfg(any(feature = "minimal", feature = "verify"))]
-pub use tree_type::TreeType;
+pub use tree_type::{MaybeTree, TreeType};
 
 #[cfg(feature = "minimal")]
 pub use crate::merk::{
     defaults::ROOT_KEY_KEY,
     prove::{ProofConstructionResult, ProofWithoutEncodingResult},
     KVIterator, Merk, MerkType, RootHashKeyAndAggregateData,
+};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use crate::proofs::branch::{
+    calculate_chunk_depths, calculate_chunk_depths_with_minimum,
+    calculate_max_tree_depth_from_count, BranchQueryResult, TrunkQueryResult,
 };
 #[cfg(feature = "minimal")]
 pub use crate::visualize::VisualizeableMerk;

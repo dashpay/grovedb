@@ -115,11 +115,10 @@ mod immediate_storage {
             .unwrap()
             .expect("cannot commit transaction");
 
-        // ... and no longer accessible at all after transaciton got commited
+        // ... and no longer accessible at all after transaction got committed
         assert!(context_ayya_after_no_tx
             .get_aux(b"key1")
             .unwrap()
-            .ok()
             .expect("cannot get from aux cf")
             .is_none());
     }
@@ -204,11 +203,10 @@ mod immediate_storage {
             .unwrap()
             .expect("cannot commit transaction");
 
-        // ... and no longer accessible at all after transaciton got commited
+        // ... and no longer accessible at all after transaction got committed
         assert!(context_ayya_after_no_tx
             .get_root(b"key1")
             .unwrap()
-            .ok()
             .expect("cannot get from roots cf")
             .is_none());
     }
@@ -470,7 +468,7 @@ mod immediate_storage {
 
         let _ = storage.commit_transaction(tx).unwrap();
 
-        // Test uncommited changes
+        // Test uncommitted changes
         {
             let tx = storage.start_transaction();
             let context_tx = storage
@@ -519,7 +517,7 @@ mod immediate_storage {
             assert!(!iter.valid().unwrap());
         }
 
-        // Test commited data stay intact
+        // Test committed data stay intact
         {
             let expected: [(&'static [u8], &'static [u8]); 4] = [
                 (b"key0", b"value0"),
@@ -747,7 +745,7 @@ mod batch_no_transaction {
             .put(b"key3", b"ayybvalue3", None, None)
             .expect("should not error");
 
-        // DB batches are not commited yet, so these operations are missing from
+        // DB batches are not committed yet, so these operations are missing from
         // StorageBatch
         assert_eq!(batch.len(), 2);
 
@@ -760,7 +758,7 @@ mod batch_no_transaction {
             .unwrap()
             .expect("cannot commit db batch");
 
-        // DB batches are "commited", but actually staged in multi-context batch to do
+        // DB batches are "committed", but actually staged in multi-context batch to do
         // it in a single run to the database
         assert_eq!(batch.len(), 6);
 
@@ -899,7 +897,7 @@ mod batch_transaction {
             .is_none());
 
         // Batches data won't be visible either in transaction and outside of it until
-        // batch is commited
+        // batch is committed
 
         let batch = StorageBatch::new();
         let context_ayya_batch = storage
@@ -953,7 +951,7 @@ mod batch_transaction {
             .unwrap()
             .expect("cannot commit batch");
 
-        // Commited batch data is accessible in transaction but not outside
+        // Committed batch data is accessible in transaction but not outside
         assert_eq!(
             context_ayya_tx
                 .get_aux(b"key2")
@@ -1013,7 +1011,7 @@ mod batch_transaction {
         db_batch_a.put(b"key1", b"value1", None, None).unwrap();
         db_batch_b.put(b"key2", b"value2", None, None).unwrap();
 
-        // Until db batches are commited our multi-context batch should be empty
+        // Until db batches are committed our multi-context batch should be empty
         assert_eq!(batch.len(), 0);
 
         context_ayya
@@ -1038,13 +1036,13 @@ mod batch_transaction {
             .expect("cannot get data")
             .is_none());
 
-        // Commited batch's data should be visible in transaction
+        // Committed batch's data should be visible in transaction
         storage
             .commit_multi_context_batch(batch, Some(&transaction))
             .unwrap()
             .expect("cannot commit multi-context batch");
 
-        // Obtaining new contexts outside a commited batch but still within a
+        // Obtaining new contexts outside a committed batch but still within a
         // transaction
         let context_ayya = storage
             .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &transaction)
@@ -1062,7 +1060,7 @@ mod batch_transaction {
             Some(b"value2".to_vec())
         );
 
-        // And still no data in the database until transaction is commited
+        // And still no data in the database until transaction is committed
         let other_transaction = storage.start_transaction();
         let context_ayya = storage
             .get_transactional_storage_context([b"ayya"].as_ref().into(), None, &other_transaction)
@@ -1100,5 +1098,246 @@ mod batch_transaction {
             context_ayyb.get(b"key2").unwrap().expect("cannot get data"),
             Some(b"value2".to_vec())
         );
+    }
+}
+
+mod storage_management {
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
+
+    #[test]
+    fn test_contexts_by_subtree_prefix_match_contexts_by_path() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+
+        let prefix = RocksDbStorage::build_prefix([b"prefix-tree"].as_ref().into()).unwrap();
+        let by_prefix = storage
+            .get_immediate_storage_context_by_subtree_prefix(prefix, &tx)
+            .unwrap();
+        let by_path = storage
+            .get_immediate_storage_context([b"prefix-tree"].as_ref().into(), &tx)
+            .unwrap();
+
+        by_prefix
+            .put(b"key-a", b"value-a", None, None)
+            .unwrap()
+            .expect("put via subtree prefix should succeed");
+        assert_eq!(
+            by_path.get(b"key-a").unwrap().expect("get should succeed"),
+            Some(b"value-a".to_vec())
+        );
+
+        let batch = StorageBatch::new();
+        let tx_by_prefix =
+            storage.get_transactional_storage_context_by_subtree_prefix(prefix, Some(&batch), &tx);
+        tx_by_prefix
+            .unwrap()
+            .put(b"key-b", b"value-b", None, None)
+            .unwrap()
+            .expect("put in transactional context should succeed");
+        storage
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit of staged writes should succeed");
+
+        assert_eq!(
+            by_path.get(b"key-b").unwrap().expect("get should succeed"),
+            Some(b"value-b".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_transactional_clear_removes_only_target_subtree() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+
+        let initial_batch = StorageBatch::new();
+        let context_a = storage
+            .get_transactional_storage_context(
+                [b"tree-a"].as_ref().into(),
+                Some(&initial_batch),
+                &tx,
+            )
+            .unwrap();
+        let context_b = storage
+            .get_transactional_storage_context(
+                [b"tree-b"].as_ref().into(),
+                Some(&initial_batch),
+                &tx,
+            )
+            .unwrap();
+
+        context_a.put(b"k1", b"v1", None, None).unwrap().unwrap();
+        context_a.put(b"k2", b"v2", None, None).unwrap().unwrap();
+        context_b.put(b"k3", b"v3", None, None).unwrap().unwrap();
+
+        storage
+            .commit_multi_context_batch(initial_batch, Some(&tx))
+            .unwrap()
+            .expect("initial commit should succeed");
+
+        let clear_batch = StorageBatch::new();
+        let mut clear_context = storage
+            .get_transactional_storage_context([b"tree-a"].as_ref().into(), Some(&clear_batch), &tx)
+            .unwrap();
+        clear_context
+            .clear()
+            .unwrap()
+            .expect("clear should succeed");
+
+        storage
+            .commit_multi_context_batch(clear_batch, Some(&tx))
+            .unwrap()
+            .expect("clear batch should commit");
+
+        let verify_a = storage
+            .get_transactional_storage_context([b"tree-a"].as_ref().into(), None, &tx)
+            .unwrap();
+        let verify_b = storage
+            .get_transactional_storage_context([b"tree-b"].as_ref().into(), None, &tx)
+            .unwrap();
+
+        assert!(verify_a
+            .get(b"k1")
+            .unwrap()
+            .expect("get should succeed")
+            .is_none());
+        assert!(verify_a
+            .get(b"k2")
+            .unwrap()
+            .expect("get should succeed")
+            .is_none());
+        assert_eq!(
+            verify_b.get(b"k3").unwrap().expect("get should succeed"),
+            Some(b"v3".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_rollback_and_flush() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context([b"rollback"].as_ref().into(), &tx)
+            .unwrap();
+
+        context
+            .put(b"key", b"value", None, None)
+            .unwrap()
+            .expect("put should succeed");
+
+        storage
+            .rollback_transaction(&tx)
+            .expect("rollback should succeed");
+
+        let tx_after = storage.start_transaction();
+        let context_after = storage
+            .get_immediate_storage_context([b"rollback"].as_ref().into(), &tx_after)
+            .unwrap();
+        assert!(context_after
+            .get(b"key")
+            .unwrap()
+            .expect("get should succeed")
+            .is_none());
+
+        storage.flush().expect("flush should succeed");
+    }
+
+    #[test]
+    fn test_checkpoint_is_independent_snapshot() {
+        let db_dir = TempDir::new().expect("cannot create db directory");
+        let checkpoint_parent = TempDir::new().expect("cannot create checkpoint directory");
+        let checkpoint_dir = checkpoint_parent.path().join("checkpoint");
+
+        let storage = RocksDbStorage::default_rocksdb_with_path(db_dir.path())
+            .expect("cannot create storage");
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context([b"checkpoint"].as_ref().into(), &tx)
+            .unwrap();
+        context
+            .put(b"k1", b"v1", None, None)
+            .unwrap()
+            .expect("put should succeed");
+        storage
+            .commit_transaction(tx)
+            .unwrap()
+            .expect("tx commit should succeed");
+
+        storage
+            .create_checkpoint(&checkpoint_dir)
+            .expect("checkpoint should be created");
+
+        // Write more data to the original after the checkpoint
+        let tx2 = storage.start_transaction();
+        let context2 = storage
+            .get_immediate_storage_context([b"checkpoint"].as_ref().into(), &tx2)
+            .unwrap();
+        context2
+            .put(b"k2", b"v2", None, None)
+            .unwrap()
+            .expect("put should succeed");
+        storage
+            .commit_transaction(tx2)
+            .unwrap()
+            .expect("tx commit should succeed");
+
+        // Open the checkpoint and verify it has only the pre-checkpoint data
+        let checkpoint_storage = RocksDbStorage::checkpoint_rocksdb_with_path(&checkpoint_dir)
+            .expect("checkpoint should open");
+        let checkpoint_tx = checkpoint_storage.start_transaction();
+        let checkpoint_context = checkpoint_storage
+            .get_immediate_storage_context([b"checkpoint"].as_ref().into(), &checkpoint_tx)
+            .unwrap();
+
+        assert_eq!(
+            checkpoint_context
+                .get(b"k1")
+                .unwrap()
+                .expect("get should succeed"),
+            Some(b"v1".to_vec()),
+            "checkpoint should contain data written before checkpoint"
+        );
+        assert!(
+            checkpoint_context
+                .get(b"k2")
+                .unwrap()
+                .expect("get should succeed")
+                .is_none(),
+            "checkpoint should NOT contain data written after checkpoint"
+        );
+    }
+
+    #[test]
+    fn test_wipe_clears_default_and_column_families() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context([b"wipe"].as_ref().into(), &tx)
+            .unwrap();
+
+        context.put(b"k", b"v", None, None).unwrap().unwrap();
+        context.put_aux(b"ak", b"av", None).unwrap().unwrap();
+        context.put_root(b"rk", b"rv", None).unwrap().unwrap();
+        context.put_meta(b"mk", b"mv", None).unwrap().unwrap();
+
+        storage
+            .commit_transaction(tx)
+            .unwrap()
+            .expect("tx commit should succeed");
+
+        storage.wipe().expect("wipe should succeed");
+
+        let verify_tx = storage.start_transaction();
+        let verify_context = storage
+            .get_immediate_storage_context([b"wipe"].as_ref().into(), &verify_tx)
+            .unwrap();
+
+        assert!(verify_context.get(b"k").unwrap().unwrap().is_none());
+        assert!(verify_context.get_aux(b"ak").unwrap().unwrap().is_none());
+        assert!(verify_context.get_root(b"rk").unwrap().unwrap().is_none());
+        assert!(verify_context.get_meta(b"mk").unwrap().unwrap().is_none());
     }
 }

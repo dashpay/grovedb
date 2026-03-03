@@ -156,10 +156,10 @@ Recall merk root hash generation:
 
 ```rust
 // the merk root hash is the node_hash of it's root node
-node_hash = Hash(kv_hash, left_child_node_hash, right_child_node_hash)
+node_hash = Hash(kv_hash || left_child_node_hash || right_child_node_hash)
 
 // to compute that we need to compute the kv_hash
-kv_hash = Hash(key, value_hash)
+kv_hash = Hash(varint(key.len()) || key || value_hash)
 
 // to compute the kv_hash we need to compute the value hash
 // which is just the hash of the value
@@ -175,7 +175,7 @@ Here's an updated version of the merk root hash generation:
 ```rust
 
 // The merk root hash is the node_hash of its root node
-node_hash = Hash(kv_hash, left_child_node_hash, right_child_node_hash)
+node_hash = Hash(kv_hash || left_child_node_hash || right_child_node_hash)
 
 // To compute the kv_hash, we need to compute the value_hash
 // For Tree elements, we modify the value_hash computation
@@ -187,7 +187,7 @@ if element_type == Element::Tree {
 }
 
 // To compute the kv_hash, we hash the key with the modified value_hash
-kv_hash = Hash(key, value_hash)
+kv_hash = Hash(varint(key.len()) || key || value_hash)
 ```
 
 This ensures that the relationship between the tree node and the underlying merk is committed to. 

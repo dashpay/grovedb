@@ -14,7 +14,7 @@ mod tests {
 
     use crate::{
         batch::QualifiedGroveDbOp,
-        operations::proof::GroveDBProof,
+        operations::{get::QueryItemOrSumReturnType, proof::GroveDBProof},
         query_result_type::{
             PathKeyOptionalElementTrio, QueryResultElement::PathKeyElementTrioResultItem,
             QueryResultElements, QueryResultType,
@@ -731,6 +731,64 @@ mod tests {
     }
 
     #[test]
+    fn test_query_item_with_sum_item_variants() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"with_sum",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum tree");
+
+        let payload = b"item-value".to_vec();
+        db.insert(
+            [TEST_LEAF, b"with_sum"].as_ref(),
+            b"target",
+            Element::ItemWithSumItem(payload.clone(), 9, Some(vec![1, 2])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item with sum value");
+
+        let mut query = Query::new();
+        query.insert_key(b"target".to_vec());
+
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"with_sum".to_vec()], query);
+
+        let (items, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("query_item_value should succeed");
+        assert_eq!(items, vec![payload.clone()]);
+
+        let (items_or_sums, _) = db
+            .query_item_value_or_sum(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("query_item_value_or_sum should succeed");
+        assert_eq!(
+            items_or_sums,
+            vec![QueryItemOrSumReturnType::ItemDataWithSumValue(
+                payload.clone(),
+                9
+            )]
+        );
+
+        let (sums, _) = db
+            .query_sums(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("query_sums should succeed");
+        assert_eq!(sums, vec![9]);
+    }
+
+    #[test]
     fn test_get_range_query_with_non_unique_subquery() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
@@ -778,8 +836,8 @@ mod tests {
     #[test]
     fn test_get_range_query_with_unique_subquery() {
         let grove_version = GroveVersion::latest();
-        let mut db = make_test_grovedb(grove_version);
-        populate_tree_for_unique_range_subquery(&mut db, grove_version);
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
 
         let path = vec![TEST_LEAF.to_vec()];
         let mut query = Query::new();
@@ -3383,7 +3441,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prove_absent_path_with_intermediate_emtpy_tree() {
+    fn test_prove_absent_path_with_intermediate_empty_tree() {
         let grove_version = GroveVersion::latest();
         //         root
         // test_leaf (empty)
@@ -3433,6 +3491,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3479,6 +3538,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3525,6 +3585,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3571,6 +3632,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3617,6 +3679,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3663,6 +3726,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3711,6 +3775,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3759,6 +3824,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3807,6 +3873,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3855,6 +3922,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3903,6 +3971,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3951,6 +4020,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -3999,6 +4069,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4047,6 +4118,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4098,6 +4170,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4149,6 +4222,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4200,6 +4274,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4251,6 +4326,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4302,6 +4378,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4353,6 +4430,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4404,6 +4482,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4455,6 +4534,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4506,6 +4586,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4557,6 +4638,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4608,6 +4690,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4659,6 +4742,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4710,6 +4794,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4767,6 +4852,7 @@ mod tests {
                             subquery: Some(Query::new_range_full().into()),
                         },
                     )])),
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4828,6 +4914,7 @@ mod tests {
                     },
                     left_to_right: true,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,
@@ -4879,6 +4966,7 @@ mod tests {
                     },
                     left_to_right: false,
                     conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
                 },
                 limit: Some(2),
                 offset: None,

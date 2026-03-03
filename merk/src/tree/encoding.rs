@@ -119,7 +119,7 @@ impl TreeNode {
             tree_inner.kv.value_defined_cost =
                 value_defined_cost_fn(tree_inner.kv.value.as_slice(), grove_version);
         }
-        self.inner = Box::new(tree_inner);
+        *self.inner = tree_inner;
         Ok(())
     }
 

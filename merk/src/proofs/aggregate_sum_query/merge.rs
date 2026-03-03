@@ -1,5 +1,5 @@
-use crate::Error;
 use crate::proofs::aggregate_sum_query::AggregateSumQuery;
+use crate::Error;
 
 impl AggregateSumQuery {
     pub fn merge_multiple(mut queries: Vec<AggregateSumQuery>) -> Result<Self, Error> {
@@ -26,9 +26,10 @@ impl AggregateSumQuery {
                 .ok_or(Error::Overflow("Overflow when merging sum limits"))?;
 
             merged_limit = match (merged_limit, query.limit_of_items_to_check) {
-                (Some(a), Some(b)) => Some(a.checked_add(b).ok_or(Error::Overflow(
-                    "Overflow when merging item check limits"
-                ))?),
+                (Some(a), Some(b)) => Some(
+                    a.checked_add(b)
+                        .ok_or(Error::Overflow("Overflow when merging item check limits"))?,
+                ),
                 _ => None, // if either is None, result is None
             };
 
@@ -48,16 +49,19 @@ impl AggregateSumQuery {
             ));
         }
 
-        self.sum_limit = self.sum_limit
+        self.sum_limit = self
+            .sum_limit
             .checked_add(other.sum_limit)
             .ok_or(Error::Overflow("Overflow when merging sum limits"))?;
 
-        self.limit_of_items_to_check = match (self.limit_of_items_to_check, other.limit_of_items_to_check) {
-            (Some(a), Some(b)) => Some(a.checked_add(b).ok_or(Error::Overflow(
-                "Overflow when merging item check limits"
-            ))?),
-            _ => None,
-        };
+        self.limit_of_items_to_check =
+            match (self.limit_of_items_to_check, other.limit_of_items_to_check) {
+                (Some(a), Some(b)) => Some(
+                    a.checked_add(b)
+                        .ok_or(Error::Overflow("Overflow when merging item check limits"))?,
+                ),
+                _ => None,
+            };
 
         self.insert_items(other.items);
 

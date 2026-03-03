@@ -94,3 +94,53 @@ impl Iterator for Iter<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "minimal")]
+mod tests {
+    use crate::tree::{tree_feature_type::AggregateData, TreeFeatureType::BasicMerkNode, TreeNode};
+
+    #[test]
+    fn iter_single_node() {
+        let tree = TreeNode::new(vec![5], vec![50], None, BasicMerkNode).unwrap();
+        let entries: Vec<_> = tree.iter().collect();
+        assert_eq!(entries, vec![(vec![5], vec![50])]);
+    }
+
+    #[test]
+    fn iter_tree_with_children_yields_in_order() {
+        let left = TreeNode::new(vec![2], vec![20], None, BasicMerkNode).unwrap();
+        let right = TreeNode::new(vec![8], vec![80], None, BasicMerkNode).unwrap();
+        let mut root = TreeNode::new(vec![5], vec![50], None, BasicMerkNode).unwrap();
+
+        let mut cost = Default::default();
+        root.inner.left = Some(crate::Link::Loaded {
+            hash: left.hash().unwrap_add_cost(&mut cost),
+            tree: left,
+            child_heights: (0, 0),
+            aggregate_data: AggregateData::NoAggregateData,
+        });
+        root.inner.right = Some(crate::Link::Loaded {
+            hash: right.hash().unwrap_add_cost(&mut cost),
+            tree: right,
+            child_heights: (0, 0),
+            aggregate_data: AggregateData::NoAggregateData,
+        });
+
+        let entries: Vec<_> = root.iter().collect();
+        assert_eq!(entries.len(), 3);
+        // Should be in-order: 2, 5, 8
+        assert_eq!(entries[0].0, vec![2]);
+        assert_eq!(entries[1].0, vec![5]);
+        assert_eq!(entries[2].0, vec![8]);
+    }
+
+    #[test]
+    fn iter_empty_collects_nothing_after_single() {
+        let tree = TreeNode::new(vec![1], vec![10], None, BasicMerkNode).unwrap();
+        let mut iter = tree.iter();
+        assert!(iter.next().is_some());
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+    }
+}

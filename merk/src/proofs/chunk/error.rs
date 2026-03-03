@@ -77,3 +77,56 @@ pub enum ChunkError {
     #[error("internal error {0}")]
     InternalError(&'static str),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ChunkError;
+
+    #[test]
+    fn test_chunk_error_messages() {
+        assert_eq!(
+            ChunkError::LimitTooSmall("x").to_string(),
+            "overflow error x"
+        );
+        assert_eq!(
+            ChunkError::OutOfBounds("x").to_string(),
+            "chunk index out of bounds: x"
+        );
+        assert_eq!(
+            ChunkError::BadTraversalInstruction("x").to_string(),
+            "traversal instruction invalid x"
+        );
+        assert_eq!(
+            ChunkError::InvalidChunkProof("x").to_string(),
+            "invalid chunk proof: x"
+        );
+        assert_eq!(
+            ChunkError::InvalidMultiChunk("x").to_string(),
+            "invalid multi chunk: x"
+        );
+        assert_eq!(
+            ChunkError::RestorationNotComplete.to_string(),
+            "called finalize too early still expecting chunks"
+        );
+        assert_eq!(
+            ChunkError::EmptyTree("x").to_string(),
+            "chunk from empty tree: x"
+        );
+        assert_eq!(
+            ChunkError::ExpectedChunkId.to_string(),
+            "expected chunk id when parsing chunk op"
+        );
+        assert_eq!(
+            ChunkError::ExpectedChunk.to_string(),
+            "expected chunk when parsing chunk op"
+        );
+        assert_eq!(
+            ChunkError::UnexpectedChunk.to_string(),
+            "unexpected chunk: cannot verify chunk because verification hash is not in memory"
+        );
+        assert_eq!(
+            ChunkError::InternalError("x").to_string(),
+            "internal error x"
+        );
+    }
+}

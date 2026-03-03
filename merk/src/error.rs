@@ -1,4 +1,7 @@
 //! Errors
+
+use grovedb_costs::CostResult;
+
 #[cfg(feature = "minimal")]
 use crate::proofs::chunk::error::ChunkError;
 
@@ -123,10 +126,165 @@ pub enum Error {
 
     #[error("unknown tree type {0}")]
     UnknownTreeType(String),
+
+    // Path errors
+    /// The path key not found could represent a valid query, just where the
+    /// path key isn't there
+    #[error("path key not found: {0}")]
+    PathKeyNotFound(String),
+    /// The path not found could represent a valid query, just where the path
+    /// isn't there
+    #[error("path not found: {0}")]
+    PathNotFound(String),
+    /// The path not found could represent a valid query, just where the parent
+    /// path merk isn't there
+    #[error("path parent layer not found: {0}")]
+    PathParentLayerNotFound(String),
+
+    #[error("data corruption error: {0}")]
+    /// Corrupted data
+    CorruptedData(String),
+
+    #[error(transparent)]
+    /// Element error
+    ElementError(grovedb_element::error::ElementError),
+}
+
+impl Error {
+    pub(crate) fn add_context(&mut self, append: impl AsRef<str>) {
+        match self {
+            Self::OldChunkRestoringError(s)
+            | Self::InvalidProofError(s)
+            | Self::ProofCreationError(s)
+            | Self::NotSupported(s)
+            | Self::RequestAmountExceeded(s)
+            | Self::ClientCorruptionError(s)
+            | Self::BigSumTreeUnderNormalSumTree(s)
+            | Self::UnknownTreeType(s)
+            | Self::PathKeyNotFound(s)
+            | Self::PathNotFound(s)
+            | Self::PathParentLayerNotFound(s)
+            | Self::CorruptedData(s) => {
+                s.push_str(", ");
+                s.push_str(append.as_ref());
+            }
+            _ => {}
+        }
+    }
 }
 
 impl From<grovedb_version::error::GroveVersionError> for Error {
     fn from(value: grovedb_version::error::GroveVersionError) -> Self {
         Error::VersionError(value)
+    }
+}
+
+impl From<grovedb_element::error::ElementError> for Error {
+    fn from(value: grovedb_element::error::ElementError) -> Self {
+        Error::ElementError(value)
+    }
+}
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+impl From<grovedb_query::error::Error> for Error {
+    fn from(value: grovedb_query::error::Error) -> Self {
+        match value {
+            grovedb_query::error::Error::NotSupported(s) => Error::NotSupported(s),
+            grovedb_query::error::Error::RequestAmountExceeded(s) => {
+                Error::RequestAmountExceeded(s)
+            }
+            grovedb_query::error::Error::CorruptedCodeExecution(s) => {
+                Error::CorruptedCodeExecution(s)
+            }
+            grovedb_query::error::Error::InvalidOperation(s) => Error::InvalidOperation(s),
+            // These variants exist when grovedb-query has verify feature enabled.
+            // Since minimal implies verify, they're always present when this impl is compiled.
+            grovedb_query::error::Error::ProofCreationError(s) => Error::ProofCreationError(s),
+            grovedb_query::error::Error::InvalidProofError(s) => Error::InvalidProofError(s),
+            grovedb_query::error::Error::KeyOrderingError(s) => Error::KeyOrderingError(s),
+            grovedb_query::error::Error::EdError(e) => Error::EdError(e),
+        }
+    }
+}
+
+pub trait MerkErrorExt {
+    fn add_context(self, append: impl AsRef<str>) -> Self;
+}
+
+impl<T> MerkErrorExt for CostResult<T, Error> {
+    fn add_context(self, append: impl AsRef<str>) -> Self {
+        self.map_err(|mut e| {
+            e.add_context(append.as_ref());
+            e
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_costs::{CostResult, CostsExt};
+
+    use super::{Error, MerkErrorExt};
+
+    #[test]
+    fn test_add_context_mutates_string_errors() {
+        let mut err = Error::PathNotFound("missing".to_string());
+        err.add_context("ctx");
+        match err {
+            Error::PathNotFound(s) => assert_eq!(s, "missing, ctx"),
+            _ => panic!("expected path not found"),
+        }
+    }
+
+    #[test]
+    fn test_add_context_noop_for_static_errors() {
+        let mut err = Error::InvalidOperation("bad op");
+        err.add_context("ctx");
+        match err {
+            Error::InvalidOperation(s) => assert_eq!(s, "bad op"),
+            _ => panic!("expected invalid operation"),
+        }
+    }
+
+    #[test]
+    fn test_cost_result_add_context() {
+        let result: CostResult<(), Error> =
+            Err(Error::CorruptedData("data".to_string())).wrap_with_cost(Default::default());
+
+        let err = result.add_context("decode").unwrap().unwrap_err();
+        match err {
+            Error::CorruptedData(s) => assert_eq!(s, "data, decode"),
+            _ => panic!("expected corrupted data"),
+        }
+    }
+
+    #[test]
+    fn test_from_query_error_mapping() {
+        let e: Error = grovedb_query::error::Error::NotSupported("n".to_string()).into();
+        assert!(matches!(e, Error::NotSupported(s) if s == "n"));
+
+        let e: Error = grovedb_query::error::Error::RequestAmountExceeded("r".to_string()).into();
+        assert!(matches!(e, Error::RequestAmountExceeded(s) if s == "r"));
+
+        let e: Error = grovedb_query::error::Error::CorruptedCodeExecution("c").into();
+        assert!(matches!(e, Error::CorruptedCodeExecution("c")));
+
+        let e: Error = grovedb_query::error::Error::InvalidOperation("i").into();
+        assert!(matches!(e, Error::InvalidOperation("i")));
+
+        let e: Error = grovedb_query::error::Error::ProofCreationError("p".to_string()).into();
+        assert!(matches!(e, Error::ProofCreationError(s) if s == "p"));
+
+        let e: Error = grovedb_query::error::Error::InvalidProofError("v".to_string()).into();
+        assert!(matches!(e, Error::InvalidProofError(s) if s == "v"));
+
+        let e: Error = grovedb_query::error::Error::KeyOrderingError("k").into();
+        assert!(matches!(e, Error::KeyOrderingError("k")));
+    }
+
+    #[test]
+    fn test_from_query_error_ed_error_mapping() {
+        let e: Error = grovedb_query::error::Error::EdError(ed::Error::UnexpectedByte(7)).into();
+        assert!(matches!(e, Error::EdError(ed::Error::UnexpectedByte(7))));
     }
 }

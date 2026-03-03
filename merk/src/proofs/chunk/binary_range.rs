@@ -65,7 +65,7 @@ impl BinaryRange {
 
     /// Returns true when the len of the range is odd
     pub fn odd(&self) -> bool {
-        (self.len() % 2) != 0
+        !self.len().is_multiple_of(2)
     }
 
     /// Determines if a value belongs to the left half or right half of a range

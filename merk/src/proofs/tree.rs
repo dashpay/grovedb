@@ -12,9 +12,15 @@ use grovedb_costs::{
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use super::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::tree::{combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, value_hash, NULL_HASH};
+use crate::tree::{
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash,
+    NULL_HASH,
+};
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::{error::Error, tree::CryptoHash};
+use crate::{
+    error::Error,
+    tree::{CryptoHash, TreeFeatureType},
+};
 #[cfg(feature = "minimal")]
 use crate::{
     proofs::chunk::chunk::{LEFT, RIGHT},
@@ -25,7 +31,7 @@ use crate::{
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Contains a tree's child node and its hash. The hash can always be assumed to
 /// be up-to-date.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Child {
     /// Tree
     pub tree: Box<Tree>,
@@ -43,6 +49,7 @@ impl Child {
             Node::KVValueHashFeatureType(key, _, _, feature_type) => {
                 (key.as_slice(), (*feature_type).into())
             }
+            Node::KVCount(key, _, count) => (key.as_slice(), AggregateData::ProvableCount(*count)),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -64,7 +71,7 @@ impl Child {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// A binary tree data structure used to represent a select subset of a tree
 /// when verifying Merkle proofs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tree {
     /// Node
     pub node: Node,
@@ -113,14 +120,49 @@ impl Tree {
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
             Node::KV(key, value) => kv_hash(key.as_slice(), value.as_slice())
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
-            Node::KVValueHash(key, _, value_hash)
-            | Node::KVValueHashFeatureType(key, _, value_hash, _) => {
-                // TODO: add verification of the value
+            Node::KVValueHash(key, _, value_hash) => {
+                // Note: value_hash may be a combined hash for subtrees, so we cannot
+                // verify hash(value) == value_hash. Security comes from merkle root check.
                 kv_digest_to_kv_hash(key.as_slice(), value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
             }
+            Node::KVValueHashFeatureType(key, _, value_hash, feature_type) => {
+                // Note: Same as KVValueHash - cannot verify hash(value) == value_hash
+                // because value_hash may be combined for subtrees. Security via merkle root.
+                kv_digest_to_kv_hash(key.as_slice(), value_hash).flat_map(|kv_hash| {
+                    // For ProvableCountTree and ProvableCountSumTree, use node_hash_with_count
+                    // Note: ProvableCountSumTree only includes count in hash, not sum
+                    match feature_type {
+                        TreeFeatureType::ProvableCountedMerkNode(count) => node_hash_with_count(
+                            &kv_hash,
+                            &self.child_hash(true),
+                            &self.child_hash(false),
+                            *count,
+                        ),
+                        TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => {
+                            // Only count is included in hash, sum is tracked but not hashed
+                            node_hash_with_count(
+                                &kv_hash,
+                                &self.child_hash(true),
+                                &self.child_hash(false),
+                                *count,
+                            )
+                        }
+                        _ => compute_hash(self, kv_hash),
+                    }
+                })
+            }
             Node::KVDigest(key, value_hash) => kv_digest_to_kv_hash(key, value_hash)
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
+            Node::KVDigestCount(key, value_hash, count) => kv_digest_to_kv_hash(key, value_hash)
+                .flat_map(|kv_hash| {
+                    node_hash_with_count(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                    )
+                }),
             Node::KVRefValueHash(key, referenced_value, node_value_hash) => {
                 let mut cost = OperationCost::default();
                 let referenced_value_hash =
@@ -131,13 +173,45 @@ impl Tree {
                 kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
             }
+            Node::KVCount(key, value, count) => {
+                kv_hash(key.as_slice(), value.as_slice()).flat_map(|kv_hash| {
+                    node_hash_with_count(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                    )
+                })
+            }
+            Node::KVHashCount(kv_hash, count) => node_hash_with_count(
+                kv_hash,
+                &self.child_hash(true),
+                &self.child_hash(false),
+                *count,
+            ),
+            Node::KVRefValueHashCount(key, referenced_value, node_value_hash, count) => {
+                let mut cost = OperationCost::default();
+                let referenced_value_hash =
+                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
+                    .unwrap_add_cost(&mut cost);
+
+                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).flat_map(|kv_hash| {
+                    node_hash_with_count(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                    )
+                })
+            }
         }
     }
 
     /// Creates an iterator that yields the in-order traversal of the nodes at
     /// the given depth.
     #[cfg(feature = "minimal")]
-    pub fn layer(&self, depth: usize) -> LayerIter {
+    pub fn layer(&self, depth: usize) -> LayerIter<'_> {
         LayerIter::new(self, depth)
     }
 
@@ -191,7 +265,7 @@ impl Tree {
             base_traversal_instruction.push(LEFT);
             child.tree.visit_refs_track_traversal_and_parent(
                 base_traversal_instruction,
-                Some(self.key()),
+                self.key(),
                 visit_node,
             )?;
             base_traversal_instruction.pop();
@@ -203,7 +277,7 @@ impl Tree {
             base_traversal_instruction.push(RIGHT);
             child.tree.visit_refs_track_traversal_and_parent(
                 base_traversal_instruction,
-                Some(self.key()),
+                self.key(),
                 visit_node,
             )?;
             base_traversal_instruction.pop();
@@ -280,14 +354,22 @@ impl Tree {
         self.hash().map(|hash| Node::Hash(hash).into())
     }
 
-    #[cfg(feature = "minimal")]
-    pub(crate) fn key(&self) -> &[u8] {
-        match self.node {
-            Node::KV(ref key, _)
-            | Node::KVValueHash(ref key, ..)
-            | Node::KVRefValueHash(ref key, ..)
-            | Node::KVValueHashFeatureType(ref key, ..) => key,
-            _ => panic!("Expected node to be type KV"),
+    /// Returns the key from this tree node if it's a KV-type node with a key.
+    /// Returns None for Hash, KVHash, or KVHashCount node types (which only
+    /// have hashes, not keys).
+    #[cfg(any(feature = "minimal", feature = "verify"))]
+    pub fn key(&self) -> Option<&[u8]> {
+        match &self.node {
+            Node::KV(key, _)
+            | Node::KVValueHash(key, ..)
+            | Node::KVRefValueHash(key, ..)
+            | Node::KVValueHashFeatureType(key, ..)
+            | Node::KVDigest(key, ..)
+            | Node::KVDigestCount(key, ..)
+            | Node::KVCount(key, ..)
+            | Node::KVRefValueHashCount(key, ..) => Some(key.as_slice()),
+            // These nodes don't have keys, only hashes
+            Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => None,
         }
     }
 
@@ -357,7 +439,7 @@ impl<'a> Iterator for LayerIter<'a> {
 /// `visit_node` will be called once for every push operation in the proof, in
 /// key-order. If `visit_node` returns an `Err` result, it will halt the
 /// execution and `execute` will return the error.
-pub(crate) fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostResult<Tree, Error>
+pub fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostResult<Tree, Error>
 where
     I: IntoIterator<Item = Result<Op, Error>>,
     F: FnMut(&Node) -> Result<(), Error>,
@@ -448,9 +530,15 @@ where
                 stack.push(parent);
             }
             Op::Push(node) => {
+                // Check key ordering for ALL node types that contain keys
                 if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
-                | Node::KVRefValueHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..)
+                | Node::KVCount(key, ..)
+                | Node::KVRefValueHashCount(key, ..)
+                | Node::KVDigest(key, _)
+                | Node::KVDigestCount(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key {
@@ -471,9 +559,15 @@ where
                 stack.push(tree);
             }
             Op::PushInverted(node) => {
+                // Check key ordering for ALL node types that contain keys
                 if let Node::KV(key, _)
+                | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
-                | Node::KVRefValueHash(key, ..) = &node
+                | Node::KVRefValueHash(key, ..)
+                | Node::KVCount(key, ..)
+                | Node::KVRefValueHashCount(key, ..)
+                | Node::KVDigest(key, _)
+                | Node::KVDigestCount(key, ..) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key {
@@ -699,5 +793,80 @@ mod test {
                 key: vec![3]
             }
         );
+    }
+
+    #[test]
+    fn execute_push_inverted_rejects_increasing_keys() {
+        let proof = vec![
+            Op::PushInverted(Node::KV(vec![2], vec![2])),
+            Op::PushInverted(Node::KV(vec![3], vec![3])),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering inverted"
+        ));
+    }
+
+    #[test]
+    fn execute_parent_inverted_attaches_right_child() {
+        let proof = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::ParentInverted,
+        ];
+        let tree = execute(proof.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        assert!(tree.left.is_none());
+        assert_eq!(
+            tree.right.as_ref().and_then(|c| c.tree.key()),
+            Some(vec![1].as_slice())
+        );
+        assert_eq!(tree.key(), Some(vec![2].as_slice()));
+    }
+
+    #[test]
+    fn execute_child_inverted_attaches_left_child() {
+        let proof = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::ChildInverted,
+        ];
+        let tree = execute(proof.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        assert!(tree.right.is_none());
+        assert_eq!(
+            tree.left.as_ref().and_then(|c| c.tree.key()),
+            Some(vec![2].as_slice())
+        );
+        assert_eq!(tree.key(), Some(vec![1].as_slice()));
+    }
+
+    #[test]
+    fn execute_returns_stack_underflow_error() {
+        let result = execute(vec![Ok(Op::Parent)], false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Stack underflow"
+        ));
+    }
+
+    #[test]
+    fn hash_supports_counted_node_variants() {
+        let tree: ProofTree = Node::KVHashCount([1; 32], 7).into();
+        let kv_hash_count_hash = tree.hash().unwrap();
+        assert_ne!(kv_hash_count_hash, NULL_HASH);
+
+        let tree: ProofTree = Node::KVDigestCount(vec![1], [2; 32], 5).into();
+        let digest_count_hash = tree.hash().unwrap();
+        assert_ne!(digest_count_hash, NULL_HASH);
+
+        let tree: ProofTree = Node::KVRefValueHashCount(vec![3], vec![4], [5; 32], 9).into();
+        let ref_value_count_hash = tree.hash().unwrap();
+        assert_ne!(ref_value_count_hash, NULL_HASH);
     }
 }

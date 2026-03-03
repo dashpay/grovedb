@@ -26,7 +26,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! Compact two dimenstional bytes array structure.
+//! Compact two dimensional bytes array structure.
 
 use std::mem;
 
@@ -53,7 +53,7 @@ impl CompactBytes {
         self.n_segments += 1;
     }
 
-    pub fn reverse_iter(&self) -> CompactBytesIter {
+    pub fn reverse_iter(&self) -> CompactBytesIter<'_> {
         CompactBytesIter {
             bytes: self,
             offset_back: self.data.len(),

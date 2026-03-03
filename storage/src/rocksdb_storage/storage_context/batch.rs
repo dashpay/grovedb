@@ -18,7 +18,7 @@ pub struct PrefixedRocksDbBatch<'db> {
     pub(crate) cf_aux: &'db ColumnFamily,
     pub(crate) cf_roots: &'db ColumnFamily,
 
-    /// As a batch to be commited is a RocksDB batch and there is no way to get
+    /// As a batch to be committed is a RocksDB batch and there is no way to get
     /// what it will do, we collect costs at the moment we append something to
     /// the batch.
     pub(crate) cost_acc: OperationCost,

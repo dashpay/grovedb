@@ -36,7 +36,7 @@ impl GroveDb {
         &self,
         app_hash: [u8; 32],
         subtrees_batch_size: usize,
-    ) -> Pin<Box<MultiStateSyncSession>> {
+    ) -> Pin<Box<MultiStateSyncSession<'_>>> {
         MultiStateSyncSession::new(self, app_hash, subtrees_batch_size)
     }
 
@@ -148,7 +148,7 @@ impl GroveDb {
                 })?;
                 for chunk_id in nested_chunk_ids
                     .is_empty()
-                    .then(|| Vec::new())
+                    .then(Vec::new)
                     .into_iter()
                     .chain(nested_chunk_ids.into_iter())
                 {
@@ -220,7 +220,7 @@ impl GroveDb {
         subtrees_batch_size: usize,
         version: u16,
         grove_version: &GroveVersion,
-    ) -> Result<Pin<Box<MultiStateSyncSession>>, Error> {
+    ) -> Result<Pin<Box<MultiStateSyncSession<'_>>>, Error> {
         check_grovedb_v0!(
             "start_snapshot_syncing",
             grove_version
@@ -420,7 +420,7 @@ pub(crate) mod utils {
             res.push(0u8);
         }
 
-        res.push(tree_type as u8);
+        res.push(tree_type.discriminant());
 
         res.extend(pack_nested_bytes(chunk_ids));
 
@@ -543,8 +543,8 @@ pub(crate) mod utils {
         let mut index = 2;
 
         for i in 0..num_elements {
-            // Ensure there is enough data to read the 2-byte length
-            if index + 1 >= packed_data.len() {
+            // Ensure there is enough data to read the 4-byte length
+            if index + 4 > packed_data.len() {
                 return Err(Error::CorruptedData(format!(
                     "Unexpected end of data while reading length of nested array {}",
                     i

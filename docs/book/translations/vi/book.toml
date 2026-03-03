@@ -1,0 +1,15 @@
+[book]
+title = "Sách GroveDB"
+authors = ["Dash Core Group"]
+language = "vi"
+src = "src"
+
+[build]
+build-dir = "../../output/vi"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-css = ["lang-selector.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "lang-selector.js"]

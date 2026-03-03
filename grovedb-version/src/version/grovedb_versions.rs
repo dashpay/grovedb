@@ -10,7 +10,6 @@ pub struct GroveDBVersions {
     pub replication: GroveDBReplicationVersions,
 }
 
-
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBAggregateSumPathQueryMethodVersions {
     pub merge: FeatureVersion,
@@ -21,6 +20,7 @@ pub struct GroveDBPathQueryMethodVersions {
     pub terminal_keys: FeatureVersion,
     pub merge: FeatureVersion,
     pub query_items_at_path: FeatureVersion,
+    pub should_add_parent_tree_at_path: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,6 +85,7 @@ pub struct GroveDBOperationsProofVersions {
     pub verify_query_with_absence_proof: FeatureVersion,
     pub verify_subset_query_with_absence_proof: FeatureVersion,
     pub verify_query_with_chained_path_queries: FeatureVersion,
+    pub verify_query_get_parent_tree_info_with_options: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

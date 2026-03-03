@@ -43,3 +43,26 @@ impl StorageFlagsError {
         self.get_mut_info().push_str(format!(": {}", info).as_str());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::StorageFlagsError;
+
+    #[test]
+    fn add_info_appends_to_all_variants() {
+        let errors = vec![
+            StorageFlagsError::DeserializeUnknownStorageFlagsType("a".to_string()),
+            StorageFlagsError::StorageFlagsWrongSize("b".to_string()),
+            StorageFlagsError::RemovingAtEpochWithNoAssociatedStorage("c".to_string()),
+            StorageFlagsError::StorageFlagsOverflow("d".to_string()),
+            StorageFlagsError::RemovingFlagsError("e".to_string()),
+            StorageFlagsError::MergingStorageFlagsFromDifferentOwners("f".to_string()),
+            StorageFlagsError::MergingStorageFlagsWithDifferentBaseEpoch("g".to_string()),
+        ];
+
+        for mut error in errors {
+            error.add_info("extra");
+            assert!(error.to_string().contains("extra"));
+        }
+    }
+}

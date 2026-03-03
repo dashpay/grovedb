@@ -9,13 +9,13 @@ use std::{
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
 use grovedb_version::{version::GroveVersion, TryFromVersioned};
 
+use crate::element::SumValue;
 use crate::{
     operations::proof::util::{
         hex_to_ascii, path_hex_to_ascii, ProvedPathKeyOptionalValue, ProvedPathKeyValue,
     },
     Element, Error,
 };
-use crate::element::SumValue;
 
 #[derive(Copy, Clone)]
 /// Query result type

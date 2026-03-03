@@ -1,5 +1,11 @@
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt};
-use grovedb_merk::{Merk, TreeType};
+use grovedb_merk::{
+    element::{
+        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
+        tree_type::ElementTreeTypeExtensions,
+    },
+    Merk, TreeType,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
@@ -43,7 +49,7 @@ where
         let element = cost_return_on_error!(
             &mut cost,
             Element::get_from_storage(&parent_storage, parent_key, grove_version)
-                .map_err(|e| C::parent_key_not_found(e, parent_path, parent_key))
+                .map_err(|e| C::parent_key_not_found(e.into(), parent_path, parent_key))
         );
         if let Some((root_key, tree_type)) = element.root_key_and_tree_type_owned() {
             Merk::open_layered_with_root_key(

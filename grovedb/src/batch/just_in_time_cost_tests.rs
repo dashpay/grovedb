@@ -52,7 +52,7 @@ mod tests {
                     StorageFlags::split_removal_bytes(flags, removed_key_bytes, removed_value_bytes)
                         .map_err(|e| Error::SplitRemovalBytesClientError(e.to_string()))
                 },
-                Some(&tx),
+                Some(tx),
                 grove_version,
             )
             .cost_as_result()
@@ -84,7 +84,7 @@ mod tests {
 
     fn verify_references(grove_db: &TempGroveDb, tx: &Transaction) {
         let issues = grove_db
-            .visualize_verify_grovedb(Some(&tx), true, false, &Default::default())
+            .visualize_verify_grovedb(Some(tx), true, false, &Default::default())
             .unwrap();
         assert_eq!(
             issues.len(),
@@ -540,7 +540,7 @@ mod tests {
         for n in 1..150 {
             let tx = db.start_transaction();
             let mut item = base_item.clone();
-            item.extend(std::iter::repeat(0).take(n));
+            item.extend(std::iter::repeat_n(0, n));
             // We are adding n bytes
             let ops = vec![
                 QualifiedGroveDbOp::insert_or_replace_op(
@@ -639,7 +639,7 @@ mod tests {
         for n in 1..150 {
             let tx = db.start_transaction();
             let mut item = base_item.clone();
-            item.extend(std::iter::repeat(0).take(n));
+            item.extend(std::iter::repeat_n(0, n));
             // We are adding n bytes
             let ops = vec![
                 QualifiedGroveDbOp::insert_or_replace_op(
@@ -739,7 +739,7 @@ mod tests {
         for n in 1..150 {
             let tx = db.start_transaction();
             let mut item = base_item.clone();
-            item.extend(std::iter::repeat(0).take(n));
+            item.extend(std::iter::repeat_n(0, n));
             // We are adding n bytes
             let ops = vec![
                 QualifiedGroveDbOp::insert_or_replace_op(
@@ -818,7 +818,7 @@ mod tests {
 
         let base_item = b"value1".to_vec();
         let mut original_item = base_item.clone();
-        original_item.extend(std::iter::repeat(0).take(150));
+        original_item.extend(std::iter::repeat_n(0, 150));
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -839,7 +839,7 @@ mod tests {
         for n in (0..to).rev() {
             let tx = db.start_transaction();
             let mut item = base_item.clone();
-            item.extend(std::iter::repeat(0).take(n));
+            item.extend(std::iter::repeat_n(0, n));
             // We are adding n bytes
             let ops = vec![
                 QualifiedGroveDbOp::insert_or_replace_op(
@@ -923,7 +923,7 @@ mod tests {
 
         let base_item = b"value1".to_vec();
         let mut original_item = base_item.clone();
-        original_item.extend(std::iter::repeat(0).take(150));
+        original_item.extend(std::iter::repeat_n(0, 150));
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -942,7 +942,7 @@ mod tests {
         for n in 0..150 {
             let tx = db.start_transaction();
             let mut item = base_item.clone();
-            item.extend(std::iter::repeat(0).take(n));
+            item.extend(std::iter::repeat_n(0, n));
             // We are adding n bytes
             let ops = vec![
                 QualifiedGroveDbOp::insert_or_replace_op(
@@ -1345,7 +1345,7 @@ mod tests {
         for n in 1..150 {
             let tx = db.start_transaction();
             let mut item = base_item.clone();
-            item.extend(std::iter::repeat(0).take(n));
+            item.extend(std::iter::repeat_n(0, n));
             // We are adding n bytes
             let ops = vec![
                 QualifiedGroveDbOp::insert_or_replace_op(
@@ -1371,7 +1371,7 @@ mod tests {
 
             apply_batch(&db, ops, &tx, grove_version);
 
-            let expected_added_bytes = if n < 15 {
+            let _expected_added_bytes = if n < 15 {
                 n as u32 + 3
             } else if n < 124 {
                 n as u32 + 4 // the varint requires an extra byte
@@ -1419,7 +1419,7 @@ mod tests {
 
         let base_item = b"value1".to_vec();
         let mut original_item = base_item.clone();
-        original_item.extend(std::iter::repeat(0).take(150));
+        original_item.extend(std::iter::repeat_n(0, 150));
 
         db.insert(
             [b"tree".as_slice()].as_ref(),
@@ -1437,7 +1437,7 @@ mod tests {
         for n in (0..to).rev() {
             let tx = db.start_transaction();
             let mut item = base_item.clone();
-            item.extend(std::iter::repeat(0).take(n));
+            item.extend(std::iter::repeat_n(0, n));
             // We are adding n bytes
             let ops = vec![
                 QualifiedGroveDbOp::insert_or_replace_op(

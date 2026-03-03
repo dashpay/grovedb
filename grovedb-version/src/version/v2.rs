@@ -1,3 +1,4 @@
+use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 use crate::version::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
@@ -11,7 +12,6 @@ use crate::version::{
     merk_versions::{MerkAverageCaseCostsVersions, MerkVersions},
     GroveVersion,
 };
-use crate::version::grovedb_versions::GroveDBAggregateSumPathQueryMethodVersions;
 
 pub const GROVE_V2: GroveVersion = GroveVersion {
     protocol_version: 1,
@@ -151,6 +151,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 verify_query_with_absence_proof: 0,
                 verify_subset_query_with_absence_proof: 0,
                 verify_query_with_chained_path_queries: 0,
+                verify_query_get_parent_tree_info_with_options: 0,
             },
             average_case: GroveDBOperationsAverageCaseVersions {
                 add_average_case_get_merk_at_path: 0,
@@ -187,6 +188,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             terminal_keys: 0,
             merge: 0,
             query_items_at_path: 0,
+            should_add_parent_tree_at_path: 0,
         },
         replication: GroveDBReplicationVersions {
             get_subtrees_metadata: 0,

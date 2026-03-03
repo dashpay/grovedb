@@ -49,7 +49,7 @@ merk.apply(&batch).unwrap();
 
 Merk is being used in the [Nomic](https://github.com/nomic-io/nomic) Bitcoin Sidechain.
 
-The codebase has not been audited but has been throroughly tested and proves to be stable.
+The codebase has not been audited but has been thoroughly tested and proves to be stable.
 
 ## Benchmarks
 

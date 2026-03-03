@@ -1,6 +1,6 @@
 //! Fuzz tests
 
-#![cfg(tests)]
+#![cfg(tests)] // NB: intentionally `tests` (not `test`) to disable these broken fuzz tests
 
 #[cfg(feature = "minimal")]
 use std::{cell::RefCell, collections::BTreeMap};

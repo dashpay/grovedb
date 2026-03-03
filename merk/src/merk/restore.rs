@@ -47,11 +47,11 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
-    tree::{combine_hash, kv::ValueDefinedCostType, RefWalker, TreeNode},
+    tree::{combine_hash, kv::ValueDefinedCostType, value_hash, RefWalker, TreeNode},
     tree_type::TreeType,
     CryptoHash, Error,
     Error::{CostsError, StorageError},
-    Link, Merk,
+    Link, Merk, TreeFeatureType,
 };
 
 /// Restorer handles verification of chunks and replication of Merk trees.
@@ -105,7 +105,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
         if root_traversal_instruction.is_empty() {
-            let _ = self.merk.set_base_root_key(Some(chunk_tree.key().to_vec()));
+            let _ = self
+                .merk
+                .set_base_root_key(chunk_tree.key().map(|k| k.to_vec()));
         } else {
             // every non root chunk has some associated parent with an placeholder link
             // here we update the placeholder link to represent the true data
@@ -175,9 +177,15 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut hash_count = 0;
 
         // build tree from ops
-        // ensure only made of KvValueFeatureType and Hash nodes and count them
+        // ensure only made of KV-like nodes and Hash nodes, and count them
         let tree = execute(chunk.clone().into_iter().map(Ok), false, |node| {
-            if matches!(node, Node::KVValueHashFeatureType(..)) {
+            if matches!(
+                node,
+                Node::KVValueHashFeatureType(..)
+                    | Node::KV(..)
+                    | Node::KVValueHash(..)
+                    | Node::KVCount(..)
+            ) {
                 kv_count += 1;
                 Ok(())
             } else if matches!(node, Node::Hash(..)) {
@@ -185,7 +193,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 Ok(())
             } else {
                 Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(
-                    "expected chunk proof to contain only kvvaluefeaturetype or hash nodes",
+                    "expected chunk proof to contain only kv or hash nodes",
                 )))
             }
         })
@@ -232,12 +240,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             None,
             &mut |proof_node, node_traversal_instruction, parent_key| {
                 match &proof_node.node {
-                    Node::KVValueHashFeatureType(key, value, value_hash, feature_type) => {
+                    Node::KVValueHashFeatureType(key, value, vh, feature_type) => {
                         // build tree from node value
                         let mut tree = TreeNode::new_with_value_hash(
                             key.clone(),
                             value.clone(),
-                            *value_hash,
+                            *vh,
                             *feature_type,
                         )
                         .unwrap();
@@ -249,6 +257,60 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         // encode the node and add it to the batch
                         let bytes = tree.encode();
 
+                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                    }
+                    Node::KV(key, value) => {
+                        // Items in normal trees: value_hash = H(value),
+                        // feature_type = BasicMerkNode
+                        let vh = value_hash(value.as_slice()).unwrap();
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            vh,
+                            TreeFeatureType::BasicMerkNode,
+                        )
+                        .unwrap();
+
+                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
+                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+
+                        let bytes = tree.encode();
+                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                    }
+                    Node::KVValueHash(key, value, vh) => {
+                        // Subtrees/references in normal trees: value_hash is
+                        // provided (may be a combined hash for subtrees),
+                        // feature_type = BasicMerkNode
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            *vh,
+                            TreeFeatureType::BasicMerkNode,
+                        )
+                        .unwrap();
+
+                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
+                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+
+                        let bytes = tree.encode();
+                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                    }
+                    Node::KVCount(key, value, count) => {
+                        // Items in ProvableCountTree: value_hash = H(value),
+                        // feature_type = ProvableCountedMerkNode(count)
+                        let vh = value_hash(value.as_slice()).unwrap();
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            vh,
+                            TreeFeatureType::ProvableCountedMerkNode(*count),
+                        )
+                        .unwrap();
+
+                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
+                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+
+                        let bytes = tree.encode();
                         batch.put(key, &bytes, None, None).map_err(CostsError)
                     }
                     Node::Hash(hash) => {
@@ -266,7 +328,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     _ => {
                         // we do nothing for other node types
                         // technically verify chunk will be called before this
-                        // as such this should be be reached
+                        // as such this should not be reached
                         Ok(())
                     }
                 }
@@ -315,7 +377,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             .last()
             .expect("rewrite is only called when traversal_instruction is not empty");
 
-        let updated_key = chunk_tree.key();
+        let updated_key = chunk_tree
+            .key()
+            .expect("chunk tree must have a key during restore");
         let updated_sum = chunk_tree.aggregate_data();
 
         if let Some(Link::Reference {
@@ -415,6 +479,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     }
 
     /// Rebuild restoration state from partial storage state
+    #[allow(dead_code)]
     fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
         // TODO: think about the return type some more
         let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
@@ -512,8 +577,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         if let Some(link) = left_link {
-            let left_tree = link.tree();
-            if left_tree.is_none() {
+            if let Some(left_tree) = link.tree() {
+                self.verify_tree_height(left_tree, left_height, grove_version)?;
+            } else {
                 let left_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
@@ -523,14 +589,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height, grove_version)?;
-            } else {
-                self.verify_tree_height(left_tree.unwrap(), left_height, grove_version)?;
             }
         }
 
         if let Some(link) = right_link {
-            let right_tree = link.tree();
-            if right_tree.is_none() {
+            if let Some(right_tree) = link.tree() {
+                self.verify_tree_height(right_tree, right_height, grove_version)?;
+            } else {
                 let right_tree = TreeNode::get(
                     &self.merk.storage,
                     link.key(),
@@ -540,8 +605,6 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .unwrap()?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height, grove_version)?;
-            } else {
-                self.verify_tree_height(right_tree.unwrap(), right_height, grove_version)?;
             }
         }
 
@@ -590,20 +653,50 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_verification_only_kv_feature_and_hash() {
-        // should not accept kv
-        let invalid_chunk_proof = vec![Op::Push(Node::KV(vec![1], vec![1]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
+    fn test_chunk_verification_accepted_and_rejected_node_types() {
+        // KV should be accepted (items in normal trees)
+        let kv_proof = vec![Op::Push(Node::KV(vec![1], vec![1]))];
+        let result =
+            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kv_proof, &[0; 32], &None);
+        // KV is now accepted; it will fail with hash mismatch (not invalid node type)
+        assert!(
+            !matches!(
+                result,
+                Err(ChunkRestoringError(InvalidChunkProof(
+                    "expected chunk proof to contain only kv or hash nodes",
+                )))
+            ),
+            "KV nodes should be accepted by chunk verification"
         );
-        assert!(matches!(
-            verification_result,
-            Err(ChunkRestoringError(InvalidChunkProof(
-                "expected chunk proof to contain only kvvaluefeaturetype or hash nodes",
-            )))
-        ));
+
+        // KVValueHash should be accepted (subtrees in normal trees)
+        let kvvh_proof = vec![Op::Push(Node::KVValueHash(vec![0], vec![0], [0; 32]))];
+        let result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
+            kvvh_proof, &[0; 32], &None,
+        );
+        assert!(
+            !matches!(
+                result,
+                Err(ChunkRestoringError(InvalidChunkProof(
+                    "expected chunk proof to contain only kv or hash nodes",
+                )))
+            ),
+            "KVValueHash nodes should be accepted by chunk verification"
+        );
+
+        // KVCount should be accepted (items in provable count trees)
+        let kvc_proof = vec![Op::Push(Node::KVCount(vec![0], vec![0], 1))];
+        let result =
+            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kvc_proof, &[0; 32], &None);
+        assert!(
+            !matches!(
+                result,
+                Err(ChunkRestoringError(InvalidChunkProof(
+                    "expected chunk proof to contain only kv or hash nodes",
+                )))
+            ),
+            "KVCount nodes should be accepted by chunk verification"
+        );
 
         // should not accept kvhash
         let invalid_chunk_proof = vec![Op::Push(Node::KVHash([0; 32]))];
@@ -615,7 +708,7 @@ mod tests {
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
-                "expected chunk proof to contain only kvvaluefeaturetype or hash nodes",
+                "expected chunk proof to contain only kv or hash nodes",
             )))
         ));
 
@@ -629,21 +722,7 @@ mod tests {
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
-                "expected chunk proof to contain only kvvaluefeaturetype or hash nodes",
-            )))
-        ));
-
-        // should not accept kvvaluehash
-        let invalid_chunk_proof = vec![Op::Push(Node::KVValueHash(vec![0], vec![0], [0; 32]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
-        );
-        assert!(matches!(
-            verification_result,
-            Err(ChunkRestoringError(InvalidChunkProof(
-                "expected chunk proof to contain only kvvaluefeaturetype or hash nodes",
+                "expected chunk proof to contain only kv or hash nodes",
             )))
         ));
 
@@ -657,7 +736,7 @@ mod tests {
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
-                "expected chunk proof to contain only kvvaluefeaturetype or hash nodes",
+                "expected chunk proof to contain only kv or hash nodes",
             )))
         ));
     }

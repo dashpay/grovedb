@@ -3,11 +3,25 @@
 
 use std::fmt;
 
+use crate::element::SumValue;
+#[cfg(feature = "minimal")]
+use crate::operations::proof::util::hex_to_ascii;
+use crate::operations::proof::util::path_as_slices_hex_to_ascii;
+use crate::query_result_type::KeySumValuePair;
+use crate::{AggregateSumPathQuery, Element};
+#[cfg(feature = "minimal")]
+use crate::{Error, TransactionArg};
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
+    cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
+    CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "minimal")]
+use grovedb_merk::element::decode::ElementDecodeExtensions;
+#[cfg(feature = "minimal")]
+use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+#[cfg(feature = "minimal")]
+use grovedb_merk::error::MerkErrorExt;
 use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
 #[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
@@ -17,17 +31,6 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
 #[cfg(feature = "minimal")]
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
-#[cfg(feature = "minimal")]
-use crate::operations::proof::util::hex_to_ascii;
-use crate::operations::proof::util::path_as_slices_hex_to_ascii;
-use crate::{AggregateSumPathQuery, Element};
-#[cfg(feature = "minimal")]
-use crate::{
-    element::helpers::raw_decode,
-    Error, TransactionArg,
-};
-use crate::element::SumValue;
-use crate::query_result_type::KeySumValuePair;
 
 #[derive(Copy, Clone, Debug)]
 pub struct AggregateSumQueryOptions {
@@ -62,6 +65,7 @@ impl Default for AggregateSumQueryOptions {
 
 #[cfg(feature = "minimal")]
 /// Aggregate Sum Path query push arguments
+#[allow(dead_code)]
 pub struct AggregateSumPathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
@@ -76,23 +80,6 @@ where
     pub results: &'a mut Vec<KeySumValuePair>,
     pub limit: &'a mut Option<u16>,
     pub sum_limit_left: &'a mut SumValue,
-}
-
-#[cfg(feature = "minimal")]
-fn format_query(query: &AggregateSumQuery, indent: usize) -> String {
-    let indent_str = " ".repeat(indent);
-    let mut output = format!("{}AggregateSumQuery {{\n", indent_str);
-
-    output += &format!("{}  items: [\n", indent_str);
-    for item in &query.items {
-        output += &format!("{}    {},\n", indent_str, item);
-    }
-    output += &format!("{}  ],\n", indent_str);
-
-    output += &format!("{}  left_to_right: {}\n", indent_str, query.left_to_right);
-    output += &format!("{}}}", indent_str);
-
-    output
 }
 
 #[cfg(feature = "minimal")]
@@ -134,10 +121,57 @@ where
     }
 }
 
-impl Element {
-    #[cfg(feature = "minimal")]
+#[cfg(feature = "minimal")]
+pub trait ElementAggregateSumQueryExtensions {
+    fn get_aggregate_sum_query(
+        storage: &RocksDbStorage,
+        aggregate_sum_path_query: &AggregateSumPathQuery,
+        query_options: AggregateSumQueryOptions,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<KeySumValuePair>, Error>;
+    fn get_aggregate_sum_query_apply_function(
+        storage: &RocksDbStorage,
+        path: &[&[u8]],
+        aggregate_sum_query: &AggregateSumQuery,
+        query_options: AggregateSumQueryOptions,
+        transaction: TransactionArg,
+        add_element_function: fn(
+            AggregateSumPathQueryPushArgs,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<KeySumValuePair>, Error>;
+    fn aggregate_sum_path_query_push(
+        args: AggregateSumPathQueryPushArgs,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+    fn aggregate_sum_query_item(
+        storage: &RocksDbStorage,
+        item: &QueryItem,
+        results: &mut Vec<KeySumValuePair>,
+        path: &[&[u8]],
+        left_to_right: bool,
+        transaction: TransactionArg,
+        limit: &mut Option<u16>,
+        sum_limit_left: &mut SumValue,
+        query_options: AggregateSumQueryOptions,
+        add_element_function: fn(
+            AggregateSumPathQueryPushArgs,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+    fn basic_aggregate_sum_push(
+        args: AggregateSumPathQueryPushArgs,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error>;
+}
+
+#[cfg(feature = "minimal")]
+impl ElementAggregateSumQueryExtensions for Element {
     /// Returns a vector of result elements based on given query
-    pub fn get_aggregate_sum_query(
+    fn get_aggregate_sum_query(
         storage: &RocksDbStorage,
         aggregate_sum_path_query: &AggregateSumPathQuery,
         query_options: AggregateSumQueryOptions,
@@ -146,7 +180,10 @@ impl Element {
     ) -> CostResult<Vec<KeySumValuePair>, Error> {
         check_grovedb_v0_with_cost!(
             "get_aggregate_sum_query",
-            grove_version.grovedb_versions.element.get_aggregate_sum_query
+            grove_version
+                .grovedb_versions
+                .element
+                .get_aggregate_sum_query
         );
 
         let path_slices = aggregate_sum_path_query
@@ -165,17 +202,18 @@ impl Element {
         )
     }
 
-
-    #[cfg(feature = "minimal")]
     /// Returns a vector of result sum items with keys
     /// based on given aggregate sum query
-    pub fn get_aggregate_sum_query_apply_function(
+    fn get_aggregate_sum_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
         aggregate_sum_query: &AggregateSumQuery,
         query_options: AggregateSumQueryOptions,
         transaction: TransactionArg,
-        add_element_function: fn(AggregateSumPathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        add_element_function: fn(
+            AggregateSumPathQueryPushArgs,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<KeySumValuePair>, Error> {
         check_grovedb_v0_with_cost!(
@@ -249,7 +287,6 @@ impl Element {
         Ok(results).wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "minimal")]
     /// Push arguments to path query
     fn aggregate_sum_path_query_push(
         args: AggregateSumPathQueryPushArgs,
@@ -257,25 +294,23 @@ impl Element {
     ) -> CostResult<(), Error> {
         check_grovedb_v0_with_cost!(
             "path_query_push",
-            grove_version.grovedb_versions.element.aggregate_sum_path_query_push
+            grove_version
+                .grovedb_versions
+                .element
+                .aggregate_sum_path_query_push
         );
 
         let cost = OperationCost::default();
 
-
         if !args.element.is_sum_item() {
             return Err(Error::InvalidPath(
-                "we are only expecting sum items in this path"
-                    .to_owned(),
+                "we are only expecting sum items in this path".to_owned(),
             ))
-                .wrap_with_cost(cost);
+            .wrap_with_cost(cost);
         } else {
             cost_return_on_error_no_add!(
                 cost,
-                Element::basic_aggregate_sum_push(
-                   args,
-                    grove_version
-                )
+                Element::basic_aggregate_sum_push(args, grove_version)
             );
         }
         Ok(()).wrap_with_cost(cost)
@@ -287,7 +322,6 @@ impl Element {
     /// trees where the sub elements have no matches, hence the limit would
     /// not decrease and hence we would continue on the increasingly
     /// expensive query.
-    #[cfg(feature = "minimal")]
     fn aggregate_sum_query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
@@ -298,19 +332,22 @@ impl Element {
         limit: &mut Option<u16>,
         sum_limit_left: &mut SumValue,
         query_options: AggregateSumQueryOptions,
-        add_element_function: fn(AggregateSumPathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
+        add_element_function: fn(
+            AggregateSumPathQueryPushArgs,
+            &GroveVersion,
+        ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         use grovedb_storage::Storage;
 
-        use crate::{
-            error::GroveDbErrorExt,
-            util::{compat, TxRef},
-        };
+        use crate::util::{compat, TxRef};
 
         check_grovedb_v0_with_cost!(
             "aggregate_sum_query_item",
-            grove_version.grovedb_versions.element.aggregate_sum_query_item
+            grove_version
+                .grovedb_versions
+                .element
+                .aggregate_sum_query_item
         );
 
         let mut cost = OperationCost::default();
@@ -341,6 +378,7 @@ impl Element {
                     .flat_map_ok(|subtree| {
                         Element::get(&subtree, key, query_options.allow_cache, grove_version)
                             .add_context(format!("path is {}", path_as_slices_hex_to_ascii(path)))
+                            .map_err(|e| e.into())
                     })
                     .unwrap_add_cost(&mut cost);
 
@@ -408,9 +446,9 @@ impl Element {
                 .iter_is_valid_for_type(&iter, *limit, Some(*sum_limit_left), left_to_right)
                 .unwrap_add_cost(&mut cost)
             {
-                let element = cost_return_on_error_no_add!(
+                let element = cost_return_on_error_into_no_add!(
                     cost,
-                    raw_decode(
+                    Element::raw_decode(
                         iter.value()
                             .unwrap_add_cost(&mut cost)
                             .expect("if key exists then value should too"),
@@ -462,11 +500,16 @@ impl Element {
         .wrap_with_cost(cost)
     }
 
-    #[cfg(feature = "minimal")]
-    fn basic_aggregate_sum_push(args: AggregateSumPathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error> {
+    fn basic_aggregate_sum_push(
+        args: AggregateSumPathQueryPushArgs,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
         check_grovedb_v0!(
             "basic_aggregate_sum_push",
-            grove_version.grovedb_versions.element.basic_aggregate_sum_push
+            grove_version
+                .grovedb_versions
+                .element
+                .basic_aggregate_sum_push
         );
 
         let AggregateSumPathQueryPushArgs {
@@ -482,7 +525,7 @@ impl Element {
         let element = element.convert_if_reference_to_absolute_reference(path, key)?;
 
         let Element::SumItem(value, _) = element else {
-            return Err(Error::WrongElementType("Only sum items are allowed"));
+            return Err(Error::InvalidInput("Only sum items are allowed"));
         };
 
         let key = key.ok_or(Error::CorruptedPath(
@@ -506,8 +549,13 @@ mod tests {
     use grovedb_merk::proofs::query::QueryItem;
     use grovedb_version::version::GroveVersion;
 
-    use crate::{tests::{make_test_sum_tree_grovedb, TEST_LEAF}, AggregateSumPathQuery, Element};
-    use crate::element::aggregate_sum_query::AggregateSumQueryOptions;
+    use crate::element::aggregate_sum_query::{
+        AggregateSumQueryOptions, ElementAggregateSumQueryExtensions,
+    };
+    use crate::{
+        tests::{make_test_sum_tree_grovedb, TEST_LEAF},
+        AggregateSumPathQuery, Element,
+    };
 
     #[test]
     fn test_get_aggregate_sum_query_full_range() {
@@ -573,10 +621,7 @@ mod tests {
             )
             .unwrap()
             .expect("expected successful get_query"),
-            vec![
-                (b"a".to_vec(), 7),
-                (b"b".to_vec(), 5)
-            ]
+            vec![(b"a".to_vec(), 7), (b"b".to_vec(), 5)]
         );
 
         // Test queries by full range up to 12
@@ -595,15 +640,12 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"a".to_vec(), 7),
-                (b"b".to_vec(), 5)
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"a".to_vec(), 7), (b"b".to_vec(), 5)]
         );
 
-        // Test queries by full range up to 12
+        // Test queries by full range up to 13
         let aggregate_sum_query = AggregateSumQuery::new(13, None);
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
@@ -619,13 +661,9 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"a".to_vec(), 7),
-                (b"b".to_vec(), 5),
-                (b"c".to_vec(), 3)
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"a".to_vec(), 7), (b"b".to_vec(), 5), (b"c".to_vec(), 3)]
         );
 
         // Test queries by full range up to 0
@@ -644,12 +682,12 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![]
         );
 
-        // Test queries by full range up to 0
+        // Test queries by full range up to 100
         let aggregate_sum_query = AggregateSumQuery::new(100, None);
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
@@ -665,8 +703,8 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 (b"a".to_vec(), 7),
                 (b"b".to_vec(), 5),
@@ -689,8 +727,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"b",
@@ -699,8 +737,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"c",
@@ -709,8 +747,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"d",
@@ -719,8 +757,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by full range up to 10
         let aggregate_sum_query = AggregateSumQuery::new_descending(10, None);
@@ -738,11 +776,9 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"d".to_vec(), 11)
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"d".to_vec(), 11)]
         );
 
         // Test queries by full range up to 12
@@ -761,12 +797,9 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"d".to_vec(), 11),
-                (b"c".to_vec(), 3)
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"d".to_vec(), 11), (b"c".to_vec(), 3)]
         );
 
         // Test queries by full range up to 0
@@ -785,12 +818,12 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![]
         );
 
-        // Test queries by full range up to 0
+        // Test queries by full range up to 100
         let aggregate_sum_query = AggregateSumQuery::new_descending(100, None);
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
@@ -806,8 +839,8 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 (b"d".to_vec(), 11),
                 (b"c".to_vec(), 3),
@@ -830,8 +863,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"b",
@@ -840,8 +873,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"c",
@@ -850,8 +883,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"d",
@@ -860,8 +893,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"e",
@@ -870,8 +903,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"f",
@@ -880,11 +913,15 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by sub range up to 3
-        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(QueryItem::Range(b"b".to_vec()..b"e".to_vec()),3, None);
+        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(
+            QueryItem::Range(b"b".to_vec()..b"e".to_vec()),
+            3,
+            None,
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
@@ -899,15 +936,17 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"b".to_vec(), 5)
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"b".to_vec(), 5)]
         );
 
         // Test queries by sub range up to 0
-        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(QueryItem::Range(b"b".to_vec()..b"e".to_vec()),0, None);
+        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(
+            QueryItem::Range(b"b".to_vec()..b"e".to_vec()),
+            0,
+            None,
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
@@ -922,38 +961,42 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![]
         );
 
         // Test queries by sub range up to 100
-        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(QueryItem::Range(b"b".to_vec()..b"e".to_vec()),100, None);
-
-        let aggregate_sum_path_query = AggregateSumPathQuery {
-            path: vec![TEST_LEAF.to_vec()],
-            aggregate_sum_query,
-        };
-
-        assert_eq!(
-            Element::get_aggregate_sum_query(
-                &db.db,
-                &aggregate_sum_path_query,
-                AggregateSumQueryOptions::default(),
-                None,
-                grove_version
-            )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"b".to_vec(), 5),
-                (b"c".to_vec(), 3),
-                (b"d".to_vec(), 11),
-            ]
+        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(
+            QueryItem::Range(b"b".to_vec()..b"e".to_vec()),
+            100,
+            None,
         );
 
-        // Test queries by sub range up to 100
-        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(QueryItem::RangeInclusive(b"b".to_vec()..=b"e".to_vec()),100, None);
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        assert_eq!(
+            Element::get_aggregate_sum_query(
+                &db.db,
+                &aggregate_sum_path_query,
+                AggregateSumQueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"b".to_vec(), 5), (b"c".to_vec(), 3), (b"d".to_vec(), 11),]
+        );
+
+        // Test queries by sub range inclusive up to 100
+        let aggregate_sum_query = AggregateSumQuery::new_single_query_item(
+            QueryItem::RangeInclusive(b"b".to_vec()..=b"e".to_vec()),
+            100,
+            None,
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
@@ -968,8 +1011,8 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
+            .unwrap()
+            .expect("expected successful get_query"),
             vec![
                 (b"b".to_vec(), 5),
                 (b"c".to_vec(), 3),
@@ -992,8 +1035,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"b",
@@ -1002,8 +1045,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"c",
@@ -1012,8 +1055,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"d",
@@ -1022,8 +1065,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"e",
@@ -1032,8 +1075,8 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
         db.insert(
             [TEST_LEAF].as_ref(),
             b"f",
@@ -1042,11 +1085,15 @@ mod tests {
             None,
             grove_version,
         )
-            .unwrap()
-            .expect("cannot insert element");
+        .unwrap()
+        .expect("cannot insert element");
 
         // Test queries by sub range up to 50
-        let aggregate_sum_query = AggregateSumQuery::new_with_keys(vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()], 50, None);
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys(
+            vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()],
+            50,
+            None,
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
@@ -1062,17 +1109,17 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"b".to_vec(), 5),
-                (b"e".to_vec(), 14),
-                (b"c".to_vec(), 3),
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"b".to_vec(), 5), (b"e".to_vec(), 14), (b"c".to_vec(), 3),]
         );
 
         // Test queries by sub range up to 6
-        let aggregate_sum_query = AggregateSumQuery::new_with_keys(vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()], 6, None);
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys(
+            vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()],
+            6,
+            None,
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
@@ -1088,16 +1135,17 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"b".to_vec(), 5),
-                (b"e".to_vec(), 14),
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"b".to_vec(), 5), (b"e".to_vec(), 14),]
         );
 
         // Test queries by sub range up to 5
-        let aggregate_sum_query = AggregateSumQuery::new_with_keys(vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()], 5, None);
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys(
+            vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()],
+            5,
+            None,
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
@@ -1113,22 +1161,24 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"b".to_vec(), 5),
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"b".to_vec(), 5),]
         );
 
         // Test queries by sub range up to 50, but we make sure to only allow two elements to come back
-        let aggregate_sum_query = AggregateSumQuery::new_with_keys(vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()], 50, Some(2));
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys(
+            vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()],
+            50,
+            Some(2),
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
             aggregate_sum_query,
         };
 
-        // We should get only the first one
+        // We should get only the first two
         assert_eq!(
             Element::get_aggregate_sum_query(
                 &db.db,
@@ -1137,41 +1187,43 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"b".to_vec(), 5),
-                (b"e".to_vec(), 14),
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"b".to_vec(), 5), (b"e".to_vec(), 14),]
         );
 
         // Test queries by sub range up to 50, but we make sure to only allow two elements to come back, descending
-        let aggregate_sum_query = AggregateSumQuery::new_with_keys_reversed(vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()], 50, Some(2));
-
-        let aggregate_sum_path_query = AggregateSumPathQuery {
-            path: vec![TEST_LEAF.to_vec()],
-            aggregate_sum_query,
-        };
-
-        // We should get only the first one
-        assert_eq!(
-            Element::get_aggregate_sum_query(
-                &db.db,
-                &aggregate_sum_path_query,
-                AggregateSumQueryOptions::default(),
-                None,
-                grove_version
-            )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"c".to_vec(), 3),
-                (b"e".to_vec(), 14),
-            ]
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys_reversed(
+            vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()],
+            50,
+            Some(2),
         );
 
-        // Test queries by sub range up to 50, but we make sure to only allow two elements to come back, descending
-        let aggregate_sum_query = AggregateSumQuery::new_with_keys_reversed(vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()], 3, None);
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        // We should get only the first two in reverse order
+        assert_eq!(
+            Element::get_aggregate_sum_query(
+                &db.db,
+                &aggregate_sum_path_query,
+                AggregateSumQueryOptions::default(),
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"c".to_vec(), 3), (b"e".to_vec(), 14),]
+        );
+
+        // Test queries by sub range up to 3, descending
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys_reversed(
+            vec![b"b".to_vec(), b"e".to_vec(), b"c".to_vec()],
+            3,
+            None,
+        );
 
         let aggregate_sum_path_query = AggregateSumPathQuery {
             path: vec![TEST_LEAF.to_vec()],
@@ -1187,11 +1239,9 @@ mod tests {
                 None,
                 grove_version
             )
-                .unwrap()
-                .expect("expected successful get_query"),
-            vec![
-                (b"c".to_vec(), 3),
-            ]
+            .unwrap()
+            .expect("expected successful get_query"),
+            vec![(b"c".to_vec(), 3),]
         );
     }
 }

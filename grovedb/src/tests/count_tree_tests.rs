@@ -4,6 +4,7 @@
 mod tests {
     use assert_matches::assert_matches;
     use grovedb_merk::{
+        element::costs::ElementCostExtensions,
         proofs::Query,
         tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType::{BasicMerkNode, CountedMerkNode},
@@ -103,6 +104,217 @@ mod tests {
             Element::deserialize(&result_set[0].value, grove_version)
                 .expect("should deserialize element"),
             Element::new_item(vec![3])
+        );
+    }
+
+    #[test]
+    fn test_count_tree_without_aggregation_query_result() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        // Can fetch count tree
+        let count_tree = db
+            .get([TEST_LEAF].as_ref(), b"key", None, grove_version)
+            .unwrap()
+            .expect("should get count tree");
+        assert!(matches!(count_tree, Element::CountTree(..)));
+
+        db.insert(
+            [TEST_LEAF, b"key"].as_ref(),
+            b"innerkey",
+            Element::new_item(vec![1]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+        db.insert(
+            [TEST_LEAF, b"key"].as_ref(),
+            b"innerkey2",
+            Element::new_item(vec![3]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+        db.insert(
+            [TEST_LEAF, b"key"].as_ref(),
+            b"innerkey3",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+        // Test proper item retrieval
+        let item = db
+            .get(
+                [TEST_LEAF, b"key"].as_ref(),
+                b"innerkey",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should get item");
+        assert_eq!(item, Element::new_item(vec![1]));
+
+        // Test proof generation
+        let mut query = Query::new();
+        query.insert_key("key".as_bytes().to_vec());
+
+        let sub_query = Query::new_range_full();
+
+        query.set_subquery(sub_query);
+
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+        let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        assert_eq!(result_set.len(), 3);
+        assert_eq!(
+            Element::deserialize(&result_set[0].value, grove_version)
+                .expect("should deserialize element"),
+            Element::new_item(vec![1])
+        );
+        assert_eq!(
+            Element::deserialize(&result_set[1].value, grove_version)
+                .expect("should deserialize element"),
+            Element::new_item(vec![3])
+        );
+        assert_eq!(
+            Element::deserialize(&result_set[2].value, grove_version)
+                .expect("should deserialize element"),
+            Element::empty_tree()
+        );
+    }
+
+    #[test]
+    fn test_count_tree_aggregation_query_result() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        // Can fetch count tree
+        let count_tree = db
+            .get([TEST_LEAF].as_ref(), b"key", None, grove_version)
+            .unwrap()
+            .expect("should get count tree");
+        assert!(matches!(count_tree, Element::CountTree(..)));
+
+        db.insert(
+            [TEST_LEAF, b"key"].as_ref(),
+            b"innerkey",
+            Element::new_item(vec![1]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+        db.insert(
+            [TEST_LEAF, b"key"].as_ref(),
+            b"innerkey2",
+            Element::new_item(vec![3]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+        db.insert(
+            [TEST_LEAF, b"key"].as_ref(),
+            b"innerkey3",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+        // Test proper item retrieval
+        let item = db
+            .get(
+                [TEST_LEAF, b"key"].as_ref(),
+                b"innerkey",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should get item");
+        assert_eq!(item, Element::new_item(vec![1]));
+
+        // Test proof generation
+        let mut query = Query::new();
+        query.insert_key("key".as_bytes().to_vec());
+
+        let sub_query = Query::new_range_full();
+
+        query.set_subquery(sub_query);
+
+        query.add_parent_tree_on_subquery = true;
+
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+        let (root_hash, result_set) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+            .expect("should verify proof");
+        assert_eq!(
+            root_hash,
+            db.grove_db.root_hash(None, grove_version).unwrap().unwrap()
+        );
+        assert_eq!(result_set.len(), 4);
+        assert_eq!(
+            Element::deserialize(&result_set[0].value, grove_version)
+                .expect("should deserialize element"),
+            Element::CountTree(Some("innerkey2".as_bytes().to_vec()), 3, None)
+        );
+        assert_eq!(
+            Element::deserialize(&result_set[1].value, grove_version)
+                .expect("should deserialize element"),
+            Element::new_item(vec![1])
+        );
+        assert_eq!(
+            Element::deserialize(&result_set[2].value, grove_version)
+                .expect("should deserialize element"),
+            Element::new_item(vec![3])
+        );
+        assert_eq!(
+            Element::deserialize(&result_set[3].value, grove_version)
+                .expect("should deserialize element"),
+            Element::empty_tree()
         );
     }
 

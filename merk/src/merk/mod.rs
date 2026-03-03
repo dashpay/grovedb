@@ -62,6 +62,10 @@ use crate::{
     error::Error,
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
     proofs::{
+        branch::{
+            calculate_chunk_depths, calculate_chunk_depths_with_minimum,
+            calculate_max_tree_depth_from_count, BranchQueryResult, TrunkQueryResult,
+        },
         chunk::{
             chunk::{LEFT, RIGHT},
             util::traversal_instruction_as_vec_bytes,
@@ -70,8 +74,8 @@ use crate::{
         Query,
     },
     tree::{
-        kv::ValueDefinedCostType, AggregateData, AuxMerkBatch, CryptoHash, Op, RefWalker, TreeNode,
-        NULL_HASH,
+        kv::ValueDefinedCostType, AggregateData, AuxMerkBatch, CryptoHash, Fetch, Op, RefWalker,
+        TreeNode, NULL_HASH,
     },
     tree_type::TreeType,
     Error::{CostsError, EdError, StorageError},
@@ -242,47 +246,44 @@ impl MerkType {
     }
 }
 
+// Re-export NodeType from grovedb-query
 #[cfg(any(feature = "minimal", feature = "verify"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NodeType {
-    NormalNode,
-    SumNode,
-    BigSumNode,
-    CountNode,
-    CountSumNode,
-}
+pub use grovedb_query::proofs::NodeType;
 
-impl NodeType {
-    pub const fn feature_len(&self) -> u32 {
-        match self {
-            NodeType::NormalNode => 1,
-            NodeType::SumNode => 9,
-            NodeType::BigSumNode => 17,
-            NodeType::CountNode => 9,
-            NodeType::CountSumNode => 17,
-        }
-    }
-
-    pub const fn cost(&self) -> u32 {
-        match self {
-            NodeType::NormalNode => 0,
-            NodeType::SumNode => 8,
-            NodeType::BigSumNode => 16,
-            NodeType::CountNode => 8,
-            NodeType::CountSumNode => 16,
-        }
-    }
-}
-
-/// A handle to a Merkle key/value store backed by RocksDB.
+/// A Merkle AVL tree providing authenticated key/value storage.
+///
+/// Each `Merk` instance is a self-balancing binary search tree where every
+/// node carries a cryptographic hash of its subtree. The generic parameter
+/// `S` is the backing storage (typically a RocksDB storage context).
+///
+/// In GroveDB a `Merk` represents a single subtree in the grove hierarchy.
+/// Its root hash is propagated upward into the parent tree's node, forming
+/// the authenticated chain from leaves to the grove root.
 pub struct Merk<S> {
+    /// The in-memory root of the AVL tree, or `None` if the tree is empty.
+    /// Wrapped in a `Cell` so it can be temporarily taken out for traversal
+    /// and mutation (see `use_tree`, `walk`) without requiring `&mut self`.
     pub(crate) tree: Cell<Option<TreeNode>>,
+    /// The key under which the root `TreeNode` is stored, or `None` for an
+    /// empty tree. For standalone/base Merks this is read from the
+    /// `ROOT_KEY_KEY` metadata entry; for layered Merks it is supplied by
+    /// the parent tree. Updated after each commit when the root may change
+    /// due to AVL rotations.
     pub(crate) root_tree_key: Cell<Option<Vec<u8>>>,
-    /// Storage
+    /// The backing storage context for reading and writing tree nodes.
+    ///
+    /// Concrete types used in practice:
+    /// - `PrefixedRocksDbImmediateStorageContext` — direct reads/writes outside
+    ///   a transaction.
+    /// - `PrefixedRocksDbTransactionContext` — reads/writes within an
+    ///   optimistic transaction; writes go to a `StorageBatch` and are
+    ///   committed atomically.
+    /// - `PrefixedRocksDbReadOnlyStorageContext` — read-only access used during
+    ///   proof generation and queries.
     pub storage: S,
-    /// Merk type
+    /// How this Merk is managed: standalone, base, or layered under a parent.
     pub merk_type: MerkType,
-    /// The tree type
+    /// The kind of data this tree holds (normal, sum, count, etc.).
     pub tree_type: TreeType,
 }
 
@@ -311,9 +312,10 @@ where
     /// proofs can be checked against). If the tree is empty, returns the null
     /// hash (zero-filled).
     pub fn root_hash(&self) -> CostContext<CryptoHash> {
+        let tree_type = self.tree_type;
         self.use_tree(|tree| {
             tree.map_or(NULL_HASH.wrap_with_cost(Default::default()), |tree| {
-                tree.hash()
+                tree.hash_for_link(tree_type)
             })
         })
     }
@@ -349,12 +351,13 @@ where
     pub fn root_hash_key_and_aggregate_data(
         &self,
     ) -> CostResult<RootHashKeyAndAggregateData, Error> {
+        let tree_type = self.tree_type;
         self.use_tree(|tree| match tree {
             None => Ok((NULL_HASH, None, AggregateData::NoAggregateData))
                 .wrap_with_cost(Default::default()),
             Some(tree) => {
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
-                tree.hash()
+                tree.hash_for_link(tree_type)
                     .map(|hash| Ok((hash, Some(tree.key().to_vec()), aggregate_data)))
             }
         })
@@ -768,6 +771,242 @@ where
             skip_sum_checks,
             grove_version,
         );
+    }
+
+    /// Performs a trunk query on a count-based tree.
+    ///
+    /// A trunk query retrieves the top N levels of the tree, with optimal depth
+    /// splitting for efficient chunked retrieval of large trees.
+    ///
+    /// # Arguments
+    /// * `max_depth` - Maximum depth per chunk for splitting
+    /// * `min_depth` - Optional minimum depth per chunk (for privacy control).
+    ///   When provided for ProvableCountTree or ProvableCountSumTree, the first
+    ///   chunk depth will be clamped to at least this value, preventing
+    ///   information leakage about small subtrees.
+    /// * `grove_version` - The grove version for compatibility
+    ///
+    /// # Returns
+    /// A `TrunkQueryResult` containing the proof, chunk depths, tree depth, and
+    /// root hash.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The tree type doesn't support count (not CountTree, CountSumTree,
+    ///   ProvableCountTree, or ProvableCountSumTree)
+    /// - The tree is empty
+    pub fn trunk_query(
+        &self,
+        max_depth: u8,
+        min_depth: Option<u8>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<TrunkQueryResult, Error> {
+        let mut cost = OperationCost::default();
+
+        // Verify tree type supports count
+        let supports_count = matches!(
+            self.tree_type,
+            TreeType::CountTree
+                | TreeType::CountSumTree
+                | TreeType::ProvableCountTree
+                | TreeType::ProvableCountSumTree
+        );
+        if !supports_count {
+            return Err(Error::InvalidOperation(
+                "trunk_query requires a count tree (CountTree, CountSumTree, ProvableCountTree, \
+                 or ProvableCountSumTree)",
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // Get count from aggregate data
+        let aggregate_data = cost_return_on_error_no_add!(cost, self.aggregate_data());
+        let count = aggregate_data.as_count_u64();
+
+        if count == 0 {
+            if self.has_root_key() {
+                return Err(Error::CorruptedState(
+                    "count tree has root node but aggregate count is 0",
+                ))
+                .wrap_with_cost(cost);
+            }
+            return Ok(TrunkQueryResult {
+                proof: vec![],
+                chunk_depths: vec![],
+                tree_depth: 0,
+            })
+            .wrap_with_cost(cost);
+        }
+
+        // calculate the tree depth
+        let tree_depth = calculate_max_tree_depth_from_count(count);
+
+        // For provable count trees with min_depth, use
+        // calculate_chunk_depths_with_minimum to ensure privacy by using a
+        // minimum depth even for small subtrees
+        let is_provable_count_tree = matches!(
+            self.tree_type,
+            TreeType::ProvableCountTree | TreeType::ProvableCountSumTree
+        );
+        let chunk_depths = if let Some(min) = min_depth {
+            if is_provable_count_tree {
+                calculate_chunk_depths_with_minimum(tree_depth, max_depth, min)
+            } else {
+                calculate_chunk_depths(tree_depth, max_depth)
+            }
+        } else {
+            calculate_chunk_depths(tree_depth, max_depth)
+        };
+
+        // Generate proof using create_chunk
+        let tree_type = self.tree_type;
+        let proof_cost_result = self.walk(|maybe_walker| match maybe_walker {
+            None => Err(Error::CorruptedState(
+                "tree has non-zero count but no root node",
+            ))
+            .wrap_with_cost(OperationCost::default()),
+            Some(mut walker) => {
+                walker.create_chunk(chunk_depths[0] as usize, tree_type, grove_version)
+            }
+        });
+
+        let proof = match proof_cost_result.unwrap_add_cost(&mut cost) {
+            Ok(p) => p,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+
+        Ok(TrunkQueryResult {
+            proof,
+            chunk_depths,
+            tree_depth,
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Performs a branch query on any tree type.
+    ///
+    /// A branch query navigates to a specific key in the tree and returns
+    /// the subtree rooted at that key, up to a specified depth.
+    ///
+    /// # Arguments
+    /// * `target_key` - The key to navigate to (the root of the returned
+    ///   branch)
+    /// * `depth` - The depth of the subtree to return
+    /// * `grove_version` - The grove version for compatibility
+    ///
+    /// # Returns
+    /// A `BranchQueryResult` containing the proof, branch root key, returned
+    /// depth, and branch root hash.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The tree is empty
+    /// - The target key is not found
+    pub fn branch_query(
+        &self,
+        target_key: &[u8],
+        depth: u8,
+        grove_version: &GroveVersion,
+    ) -> CostResult<BranchQueryResult, Error> {
+        let mut cost = OperationCost::default();
+
+        let result = self.walk(|maybe_walker| {
+            let mut walker = match maybe_walker {
+                None => {
+                    return Err(Error::InvalidOperation(
+                        "branch_query cannot be performed on an empty tree",
+                    ))
+                }
+                Some(w) => w,
+            };
+
+            // First, find the path to the target key
+            let find_result = walker
+                .find_key_path(target_key, grove_version)
+                .unwrap_add_cost(&mut cost);
+
+            let traversal_path = match find_result {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    return Err(Error::PathKeyNotFound(format!(
+                        "key {} not found in tree",
+                        hex::encode(target_key)
+                    )))
+                }
+                Err(e) => return Err(e),
+            };
+
+            // Navigate to the key and get its hash using recursion
+            fn get_hash_at_path<S: Fetch + Sized + Clone>(
+                walker: &mut RefWalker<'_, S>,
+                path: &[bool],
+                grove_version: &GroveVersion,
+                cost: &mut OperationCost,
+            ) -> Result<CryptoHash, Error> {
+                if path.is_empty() {
+                    return Ok(walker.tree().hash().unwrap_add_cost(cost));
+                }
+
+                let go_left = path[0];
+                let child_result = walker
+                    .walk(
+                        go_left,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                    .unwrap_add_cost(cost);
+
+                match child_result {
+                    Ok(Some(mut child)) => {
+                        get_hash_at_path(&mut child, &path[1..], grove_version, cost)
+                    }
+                    Ok(None) => Err(Error::InternalError(
+                        "inconsistent tree state during branch_query",
+                    )),
+                    Err(e) => Err(e),
+                }
+            }
+
+            let branch_root_hash =
+                get_hash_at_path(&mut walker, &traversal_path, grove_version, &mut cost)?;
+
+            // Use traverse_and_build_chunk to generate proof at the target location
+            // Note: We need to get a fresh walker since the previous one was consumed
+            Ok((traversal_path, branch_root_hash))
+        });
+
+        let (traversal_path, branch_root_hash) = match result {
+            Ok(r) => r,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+
+        // Now use traverse_and_build_chunk to generate the proof
+        let tree_type = self.tree_type;
+        let proof_cost_result = self.walk(|maybe_walker| match maybe_walker {
+            None => Err(Error::InvalidOperation(
+                "branch_query cannot be performed on an empty tree",
+            ))
+            .wrap_with_cost(OperationCost::default()),
+            Some(mut walker) => walker.traverse_and_build_chunk(
+                &traversal_path,
+                depth as usize,
+                tree_type,
+                grove_version,
+            ),
+        });
+
+        let proof = match proof_cost_result.unwrap_add_cost(&mut cost) {
+            Ok(p) => p,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+
+        Ok(BranchQueryResult {
+            proof,
+            branch_root_key: target_key.to_vec(),
+            returned_depth: depth,
+            branch_root_hash,
+        })
+        .wrap_with_cost(cost)
     }
 }
 
@@ -1372,5 +1611,153 @@ mod test {
             .unwrap()
             .expect("should get successfully");
         assert_eq!(result, Some(b"c".to_vec()));
+    }
+
+    fn make_count_batch_seq(range: std::ops::Range<u64>) -> Vec<(Vec<u8>, crate::Op)> {
+        use crate::TreeFeatureType::CountedMerkNode;
+        range
+            .map(|n| {
+                (
+                    n.to_be_bytes().to_vec(),
+                    crate::Op::Put(vec![123; 60], CountedMerkNode(1)),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_trunk_query_on_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountTree);
+
+        // Insert some elements to create a tree with count
+        // Use CountedMerkNode feature type for count trees
+        let batch = make_count_batch_seq(0..15); // 15 elements should give depth 4
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+
+        // Trunk query should succeed on count tree
+        let result = merk.trunk_query(8, None, grove_version).unwrap();
+        if let Err(ref e) = result {
+            eprintln!("trunk_query error: {:?}", e);
+        }
+        assert!(
+            result.is_ok(),
+            "trunk_query should succeed on CountTree: {:?}",
+            result.err()
+        );
+
+        let trunk_result = result.unwrap();
+        assert!(!trunk_result.proof.is_empty(), "proof should not be empty");
+        assert!(trunk_result.tree_depth > 0, "tree depth should be > 0");
+        assert!(
+            !trunk_result.chunk_depths.is_empty(),
+            "chunk depths should not be empty"
+        );
+        // Chunk depths should sum to tree depth
+        let sum: u8 = trunk_result.chunk_depths.iter().sum();
+        assert_eq!(
+            sum, trunk_result.tree_depth,
+            "chunk depths should sum to tree depth"
+        );
+    }
+
+    #[test]
+    fn test_trunk_query_fails_on_normal_tree() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        // Insert some elements
+        let batch = make_batch_seq(0..10);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+
+        // Trunk query should fail on normal tree
+        let result = merk.trunk_query(8, None, grove_version).unwrap();
+        assert!(result.is_err(), "trunk_query should fail on NormalTree");
+    }
+
+    #[test]
+    fn test_branch_query_on_normal_tree() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        // Insert elements 0-14
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+
+        // Query for an element that exists
+        // The key for element 7 is a byte representation of 7
+        let key = 7u64.to_be_bytes().to_vec();
+
+        let result = merk.branch_query(&key, 2, grove_version).unwrap();
+        assert!(
+            result.is_ok(),
+            "branch_query should succeed for existing key"
+        );
+
+        let branch_result = result.unwrap();
+        assert!(!branch_result.proof.is_empty(), "proof should not be empty");
+        assert_eq!(
+            branch_result.branch_root_key, key,
+            "branch root key should match target"
+        );
+        assert_eq!(
+            branch_result.returned_depth, 2,
+            "returned depth should match requested"
+        );
+    }
+
+    #[test]
+    fn test_branch_query_key_not_found() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+
+        // Insert elements 0-9
+        let batch = make_batch_seq(0..10);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+
+        // Query for an element that doesn't exist
+        let key = vec![255, 255, 255]; // A key that doesn't exist
+
+        let result = merk.branch_query(&key, 2, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "branch_query should fail for non-existent key"
+        );
+    }
+
+    #[test]
+    fn test_trunk_query_empty_tree_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountTree);
+
+        // Trunk query on empty tree should return an empty result
+        let result = merk
+            .trunk_query(8, None, grove_version)
+            .unwrap()
+            .expect("trunk_query should succeed on empty tree");
+        assert!(result.proof.is_empty(), "proof should be empty");
+        assert!(
+            result.chunk_depths.is_empty(),
+            "chunk_depths should be empty"
+        );
+        assert_eq!(result.tree_depth, 0, "tree_depth should be 0");
+    }
+
+    #[test]
+    fn test_branch_query_empty_tree_fails() {
+        let grove_version = GroveVersion::latest();
+        let merk = TempMerk::new(grove_version);
+
+        // Branch query should fail on empty tree
+        let result = merk.branch_query(&[1, 2, 3], 2, grove_version).unwrap();
+        assert!(result.is_err(), "branch_query should fail on empty tree");
     }
 }

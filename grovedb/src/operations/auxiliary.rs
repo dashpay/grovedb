@@ -36,7 +36,10 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
 
-use crate::{util::TxRef, Element, Error, GroveDb, TransactionArg};
+use crate::{
+    element::elements_iterator::ElementIteratorExtensions, util::TxRef, Element, Error, GroveDb,
+    TransactionArg,
+};
 
 impl GroveDb {
     /// Put op for aux storage

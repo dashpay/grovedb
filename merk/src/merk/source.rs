@@ -12,7 +12,7 @@ impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
 {
-    pub(in crate::merk) fn source(&self) -> MerkSource<S> {
+    pub(in crate::merk) fn source(&self) -> MerkSource<'_, S> {
         MerkSource {
             storage: &self.storage,
             tree_type: self.tree_type,
