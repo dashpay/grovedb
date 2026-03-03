@@ -3,6 +3,7 @@ codecov:
 
 ignore:
   - "**/test_utils.rs"
+  - "**/test_utils/**"
   - "**/tests.rs"
   - "**/tests/**"
 

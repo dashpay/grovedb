@@ -1185,4 +1185,292 @@ mod tests {
         assert!(cost.storage_cost.replaced_bytes > 0);
         assert!(cost.storage_loaded_bytes > 0);
     }
+
+    // =========================================================================
+    // v0 propagation (covers add_average_case_merk_propagate_v0 entirely)
+    // =========================================================================
+
+    #[test]
+    fn test_propagate_v0_all_subtrees() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
+                8,
+                EstimatedSumTrees::NoSumTrees,
+                Some(4),
+            ),
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &layer_info, GroveVersion::first()).unwrap();
+        assert!(cost.seek_count > 0);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_loaded_bytes > 0);
+    }
+
+    #[test]
+    fn test_propagate_v0_all_items() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &layer_info, GroveVersion::first()).unwrap();
+        assert!(cost.seek_count > 0);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_loaded_bytes > 0);
+    }
+
+    #[test]
+    fn test_propagate_v0_all_reference() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(2)),
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &layer_info, GroveVersion::first()).unwrap();
+        assert!(cost.seek_count > 0);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_loaded_bytes > 0);
+    }
+
+    #[test]
+    fn test_propagate_v0_mix() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
+                items_size: Some((8, 32, Some(2), 3)),
+                references_size: Some((8, 24, Some(1), 1)),
+            },
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &layer_info, GroveVersion::first()).unwrap();
+        assert!(cost.seek_count > 0);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_loaded_bytes > 0);
+    }
+
+    // =========================================================================
+    // v1 propagation branches not yet covered (Mix, AllReference)
+    // =========================================================================
+
+    #[test]
+    fn test_propagate_v1_all_reference() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(2)),
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &layer_info, GroveVersion::latest()).unwrap();
+        assert!(cost.seek_count > 0);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_loaded_bytes > 0);
+    }
+
+    #[test]
+    fn test_propagate_v1_mix() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
+                items_size: Some((8, 32, Some(2), 3)),
+                references_size: Some((8, 24, Some(1), 1)),
+            },
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &layer_info, GroveVersion::latest()).unwrap();
+        assert!(cost.seek_count > 0);
+        assert!(cost.storage_cost.replaced_bytes > 0);
+        assert!(cost.storage_loaded_bytes > 0);
+    }
+
+    // =========================================================================
+    // Utility functions with zero coverage
+    // =========================================================================
+
+    #[test]
+    fn test_add_average_case_merk_has_value() {
+        let mut cost = OperationCost::default();
+        add_average_case_merk_has_value(&mut cost, 32, 100);
+        assert_eq!(cost.seek_count, 1);
+        assert_eq!(cost.storage_loaded_bytes, 132);
+    }
+
+    #[test]
+    fn test_node_hash_update_count() {
+        let count = node_hash_update_count();
+        // hash of 3 * HASH_LENGTH bytes: 1 + (bytes - 1) / HASH_BLOCK_SIZE
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn test_add_average_case_merk_root_hash() {
+        let mut cost = OperationCost::default();
+        add_average_case_merk_root_hash(&mut cost);
+        assert!(cost.hash_node_calls > 0);
+    }
+
+    // =========================================================================
+    // EstimatedSumTrees variant arms not yet covered
+    // =========================================================================
+
+    #[test]
+    fn test_estimated_sum_trees_all_variant_arms() {
+        let v = GroveVersion::latest();
+        let sum = EstimatedSumTrees::AllSumTrees.estimated_size(v).unwrap();
+        assert!(sum > 0);
+        let big = EstimatedSumTrees::AllBigSumTrees.estimated_size(v).unwrap();
+        assert!(big > 0);
+        let count = EstimatedSumTrees::AllCountTrees.estimated_size(v).unwrap();
+        assert!(count > 0);
+        let count_sum = EstimatedSumTrees::AllCountSumTrees
+            .estimated_size(v)
+            .unwrap();
+        assert!(count_sum > 0);
+    }
+
+    // =========================================================================
+    // EstimatedLayerCount edge case
+    // =========================================================================
+
+    #[test]
+    fn test_estimate_levels_u32_max() {
+        assert_eq!(
+            EstimatedLayerCount::ApproximateElements(u32::MAX).estimate_levels(),
+            32
+        );
+    }
+
+    // =========================================================================
+    // EstimatedLayerSizes method branches
+    // =========================================================================
+
+    #[test]
+    fn test_layered_flags_size_mix_with_subtrees() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
+            items_size: Some((8, 32, Some(2), 1)),
+            references_size: None,
+        };
+        let flags = layer.layered_flags_size().unwrap();
+        assert_eq!(*flags, Some(4));
+    }
+
+    #[test]
+    fn test_layered_flags_size_mix_without_subtrees() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: Some((8, 32, Some(2), 1)),
+            references_size: None,
+        };
+        assert!(layer.layered_flags_size().is_err());
+    }
+
+    #[test]
+    fn test_subtree_size_all_subtrees() {
+        let layer = EstimatedLayerSizes::AllSubtrees(8, EstimatedSumTrees::NoSumTrees, Some(4));
+        let size = layer
+            .subtree_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        assert_eq!(size, 7); // NoSumTrees=0, flags=4, base=3
+    }
+
+    #[test]
+    fn test_subtree_size_mix_with_subtrees() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
+            items_size: None,
+            references_size: None,
+        };
+        let size = layer
+            .subtree_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        assert_eq!(size, 7);
+    }
+
+    #[test]
+    fn test_subtree_size_non_subtree_errors() {
+        let layer = EstimatedLayerSizes::AllReference(8, 24, Some(2));
+        assert!(layer
+            .subtree_with_feature_and_flags_size(GroveVersion::latest())
+            .is_err());
+    }
+
+    #[test]
+    fn test_value_size_all_reference() {
+        let layer = EstimatedLayerSizes::AllReference(8, 24, Some(2));
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        assert_eq!(size, 24 + 2 + 5); // value + flags + 5 for refs
+    }
+
+    #[test]
+    fn test_value_size_all_subtrees() {
+        let layer = EstimatedLayerSizes::AllSubtrees(8, EstimatedSumTrees::NoSumTrees, Some(4));
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        assert_eq!(size, 7);
+    }
+
+    #[test]
+    fn test_value_size_mix_weighted_combination() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
+            items_size: Some((8, 32, Some(2), 3)),
+            references_size: Some((8, 24, Some(1), 1)),
+        };
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        // item_size=32+2+3=37, ref_size=24+1+5=30, subtree_size=0+4+3=7
+        // combined_weight=3+1+2=6, result=(37+30+7)/6=12
+        assert_eq!(size, 12);
+    }
+
+    #[test]
+    fn test_value_size_mix_only_subtrees() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
+            items_size: None,
+            references_size: None,
+        };
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        assert_eq!(size, 7);
+    }
+
+    #[test]
+    fn test_value_size_mix_only_refs() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: None,
+            references_size: Some((8, 24, Some(1), 1)),
+        };
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        assert_eq!(size, 24 + 1 + 5);
+    }
+
+    #[test]
+    fn test_value_size_mix_only_items() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: Some((8, 32, Some(2), 3)),
+            references_size: None,
+        };
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        assert_eq!(size, 32 + 2 + 3);
+    }
 }
