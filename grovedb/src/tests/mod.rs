@@ -6,6 +6,7 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod batch_coverage_tests;
 mod batch_rejection_tests;
 mod bulk_append_tree_tests;
 mod checkpoint_tests;
@@ -13,17 +14,32 @@ mod chunk_branch_proof_tests;
 mod commitment_tree_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
+mod delete_up_tree_tests;
 mod dense_tree_tests;
+mod error_display_tests;
+mod estimated_costs_average_case_tests;
+mod estimated_costs_worst_case_tests;
+mod get_cost_estimator_tests;
+mod grove_query_result_tests;
+mod is_empty_tree_tests;
+mod misc_coverage_tests;
 mod mmr_tree_tests;
+mod operations_coverage_tests;
+mod proof_advanced_tests;
+mod proof_coverage_tests;
 mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;
 mod provable_count_tree_test;
+mod query_result_type_tests;
+mod replication_session_tests;
+mod replication_utils_tests;
 mod test_compaction_sizes;
 mod test_provable_count_fresh;
 mod tree_hashes_tests;
 mod trunk_proof_tests;
 mod v1_proof_tests;
+mod visualize_tests;
 
 use std::{
     ops::{Deref, DerefMut},
