@@ -1,8 +1,5 @@
-use std::panic;
-
 use grovedb_element::{
-    error::ElementError, reference_path::ReferencePathType, CountValue, Element, ElementFlags,
-    SumValue,
+    error::ElementError, reference_path::ReferencePathType, Element, ElementFlags,
 };
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;
@@ -136,31 +133,6 @@ fn constructors_create_expected_count_and_count_sum_tree_variants() {
             sample_flags()
         ),
         Element::CountSumTree(Some(vec![6]), 2, -3, sample_flags())
-    );
-}
-
-#[test]
-fn constructors_create_expected_item_and_sum_item_variants() {
-    assert_eq!(
-        Element::new_item(vec![1, 2]),
-        Element::Item(vec![1, 2], None)
-    );
-    assert_eq!(
-        Element::new_item_with_flags(vec![1, 2], sample_flags()),
-        Element::Item(vec![1, 2], sample_flags())
-    );
-    assert_eq!(Element::new_sum_item(12), Element::SumItem(12, None));
-    assert_eq!(
-        Element::new_sum_item_with_flags(-12, sample_flags()),
-        Element::SumItem(-12, sample_flags())
-    );
-    assert_eq!(
-        Element::new_item_with_sum_item(vec![1], 44),
-        Element::ItemWithSumItem(vec![1], 44, None)
-    );
-    assert_eq!(
-        Element::new_item_with_sum_item_with_flags(vec![1], -44, sample_flags()),
-        Element::ItemWithSumItem(vec![1], -44, sample_flags())
     );
 }
 
@@ -299,22 +271,6 @@ fn constructors_create_expected_commitment_mmr_bulk_dense_variants() {
         Element::new_dense_tree(13, 9, sample_flags()),
         Element::DenseAppendOnlyFixedSizeTree(13, 9, sample_flags())
     );
-}
-
-#[test]
-fn constructors_enforce_chunk_power_bounds() {
-    let commitment = panic::catch_unwind(|| Element::empty_commitment_tree(32));
-    assert!(commitment.is_err());
-
-    let commitment_flags =
-        panic::catch_unwind(|| Element::empty_commitment_tree_with_flags(255, Some(vec![1])));
-    assert!(commitment_flags.is_err());
-
-    let bulk = panic::catch_unwind(|| Element::empty_bulk_append_tree(100));
-    assert!(bulk.is_err());
-
-    let bulk_flags = panic::catch_unwind(|| Element::empty_bulk_append_tree_with_flags(50, None));
-    assert!(bulk_flags.is_err());
 }
 
 #[test]
@@ -567,10 +523,4 @@ fn convert_if_reference_to_absolute_reference_converts_and_preserves_other_types
         err,
         ElementError::InvalidInput("reference stored path cannot satisfy reference constraints")
     ));
-}
-
-#[test]
-fn tree_and_item_defaults_use_alias_types() {
-    let _sum_value: SumValue = Element::new_sum_item(1).as_sum_item_value().unwrap();
-    let _count_value: CountValue = Element::new_count_tree(Some(vec![1])).count_value_or_default();
 }

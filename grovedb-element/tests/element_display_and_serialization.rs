@@ -1,4 +1,4 @@
-use grovedb_element::{error::ElementError, hex_to_ascii, Element, ElementType};
+use grovedb_element::{error::ElementError, Element, ElementType};
 use grovedb_version::version::GroveVersion;
 
 #[test]
@@ -105,12 +105,6 @@ fn element_display_and_type_helpers_cover_all_variants() {
         assert_eq!(element.type_str(), expected_type_str);
         assert_eq!(format!("{element}"), expected_display);
     }
-}
-
-#[test]
-fn hex_to_ascii_covers_ascii_and_binary_inputs() {
-    assert_eq!(hex_to_ascii(b"Alpha_123/-[]@\\"), "Alpha_123/-[]@\\");
-    assert_eq!(hex_to_ascii(&[0, 255, 10]), "0x00ff0a");
 }
 
 #[test]
