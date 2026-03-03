@@ -926,6 +926,75 @@ mod storage_tests {
     }
 
     #[test]
+    fn test_debug_fmt() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+
+        // Debug on empty tree
+        let s = format!("{:?}", ct);
+        assert!(s.contains("CommitmentTree"), "should contain struct name");
+        assert!(
+            s.contains("total_count"),
+            "should contain total_count field"
+        );
+        assert!(s.contains("frontier"), "should contain frontier field");
+
+        // Debug after appending
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
+            .value
+            .expect("append should succeed");
+        let s = format!("{:?}", ct);
+        assert!(
+            s.contains("CommitmentTree"),
+            "should still contain struct name after append"
+        );
+    }
+
+    #[test]
+    fn test_open_from_state_error_invalid_chunk_power() {
+        let ctx = MockDataStorageContext::new();
+        // chunk_power=0 is invalid (must be 1..=16), causing from_state to fail
+        let result = CommitmentTree::<_, DashMemo>::open(0, 0, ctx);
+        let err = result
+            .value
+            .expect_err("should fail with invalid chunk_power");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("bulk tree from_state"),
+            "error should mention from_state: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_open_frontier_total_count_mismatch() {
+        // 1. Create a tree, append 1 item, save
+        let ctx = MockDataStorageContext::new();
+        let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
+            .value
+            .expect("open should succeed");
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
+            .value
+            .expect("append should succeed");
+        ct.save().value.expect("save should succeed");
+
+        // 2. Re-open with total_count=0 but the frontier has tree_size=1
+        let storage = ct.bulk_tree.dense_tree.storage;
+        let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, storage);
+        let err = result
+            .value
+            .expect_err("should fail with frontier/total_count mismatch");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("frontier tree_size"),
+            "error should mention frontier mismatch: {}",
+            msg
+        );
+    }
+
+    #[test]
     fn test_append_raw_rejects_invalid_cmx() {
         let ctx = MockDataStorageContext::new();
         let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
