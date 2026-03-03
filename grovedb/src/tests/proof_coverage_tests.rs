@@ -5113,4 +5113,329 @@ mod tests {
             "should have 2 sum items from deep sum tree"
         );
     }
+
+    // =========================================================================
+    // BulkAppendTree query variant coverage
+    //
+    // Exercises different QueryItem match arms in verify.rs:
+    //   extract_range_from_query_items (lines 993-1111)
+    //   expand_query_to_u64_positions  (lines 1116-1224)
+    //
+    // Existing tests only use Key and RangeInclusive. These tests cover:
+    //   Range, RangeFull, RangeFrom, RangeTo, RangeToInclusive,
+    //   RangeAfter, RangeAfterTo, RangeAfterToInclusive
+    // =========================================================================
+
+    /// Helper: create a BulkAppendTree at path [b"root", b"bat"] with `count`
+    /// items (values [50, 51, ...]) and return the db handle.
+    fn setup_bulk_append_tree(
+        grove_version: &GroveVersion,
+        count: u8,
+    ) -> crate::tests::TempGroveDb {
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"bat",
+            Element::empty_bulk_append_tree(2), // chunk_power = 2 (epoch_size = 4)
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert bulk append tree");
+
+        for i in 0..count {
+            db.bulk_append(
+                [b"root"].as_ref(),
+                b"bat",
+                vec![i + 50],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("append value");
+        }
+
+        db
+    }
+
+    /// Helper: build a PathQuery that queries a BulkAppendTree at
+    /// [b"root"] -> key b"bat" -> inner_query.
+    fn bat_path_query(inner_query: Query) -> PathQuery {
+        let query = Query {
+            items: vec![QueryItem::Key(b"bat".to_vec())],
+            default_subquery_branch: SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(inner_query)),
+            },
+            left_to_right: true,
+            conditional_subquery_branches: None,
+            add_parent_tree_on_subquery: false,
+        };
+        PathQuery::new_unsized(vec![b"root".to_vec()], query)
+    }
+
+    /// Helper: prove and verify a BulkAppendTree query, returning result count.
+    fn prove_verify_bat(
+        db: &crate::tests::TempGroveDb,
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> usize {
+        let proof_bytes = db
+            .prove_query_v1(path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+        .expect("should verify");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root, "root hash mismatch");
+        results.len()
+    }
+
+    #[test]
+    fn bulk_append_query_range_exclusive() {
+        // QueryItem::Range (exclusive end): positions 1..4
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_range(1u64.to_be_bytes().to_vec()..4u64.to_be_bytes().to_vec());
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 3, "range 1..4 should return positions 1,2,3");
+    }
+
+    #[test]
+    fn bulk_append_query_range_full() {
+        // QueryItem::RangeFull: all positions
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_all();
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 6, "RangeFull should return all 6 items");
+    }
+
+    #[test]
+    fn bulk_append_query_range_from() {
+        // QueryItem::RangeFrom: positions 3..
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_range_from(3u64.to_be_bytes().to_vec()..);
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 3, "RangeFrom 3.. should return positions 3,4,5");
+    }
+
+    #[test]
+    fn bulk_append_query_range_to() {
+        // QueryItem::RangeTo: ..3 (positions 0,1,2)
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_range_to(..3u64.to_be_bytes().to_vec());
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 3, "RangeTo ..3 should return positions 0,1,2");
+    }
+
+    #[test]
+    fn bulk_append_query_range_to_inclusive() {
+        // QueryItem::RangeToInclusive: ..=3 (positions 0,1,2,3)
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_range_to_inclusive(..=3u64.to_be_bytes().to_vec());
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 4, "RangeToInclusive ..=3 should return 4 items");
+    }
+
+    #[test]
+    fn bulk_append_query_range_after() {
+        // QueryItem::RangeAfter: (2, ∞) — positions 3,4,5
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_range_after(2u64.to_be_bytes().to_vec()..);
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 3, "RangeAfter (2,∞) should return positions 3,4,5");
+    }
+
+    #[test]
+    fn bulk_append_query_range_after_to() {
+        // QueryItem::RangeAfterTo: (1, 5) — positions 2,3,4
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_range_after_to(1u64.to_be_bytes().to_vec()..5u64.to_be_bytes().to_vec());
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 3, "RangeAfterTo (1,5) should return positions 2,3,4");
+    }
+
+    #[test]
+    fn bulk_append_query_range_after_to_inclusive() {
+        // QueryItem::RangeAfterToInclusive: (1, 4] — positions 2,3,4
+        let grove_version = GroveVersion::latest();
+        let db = setup_bulk_append_tree(grove_version, 6);
+
+        let mut inner = Query::new();
+        inner.insert_range_after_to_inclusive(
+            1u64.to_be_bytes().to_vec()..=4u64.to_be_bytes().to_vec(),
+        );
+        let pq = bat_path_query(inner);
+
+        let count = prove_verify_bat(&db, &pq, grove_version);
+        assert_eq!(count, 3, "RangeAfterToInclusive (1,4] should return 2,3,4");
+    }
+
+    #[test]
+    fn prove_v0_mixed_elements_right_to_left_with_limit() {
+        // V0 proof right-to-left over a subtree with items, trees, and references
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"sub",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sub");
+
+        // Mix of element types in the subtree
+        db.insert(
+            [b"root".as_slice(), b"sub".as_slice()].as_ref(),
+            b"a_item",
+            Element::new_item(b"val_a".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item a");
+
+        db.insert(
+            [b"root".as_slice(), b"sub".as_slice()].as_ref(),
+            b"b_tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert tree b");
+
+        db.insert(
+            [b"root".as_slice(), b"sub".as_slice()].as_ref(),
+            b"c_item",
+            Element::new_item(b"val_c".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item c");
+
+        db.insert(
+            [b"root".as_slice(), b"sub".as_slice()].as_ref(),
+            b"d_ref",
+            Element::new_reference(crate::reference_path::ReferencePathType::SiblingReference(
+                b"a_item".to_vec(),
+            )),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert ref d");
+
+        // Right-to-left query with limit=3
+        let mut inner = Query::new_with_direction(false);
+        inner.insert_all();
+        let mut outer = Query::new();
+        outer.insert_key(b"sub".to_vec());
+        outer.set_subquery(inner);
+        let path_query = PathQuery {
+            path: vec![b"root".to_vec()],
+            query: SizedQuery {
+                query: outer,
+                limit: Some(3),
+                offset: None,
+            },
+        };
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove right-to-left mixed");
+
+        let (root_hash, results) = GroveDb::verify_query(&proof_bytes, &path_query, grove_version)
+            .expect("should verify right-to-left mixed");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        // d_ref (limit 3→2), c_item (2→1), b_tree (empty subquery, 1→0, done)
+        // So only 2 actual results are returned (the empty subtree consumes
+        // a limit slot with default decrease_limit_on_empty=true)
+        assert_eq!(
+            results.len(),
+            2,
+            "right-to-left with limit=3: d_ref + c_item (b_tree empty consumes limit)"
+        );
+    }
 }
