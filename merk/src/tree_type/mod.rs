@@ -308,6 +308,14 @@ mod tests {
             TreeType::MmrTree.empty_tree_feature_type(),
             TreeFeatureType::BasicMerkNode
         );
+        assert_eq!(
+            TreeType::BulkAppendTree(0).empty_tree_feature_type(),
+            TreeFeatureType::BasicMerkNode
+        );
+        assert_eq!(
+            TreeType::DenseAppendOnlyFixedSizeTree(0).empty_tree_feature_type(),
+            TreeFeatureType::BasicMerkNode
+        );
     }
 
     #[test]
