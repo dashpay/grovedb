@@ -1430,7 +1430,9 @@ mod tests {
         let size = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
             .unwrap();
-        assert!(size > 0);
+        // item_size=32+2+3=37, ref_size=24+1+5=30, subtree_size=0+4+3=7
+        // combined_weight=3+1+2=6, result=(37+30+7)/6=12
+        assert_eq!(size, 12);
     }
 
     #[test]
