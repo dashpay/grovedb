@@ -175,5 +175,15 @@ mod tests {
             "visualization should contain 'my_sum_tree', got: {}",
             output
         );
+        assert!(
+            output.contains("sum_key1"),
+            "visualization should contain 'sum_key1', got: {}",
+            output
+        );
+        assert!(
+            output.contains("sum_key2"),
+            "visualization should contain 'sum_key2', got: {}",
+            output
+        );
     }
 }

@@ -147,6 +147,23 @@ mod tests {
     }
 
     #[test]
+    fn unpack_truncated_bytes_error_incomplete_length_prefix() {
+        // Header says 1 element, but only 1-3 bytes of the 4-byte length prefix
+        // are present. This exercises the boundary where the guard (index + 1)
+        // is weaker than the subsequent 4-byte read.
+        for trailing in 1..=3u8 {
+            let mut packed = vec![];
+            packed.extend_from_slice(&1u16.to_be_bytes()); // num_elements = 1
+            packed.extend(vec![0xAA; trailing as usize]); // partial length prefix
+            let result = unpack_nested_bytes(&packed);
+            assert!(
+                result.is_err(),
+                "incomplete length prefix ({trailing} bytes) should return an error"
+            );
+        }
+    }
+
+    #[test]
     fn unpack_truncated_bytes_error_short_element_content() {
         // Header says 1 element of length 10, but only 3 bytes of content provided
         let mut packed = vec![];

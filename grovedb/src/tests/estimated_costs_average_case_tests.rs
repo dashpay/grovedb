@@ -95,6 +95,10 @@ fn test_average_case_merk_replace_tree_with_propagate() {
         true,
         grove_version,
     );
+    without_propagation
+        .value
+        .as_ref()
+        .expect("replace tree without propagation should succeed");
     with_propagation
         .value
         .as_ref()

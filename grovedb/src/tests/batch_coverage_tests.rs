@@ -1548,6 +1548,8 @@ mod tests {
         .unwrap()
         .expect("batch with flag update callback should succeed");
 
+        assert!(callback_called, "flag update callback should be invoked");
+
         // Verify the item was updated
         let result = db
             .get([TEST_LEAF].as_ref(), b"flagged", None, grove_version)
@@ -1684,13 +1686,18 @@ mod tests {
             Element::new_item(b"val1".to_vec()),
         )];
 
+        let mut addon_called = false;
         db.apply_partial_batch(
             ops,
             None,
             |_cost, _leftover| {
-                // Add an extra item during the continuation phase.
-                // These operations run at the root level during finalization.
-                Ok(vec![])
+                addon_called = true;
+                // Return an add-on operation that inserts a second item
+                Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"addon_key".to_vec(),
+                    Element::new_item(b"addon_val".to_vec()),
+                )])
             },
             None,
             grove_version,
@@ -1698,11 +1705,13 @@ mod tests {
         .unwrap()
         .expect("apply_partial_batch with add-on ops should succeed");
 
-        let item = db
-            .get([TEST_LEAF].as_ref(), b"partial_key1", None, grove_version)
+        assert!(addon_called, "add-on operations callback should be invoked");
+
+        let addon_item = db
+            .get([TEST_LEAF].as_ref(), b"addon_key", None, grove_version)
             .unwrap()
-            .expect("partial_key1 should exist");
-        assert_eq!(item, Element::new_item(b"val1".to_vec()));
+            .expect("addon_key from add-on operation should exist");
+        assert_eq!(addon_item, Element::new_item(b"addon_val".to_vec()));
     }
 
     // ===================================================================
@@ -2530,9 +2539,11 @@ mod tests {
             ..Default::default()
         });
 
-        // This might or might not fail depending on exact semantics;
-        // the important thing is the code path is exercised.
-        let _result = db.apply_batch(ops, options, None, grove_version).unwrap();
+        // The validation only prevents overriding a tree with another tree,
+        // so replacing a tree with an item should succeed.
+        db.apply_batch(ops, options, None, grove_version)
+            .unwrap()
+            .expect("replacing a tree with an item should succeed even with validation enabled");
     }
 
     // ===================================================================

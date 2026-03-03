@@ -543,8 +543,8 @@ pub(crate) mod utils {
         let mut index = 2;
 
         for i in 0..num_elements {
-            // Ensure there is enough data to read the 2-byte length
-            if index + 1 >= packed_data.len() {
+            // Ensure there is enough data to read the 4-byte length
+            if index + 4 > packed_data.len() {
                 return Err(Error::CorruptedData(format!(
                     "Unexpected end of data while reading length of nested array {}",
                     i
