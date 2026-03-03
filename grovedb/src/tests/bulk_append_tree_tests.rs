@@ -1526,3 +1526,187 @@ fn test_verify_grovedb_bulk_tree_empty() {
         issues
     );
 }
+
+// ===========================================================================
+// Additional coverage tests
+// ===========================================================================
+
+/// Tests error when calling `bulk_count` on a non-BulkAppendTree element.
+#[test]
+fn test_bulk_count_on_non_bulk_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(b"hello".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .bulk_count(EMPTY_PATH, b"item", None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("not a BulkAppendTree")),
+        "expected InvalidInput error for non-bulk element, got: {:?}",
+        result
+    );
+}
+
+/// Tests error when calling `bulk_chunk_count` on a non-BulkAppendTree element.
+#[test]
+fn test_bulk_chunk_count_on_non_bulk_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(b"data".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .bulk_chunk_count(EMPTY_PATH, b"item", None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("not a BulkAppendTree")),
+        "expected InvalidInput error for non-bulk element, got: {:?}",
+        result
+    );
+}
+
+/// Tests error when calling `bulk_get_buffer` on a non-BulkAppendTree element.
+#[test]
+fn test_bulk_get_buffer_on_non_bulk_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(b"data".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .bulk_get_buffer(EMPTY_PATH, b"item", None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("not a BulkAppendTree")),
+        "expected InvalidInput error for non-bulk element, got: {:?}",
+        result
+    );
+}
+
+/// Tests error when calling `bulk_get_chunk` on a non-BulkAppendTree element.
+#[test]
+fn test_bulk_get_chunk_on_non_bulk_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(b"data".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .bulk_get_chunk(EMPTY_PATH, b"item", 0, None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("not a BulkAppendTree")),
+        "expected InvalidInput error for non-bulk element, got: {:?}",
+        result
+    );
+}
+
+/// Tests error when calling `bulk_get_value` on a non-BulkAppendTree element.
+#[test]
+fn test_bulk_get_value_on_non_bulk_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"item",
+        Element::new_item(b"data".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    let result = db
+        .bulk_get_value(EMPTY_PATH, b"item", 0, None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("not a BulkAppendTree")),
+        "expected InvalidInput error for non-bulk element, got: {:?}",
+        result
+    );
+}
+
+/// Tests batch preprocessing error when a BulkAppend op targets a
+/// non-BulkAppendTree element.
+#[test]
+fn test_bulk_batch_with_non_bulk_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Insert a normal tree, not a BulkAppendTree
+    db.insert(
+        EMPTY_PATH,
+        b"tree",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert tree");
+
+    // Insert an item inside the tree so the path resolves
+    db.insert(
+        [b"tree"].as_ref(),
+        b"item",
+        Element::new_item(b"hello".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert item");
+
+    // Batch with BulkAppend targeting the item (not a BulkAppendTree)
+    let ops = vec![QualifiedGroveDbOp::bulk_append_op(
+        vec![b"tree".to_vec(), b"item".to_vec()],
+        b"should_fail".to_vec(),
+    )];
+
+    let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(msg)) if msg.contains("not a BulkAppendTree")),
+        "expected InvalidInput error when batch targets non-bulk element, got: {:?}",
+        result
+    );
+}

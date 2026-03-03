@@ -515,4 +515,368 @@ mod proof_tests {
             .expect_err("corrupted chunk blob must fail");
         assert!(matches!(err, BulkAppendError::CorruptedData(_)));
     }
+
+    // ── New tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_query_to_ranges_range_full_on_empty_tree() {
+        // RangeFull with total_count=0 hits the continue branch at line 82,
+        // resulting in empty ranges
+        let ranges =
+            super::super::query_to_ranges(&full_range_query(), 0).expect("query_to_ranges");
+        assert!(
+            ranges.is_empty(),
+            "RangeFull on empty tree should produce no ranges"
+        );
+    }
+
+    #[test]
+    fn test_verify_against_query_rejects_wrong_state_root() {
+        // Build tree, generate proof with valid query, verify_against_query with
+        // wrong state root — exercises the state root mismatch error path in
+        // verify_against_query (lines 433-437).
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..5u32)
+            .map(|i| format!("wr_{}", i).into_bytes())
+            .collect();
+        let (_state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        let query = range_query(0, 5);
+        let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
+
+        let wrong_root = [0xABu8; 32];
+        let err = proof
+            .verify_against_query::<Vec<(u64, Vec<u8>)>>(&wrong_root, height, total_count, &query)
+            .expect_err("wrong state root must fail in verify_against_query");
+        assert!(
+            matches!(err, BulkAppendError::InvalidProof(_)),
+            "expected InvalidProof, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_verify_and_compute_root_rejects_corrupted_chunk_leaf() {
+        // Build tree with enough data to have a chunk, generate proof,
+        // corrupt a proof_item in chunk_proof to trigger
+        // "chunk MMR proof verification failed" (line 362-363).
+        //
+        // Corrupting a proof_item (sibling hash) makes the MMR proof
+        // internally inconsistent, which verify_and_get_root detects.
+        let height = 2u8;
+        // 8 values -> 2 chunks (0..4, 4..8), no buffer.
+        // Querying only chunk 0 means the proof needs a sibling hash for
+        // chunk 1 in proof_items.
+        let values: Vec<Vec<u8>> = (0..8u32)
+            .map(|i| format!("cl_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        let query = range_query(0, 4); // only chunk 0
+        let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
+
+        assert!(
+            !proof.chunk_proof.proof_items().is_empty(),
+            "chunk proof must have proof_items for a 2-chunk MMR"
+        );
+
+        // Corrupt a proof_item (sibling hash) to make the MMR proof
+        // internally inconsistent.
+        let mut corrupted_proof_items = proof.chunk_proof.proof_items().to_vec();
+        corrupted_proof_items[0] = [0xEE; 32];
+
+        let corrupted_proof = BulkAppendTreeProof {
+            chunk_proof: MmrTreeProof::new(
+                proof.chunk_proof.mmr_size(),
+                proof.chunk_proof.leaves().to_vec(),
+                corrupted_proof_items,
+            ),
+            buffer_proof: proof.buffer_proof.clone(),
+        };
+
+        // verify_and_compute_root produces a different root because the
+        // corrupted sibling hash changes the computed MMR root.
+        // verify() catches the state root mismatch.
+        let err = corrupted_proof
+            .verify(&state_root, height, total_count)
+            .expect_err("corrupted chunk proof_item must fail verify()");
+        assert!(
+            matches!(err, BulkAppendError::InvalidProof(_)),
+            "expected InvalidProof, got {:?}",
+            err
+        );
+
+        // Additionally verify that verify_and_compute_root succeeds but
+        // produces a different state root (the corruption changes the result
+        // rather than causing an internal error).
+        let (computed_root, _) = corrupted_proof
+            .verify_and_compute_root(height, total_count)
+            .expect(
+                "verify_and_compute_root should succeed with internally consistent but wrong data",
+            );
+        assert_ne!(
+            computed_root, state_root,
+            "corrupted proof must produce a different state root"
+        );
+    }
+
+    #[test]
+    fn test_verify_and_compute_root_rejects_corrupted_buffer_hash() {
+        // Build tree with buffer entries, generate proof, corrupt node_hashes
+        // in buffer_proof to trigger "dense tree proof verification failed"
+        // (lines 373-375).
+        let height = 3u8;
+        // height=3, capacity=7, epoch_size=8.
+        // 3 values stay in buffer (no chunks).
+        let values: Vec<Vec<u8>> = (0..3u32)
+            .map(|i| format!("bh_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        let query = range_query(0, 1); // Prove only position 0
+        let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
+
+        // The buffer_proof should have node_hashes for sibling branches.
+        // Corrupt one of them.
+        let mut corrupted_buffer = proof.buffer_proof.clone();
+        if !corrupted_buffer.node_hashes.is_empty() {
+            // Flip the hash of the first node_hash entry
+            corrupted_buffer.node_hashes[0].1 = [0xDD; 32];
+        } else if !corrupted_buffer.node_value_hashes.is_empty() {
+            // Flip the hash of the first node_value_hash entry
+            corrupted_buffer.node_value_hashes[0].1 = [0xDD; 32];
+        } else {
+            panic!("buffer proof should have at least one node_hash or node_value_hash for a partial proof");
+        }
+
+        let corrupted_proof = BulkAppendTreeProof {
+            chunk_proof: proof.chunk_proof.clone(),
+            buffer_proof: corrupted_buffer,
+        };
+
+        // verify() will fail because the dense tree root computed from
+        // corrupted hashes won't match.
+        let err = corrupted_proof
+            .verify(&state_root, height, total_count)
+            .expect_err("corrupted buffer hash must fail verify()");
+        assert!(
+            matches!(err, BulkAppendError::InvalidProof(_)),
+            "expected InvalidProof, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_generate_and_verify_range_inclusive_query() {
+        // Full proof generation/verification using RangeInclusive query item.
+        // height=2, 9 values -> 2 chunks + 1 buffer
+        // Query RangeInclusive [2..=6], should return 5 values (positions 2,3,4,5,6)
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..9u32)
+            .map(|i| format!("ri_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        let mut query = Query::default();
+        query
+            .items
+            .push(QueryItem::RangeInclusive(pos_bytes(2)..=pos_bytes(6)));
+
+        let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
+
+        let vals: Vec<(u64, Vec<u8>)> = proof
+            .verify_against_query(&state_root, height, total_count, &query)
+            .expect("verify RangeInclusive query");
+        assert_eq!(vals.len(), 5, "expected 5 values for positions 2..=6");
+        assert_eq!(vals[0], (2, b"ri_2".to_vec()));
+        assert_eq!(vals[1], (3, b"ri_3".to_vec()));
+        assert_eq!(vals[2], (4, b"ri_4".to_vec()));
+        assert_eq!(vals[3], (5, b"ri_5".to_vec()));
+        assert_eq!(vals[4], (6, b"ri_6".to_vec()));
+    }
+
+    #[test]
+    fn test_generate_and_verify_range_from_query() {
+        // Full proof generation/verification using RangeFrom query item.
+        // height=2, 9 values -> 2 chunks + 1 buffer
+        // Query RangeFrom [6..], should return 3 values (positions 6,7,8)
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..9u32)
+            .map(|i| format!("rf_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        let mut query = Query::default();
+        query.items.push(QueryItem::RangeFrom(pos_bytes(6)..));
+
+        let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
+
+        let vals: Vec<(u64, Vec<u8>)> = proof
+            .verify_against_query(&state_root, height, total_count, &query)
+            .expect("verify RangeFrom query");
+        assert_eq!(vals.len(), 3, "expected 3 values for positions 6..9");
+        assert_eq!(vals[0], (6, b"rf_6".to_vec()));
+        assert_eq!(vals[1], (7, b"rf_7".to_vec()));
+        assert_eq!(vals[2], (8, b"rf_8".to_vec()));
+    }
+
+    #[test]
+    fn test_generate_and_verify_range_after_query() {
+        // Full proof generation/verification using RangeAfter, RangeToInclusive,
+        // and RangeAfterToInclusive query items.
+        // height=2, 9 values -> 2 chunks + 1 buffer
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..9u32)
+            .map(|i| format!("ra_{}", i).into_bytes())
+            .collect();
+        let (state_root, tree) = build_test_tree(height, &values);
+        let total_count = tree.total_count;
+
+        // RangeAfter (5..), positions > 5 -> 6,7,8
+        {
+            let mut query = Query::default();
+            query.items.push(QueryItem::RangeAfter(pos_bytes(5)..));
+
+            let proof = BulkAppendTreeProof::generate(&query, &tree).expect("generate proof");
+            let vals: Vec<(u64, Vec<u8>)> = proof
+                .verify_against_query(&state_root, height, total_count, &query)
+                .expect("verify RangeAfter query");
+            assert_eq!(vals.len(), 3);
+            assert_eq!(vals[0], (6, b"ra_6".to_vec()));
+            assert_eq!(vals[2], (8, b"ra_8".to_vec()));
+        }
+
+        // RangeToInclusive (..=2), positions 0,1,2
+        {
+            let mut query = Query::default();
+            query
+                .items
+                .push(QueryItem::RangeToInclusive(..=pos_bytes(2)));
+
+            let proof = BulkAppendTreeProof::generate(&query, &tree)
+                .expect("generate RangeToInclusive proof");
+            let vals: Vec<(u64, Vec<u8>)> = proof
+                .verify_against_query(&state_root, height, total_count, &query)
+                .expect("verify RangeToInclusive query");
+            assert_eq!(vals.len(), 3);
+            assert_eq!(vals[0], (0, b"ra_0".to_vec()));
+            assert_eq!(vals[2], (2, b"ra_2".to_vec()));
+        }
+
+        // RangeAfterToInclusive (3..=6], positions 4,5,6
+        {
+            let mut query = Query::default();
+            query.items.push(QueryItem::RangeAfterToInclusive(
+                pos_bytes(3)..=pos_bytes(6),
+            ));
+
+            let proof = BulkAppendTreeProof::generate(&query, &tree)
+                .expect("generate RangeAfterToInclusive proof");
+            let vals: Vec<(u64, Vec<u8>)> = proof
+                .verify_against_query(&state_root, height, total_count, &query)
+                .expect("verify RangeAfterToInclusive query");
+            assert_eq!(vals.len(), 3);
+            assert_eq!(vals[0], (4, b"ra_4".to_vec()));
+            assert_eq!(vals[2], (6, b"ra_6".to_vec()));
+        }
+    }
+
+    #[test]
+    fn test_query_to_ranges_out_of_bounds_continue_branches() {
+        // Each QueryItem variant has a `continue` branch for out-of-range items.
+        // This test exercises every such branch with total_count=5.
+        let total_count = 5u64;
+
+        // RangeInclusive: s >= e after clamping (line 76)
+        {
+            let mut q = Query::default();
+            q.items
+                .push(QueryItem::RangeInclusive(pos_bytes(10)..=pos_bytes(12)));
+            let ranges =
+                super::super::query_to_ranges(&q, total_count).expect("RangeInclusive oob");
+            assert!(
+                ranges.is_empty(),
+                "RangeInclusive beyond total_count should produce empty ranges"
+            );
+        }
+
+        // RangeFrom: s >= total_count (line 89)
+        {
+            let mut q = Query::default();
+            q.items.push(QueryItem::RangeFrom(pos_bytes(5)..));
+            let ranges = super::super::query_to_ranges(&q, total_count).expect("RangeFrom oob");
+            assert!(
+                ranges.is_empty(),
+                "RangeFrom at total_count should produce empty ranges"
+            );
+        }
+
+        // RangeTo: e == 0 (line 96)
+        {
+            let mut q = Query::default();
+            q.items.push(QueryItem::RangeTo(..pos_bytes(0)));
+            let ranges = super::super::query_to_ranges(&q, total_count).expect("RangeTo e=0");
+            assert!(
+                ranges.is_empty(),
+                "RangeTo with end=0 should produce empty ranges"
+            );
+        }
+
+        // RangeToInclusive: e == 0 after saturating_add + min (line 105)
+        // bytes_to_global_position returns u64, saturating_add(1) on 0 gives 1,
+        // but min(total_count) gives 1 which is > 0, so we can't hit e==0 this
+        // way unless total_count is 0. Use total_count=0 for this variant.
+        {
+            let mut q = Query::default();
+            q.items.push(QueryItem::RangeToInclusive(..=pos_bytes(5)));
+            let ranges = super::super::query_to_ranges(&q, 0).expect("RangeToInclusive empty tree");
+            assert!(
+                ranges.is_empty(),
+                "RangeToInclusive on empty tree should produce empty ranges"
+            );
+        }
+
+        // RangeAfter: s >= total_count (line 112)
+        {
+            let mut q = Query::default();
+            q.items.push(QueryItem::RangeAfter(pos_bytes(4)..));
+            let ranges = super::super::query_to_ranges(&q, total_count).expect("RangeAfter oob");
+            assert!(
+                ranges.is_empty(),
+                "RangeAfter at last position should produce empty ranges"
+            );
+        }
+
+        // RangeAfterTo: s >= e (line 120)
+        {
+            let mut q = Query::default();
+            q.items
+                .push(QueryItem::RangeAfterTo(pos_bytes(5)..pos_bytes(3)));
+            let ranges =
+                super::super::query_to_ranges(&q, total_count).expect("RangeAfterTo inverted");
+            assert!(
+                ranges.is_empty(),
+                "RangeAfterTo with inverted range should produce empty ranges"
+            );
+        }
+
+        // RangeAfterToInclusive: s >= e (line 130)
+        {
+            let mut q = Query::default();
+            q.items.push(QueryItem::RangeAfterToInclusive(
+                pos_bytes(10)..=pos_bytes(8),
+            ));
+            let ranges = super::super::query_to_ranges(&q, total_count)
+                .expect("RangeAfterToInclusive inverted");
+            assert!(
+                ranges.is_empty(),
+                "RangeAfterToInclusive with inverted range should produce empty ranges"
+            );
+        }
+    }
 }
