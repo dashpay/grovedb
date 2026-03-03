@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(leaf_info.count, Some(42));
         assert_eq!(leaf_info.hash, [1u8; 32]);
 
-        // Clone and PartialEq
+        // Copy and PartialEq
         let cloned = leaf_info;
         assert_eq!(leaf_info, cloned);
     }

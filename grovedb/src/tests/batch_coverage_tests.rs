@@ -2544,6 +2544,16 @@ mod tests {
         db.apply_batch(ops, options, None, grove_version)
             .unwrap()
             .expect("replacing a tree with an item should succeed even with validation enabled");
+
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"subtree", None, grove_version)
+            .unwrap()
+            .expect("element at 'subtree' should exist after replacement");
+        assert_eq!(
+            result,
+            Element::new_item(b"new_item".to_vec()),
+            "tree should have been replaced by item"
+        );
     }
 
     // ===================================================================
