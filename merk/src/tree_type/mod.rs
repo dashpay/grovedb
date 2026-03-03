@@ -179,3 +179,190 @@ impl TreeType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_type_discriminant_roundtrip() {
+        let variants = [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::CommitmentTree(5),
+            TreeType::MmrTree,
+            TreeType::BulkAppendTree(3),
+            TreeType::DenseAppendOnlyFixedSizeTree(8),
+        ];
+        for v in &variants {
+            let d = v.discriminant();
+            let back = TreeType::try_from(d).unwrap();
+            // Roundtrip preserves the variant (inner values default to 0 for parameterized types)
+            assert_eq!(d, back.discriminant());
+        }
+    }
+
+    #[test]
+    fn tree_type_try_from_invalid() {
+        assert!(TreeType::try_from(11u8).is_err());
+        assert!(TreeType::try_from(255u8).is_err());
+    }
+
+    #[test]
+    fn tree_type_display_all_variants() {
+        assert_eq!(format!("{}", TreeType::NormalTree), "Normal Tree");
+        assert_eq!(format!("{}", TreeType::SumTree), "Sum Tree");
+        assert_eq!(format!("{}", TreeType::BigSumTree), "Big Sum Tree");
+        assert_eq!(format!("{}", TreeType::CountTree), "Count Tree");
+        assert_eq!(format!("{}", TreeType::CountSumTree), "Count Sum Tree");
+        assert_eq!(
+            format!("{}", TreeType::ProvableCountTree),
+            "Provable Count Tree"
+        );
+        assert_eq!(
+            format!("{}", TreeType::ProvableCountSumTree),
+            "Provable Count Sum Tree"
+        );
+        assert_eq!(
+            format!("{}", TreeType::CommitmentTree(0)),
+            "Commitment Tree"
+        );
+        assert_eq!(format!("{}", TreeType::MmrTree), "MMR Tree");
+        assert_eq!(format!("{}", TreeType::BulkAppendTree(0)), "BulkAppendTree");
+        assert_eq!(
+            format!("{}", TreeType::DenseAppendOnlyFixedSizeTree(0)),
+            "Dense Tree"
+        );
+    }
+
+    #[test]
+    fn uses_non_merk_data_storage() {
+        assert!(!TreeType::NormalTree.uses_non_merk_data_storage());
+        assert!(!TreeType::SumTree.uses_non_merk_data_storage());
+        assert!(!TreeType::BigSumTree.uses_non_merk_data_storage());
+        assert!(!TreeType::CountTree.uses_non_merk_data_storage());
+        assert!(!TreeType::CountSumTree.uses_non_merk_data_storage());
+        assert!(!TreeType::ProvableCountTree.uses_non_merk_data_storage());
+        assert!(!TreeType::ProvableCountSumTree.uses_non_merk_data_storage());
+        assert!(TreeType::CommitmentTree(0).uses_non_merk_data_storage());
+        assert!(TreeType::MmrTree.uses_non_merk_data_storage());
+        assert!(TreeType::BulkAppendTree(0).uses_non_merk_data_storage());
+        assert!(TreeType::DenseAppendOnlyFixedSizeTree(0).uses_non_merk_data_storage());
+    }
+
+    #[test]
+    fn allows_sum_item() {
+        assert!(!TreeType::NormalTree.allows_sum_item());
+        assert!(TreeType::SumTree.allows_sum_item());
+        assert!(TreeType::BigSumTree.allows_sum_item());
+        assert!(!TreeType::CountTree.allows_sum_item());
+        assert!(TreeType::CountSumTree.allows_sum_item());
+        assert!(!TreeType::ProvableCountTree.allows_sum_item());
+        assert!(TreeType::ProvableCountSumTree.allows_sum_item());
+        assert!(!TreeType::CommitmentTree(0).allows_sum_item());
+        assert!(!TreeType::MmrTree.allows_sum_item());
+        assert!(!TreeType::BulkAppendTree(0).allows_sum_item());
+        assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).allows_sum_item());
+    }
+
+    #[test]
+    fn empty_tree_feature_type_all_variants() {
+        assert_eq!(
+            TreeType::NormalTree.empty_tree_feature_type(),
+            TreeFeatureType::BasicMerkNode
+        );
+        assert_eq!(
+            TreeType::SumTree.empty_tree_feature_type(),
+            TreeFeatureType::SummedMerkNode(0)
+        );
+        assert_eq!(
+            TreeType::BigSumTree.empty_tree_feature_type(),
+            TreeFeatureType::BigSummedMerkNode(0)
+        );
+        assert_eq!(
+            TreeType::CountTree.empty_tree_feature_type(),
+            TreeFeatureType::CountedMerkNode(0)
+        );
+        assert_eq!(
+            TreeType::CountSumTree.empty_tree_feature_type(),
+            TreeFeatureType::CountedSummedMerkNode(0, 0)
+        );
+        assert_eq!(
+            TreeType::ProvableCountTree.empty_tree_feature_type(),
+            TreeFeatureType::ProvableCountedMerkNode(0)
+        );
+        assert_eq!(
+            TreeType::ProvableCountSumTree.empty_tree_feature_type(),
+            TreeFeatureType::ProvableCountedSummedMerkNode(0, 0)
+        );
+        assert_eq!(
+            TreeType::CommitmentTree(0).empty_tree_feature_type(),
+            TreeFeatureType::BasicMerkNode
+        );
+        assert_eq!(
+            TreeType::MmrTree.empty_tree_feature_type(),
+            TreeFeatureType::BasicMerkNode
+        );
+        assert_eq!(
+            TreeType::BulkAppendTree(0).empty_tree_feature_type(),
+            TreeFeatureType::BasicMerkNode
+        );
+        assert_eq!(
+            TreeType::DenseAppendOnlyFixedSizeTree(0).empty_tree_feature_type(),
+            TreeFeatureType::BasicMerkNode
+        );
+    }
+
+    #[test]
+    fn to_element_type_all_variants() {
+        assert_eq!(
+            TreeType::NormalTree.to_element_type(),
+            Some(ElementType::Tree)
+        );
+        assert_eq!(
+            TreeType::SumTree.to_element_type(),
+            Some(ElementType::SumTree)
+        );
+        assert_eq!(
+            TreeType::BigSumTree.to_element_type(),
+            Some(ElementType::BigSumTree)
+        );
+        assert_eq!(
+            TreeType::CountTree.to_element_type(),
+            Some(ElementType::CountTree)
+        );
+        assert_eq!(
+            TreeType::CountSumTree.to_element_type(),
+            Some(ElementType::CountSumTree)
+        );
+        assert_eq!(
+            TreeType::ProvableCountTree.to_element_type(),
+            Some(ElementType::ProvableCountTree)
+        );
+        assert_eq!(
+            TreeType::ProvableCountSumTree.to_element_type(),
+            Some(ElementType::ProvableCountSumTree)
+        );
+        assert_eq!(
+            TreeType::CommitmentTree(0).to_element_type(),
+            Some(ElementType::CommitmentTree)
+        );
+        assert_eq!(
+            TreeType::MmrTree.to_element_type(),
+            Some(ElementType::MmrTree)
+        );
+        assert_eq!(
+            TreeType::BulkAppendTree(0).to_element_type(),
+            Some(ElementType::BulkAppendTree)
+        );
+        assert_eq!(
+            TreeType::DenseAppendOnlyFixedSizeTree(0).to_element_type(),
+            Some(ElementType::DenseAppendOnlyFixedSizeTree)
+        );
+    }
+}

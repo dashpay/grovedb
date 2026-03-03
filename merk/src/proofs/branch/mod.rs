@@ -13,6 +13,9 @@
 //! `Node::Hash` for truncated children beyond the specified depth.
 
 pub mod depth;
+#[cfg(test)]
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod tests;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{
