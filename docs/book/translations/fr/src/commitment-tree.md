@@ -401,7 +401,7 @@ des preuves d'autorisation de depense.
 
 ### commitment_tree_get_value
 
-Recupere une valeur stockee (cmx || rho || charge utile) par sa position globale :
+Récupère une valeur stockée (cmx || rho || charge utile) par sa position globale :
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
