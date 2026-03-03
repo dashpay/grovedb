@@ -11,8 +11,8 @@ mod tests {
 
     use crate::{
         batch::{
-            key_info::KeyInfo::KnownKey,
-            BatchApplyOptions, GroveOp, KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp,
+            key_info::KeyInfo::KnownKey, BatchApplyOptions, GroveOp, KeyInfoPath, NonMerkTreeMeta,
+            QualifiedGroveDbOp,
         },
         reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
