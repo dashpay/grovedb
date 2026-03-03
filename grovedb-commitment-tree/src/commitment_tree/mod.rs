@@ -277,6 +277,10 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
 
         let bulk_result = match self.bulk_tree.append(&item_value) {
             Ok(r) => r,
+            // codecov:ignore — requires BulkAppendTree::append to fail, which only happens on
+            // storage faults (put/get errors) during dense tree insert or MMR compaction;
+            // MockDataStorageContext always succeeds and FailingDataStorageContext prevents
+            // construction, so this path cannot be reached without a fault-injecting mock
             Err(e) => {
                 return Err(CommitmentTreeError::InvalidData(format!(
                     "bulk append: {}",
@@ -296,6 +300,9 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
                 cost += frontier_cost;
                 root
             }
+            // codecov:ignore — CommitmentFrontier::append can only fail with InvalidFieldElement
+            // (already checked at line 258) or TreeFull (requires 2^32 Sinsemilla appends);
+            // neither case is reachable in practice
             grovedb_costs::CostContext {
                 value: Err(e),
                 cost: frontier_cost,
