@@ -1378,7 +1378,7 @@ mod tests {
         let size = layer
             .subtree_with_feature_and_flags_size(GroveVersion::latest())
             .unwrap();
-        assert_eq!(size, 0 + 4 + 3); // NoSumTrees=0, flags=4, base=3
+        assert_eq!(size, 7); // NoSumTrees=0, flags=4, base=3
     }
 
     #[test]
@@ -1391,7 +1391,7 @@ mod tests {
         let size = layer
             .subtree_with_feature_and_flags_size(GroveVersion::latest())
             .unwrap();
-        assert_eq!(size, 0 + 4 + 3);
+        assert_eq!(size, 7);
     }
 
     #[test]
@@ -1417,7 +1417,7 @@ mod tests {
         let size = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
             .unwrap();
-        assert_eq!(size, 0 + 4 + 3);
+        assert_eq!(size, 7);
     }
 
     #[test]
@@ -1443,7 +1443,7 @@ mod tests {
         let size = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
             .unwrap();
-        assert_eq!(size, 0 + 4 + 3);
+        assert_eq!(size, 7);
     }
 
     #[test]
