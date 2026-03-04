@@ -460,9 +460,9 @@ pub const MAX_PROOF_STACK_DEPTH: usize = 10_000;
 ///
 /// Prevents Rust thread-stack overflow from recursive `Drop` on deeply
 /// nested trees when `collapse` is false. An AVL tree with 2^64 entries
-/// has height ≈ 92, so 128 is extremely generous for any real tree. Proof
-/// subtrees should never be deeper than the backing Merk tree.
-pub const MAX_PROOF_TREE_HEIGHT: usize = 128;
+/// has height ≈ 92, which is the theoretical maximum for any real tree.
+/// Proof subtrees should never be deeper than the backing Merk tree.
+pub const MAX_PROOF_TREE_HEIGHT: usize = 92;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Executes a proof by stepping through its operators, modifying the
@@ -1131,32 +1131,34 @@ mod test {
             );
         }
 
-        // Scenario 3: Tree height exactly 128 (at MAX_PROOF_TREE_HEIGHT).
-        // Build two chains of height 127 as left and right children of a
+        // Scenario 3: Tree height exactly 92 (at MAX_PROOF_TREE_HEIGHT).
+        // Build two chains of height 91 as left and right children of a
         // root node so the final tree is balanced. Uses collapse=false
         // since collapse=true caps height at 2.
         {
+            let max_height = super::MAX_PROOF_TREE_HEIGHT; // 92
             let mut ops: Vec<Result<Op, Error>> = Vec::new();
-            // Build left chain of height 127
+            // Build left chain of height max_height - 1
             ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
-            for _ in 0..126 {
+            for _ in 0..(max_height - 2) {
                 ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
                 ops.push(Ok(Op::Parent));
             }
             // Push root and attach left child
             ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
             ops.push(Ok(Op::Parent));
-            // Build right chain of height 127
+            // Build right chain of height max_height - 1
             ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
-            for _ in 0..126 {
+            for _ in 0..(max_height - 2) {
                 ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
                 ops.push(Ok(Op::Parent));
             }
             // Attach right child
             ops.push(Ok(Op::Child));
-            assert_eq!(ops.len(), 509);
+            let expected_ops = 2 * (2 * (max_height - 2) + 1) + 3;
+            assert_eq!(ops.len(), expected_ops);
             let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
-            assert!(result.is_ok(), "Height 128 should succeed (limit is 128)");
+            assert!(result.is_ok(), "Height 92 should succeed (limit is 92)");
         }
     }
 
