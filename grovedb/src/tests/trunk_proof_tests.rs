@@ -4,16 +4,16 @@
 mod tests {
     use blake3::Hasher;
     use grovedb_merk::proofs::{
-        branch::depth::calculate_max_tree_depth_from_count, Decoder, Node, Op,
+        Decoder, Node, Op, branch::depth::calculate_max_tree_depth_from_count,
     };
     use grovedb_version::version::GroveVersion;
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{Rng, SeedableRng, rngs::StdRng};
 
     use crate::{
+        Element, GroveDb,
         operations::proof::GroveDBProof,
         query::PathTrunkChunkQuery,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
-        Element, GroveDb,
     };
 
     #[test]

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage};
+use grovedb_storage::{Storage, rocksdb_storage::RocksDbStorage};
 
 use crate::{Error, GroveDb};
 

@@ -3,20 +3,20 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::{
+        TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
         element::costs::ElementCostExtensions,
         proofs::Query,
-        tree::{kv::ValueDefinedCostType, AggregateData},
-        TreeFeatureType::{BasicMerkNode, BigSummedMerkNode, SummedMerkNode},
+        tree::{AggregateData, kv::ValueDefinedCostType},
     };
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        Element, Error, GroveDb, PathQuery,
         batch::QualifiedGroveDbOp,
         element::SumValue,
         reference_path::ReferencePathType,
-        tests::{make_test_grovedb, TEST_LEAF},
-        Element, Error, GroveDb, PathQuery,
+        tests::{TEST_LEAF, make_test_grovedb},
     };
 
     #[test]
@@ -711,9 +711,9 @@ mod tests {
             merk.aggregate_data().expect("expected to get sum"),
             AggregateData::Sum(9999940)
         ); // 30 +
-           // 10 -
-           // 100 +
-           // 10000000
+        // 10 -
+        // 100 +
+        // 10000000
     }
 
     #[test]

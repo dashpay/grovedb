@@ -1,6 +1,6 @@
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
-use crate::{query_item::QueryItem, Query};
+use crate::{Query, query_item::QueryItem};
 
 impl Query {
     /// Adds an individual key to the query, so that its value (or its absence)

@@ -2,7 +2,7 @@
 name = "grovedb-dense-fixed-sized-merkle-tree"
 version = "4.0.0"
 authors = ["Samuel Westrich <sam@dash.org>"]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "Dense (fixed-size, power-of-2) Merkle tree root computation using Blake3"
 homepage = "https://www.grovedb.org"

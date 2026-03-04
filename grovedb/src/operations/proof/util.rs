@@ -1,8 +1,8 @@
 use std::fmt;
 
 use grovedb_merk::{
-    proofs::query::{Key, Path, ProvedKeyOptionalValue, ProvedKeyValue},
     CryptoHash, Error,
+    proofs::query::{Key, Path, ProvedKeyOptionalValue, ProvedKeyValue},
 };
 use grovedb_version::version::GroveVersion;
 
@@ -234,10 +234,10 @@ mod tests {
     use grovedb_merk::proofs::query::ProvedKeyOptionalValue;
     use grovedb_version::version::GroveVersion;
 
-    use crate::operations::proof::util::{
-        element_hex_to_ascii, optional_element_hex_to_ascii, ProvedPathKeyOptionalValue,
-    };
     use crate::Element;
+    use crate::operations::proof::util::{
+        ProvedPathKeyOptionalValue, element_hex_to_ascii, optional_element_hex_to_ascii,
+    };
 
     #[test]
     fn test_proved_path_from_single_proved_key_value() {

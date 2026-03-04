@@ -15,7 +15,7 @@
 
 use std::sync::OnceLock;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use grovedb_commitment_tree::{
     Anchor, Authorized, BatchValidator, Builder, Bundle, BundleType, DashMemo, Flags,
     FullViewingKey, Hashable, MerkleHashOrchard, NoteValue, ProvingKey, Scope, SpendingKey,

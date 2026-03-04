@@ -4,19 +4,19 @@
 mod tests {
     use assert_matches::assert_matches;
     use grovedb_merk::{
+        TreeFeatureType::{BasicMerkNode, CountedMerkNode},
         element::costs::ElementCostExtensions,
         proofs::Query,
-        tree::{kv::ValueDefinedCostType, AggregateData},
-        TreeFeatureType::{BasicMerkNode, CountedMerkNode},
+        tree::{AggregateData, kv::ValueDefinedCostType},
     };
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        Element, GroveDb, PathQuery,
         batch::QualifiedGroveDbOp,
         reference_path::ReferencePathType,
-        tests::{make_test_grovedb, TEST_LEAF},
-        Element, GroveDb, PathQuery,
+        tests::{TEST_LEAF, make_test_grovedb},
     };
 
     #[test]

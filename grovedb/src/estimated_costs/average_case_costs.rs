@@ -2,33 +2,33 @@
 //! Implements average case cost functions in GroveDb
 
 use grovedb_costs::{
-    cost_return_on_error_into_no_add, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
+    CostResult, CostsExt, OperationCost, cost_return_on_error_into_no_add,
+    cost_return_on_error_no_add,
 };
 use grovedb_merk::{
+    HASH_LENGTH,
     element::tree_type::ElementTreeTypeExtensions,
     estimated_costs::{
         add_cost_case_merk_insert, add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
         add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
         average_case_costs::{
-            add_average_case_get_merk_node, add_average_case_merk_delete,
-            add_average_case_merk_delete_layered, add_average_case_merk_propagate,
-            add_average_case_merk_replace_layered, EstimatedLayerInformation,
+            EstimatedLayerInformation, add_average_case_get_merk_node,
+            add_average_case_merk_delete, add_average_case_merk_delete_layered,
+            add_average_case_merk_propagate, add_average_case_merk_replace_layered,
         },
     },
     tree::TreeNode,
-    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
-    HASH_LENGTH,
+    tree_type::{CostSize, SUM_ITEM_COST_SIZE, TreeType},
 };
-use grovedb_storage::{worst_case_costs::WorstKeyLength, Storage};
+use grovedb_storage::{Storage, worst_case_costs::WorstKeyLength};
 use grovedb_version::{
     check_grovedb_v0, check_grovedb_v0_with_cost, error::GroveVersionError, version::GroveVersion,
 };
 use integer_encoding::VarInt;
 
 use crate::{
-    batch::{key_info::KeyInfo, KeyInfoPath},
     Element, ElementFlags, Error, GroveDb,
+    batch::{KeyInfoPath, key_info::KeyInfo},
 };
 
 impl GroveDb {
@@ -414,7 +414,7 @@ impl GroveDb {
             }
             _ => {
                 return Err(Error::InvalidParameter("patching can only be on Items"))
-                    .wrap_with_cost(cost)
+                    .wrap_with_cost(cost);
             }
         };
         if let Some(level) = propagate_for_level {
@@ -621,19 +621,19 @@ mod test {
 
     use grovedb_costs::OperationCost;
     use grovedb_merk::{
-        estimated_costs::average_case_costs::add_average_case_get_merk_node,
-        test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk,
+        Merk, estimated_costs::average_case_costs::add_average_case_get_merk_node,
+        test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, tree_type::TreeType,
     };
     use grovedb_storage::{
-        rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
+        Storage, StorageBatch, rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength,
     };
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use crate::{
-        batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
-        tests::{common::EMPTY_PATH, TEST_LEAF},
         Element, GroveDb,
+        batch::{KeyInfoPath, key_info::KeyInfo::KnownKey},
+        tests::{TEST_LEAF, common::EMPTY_PATH},
     };
 
     #[test]

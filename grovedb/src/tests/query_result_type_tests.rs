@@ -5,11 +5,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
+        Element, Error,
         query_result_type::{
             BTreeMapLevelResult, BTreeMapLevelResultOrItem, QueryResultElement,
             QueryResultElements, QueryResultType,
         },
-        Element, Error,
     };
 
     // ---------------------------------------------------------------------------

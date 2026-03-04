@@ -11,13 +11,13 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 #[cfg(feature = "minimal")]
-use super::{hash::CryptoHash, TreeNode};
+use super::{TreeNode, hash::CryptoHash};
+#[cfg(feature = "minimal")]
+use crate::HASH_LENGTH_U32;
 #[cfg(feature = "minimal")]
 use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::tree::tree_feature_type::AggregateData;
-#[cfg(feature = "minimal")]
-use crate::HASH_LENGTH_U32;
 // TODO: optimize memory footprint
 
 #[cfg(feature = "minimal")]
@@ -180,11 +180,7 @@ impl Link {
     #[inline]
     pub const fn height(&self) -> u8 {
         const fn max(a: u8, b: u8) -> u8 {
-            if a >= b {
-                a
-            } else {
-                b
-            }
+            if a >= b { a } else { b }
         }
 
         let (left_height, right_height) = match self {
@@ -234,22 +230,10 @@ impl Link {
     /// Return heights of children of the Link as mutable tuple
     pub(crate) fn child_heights_mut(&mut self) -> &mut (u8, u8) {
         match self {
-            Link::Reference {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Modified {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Uncommitted {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Loaded {
-                ref mut child_heights,
-                ..
-            } => child_heights,
+            Link::Reference { child_heights, .. } => child_heights,
+            Link::Modified { child_heights, .. } => child_heights,
+            Link::Uncommitted { child_heights, .. } => child_heights,
+            Link::Loaded { child_heights, .. } => child_heights,
         }
     }
 
@@ -539,10 +523,10 @@ impl Decode for Link {
         }
 
         if let Link::Reference {
-            ref mut aggregate_data,
-            ref mut key,
-            ref mut hash,
-            ref mut child_heights,
+            aggregate_data,
+            key,
+            hash,
+            child_heights,
         } = self
         {
             let length = read_u8(&mut input)? as usize;
@@ -609,7 +593,7 @@ fn read_u8<R: Read>(mut input: R) -> Result<u8> {
 #[cfg(test)]
 mod test {
     use super::{
-        super::{hash::NULL_HASH, TreeNode},
+        super::{TreeNode, hash::NULL_HASH},
         *,
     };
     use crate::TreeFeatureType::BasicMerkNode;

@@ -1,12 +1,12 @@
 //! Read operations for BulkAppendTree.
 
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
-use grovedb_merkle_mountain_range::{leaf_to_pos, MMRStoreReadOps, MmrKeySize, MmrStore, MMR};
+use grovedb_merkle_mountain_range::{MMR, MMRStoreReadOps, MmrKeySize, MmrStore, leaf_to_pos};
 use grovedb_query::Query;
 use grovedb_storage::StorageContext;
 
 use super::BulkAppendTree;
-use crate::{chunk::deserialize_chunk_blob, BulkAppendError};
+use crate::{BulkAppendError, chunk::deserialize_chunk_blob};
 
 /// Result of querying the dense tree buffer.
 #[derive(Debug, Clone)]

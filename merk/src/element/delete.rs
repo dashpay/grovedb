@@ -1,13 +1,13 @@
 //! Delete
 //! Implements functions in Element for deleting
 
-use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostResult, CostsExt};
+use grovedb_costs::{CostResult, CostsExt, storage_cost::removal::StorageRemovedBytes};
 use grovedb_element::Element;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    element::costs::ElementCostExtensions, BatchEntry, Error, Merk, MerkOptions, Op, TreeType,
+    BatchEntry, Error, Merk, MerkOptions, Op, TreeType, element::costs::ElementCostExtensions,
 };
 
 pub trait ElementDeleteFromStorageExtensions {

@@ -87,11 +87,7 @@ impl StorageCost {
     /// Verifies the len of a key item only if the node is new
     /// doesn't need to verify for the update case since the key never changes
     pub fn verify_key_storage_cost(&self, len: u32, new_node: bool) -> Result<(), Error> {
-        if new_node {
-            self.verify(len)
-        } else {
-            Ok(())
-        }
+        if new_node { self.verify(len) } else { Ok(()) }
     }
 
     /// worse_or_eq_than means worse for things that would cost resources

@@ -93,11 +93,13 @@ mod immediate_storage {
             .expect("cannot delete from aux cf");
 
         // Should be deleted inside transaction:
-        assert!(context_ayya_after_tx
-            .get_aux(b"key1")
-            .unwrap()
-            .expect("cannot get from aux cf")
-            .is_none());
+        assert!(
+            context_ayya_after_tx
+                .get_aux(b"key1")
+                .unwrap()
+                .expect("cannot get from aux cf")
+                .is_none()
+        );
 
         // But still accessible outside of it:
         assert_eq!(
@@ -116,11 +118,13 @@ mod immediate_storage {
             .expect("cannot commit transaction");
 
         // ... and no longer accessible at all after transaction got committed
-        assert!(context_ayya_after_no_tx
-            .get_aux(b"key1")
-            .unwrap()
-            .expect("cannot get from aux cf")
-            .is_none());
+        assert!(
+            context_ayya_after_no_tx
+                .get_aux(b"key1")
+                .unwrap()
+                .expect("cannot get from aux cf")
+                .is_none()
+        );
     }
 
     #[test]
@@ -181,11 +185,13 @@ mod immediate_storage {
             .expect("cannot delete from roots cf");
 
         // Should be deleted inside transaction:
-        assert!(context_ayya_after_tx
-            .get_root(b"key1")
-            .unwrap()
-            .expect("cannot get from roots cf")
-            .is_none());
+        assert!(
+            context_ayya_after_tx
+                .get_root(b"key1")
+                .unwrap()
+                .expect("cannot get from roots cf")
+                .is_none()
+        );
 
         // But still accessible outside of it:
         assert_eq!(
@@ -204,11 +210,13 @@ mod immediate_storage {
             .expect("cannot commit transaction");
 
         // ... and no longer accessible at all after transaction got committed
-        assert!(context_ayya_after_no_tx
-            .get_root(b"key1")
-            .unwrap()
-            .expect("cannot get from roots cf")
-            .is_none());
+        assert!(
+            context_ayya_after_no_tx
+                .get_root(b"key1")
+                .unwrap()
+                .expect("cannot get from roots cf")
+                .is_none()
+        );
     }
 
     #[test]
@@ -254,11 +262,13 @@ mod immediate_storage {
             .unwrap()
             .expect("cannot delete from meta cf");
 
-        assert!(context_ayya
-            .get_meta(b"key1")
-            .unwrap()
-            .expect("cannot get from meta cf")
-            .is_none());
+        assert!(
+            context_ayya
+                .get_meta(b"key1")
+                .unwrap()
+                .expect("cannot get from meta cf")
+                .is_none()
+        );
         assert_eq!(
             context_ayya
                 .get_meta(b"key2")
@@ -322,11 +332,13 @@ mod immediate_storage {
             .unwrap()
             .expect("cannot delete from storage");
 
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
+        assert!(
+            context_ayya
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get from storage")
+                .is_none()
+        );
         assert_eq!(
             context_ayya
                 .get(b"key2")
@@ -364,32 +376,38 @@ mod immediate_storage {
             .unwrap()
             .expect("cannot insert into storage");
 
-        assert!(context_ayya
-            .get(b"key3")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
+        assert!(
+            context_ayya
+                .get(b"key3")
+                .unwrap()
+                .expect("cannot get from storage")
+                .is_none()
+        );
 
         let mut batch = context_ayya.new_batch();
         batch.delete(b"key1", None);
         batch.put(b"key3", b"ayyavalue3", None, None).unwrap();
 
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_some());
+        assert!(
+            context_ayya
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get from storage")
+                .is_some()
+        );
 
         context_ayya
             .commit_batch(batch)
             .unwrap()
             .expect("cannot commit a batch");
 
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
+        assert!(
+            context_ayya
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get from storage")
+                .is_none()
+        );
 
         storage
             .commit_transaction(tx)
@@ -409,11 +427,13 @@ mod immediate_storage {
                 .expect("cannot get from storage"),
             b"ayyavalue3"
         );
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get from storage")
-            .is_none());
+        assert!(
+            context_ayya
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get from storage")
+                .is_none()
+        );
     }
 
     #[test]
@@ -605,11 +625,13 @@ mod batch_no_transaction {
 
         // There is no "staging" data for batch contexts: `get` will access only
         // pre-batch data (thus `None` until commit).
-        assert!(context_ayya
-            .get_aux(b"key1")
-            .unwrap()
-            .expect("cannot get from aux cf")
-            .is_none());
+        assert!(
+            context_ayya
+                .get_aux(b"key1")
+                .unwrap()
+                .expect("cannot get from aux cf")
+                .is_none()
+        );
 
         assert_eq!(batch.len(), 8);
 
@@ -762,16 +784,20 @@ mod batch_no_transaction {
         // it in a single run to the database
         assert_eq!(batch.len(), 6);
 
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
-        assert!(context_ayya
-            .get(b"key3")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
+        assert!(
+            context_ayya
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
+        assert!(
+            context_ayya
+                .get(b"key3")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
 
         storage
             .commit_multi_context_batch(batch, Some(&transaction))
@@ -885,16 +911,20 @@ mod batch_transaction {
         );
 
         // ...but not outside of it
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
-        assert!(context_ayyb
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
+        assert!(
+            context_ayya
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
+        assert!(
+            context_ayyb
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
 
         // Batches data won't be visible either in transaction and outside of it until
         // batch is committed
@@ -925,26 +955,34 @@ mod batch_transaction {
 
         assert_eq!(batch.len(), 2);
 
-        assert!(context_ayya_tx
-            .get_aux(b"key2")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
-        assert!(context_ayyb_tx
-            .get_aux(b"key2")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
-        assert!(context_ayya
-            .get_aux(b"key2")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
-        assert!(context_ayyb
-            .get_aux(b"key2")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
+        assert!(
+            context_ayya_tx
+                .get_aux(b"key2")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
+        assert!(
+            context_ayyb_tx
+                .get_aux(b"key2")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
+        assert!(
+            context_ayya
+                .get_aux(b"key2")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
+        assert!(
+            context_ayyb
+                .get_aux(b"key2")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
 
         storage
             .commit_multi_context_batch(batch, Some(&transaction))
@@ -962,11 +1000,13 @@ mod batch_transaction {
             b"ayyavalue2"
         );
 
-        assert!(context_ayya
-            .get_aux(b"key2")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
+        assert!(
+            context_ayya
+                .get_aux(b"key2")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
 
         storage
             .commit_transaction(transaction)
@@ -1025,16 +1065,20 @@ mod batch_transaction {
 
         // All operations are in multi-context batch, but not visible in DB yet
         assert_eq!(batch.len(), 2);
-        assert!(context_ayya
-            .get(b"key1")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
-        assert!(context_ayyb
-            .get(b"key2")
-            .unwrap()
-            .expect("cannot get data")
-            .is_none());
+        assert!(
+            context_ayya
+                .get(b"key1")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
+        assert!(
+            context_ayyb
+                .get(b"key2")
+                .unwrap()
+                .expect("cannot get data")
+                .is_none()
+        );
 
         // Committed batch's data should be visible in transaction
         storage
@@ -1105,7 +1149,7 @@ mod storage_management {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
+    use crate::{Storage, StorageBatch, StorageContext, rocksdb_storage::RocksDbStorage};
 
     #[test]
     fn test_contexts_by_subtree_prefix_match_contexts_by_path() {
@@ -1199,16 +1243,20 @@ mod storage_management {
             .get_transactional_storage_context([b"tree-b"].as_ref().into(), None, &tx)
             .unwrap();
 
-        assert!(verify_a
-            .get(b"k1")
-            .unwrap()
-            .expect("get should succeed")
-            .is_none());
-        assert!(verify_a
-            .get(b"k2")
-            .unwrap()
-            .expect("get should succeed")
-            .is_none());
+        assert!(
+            verify_a
+                .get(b"k1")
+                .unwrap()
+                .expect("get should succeed")
+                .is_none()
+        );
+        assert!(
+            verify_a
+                .get(b"k2")
+                .unwrap()
+                .expect("get should succeed")
+                .is_none()
+        );
         assert_eq!(
             verify_b.get(b"k3").unwrap().expect("get should succeed"),
             Some(b"v3".to_vec())
@@ -1236,11 +1284,13 @@ mod storage_management {
         let context_after = storage
             .get_immediate_storage_context([b"rollback"].as_ref().into(), &tx_after)
             .unwrap();
-        assert!(context_after
-            .get(b"key")
-            .unwrap()
-            .expect("get should succeed")
-            .is_none());
+        assert!(
+            context_after
+                .get(b"key")
+                .unwrap()
+                .expect("get should succeed")
+                .is_none()
+        );
 
         storage.flush().expect("flush should succeed");
     }

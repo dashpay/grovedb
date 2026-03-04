@@ -1,14 +1,14 @@
 use std::fmt;
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost, cost_return_on_error};
 
 #[cfg(feature = "minimal")]
 use crate::proofs::query::{Map, MapBuilder};
 use crate::{
-    error::Error,
-    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
-    tree::value_hash,
     CryptoHash as MerkHash, CryptoHash,
+    error::Error,
+    proofs::{Decoder, Node, Query, hex_to_ascii, tree::execute},
+    tree::value_hash,
 };
 
 /// Verify proof against expected hash
@@ -413,7 +413,7 @@ impl QueryProofVerify for Query {
                         return Err(Error::InvalidProofError(
                             "Proof is missing data for query".to_string(),
                         ))
-                        .wrap_with_cost(cost)
+                        .wrap_with_cost(cost);
                     }
                 }
             }

@@ -1,20 +1,21 @@
 //! Query
 //! Implements functions in Element for querying
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_into_no_add,
-    cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_into,
+    cost_return_on_error_into_no_add, cost_return_on_error_no_add,
 };
 use grovedb_element::Element;
 use grovedb_merk::{
     element::{decode::ElementDecodeExtensions, get::ElementFetchFromStorageExtensions},
     error::MerkErrorExt,
-    proofs::{query::query_item::QueryItem, Query},
+    proofs::{Query, query::query_item::QueryItem},
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
+use grovedb_storage::{RawIterator, StorageContext, rocksdb_storage::RocksDbStorage};
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
+    Error, PathQuery, SizedQuery, TransactionArg,
     element::{path_query_push_args::PathQueryPushArgs, query_options::QueryOptions},
     operations::proof::util::path_as_slices_hex_to_ascii,
     query_result_type::{
@@ -24,7 +25,6 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    Error, PathQuery, SizedQuery, TransactionArg,
 };
 
 pub trait ElementQueryExtensions {
@@ -323,7 +323,7 @@ impl ElementQueryExtensions for Element {
         args: PathQueryPushArgs,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
-        use crate::util::{compat, TxRef};
+        use crate::util::{TxRef, compat};
 
         check_grovedb_v0_with_cost!(
             "path_query_push",
@@ -598,7 +598,7 @@ impl ElementQueryExtensions for Element {
     ) -> CostResult<(), Error> {
         use grovedb_storage::Storage;
 
-        use crate::util::{compat, TxRef};
+        use crate::util::{TxRef, compat};
 
         check_grovedb_v0_with_cost!(
             "query_item",
@@ -829,13 +829,13 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        SizedQuery,
         element::query::{ElementQueryExtensions, QueryOptions},
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
             QueryResultType::{QueryKeyElementPairResultType, QueryPathKeyElementTrioResultType},
         },
-        tests::{make_test_grovedb, TEST_LEAF},
-        SizedQuery,
+        tests::{TEST_LEAF, make_test_grovedb},
     };
 
     #[test]

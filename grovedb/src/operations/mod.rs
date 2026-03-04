@@ -27,4 +27,4 @@ pub mod bulk_append_tree;
 pub mod dense_tree;
 
 #[cfg(feature = "minimal")]
-pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};
+pub use get::{MAX_REFERENCE_HOPS, QueryItemOrSumReturnType};

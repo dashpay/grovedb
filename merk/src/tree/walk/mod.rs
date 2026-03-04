@@ -8,10 +8,10 @@ mod ref_walker;
 #[cfg(feature = "minimal")]
 pub use fetch::Fetch;
 #[cfg(feature = "minimal")]
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost, cost_return_on_error};
 use grovedb_costs::{
     cost_return_on_error_no_add,
-    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    storage_cost::{StorageCost, removal::StorageRemovedBytes},
 };
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
@@ -21,7 +21,7 @@ pub use ref_walker::RefWalker;
 use super::{Link, TreeNode};
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
-use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash, Error};
+use crate::{CryptoHash, Error, owner::Owner, tree::tree_feature_type::TreeFeatureType};
 
 #[cfg(feature = "minimal")]
 /// Allows traversal of a `Tree`, fetching from the given source when traversing

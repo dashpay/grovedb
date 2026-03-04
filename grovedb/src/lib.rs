@@ -179,15 +179,15 @@ pub use element::ElementFlags;
 use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_no_add,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::calculate_max_tree_depth_from_count;
 #[cfg(feature = "minimal")]
 use grovedb_merk::element::{
-    costs::ElementCostExtensions, decode::ElementDecodeExtensions,
+    ElementExt, costs::ElementCostExtensions, decode::ElementDecodeExtensions,
     get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
-    reconstruct::ElementReconstructExtensions, tree_type::ElementTreeTypeExtensions, ElementExt,
+    reconstruct::ElementReconstructExtensions, tree_type::ElementTreeTypeExtensions,
 };
 #[cfg(feature = "estimated_costs")]
 pub use grovedb_merk::estimated_costs::{
@@ -197,30 +197,29 @@ pub use grovedb_merk::estimated_costs::{
     worst_case_costs::WorstCaseLayerInformation,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use grovedb_merk::proofs::query::query_item::QueryItem;
+pub use grovedb_merk::proofs::Query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::SubqueryBranch;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::query::VerifyOptions;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use grovedb_merk::proofs::Query;
+pub use grovedb_merk::proofs::query::query_item::QueryItem;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::proofs::{
-    encoding::Decoder as MerkProofDecoder, Node as MerkProofNode, Op as MerkProofOp,
+    Node as MerkProofNode, Op as MerkProofOp, encoding::Decoder as MerkProofDecoder,
 };
-#[cfg(feature = "minimal")]
-use grovedb_merk::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 pub use grovedb_merk::tree::AggregateData;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grovedb_merk::tree::TreeFeatureType;
 #[cfg(feature = "minimal")]
+use grovedb_merk::tree::kv::ValueDefinedCostType;
+#[cfg(feature = "minimal")]
 pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
-    self,
+    self, BatchEntry, CryptoHash, KVIterator, Merk,
     tree::{combine_hash, value_hash},
-    BatchEntry, CryptoHash, KVIterator, Merk,
 };
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
@@ -229,9 +228,9 @@ use grovedb_storage::rocksdb_storage::PrefixedRocksDbImmediateStorageContext;
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
-#[cfg(feature = "minimal")]
 use grovedb_storage::{Storage, StorageContext};
+#[cfg(feature = "minimal")]
+use grovedb_storage::{StorageBatch, rocksdb_storage::PrefixedRocksDbTransactionContext};
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
@@ -246,14 +245,14 @@ use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
 #[cfg(feature = "minimal")]
-use util::{compat, TxRef};
+use util::{TxRef, compat};
 
+#[cfg(feature = "minimal")]
+use crate::Error::MerkError;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use crate::error::Error;
 #[cfg(feature = "minimal")]
 use crate::operations::proof::util::hex_to_ascii;
-#[cfg(feature = "minimal")]
-use crate::Error::MerkError;
 
 #[cfg(feature = "minimal")]
 type Hash = [u8; 32];

@@ -4,16 +4,16 @@
 //! blake3-based dense Merkle trees with level-order (BFS) filling.
 
 use grovedb_merk::proofs::{
-    query::{QueryItem, SubqueryBranch},
     Query,
+    query::{QueryItem, SubqueryBranch},
 };
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    Element, Error, GroveDb, PathQuery, SizedQuery,
     batch::QualifiedGroveDbOp,
     operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
 // ===========================================================================

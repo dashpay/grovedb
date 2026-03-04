@@ -28,17 +28,16 @@
 
 //! Merk benches
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use grovedb_costs::storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes::BasicStorageRemoval};
 use grovedb_merk::{
-    proofs,
-    test_utils::{make_batch_rand, make_batch_seq, make_del_batch_rand, TempMerk},
-    tree::{kv::ValueDefinedCostType, MerkBatch},
+    Merk, Restorer, proofs,
+    test_utils::{TempMerk, make_batch_rand, make_batch_seq, make_del_batch_rand},
+    tree::{MerkBatch, kv::ValueDefinedCostType},
     tree_type::TreeType,
-    Merk, Restorer,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
+use grovedb_storage::{Storage, rocksdb_storage::test_utils::TempStorage};
 use grovedb_version::version::GroveVersion;
 use rand::prelude::*;
 

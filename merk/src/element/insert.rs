@@ -2,20 +2,19 @@
 //! Implements functions in Element for inserting into Merk
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
-    cost_return_on_error_into_default, cost_return_on_error_no_add, CostResult, CostsExt,
-    OperationCost,
+    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_default,
+    cost_return_on_error_into, cost_return_on_error_into_default, cost_return_on_error_no_add,
 };
 use grovedb_element::{Element, Element::SumItem};
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
+    BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
     element::{
         costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
         get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
-    BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
 };
 
 pub trait ElementInsertToStorageExtensions {
@@ -172,11 +171,13 @@ impl ElementInsertToStorageExtensions for Element {
         let merk_feature_type =
             cost_return_on_error_into_default!(self.get_feature_type(merk.tree_type));
         let batch_operations = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
-            let cost = cost_return_on_error_default!(self
-                .specialized_value_defined_cost(grove_version)
-                .ok_or(Error::CorruptedCodeExecution(
-                    "sum items should always have a value defined cost"
-                )));
+            let cost = cost_return_on_error_default!(
+                self.specialized_value_defined_cost(grove_version).ok_or(
+                    Error::CorruptedCodeExecution(
+                        "sum items should always have a value defined cost"
+                    )
+                )
+            );
             [(
                 key,
                 Op::PutWithSpecializedCost(serialized, cost, merk_feature_type),
@@ -228,11 +229,13 @@ impl ElementInsertToStorageExtensions for Element {
         };
 
         let entry = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
-            let cost = cost_return_on_error_default!(self
-                .specialized_value_defined_cost(grove_version)
-                .ok_or(Error::CorruptedCodeExecution(
-                    "sum items should always have a value defined cost"
-                )));
+            let cost = cost_return_on_error_default!(
+                self.specialized_value_defined_cost(grove_version).ok_or(
+                    Error::CorruptedCodeExecution(
+                        "sum items should always have a value defined cost"
+                    )
+                )
+            );
 
             (
                 key,
@@ -569,11 +572,12 @@ impl ElementInsertToStorageExtensions for Element {
             Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
-        let cost = cost_return_on_error_default!(self
-            .layered_value_defined_cost(grove_version)
-            .ok_or(Error::CorruptedCodeExecution(
-                "trees should always have a layered value defined cost"
-            )));
+        let cost = cost_return_on_error_default!(
+            self.layered_value_defined_cost(grove_version)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "trees should always have a layered value defined cost"
+                ))
+        );
 
         // Replacing is more efficient, but should lead to the same costs
         let entry = if is_replace {
@@ -595,12 +599,12 @@ impl ElementInsertToStorageExtensions for Element {
 #[cfg(all(feature = "minimal", feature = "test_utils"))]
 #[cfg(test)]
 mod tests {
-    use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
+    use grovedb_storage::{Storage, StorageBatch, rocksdb_storage::test_utils::TempStorage};
 
     use super::*;
     use crate::{
         element::get::ElementFetchFromStorageExtensions,
-        test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk},
+        test_utils::{TempMerk, empty_path_merk, empty_path_merk_read_only},
     };
 
     #[test]

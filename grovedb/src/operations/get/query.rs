@@ -3,7 +3,7 @@
 use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_no_add,
 };
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "minimal")]
@@ -11,18 +11,18 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "minimal")]
 use crate::element::SumValue;
+#[cfg(feature = "minimal")]
+use crate::{
+    Element, Error, GroveDb, PathQuery, TransactionArg,
+    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
+    reference_path::ReferencePathType,
+};
 use crate::{
     element::{
-        query::ElementQueryExtensions, query_options::QueryOptions, BigSumValue, CountValue,
+        BigSumValue, CountValue, query::ElementQueryExtensions, query_options::QueryOptions,
     },
     operations::proof::ProveOptions,
     query_result_type::PathKeyOptionalElementTrio,
-};
-#[cfg(feature = "minimal")]
-use crate::{
-    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
-    reference_path::ReferencePathType,
-    Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
 #[cfg(feature = "minimal")]
@@ -792,14 +792,14 @@ where {
 mod tests {
     use std::collections::HashMap;
 
-    use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
+    use grovedb_merk::proofs::{Query, query::query_item::QueryItem};
     use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
     use crate::{
-        reference_path::ReferencePathType::AbsolutePathReference,
-        tests::{make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, PathQuery, SizedQuery,
+        reference_path::ReferencePathType::AbsolutePathReference,
+        tests::{ANOTHER_TEST_LEAF, TEST_LEAF, make_test_grovedb},
     };
 
     #[test]

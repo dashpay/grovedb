@@ -5,8 +5,8 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
         Element,
+        tests::{TEST_LEAF, common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb},
     };
 
     #[test]

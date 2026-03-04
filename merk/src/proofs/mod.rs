@@ -19,7 +19,7 @@ pub use grovedb_query::proofs::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::Query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub use tree::{execute, Tree};
+pub use tree::{Tree, execute};
 
 /// Decoder iterates over proof bytes, yielding Op values with merk Error type.
 ///

@@ -43,11 +43,11 @@ pub use context::{CostContext, CostResult, CostsExt};
 use integer_encoding::VarInt;
 
 use crate::{
+    StorageRemovedBytes::BasicStorageRemoval,
     error::Error,
     storage_cost::{
-        key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes, StorageCost,
+        StorageCost, key_value_cost::KeyValueStorageCost, removal::StorageRemovedBytes,
     },
-    StorageRemovedBytes::BasicStorageRemoval,
 };
 
 /// Child key length

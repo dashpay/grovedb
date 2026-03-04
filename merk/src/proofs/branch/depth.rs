@@ -226,7 +226,7 @@ mod tests {
     fn test_calculate_tree_depth_vs_actual_merk_height_sequential_keys() {
         use grovedb_version::version::GroveVersion;
 
-        use crate::{test_utils::TempMerk, tree::Op, TreeFeatureType::BasicMerkNode};
+        use crate::{TreeFeatureType::BasicMerkNode, test_utils::TempMerk, tree::Op};
 
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
@@ -266,7 +266,7 @@ mod tests {
     fn test_calculate_tree_depth_vs_actual_merk_height_random_hash_keys_sorted() {
         use grovedb_version::version::GroveVersion;
 
-        use crate::{test_utils::TempMerk, tree::Op, TreeFeatureType::BasicMerkNode};
+        use crate::{TreeFeatureType::BasicMerkNode, test_utils::TempMerk, tree::Op};
 
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
@@ -315,7 +315,7 @@ mod tests {
     fn test_calculate_tree_depth_vs_actual_merk_height_random_hash_keys_unsorted() {
         use grovedb_version::version::GroveVersion;
 
-        use crate::{test_utils::TempMerk, tree::Op, TreeFeatureType::BasicMerkNode};
+        use crate::{TreeFeatureType::BasicMerkNode, test_utils::TempMerk, tree::Op};
 
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new(grove_version);
@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(calculate_max_tree_depth_from_count(15), 5); // N(5)=12 <= 15 < N(6)=20
         assert_eq!(calculate_max_tree_depth_from_count(50), 7); // N(7)=33 <= 50 < N(8)=54
         assert_eq!(calculate_max_tree_depth_from_count(100), 9); // N(9)=88 <=
-                                                                 // 100 < N(10)=143
+        // 100 < N(10)=143
     }
 
     #[test]

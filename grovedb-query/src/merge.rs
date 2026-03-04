@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 
 use crate::{
-    common_path::CommonPathResult, query_item::QueryItem, Query, QueryItemIntersectionResult,
-    SubqueryBranch,
+    Query, QueryItemIntersectionResult, SubqueryBranch, common_path::CommonPathResult,
+    query_item::QueryItem,
 };
 
 impl SubqueryBranch {

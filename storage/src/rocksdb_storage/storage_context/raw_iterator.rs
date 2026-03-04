@@ -33,8 +33,8 @@ use rocksdb::DBRawIteratorWithThreadMode;
 
 use super::make_prefixed_key;
 use crate::{
-    rocksdb_storage::storage::{Db, SubtreePrefix, Tx},
     RawIterator,
+    rocksdb_storage::storage::{Db, SubtreePrefix, Tx},
 };
 
 /// 256 bytes for the key and 32 bytes for the prefix

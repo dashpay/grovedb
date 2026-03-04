@@ -11,11 +11,11 @@ mod tests {
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
 
+    use crate::Element;
     use crate::batch::key_info::KeyInfo::KnownKey;
     use crate::batch::{GroveOp, KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp};
     use crate::reference_path::ReferencePathType;
-    use crate::tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF};
-    use crate::Element;
+    use crate::tests::{TEST_LEAF, common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb};
 
     // ===================================================================
     // Group 1: NonMerkTreeMeta::to_tree_type() and count()

@@ -6,10 +6,10 @@
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    Element, Error,
     batch::QualifiedGroveDbOp,
     operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element, Error,
 };
 
 /// Small chunk power for tests — chunk size = 2^2 = 4, triggers compaction

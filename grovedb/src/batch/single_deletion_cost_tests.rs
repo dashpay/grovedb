@@ -12,9 +12,9 @@ mod tests {
     use intmap::IntMap;
 
     use crate::{
+        Element,
         batch::QualifiedGroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
-        Element,
     };
 
     #[test]

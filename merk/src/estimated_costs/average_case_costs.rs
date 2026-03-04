@@ -9,10 +9,10 @@ use integer_encoding::VarInt;
 
 #[cfg(feature = "minimal")]
 use crate::{
+    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
     error::Error,
     estimated_costs::LAYER_COST_SIZE,
-    tree::{kv::KV, Link, TreeNode},
-    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
+    tree::{Link, TreeNode, kv::KV},
 };
 use crate::{merk::NodeType, tree_type::TreeType};
 
@@ -1397,9 +1397,11 @@ mod tests {
     #[test]
     fn test_subtree_size_non_subtree_errors() {
         let layer = EstimatedLayerSizes::AllReference(8, 24, Some(2));
-        assert!(layer
-            .subtree_with_feature_and_flags_size(GroveVersion::latest())
-            .is_err());
+        assert!(
+            layer
+                .subtree_with_feature_and_flags_size(GroveVersion::latest())
+                .is_err()
+        );
     }
 
     #[test]

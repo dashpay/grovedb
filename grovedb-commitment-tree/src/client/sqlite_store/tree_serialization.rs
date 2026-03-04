@@ -176,7 +176,7 @@ mod tests {
             data.push(TAG_PARENT);
             data.push(0x00); // no annotation
             data.push(TAG_NIL); // left = nil
-                                // right continues with next Parent
+            // right continues with next Parent
         }
         data.push(TAG_NIL); // terminal
 

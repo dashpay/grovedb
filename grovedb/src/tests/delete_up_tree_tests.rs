@@ -6,9 +6,9 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        operations::delete::DeleteUpTreeOptions,
-        tests::{common::EMPTY_PATH, make_test_grovedb, TEST_LEAF},
         Element, Error,
+        operations::delete::DeleteUpTreeOptions,
+        tests::{TEST_LEAF, common::EMPTY_PATH, make_test_grovedb},
     };
 
     #[test]

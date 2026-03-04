@@ -5,8 +5,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::error::{Error, GroveDbErrorExt};
     use crate::PathQuery;
+    use crate::error::{Error, GroveDbErrorExt};
     use grovedb_costs::CostsExt;
     use grovedb_merk::proofs::Query;
 

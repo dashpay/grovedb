@@ -4,8 +4,8 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::{
-        tests::{common::EMPTY_PATH, make_test_grovedb},
         Error, GroveDb,
+        tests::{common::EMPTY_PATH, make_test_grovedb},
     };
 
     #[test]

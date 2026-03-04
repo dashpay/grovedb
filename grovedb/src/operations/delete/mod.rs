@@ -15,30 +15,29 @@ pub use delete_up_tree::DeleteUpTreeOptions;
 use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error,
+    CostResult, CostsExt, OperationCost, cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
-    CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::element::{
     costs::ElementCostExtensions, decode::ElementDecodeExtensions,
     delete::ElementDeleteFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
 };
 #[cfg(feature = "minimal")]
-use grovedb_merk::{proofs::Query, KVIterator, MaybeTree};
-#[cfg(feature = "minimal")]
 use grovedb_merk::{Error as MerkError, Merk, MerkOptions};
+#[cfg(feature = "minimal")]
+use grovedb_merk::{KVIterator, MaybeTree, proofs::Query};
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+    Storage, StorageBatch, StorageContext, rocksdb_storage::PrefixedRocksDbTransactionContext,
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::util::{compat, TxRef};
+use crate::util::{TxRef, compat};
 #[cfg(feature = "minimal")]
 use crate::{
-    batch::{GroveOp, QualifiedGroveDbOp},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
+    batch::{GroveOp, QualifiedGroveDbOp},
 };
 
 #[cfg(feature = "minimal")]
@@ -259,7 +258,7 @@ impl GroveDb {
                         return Err(Error::CorruptedData(format!(
                             "unable to decode element while clearing subtree: {e}"
                         )))
-                        .wrap_with_cost(cost)
+                        .wrap_with_cost(cost);
                     }
                 };
                 if element.is_any_tree() {
@@ -900,18 +899,18 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use grovedb_costs::{
-        storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
         OperationCost,
+        storage_cost::{StorageCost, removal::StorageRemovedBytes::BasicStorageRemoval},
     };
     use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
     use crate::{
-        operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
-        tests::{
-            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
-        },
         Element, Error,
+        operations::delete::{ClearOptions, DeleteOptions, delete_up_tree::DeleteUpTreeOptions},
+        tests::{
+            ANOTHER_TEST_LEAF, TEST_LEAF, common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb,
+        },
     };
 
     #[test]
@@ -957,18 +956,21 @@ mod tests {
         ));
         // assert_eq!(db.subtrees.len().unwrap(), 3); // TEST_LEAF, ANOTHER_TEST_LEAF
         // TEST_LEAF.key4 stay
-        assert!(db
-            .get(EMPTY_PATH, TEST_LEAF, None, grove_version)
-            .unwrap()
-            .is_ok());
-        assert!(db
-            .get(EMPTY_PATH, ANOTHER_TEST_LEAF, None, grove_version)
-            .unwrap()
-            .is_ok());
-        assert!(db
-            .get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.get(EMPTY_PATH, TEST_LEAF, None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            db.get(EMPTY_PATH, ANOTHER_TEST_LEAF, None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            db.get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
         assert_ne!(
             root_hash,
             db.root_hash(None, grove_version).unwrap().unwrap()
@@ -1030,10 +1032,11 @@ mod tests {
                 .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(db
-            .get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1451,10 +1454,11 @@ mod tests {
                 .unwrap(),
             Err(Error::PathKeyNotFound(_))
         ));
-        assert!(db
-            .get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.get([TEST_LEAF].as_ref(), b"key4", None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1473,10 +1477,11 @@ mod tests {
         .unwrap()
         .expect("successful insert");
         let root_hash = db.root_hash(None, grove_version).unwrap().unwrap();
-        assert!(db
-            .delete([TEST_LEAF].as_ref(), b"key", None, None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.delete([TEST_LEAF].as_ref(), b"key", None, None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
         assert!(matches!(
             db.get([TEST_LEAF].as_ref(), b"key", None, grove_version)
                 .unwrap(),

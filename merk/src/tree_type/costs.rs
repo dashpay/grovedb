@@ -1,9 +1,9 @@
 use crate::{
+    TreeType,
     estimated_costs::{
         BIG_SUM_LAYER_COST_SIZE, LAYER_COST_SIZE, SUM_AND_COUNT_LAYER_COST_SIZE,
         SUM_LAYER_COST_SIZE, SUM_VALUE_EXTRA_COST,
     },
-    TreeType,
 };
 
 /// The cost of a tree

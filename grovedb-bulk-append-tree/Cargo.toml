@@ -2,7 +2,7 @@
 name = "grovedb-bulk-append-tree"
 version = "4.0.0"
 authors = ["Samuel Westrich <sam@dash.org>"]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "BulkAppendTree: two-level authenticated append-only structure for GroveDB"
 homepage = "https://www.grovedb.org"

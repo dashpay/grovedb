@@ -1,18 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb_merk::{
-    calculate_chunk_depths, calculate_max_tree_depth_from_count,
+    CryptoHash, TreeFeatureType, calculate_chunk_depths, calculate_max_tree_depth_from_count,
     element::tree_type::ElementTreeTypeExtensions,
     proofs::{
-        execute,
+        Decoder, Node, Op, Query, execute,
         query::{PathKey, QueryProofVerify, VerifyOptions},
-        Decoder, Node, Op, Query,
     },
-    tree::{combine_hash, value_hash, NULL_HASH},
-    CryptoHash, TreeFeatureType,
+    tree::{NULL_HASH, combine_hash, value_hash},
 };
 use grovedb_version::{
-    check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
+    TryFromVersioned, TryIntoVersioned, check_grovedb_v0, version::GroveVersion,
 };
 
 #[cfg(feature = "proof_debug")]
@@ -20,14 +18,14 @@ use crate::operations::proof::util::{
     hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
 };
 use crate::{
+    Element, Error, GroveDb, PathQuery,
     operations::proof::{
-        util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
         GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof, ProofBytes,
         ProveOptions,
+        util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
     },
     query::{GroveTrunkQueryResult, PathTrunkChunkQuery},
     query_result_type::PathKeyOptionalElementTrio,
-    Element, Error, GroveDb, PathQuery,
 };
 
 impl GroveDb {
@@ -650,7 +648,7 @@ impl GroveDb {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "MMR proof attached to non-MmrTree element".to_string(),
-                ))
+                ));
             }
         };
 
@@ -781,7 +779,7 @@ impl GroveDb {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "BulkAppendTree proof attached to incompatible element".to_string(),
-                ))
+                ));
             }
         };
 
@@ -942,7 +940,7 @@ impl GroveDb {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "DenseTree proof attached to non-DenseTree element".to_string(),
-                ))
+                ));
             }
         };
 

@@ -125,11 +125,11 @@ mod test {
     use ed::{Decode, Encode};
 
     use crate::proofs::{
+        Node, Op,
         chunk::{
             chunk::{LEFT, RIGHT},
             chunk_op::ChunkOp,
         },
-        Node, Op,
     };
 
     #[test]

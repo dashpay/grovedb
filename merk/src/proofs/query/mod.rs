@@ -11,7 +11,7 @@ mod map;
 mod verify;
 
 #[cfg(feature = "minimal")]
-use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost, cost_return_on_error};
 #[cfg(feature = "minimal")]
 use grovedb_element::{ElementType, ProofNodeType};
 #[cfg(feature = "minimal")]
@@ -29,17 +29,17 @@ use {super::Op, std::collections::LinkedList};
 #[cfg(feature = "minimal")]
 use super::Node;
 #[cfg(feature = "minimal")]
-use crate::error::Error;
-#[cfg(feature = "minimal")]
-use crate::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "minimal")]
-use crate::tree::AggregateData;
-#[cfg(feature = "minimal")]
-use crate::tree::{Fetch, Link, RefWalker};
-#[cfg(feature = "minimal")]
 use crate::TreeFeatureType;
 #[cfg(feature = "minimal")]
 use crate::TreeType;
+#[cfg(feature = "minimal")]
+use crate::error::Error;
+#[cfg(feature = "minimal")]
+use crate::tree::AggregateData;
+#[cfg(feature = "minimal")]
+use crate::tree::kv::ValueDefinedCostType;
+#[cfg(feature = "minimal")]
+use crate::tree::{Fetch, Link, RefWalker};
 
 #[cfg(feature = "minimal")]
 pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), ProofStatus);

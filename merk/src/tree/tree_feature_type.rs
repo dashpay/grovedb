@@ -43,11 +43,7 @@ impl AggregateData {
             AggregateData::Sum(s) => *s,
             AggregateData::BigSum(i) => {
                 let max = i64::MAX as i128;
-                if *i > max {
-                    i64::MAX
-                } else {
-                    *i as i64
-                }
+                if *i > max { i64::MAX } else { *i as i64 }
             }
             AggregateData::Count(_) => 0,
             AggregateData::CountAndSum(_, s) => *s,

@@ -1,4 +1,4 @@
-use grovedb_element::{error::ElementError, Element, ElementType};
+use grovedb_element::{Element, ElementType, error::ElementError};
 use grovedb_version::version::GroveVersion;
 
 #[test]

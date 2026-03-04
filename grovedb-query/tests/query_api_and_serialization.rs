@@ -76,9 +76,10 @@ fn query_encode_decode_and_borrow_decode_round_trip() {
 #[test]
 fn query_decode_rejects_unsupported_version() {
     let err = decode_from_slice::<Query, _>(&[2_u8], standard()).expect_err("must fail");
-    assert!(err
-        .to_string()
-        .contains("unsupported Query encoding version"));
+    assert!(
+        err.to_string()
+            .contains("unsupported Query encoding version")
+    );
 }
 
 #[test]
@@ -96,7 +97,8 @@ fn query_decode_rejects_too_many_conditional_branches() {
     encode_into_std_write(false, &mut bytes, cfg).expect("encode add parent");
 
     let err = decode_from_slice::<Query, _>(&bytes, cfg).expect_err("must fail");
-    assert!(err
-        .to_string()
-        .contains("conditional subquery branches length exceeds maximum"));
+    assert!(
+        err.to_string()
+            .contains("conditional subquery branches length exceeds maximum")
+    );
 }

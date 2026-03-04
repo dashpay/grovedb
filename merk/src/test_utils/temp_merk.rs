@@ -33,16 +33,16 @@ use std::ops::{Deref, DerefMut};
 
 use grovedb_path::SubtreePath;
 #[cfg(feature = "full")]
-use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
+use grovedb_storage::{Storage, rocksdb_storage::test_utils::TempStorage};
 use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
     StorageBatch,
+    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
 };
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "full")]
 use crate::Merk;
-use crate::{tree::kv::ValueDefinedCostType, TreeType};
+use crate::{TreeType, tree::kv::ValueDefinedCostType};
 
 #[cfg(feature = "full")]
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.

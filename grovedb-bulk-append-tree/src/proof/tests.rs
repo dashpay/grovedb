@@ -3,7 +3,7 @@ mod proof_tests {
     use grovedb_merkle_mountain_range::MmrTreeProof;
     use grovedb_query::{Query, QueryItem};
 
-    use crate::{proof::*, test_utils::MemStorageContext, BulkAppendTree};
+    use crate::{BulkAppendTree, proof::*, test_utils::MemStorageContext};
 
     /// Helper: build a test tree and return it (tree owns the storage).
     fn build_test_tree(
@@ -649,7 +649,9 @@ mod proof_tests {
             // Flip the hash of the first node_value_hash entry
             corrupted_buffer.node_value_hashes[0].1 = [0xDD; 32];
         } else {
-            panic!("buffer proof should have at least one node_hash or node_value_hash for a partial proof");
+            panic!(
+                "buffer proof should have at least one node_hash or node_value_hash for a partial proof"
+            );
         }
 
         let corrupted_proof = BulkAppendTreeProof {

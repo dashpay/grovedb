@@ -26,10 +26,10 @@ use super::{
     *,
 };
 use crate::{
+    TreeFeatureType::BasicMerkNode,
     proofs::query::verify,
     test_utils::make_tree_seq,
     tree::{NoopCommit, PanicSource, RefWalker, TreeNode},
-    TreeFeatureType::BasicMerkNode,
 };
 
 fn make_3_node_tree() -> TreeNode {
@@ -120,9 +120,11 @@ fn verify_keys_test(keys: Vec<Vec<u8>>, expected_result: Vec<Option<Vec<u8>>>) {
 
     let mut values = std::collections::HashMap::new();
     for proved_value in result.result_set {
-        assert!(values
-            .insert(proved_value.key, proved_value.value)
-            .is_none());
+        assert!(
+            values
+                .insert(proved_value.key, proved_value.value)
+                .is_none()
+        );
     }
 
     for (key, expected_value) in keys.iter().zip(expected_result.iter()) {
@@ -3479,27 +3481,33 @@ fn break_subset_proof() {
     // Try to query 4
     let mut query = Query::new();
     query.insert_key(vec![0, 0, 0, 0, 0, 0, 0, 4]);
-    assert!(query
-        .verify_proof(bytes.as_slice(), Some(3), true, expected_hash)
-        .unwrap()
-        .is_err());
+    assert!(
+        query
+            .verify_proof(bytes.as_slice(), Some(3), true, expected_hash)
+            .unwrap()
+            .is_err()
+    );
 
     // if limit offset parameters are different from generation then proof
     // verification returns an error Try superset proof with increased limit
     let mut query = Query::new();
     query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
-    assert!(query
-        .verify_proof(bytes.as_slice(), Some(4), true, expected_hash)
-        .unwrap()
-        .is_err());
+    assert!(
+        query
+            .verify_proof(bytes.as_slice(), Some(4), true, expected_hash)
+            .unwrap()
+            .is_err()
+    );
 
     // Try superset proof with less limit
     let mut query = Query::new();
     query.insert_range_from(vec![0, 0, 0, 0, 0, 0, 0, 1]..);
-    assert!(query
-        .verify_proof(bytes.as_slice(), Some(2), true, expected_hash)
-        .unwrap()
-        .is_err());
+    assert!(
+        query
+            .verify_proof(bytes.as_slice(), Some(2), true, expected_hash)
+            .unwrap()
+            .is_err()
+    );
 }
 
 #[test]

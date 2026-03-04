@@ -1,13 +1,13 @@
 //! Proof generation and verification benchmarks
 
 #[cfg(feature = "minimal")]
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 #[cfg(feature = "minimal")]
 use grovedb::{Element, GroveDb, PathQuery, Query, SizedQuery};
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 #[cfg(feature = "minimal")]
 use tempfile::TempDir;
 

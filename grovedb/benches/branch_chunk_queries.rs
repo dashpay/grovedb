@@ -53,12 +53,12 @@ use std::{
 
 use grovedb::{Element, GroveDb, LeafInfo, PathBranchChunkQuery, PathTrunkChunkQuery};
 use grovedb_merk::{
-    calculate_chunk_depths_with_minimum, calculate_max_tree_depth_from_count,
-    proofs::{encode_into, tree::Tree, Node},
-    CryptoHash, TreeFeatureType,
+    CryptoHash, TreeFeatureType, calculate_chunk_depths_with_minimum,
+    calculate_max_tree_depth_from_count,
+    proofs::{Node, encode_into, tree::Tree},
 };
 use grovedb_version::version::GroveVersion;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rand_distr::{Distribution, LogNormal};
 use tempfile::TempDir;
 use tokio::sync::Mutex as TokioMutex;

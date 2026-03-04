@@ -6,7 +6,7 @@ mod tests {
     use orchard::tree::Anchor;
     use rusqlite::Connection;
 
-    use crate::{test_utils::test_leaf, ClientPersistentCommitmentTree};
+    use crate::{ClientPersistentCommitmentTree, test_utils::test_leaf};
 
     fn memory_tree() -> ClientPersistentCommitmentTree {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");

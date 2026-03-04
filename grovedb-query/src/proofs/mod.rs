@@ -7,7 +7,7 @@ mod encoding;
 
 mod tree_feature_type;
 
-pub use encoding::{encode_into, Decoder};
+pub use encoding::{Decoder, encode_into};
 pub use tree_feature_type::{NodeType, TreeFeatureType};
 
 use crate::hex_to_ascii;

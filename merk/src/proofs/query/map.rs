@@ -3,7 +3,7 @@
 #![allow(unstable_name_collisions)]
 
 use std::{
-    collections::{btree_map, btree_map::Iter, BTreeMap},
+    collections::{BTreeMap, btree_map, btree_map::Iter},
     ops::{Bound, RangeBounds},
 };
 
@@ -195,7 +195,7 @@ impl<'a> Iterator for Range<'a> {
                 return match self.check_end_bound() {
                     Err(err) => Some(Err(err)),
                     Ok(_) => None,
-                }
+                };
             }
 
             // got next item, destructure

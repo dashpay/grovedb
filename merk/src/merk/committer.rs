@@ -1,7 +1,7 @@
 use crate::{
+    Error,
     merk::BatchValue,
     tree::{Commit, TreeNode},
-    Error,
 };
 
 pub struct MerkCommitter {

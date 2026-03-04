@@ -9,8 +9,8 @@ mod tests {
     use grovedb_visualize::{Drawer, Visualize};
 
     use crate::{
-        tests::{make_test_grovedb, TEST_LEAF},
         Element,
+        tests::{TEST_LEAF, make_test_grovedb},
     };
 
     /// Helper: visualize a TempGroveDb into a String.

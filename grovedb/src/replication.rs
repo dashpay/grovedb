@@ -2,15 +2,15 @@ mod state_sync_session;
 
 use std::pin::Pin;
 
-use grovedb_merk::{tree::hash::CryptoHash, tree_type::TreeType, ChunkProducer};
+use grovedb_merk::{ChunkProducer, tree::hash::CryptoHash, tree_type::TreeType};
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 pub use self::state_sync_session::MultiStateSyncSession;
 use crate::{
+    Error, GroveDb, TransactionArg,
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
     util::TxRef,
-    Error, GroveDb, TransactionArg,
 };
 
 /// Type alias representing a chunk identifier in the state synchronization
@@ -264,7 +264,7 @@ pub(crate) mod utils {
         tree_type::TreeType,
     };
 
-    use crate::{replication::ChunkIdentifier, Error};
+    use crate::{Error, replication::ChunkIdentifier};
 
     /// Converts a path, represented as a slice of byte vectors (`&[Vec<u8>]`),
     /// into a human-readable string representation for debugging purposes.

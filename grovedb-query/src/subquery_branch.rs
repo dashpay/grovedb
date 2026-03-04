@@ -2,7 +2,7 @@ use std::fmt;
 
 use bincode::{Decode, Encode};
 
-use crate::{hex_to_ascii, Path, Query};
+use crate::{Path, Query, hex_to_ascii};
 
 #[derive(Debug, Default, Clone, PartialEq, Encode, Decode)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

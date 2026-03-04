@@ -24,4 +24,4 @@ mod tests;
 
 pub use error::DenseMerkleError;
 pub use proof::DenseTreeProof;
-pub use tree::{position_key, DenseFixedSizedMerkleTree};
+pub use tree::{DenseFixedSizedMerkleTree, position_key};

@@ -7,8 +7,8 @@
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use grovedb_merk::{
-    proofs::{tree::Tree, Node},
     CryptoHash, TreeFeatureType,
+    proofs::{Node, tree::Tree},
 };
 
 use super::grove_trunk_query_result::LeafInfo;
@@ -94,7 +94,7 @@ impl GroveBranchQueryResult {
         let min_idx = 1;
 
         for idx in (min_idx..leaf_idx).rev() {
-            let (node_tree, ref key, hash) = &path[idx];
+            let (node_tree, key, hash) = &path[idx];
             if let Some(count) = Self::get_node_count(node_tree) {
                 if count >= min_privacy_tree_count {
                     let levels_up = (leaf_idx - idx) as u8;

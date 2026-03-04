@@ -3,7 +3,7 @@
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 
-use crate::{operations::proof::util::ProvedPathKeyValues, Element, Error};
+use crate::{Element, Error, operations::proof::util::ProvedPathKeyValues};
 
 /// Compare result tuples
 pub fn compare_result_tuples(

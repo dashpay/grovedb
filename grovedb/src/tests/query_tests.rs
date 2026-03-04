@@ -4,8 +4,8 @@ mod tests {
     use std::ops::RangeFull;
 
     use grovedb_merk::proofs::{
-        query::{QueryItem, SubqueryBranch},
         Query,
+        query::{QueryItem, SubqueryBranch},
     };
     use grovedb_version::version::GroveVersion;
     use indexmap::IndexMap;
@@ -13,6 +13,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::{
+        Element, GroveDb, PathQuery, SizedQuery,
         batch::QualifiedGroveDbOp,
         operations::{get::QueryItemOrSumReturnType, proof::GroveDBProof},
         query_result_type::{
@@ -21,10 +22,9 @@ mod tests {
         },
         reference_path::ReferencePathType,
         tests::{
-            common::compare_result_sets, make_deep_tree, make_empty_grovedb, make_test_grovedb,
-            TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF,
+            ANOTHER_TEST_LEAF, TEST_LEAF, TempGroveDb, common::compare_result_sets, make_deep_tree,
+            make_empty_grovedb, make_test_grovedb,
         },
-        Element, GroveDb, PathQuery, SizedQuery,
     };
 
     fn populate_tree_for_non_unique_range_subquery(db: &TempGroveDb, grove_version: &GroveVersion) {

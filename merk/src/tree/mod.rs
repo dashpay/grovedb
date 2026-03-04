@@ -26,7 +26,7 @@ pub mod tree_feature_type;
 mod walk;
 
 #[cfg(feature = "minimal")]
-use std::cmp::{max, Ordering};
+use std::cmp::{Ordering, max};
 
 #[cfg(feature = "minimal")]
 pub use commit::{Commit, NoopCommit};
@@ -34,20 +34,20 @@ pub use commit::{Commit, NoopCommit};
 use ed::{Decode, Encode, Terminated};
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
+    CostContext, CostResult, CostsExt, OperationCost, cost_return_on_error,
+    cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::{
+        StorageCost,
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
-        StorageCost,
     },
-    CostContext, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash,
-    CryptoHash, HASH_LENGTH, NULL_HASH,
+    CryptoHash, HASH_LENGTH, NULL_HASH, combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash,
+    node_hash_with_count, value_hash,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -75,7 +75,7 @@ use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost};
 #[cfg(feature = "minimal")]
-use crate::{error::Error, tree_type::TreeType, Error::Overflow};
+use crate::{Error::Overflow, error::Error, tree_type::TreeType};
 // TODO: remove need for `TreeInner`, and just use `Box<Self>` receiver for
 // relevant methods
 
@@ -1243,11 +1243,7 @@ impl TreeNode {
 #[cfg(feature = "minimal")]
 /// Convert side (left or right) to string
 pub const fn side_to_str(left: bool) -> &'static str {
-    if left {
-        "left"
-    } else {
-        "right"
-    }
+    if left { "left" } else { "right" }
 }
 
 #[cfg(feature = "minimal")]
@@ -1260,9 +1256,9 @@ mod test_provable_count_edge_cases;
 #[cfg(test)]
 mod test {
 
-    use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, TreeNode};
+    use super::{AggregateData, TreeNode, commit::NoopCommit, hash::NULL_HASH};
     use crate::tree::{
-        tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
+        TreeFeatureType::BasicMerkNode, tree_feature_type::TreeFeatureType::SummedMerkNode,
     };
 
     #[test]

@@ -3,7 +3,7 @@ use crate::version::grovedb_versions::*;
 use crate::version::merk_versions::*;
 use crate::version::v1::GROVE_V1;
 use crate::version::v2::GROVE_V2;
-use crate::version::{GroveVersion, GROVE_VERSIONS};
+use crate::version::{GROVE_VERSIONS, GroveVersion};
 use crate::{TryFromVersioned, TryIntoVersioned};
 
 // ── GroveVersionError tests ──────────────────────────────────────────

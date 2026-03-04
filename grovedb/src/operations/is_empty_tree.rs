@@ -1,12 +1,12 @@
 //! Check if empty tree operations
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost, cost_return_on_error};
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    util::{compat, TxRef},
     Error, GroveDb, TransactionArg,
+    util::{TxRef, compat},
 };
 
 impl GroveDb {

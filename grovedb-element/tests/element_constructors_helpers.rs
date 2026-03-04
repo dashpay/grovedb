@@ -1,5 +1,5 @@
 use grovedb_element::{
-    error::ElementError, reference_path::ReferencePathType, Element, ElementFlags,
+    Element, ElementFlags, error::ElementError, reference_path::ReferencePathType,
 };
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;

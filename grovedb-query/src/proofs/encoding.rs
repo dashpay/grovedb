@@ -7,7 +7,7 @@ use ed::{Decode, Encode, Error as EdError, Terminated};
 use super::{Node, Op};
 use crate::{
     error::Error,
-    proofs::{TreeFeatureType, HASH_LENGTH},
+    proofs::{HASH_LENGTH, TreeFeatureType},
 };
 
 /// Maximum allowed value length for large value variants (64MB).
@@ -920,8 +920,8 @@ mod test {
 
     use super::{Decoder, Node, Op};
     use crate::proofs::{
-        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
         HASH_LENGTH,
+        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
     };
 
     #[test]

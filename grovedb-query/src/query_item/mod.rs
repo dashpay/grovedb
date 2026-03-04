@@ -10,7 +10,7 @@ use std::{
     ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive},
 };
 
-use bincode::{enc::write::Writer, error::DecodeError, BorrowDecode, Decode, Encode};
+use bincode::{BorrowDecode, Decode, Encode, enc::write::Writer, error::DecodeError};
 #[cfg(feature = "blockchain")]
 use grovedb_costs::{CostContext, CostsExt, OperationCost};
 #[cfg(feature = "blockchain")]
@@ -937,16 +937,26 @@ mod test {
         );
         assert!(!QueryItem::Key(vec![30]).collides_with(&QueryItem::Range(vec![10]..vec![20])));
 
-        assert!(!QueryItem::Range(vec![10]..vec![20])
-            .collides_with(&QueryItem::Range(vec![30]..vec![40])));
-        assert!(!QueryItem::Range(vec![10]..vec![20])
-            .collides_with(&QueryItem::Range(vec![20]..vec![30])));
-        assert!(QueryItem::RangeInclusive(vec![10]..=vec![20])
-            .collides_with(&QueryItem::Range(vec![20]..vec![30])));
-        assert!(QueryItem::Range(vec![15]..vec![25])
-            .collides_with(&QueryItem::Range(vec![20]..vec![30])));
-        assert!(!QueryItem::Range(vec![20]..vec![30])
-            .collides_with(&QueryItem::Range(vec![10]..vec![20])));
+        assert!(
+            !QueryItem::Range(vec![10]..vec![20])
+                .collides_with(&QueryItem::Range(vec![30]..vec![40]))
+        );
+        assert!(
+            !QueryItem::Range(vec![10]..vec![20])
+                .collides_with(&QueryItem::Range(vec![20]..vec![30]))
+        );
+        assert!(
+            QueryItem::RangeInclusive(vec![10]..=vec![20])
+                .collides_with(&QueryItem::Range(vec![20]..vec![30]))
+        );
+        assert!(
+            QueryItem::Range(vec![15]..vec![25])
+                .collides_with(&QueryItem::Range(vec![20]..vec![30]))
+        );
+        assert!(
+            !QueryItem::Range(vec![20]..vec![30])
+                .collides_with(&QueryItem::Range(vec![10]..vec![20]))
+        );
         assert!(QueryItem::RangeFrom(vec![2]..).collides_with(&QueryItem::Key(vec![5])));
     }
 

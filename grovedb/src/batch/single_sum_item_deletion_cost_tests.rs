@@ -6,9 +6,9 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        Element,
         batch::QualifiedGroveDbOp,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
-        Element,
     };
 
     #[test]

@@ -10,7 +10,7 @@ use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::tree_type::TreeType;
 #[cfg(feature = "minimal")]
-use crate::{tree::kv::KV, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32};
+use crate::{HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, tree::kv::KV};
 
 #[cfg(feature = "minimal")]
 pub mod average_case_costs;

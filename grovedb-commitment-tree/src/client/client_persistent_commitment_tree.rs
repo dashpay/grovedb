@@ -28,17 +28,17 @@ use std::{
 
 use incrementalmerkletree::{Position, Retention};
 use orchard::{
-    tree::{Anchor, MerklePath},
     NOTE_COMMITMENT_TREE_DEPTH,
+    tree::{Anchor, MerklePath},
 };
 use rusqlite::Connection;
 use shardtree::ShardTree;
 
 use super::{
-    sqlite_store::{SqliteShardStore, SqliteShardStoreError},
     SHARD_HEIGHT,
+    sqlite_store::{SqliteShardStore, SqliteShardStoreError},
 };
-use crate::commitment_frontier::{merkle_hash_from_bytes, CommitmentTreeError};
+use crate::commitment_frontier::{CommitmentTreeError, merkle_hash_from_bytes};
 
 /// Persistent Orchard commitment tree backed by SQLite.
 ///

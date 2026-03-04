@@ -7,13 +7,13 @@ use std::{
 };
 
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
-use grovedb_version::{version::GroveVersion, TryFromVersioned};
+use grovedb_version::{TryFromVersioned, version::GroveVersion};
 
 use crate::{
-    operations::proof::util::{
-        hex_to_ascii, path_hex_to_ascii, ProvedPathKeyOptionalValue, ProvedPathKeyValue,
-    },
     Element, Error,
+    operations::proof::util::{
+        ProvedPathKeyOptionalValue, ProvedPathKeyValue, hex_to_ascii, path_hex_to_ascii,
+    },
 };
 
 #[derive(Copy, Clone)]
@@ -543,11 +543,11 @@ impl TryFromVersioned<ProvedPathKeyOptionalValue> for PathKeyOptionalElementTrio
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use grovedb_version::{version::GroveVersion, TryIntoVersioned};
+    use grovedb_version::{TryIntoVersioned, version::GroveVersion};
 
     use crate::{
-        operations::proof::util::ProvedPathKeyValue, query_result_type::PathKeyOptionalElementTrio,
-        Element,
+        Element, operations::proof::util::ProvedPathKeyValue,
+        query_result_type::PathKeyOptionalElementTrio,
     };
 
     #[test]

@@ -1,8 +1,8 @@
 use grovedb_element::{
     error::ElementError,
     reference_path::{
-        path_from_reference_path_type, path_from_reference_qualified_path_type,
-        util::path_as_slices_hex_to_ascii, ReferencePathType,
+        ReferencePathType, path_from_reference_path_type, path_from_reference_qualified_path_type,
+        util::path_as_slices_hex_to_ascii,
     },
 };
 use grovedb_path::{SubtreePath, SubtreePathBuilder};
@@ -142,14 +142,18 @@ fn invert_none_and_conversion_wrappers_are_covered() {
             .invert(path.clone(), b"k")
             .is_none()
     );
-    assert!(ReferencePathType::RemovedCousinReference(long_append_path)
-        .invert(path.clone(), b"k")
-        .is_none());
+    assert!(
+        ReferencePathType::RemovedCousinReference(long_append_path)
+            .invert(path.clone(), b"k")
+            .is_none()
+    );
 
     let empty_path: SubtreePath<'_, &[u8]> = (&[] as &[&[u8]]).into();
-    assert!(ReferencePathType::CousinReference(b"x".to_vec())
-        .invert(empty_path, b"k")
-        .is_none());
+    assert!(
+        ReferencePathType::CousinReference(b"x".to_vec())
+            .invert(empty_path, b"k")
+            .is_none()
+    );
 
     let current_qualified = [b"r".as_ref(), b"p".as_ref(), b"k".as_ref()];
     let path_from_method = ReferencePathType::SiblingReference(b"sib".to_vec())

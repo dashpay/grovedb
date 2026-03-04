@@ -33,7 +33,7 @@ use std::io::{Result, Write};
 use grovedb_storage::StorageContext;
 use grovedb_visualize::{Drawer, Visualize};
 
-use crate::{tree::TreeNode, Merk};
+use crate::{Merk, tree::TreeNode};
 
 /// Visualizeable Merk
 pub struct VisualizeableMerk<'a, S, F> {

@@ -6,8 +6,11 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    Error::ChunkingError,
+    Merk,
     error::Error,
     proofs::{
+        Node, Op,
         chunk::{
             chunk_op::ChunkOp,
             error::ChunkError,
@@ -18,10 +21,7 @@ use crate::{
                 number_of_chunks, vec_bytes_as_traversal_instruction,
             },
         },
-        Node, Op,
     },
-    Error::ChunkingError,
-    Merk,
 };
 
 /// ChunkProof for replication of a single subtree
@@ -415,20 +415,20 @@ where
 mod test {
     use super::*;
     use crate::{
+        PanicSource,
         proofs::{
+            Tree,
             chunk::{
                 chunk::{
-                    tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
                     LEFT, RIGHT,
+                    tests::{traverse_get_kv_feature_type, traverse_get_node_hash},
                 },
                 util::traversal_instruction_as_vec_bytes,
             },
             tree::execute,
-            Tree,
         },
-        test_utils::{make_batch_seq, TempMerk},
+        test_utils::{TempMerk, make_batch_seq},
         tree::RefWalker,
-        PanicSource,
     };
 
     #[derive(Default)]

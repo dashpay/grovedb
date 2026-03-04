@@ -117,8 +117,7 @@ impl ReferencePathType {
                 if append_path.len() > u8::MAX as usize {
                     return None;
                 }
-                let mut relative_path =
-                    vec![path.into_reverse_iter().next().map(|x| x.to_vec())?];
+                let mut relative_path = vec![path.into_reverse_iter().next().map(|x| x.to_vec())?];
                 relative_path.push(key.to_vec());
                 ReferencePathType::UpstreamFromElementHeightReference(
                     append_path.len() as u8,
@@ -525,7 +524,7 @@ impl ReferencePathType {
 mod tests {
     use grovedb_path::{SubtreePath, SubtreePathBuilder};
 
-    use crate::reference_path::{path_from_reference_path_type, ReferencePathType};
+    use crate::reference_path::{ReferencePathType, path_from_reference_path_type};
 
     #[test]
     fn test_upstream_root_height_reference() {

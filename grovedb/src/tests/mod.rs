@@ -1386,14 +1386,16 @@ mod general_tests {
         )
         .unwrap()
         .expect("successful subtree insert");
-        assert!(db
-            .get([TEST_LEAF].as_ref(), b"merk_1", None, grove_version)
-            .unwrap()
-            .is_ok());
-        assert!(db
-            .get([TEST_LEAF].as_ref(), b"merk_2", None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.get([TEST_LEAF].as_ref(), b"merk_1", None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            db.get([TEST_LEAF].as_ref(), b"merk_2", None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1665,15 +1667,16 @@ mod general_tests {
             .expect("successful get 2"),
             element
         );
-        assert!(db
-            .get(
+        assert!(
+            db.get(
                 [TEST_LEAF, b"key1", b"key2"].as_ref(),
                 b"key4",
                 None,
                 grove_version
             )
             .unwrap()
-            .is_err());
+            .is_err()
+        );
         assert_eq!(
             prev_root_hash,
             db.root_hash(None, grove_version).unwrap().unwrap()
@@ -3198,10 +3201,11 @@ mod general_tests {
         .unwrap()
         .unwrap();
 
-        assert!(db
-            .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None, grove_version)
-            .unwrap()
-            .expect("path is valid tree"));
+        assert!(
+            db.is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None, grove_version)
+                .unwrap()
+                .expect("path is valid tree")
+        );
 
         // add an element to the tree to make it non-empty
         db.insert(
@@ -3214,10 +3218,11 @@ mod general_tests {
         )
         .unwrap()
         .unwrap();
-        assert!(!db
-            .is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None, grove_version)
-            .unwrap()
-            .expect("path is valid tree"));
+        assert!(
+            !db.is_empty_tree([TEST_LEAF, b"innertree"].as_ref(), None, grove_version)
+                .unwrap()
+                .expect("path is valid tree")
+        );
     }
 
     #[test]
@@ -3991,10 +3996,11 @@ mod general_tests {
     fn test_get_non_existing_root_leaf() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        assert!(db
-            .get(EMPTY_PATH, b"ayy", None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.get(EMPTY_PATH, b"ayy", None, grove_version)
+                .unwrap()
+                .is_err()
+        );
     }
 
     #[test]
@@ -4023,26 +4029,29 @@ mod general_tests {
         .expect("cannot insert item");
 
         // Empty tree path means root always exist
-        assert!(db
-            .check_subtree_exists_invalid_path(EMPTY_PATH, None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.check_subtree_exists_invalid_path(EMPTY_PATH, None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
 
         // TEST_LEAF should be a tree
-        assert!(db
-            .check_subtree_exists_invalid_path([TEST_LEAF].as_ref().into(), None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.check_subtree_exists_invalid_path([TEST_LEAF].as_ref().into(), None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
 
         // TEST_LEAF.key_subtree should be a tree
-        assert!(db
-            .check_subtree_exists_invalid_path(
+        assert!(
+            db.check_subtree_exists_invalid_path(
                 [TEST_LEAF, b"key_subtree"].as_ref().into(),
                 None,
                 grove_version
             )
             .unwrap()
-            .is_ok());
+            .is_ok()
+        );
 
         // TEST_LEAF.key_scalar should NOT be a tree
         assert!(matches!(
@@ -4071,14 +4080,16 @@ mod general_tests {
         )
         .unwrap()
         .expect("cannot insert item");
-        assert!(db
-            .has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
-            .unwrap()
-            .unwrap());
-        assert!(!db
-            .has_raw([TEST_LEAF].as_ref(), b"badkey", None, grove_version)
-            .unwrap()
-            .unwrap());
+        assert!(
+            db.has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
+        assert!(
+            !db.has_raw([TEST_LEAF].as_ref(), b"badkey", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
 
         // Test keys for a root tree
         db.insert(
@@ -4092,18 +4103,21 @@ mod general_tests {
         .unwrap()
         .expect("cannot insert item");
 
-        assert!(db
-            .has_raw(EMPTY_PATH, b"leaf", None, grove_version)
-            .unwrap()
-            .unwrap());
-        assert!(db
-            .has_raw(EMPTY_PATH, TEST_LEAF, None, grove_version)
-            .unwrap()
-            .unwrap());
-        assert!(!db
-            .has_raw(EMPTY_PATH, b"badleaf", None, grove_version)
-            .unwrap()
-            .unwrap());
+        assert!(
+            db.has_raw(EMPTY_PATH, b"leaf", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
+        assert!(
+            db.has_raw(EMPTY_PATH, TEST_LEAF, None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
+        assert!(
+            !db.has_raw(EMPTY_PATH, b"badleaf", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -4122,14 +4136,16 @@ mod general_tests {
         )
         .unwrap()
         .expect("cannot insert item");
-        assert!(db
-            .has_raw([TEST_LEAF].as_ref(), b"key", Some(&tx), grove_version)
-            .unwrap()
-            .unwrap());
-        assert!(!db
-            .has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
-            .unwrap()
-            .unwrap());
+        assert!(
+            db.has_raw([TEST_LEAF].as_ref(), b"key", Some(&tx), grove_version)
+                .unwrap()
+                .unwrap()
+        );
+        assert!(
+            !db.has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
 
         // Test keys for a root tree
         db.insert(
@@ -4142,26 +4158,30 @@ mod general_tests {
         )
         .unwrap()
         .expect("cannot insert item");
-        assert!(db
-            .has_raw(EMPTY_PATH, b"leaf", Some(&tx), grove_version)
-            .unwrap()
-            .unwrap());
-        assert!(!db
-            .has_raw(EMPTY_PATH, b"leaf", None, grove_version)
-            .unwrap()
-            .unwrap());
+        assert!(
+            db.has_raw(EMPTY_PATH, b"leaf", Some(&tx), grove_version)
+                .unwrap()
+                .unwrap()
+        );
+        assert!(
+            !db.has_raw(EMPTY_PATH, b"leaf", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
 
         db.commit_transaction(tx)
             .unwrap()
             .expect("cannot commit transaction");
-        assert!(db
-            .has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
-            .unwrap()
-            .unwrap());
-        assert!(db
-            .has_raw(EMPTY_PATH, b"leaf", None, grove_version)
-            .unwrap()
-            .unwrap());
+        assert!(
+            db.has_raw([TEST_LEAF].as_ref(), b"key", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
+        assert!(
+            db.has_raw(EMPTY_PATH, b"leaf", None, grove_version)
+                .unwrap()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -4294,10 +4314,11 @@ mod general_tests {
         }
 
         // `verify_grovedb` must identify issues
-        assert!(!db
-            .verify_grovedb(None, true, false, grove_version)
-            .unwrap()
-            .is_empty());
+        assert!(
+            !db.verify_grovedb(None, true, false, grove_version)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -4349,10 +4370,11 @@ mod general_tests {
         .unwrap()
         .unwrap();
 
-        assert!(db
-            .verify_grovedb(None, true, false, grove_version)
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.verify_grovedb(None, true, false, grove_version)
+                .unwrap()
+                .is_empty()
+        );
 
         // Breaking things there:
         db.insert(
@@ -4366,10 +4388,11 @@ mod general_tests {
         .unwrap()
         .unwrap();
 
-        assert!(!db
-            .verify_grovedb(None, true, false, grove_version)
-            .unwrap()
-            .is_empty());
+        assert!(
+            !db.verify_grovedb(None, true, false, grove_version)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -4404,10 +4427,11 @@ mod general_tests {
             .unwrap()
             .unwrap();
 
-        assert!(db
-            .verify_grovedb(None, true, false, grove_version)
-            .unwrap()
-            .is_empty());
+        assert!(
+            db.verify_grovedb(None, true, false, grove_version)
+                .unwrap()
+                .is_empty()
+        );
 
         // Breaking things there:
         db.insert(
@@ -4421,9 +4445,10 @@ mod general_tests {
         .unwrap()
         .unwrap();
 
-        assert!(!db
-            .verify_grovedb(None, true, false, grove_version)
-            .unwrap()
-            .is_empty());
+        assert!(
+            !db.verify_grovedb(None, true, false, grove_version)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

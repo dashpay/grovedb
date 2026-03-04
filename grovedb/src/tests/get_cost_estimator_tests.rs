@@ -6,8 +6,8 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
         GroveDb,
+        batch::{KeyInfoPath, key_info::KeyInfo::KnownKey},
     };
 
     // -----------------------------------------------------------------------

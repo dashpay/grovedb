@@ -1,22 +1,22 @@
 use std::cmp::Ordering;
 
 use grovedb_costs::{
-    storage_cost::{
-        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
-        StorageCost,
-    },
     CostResult, CostsExt,
+    storage_cost::{
+        StorageCost,
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+    },
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    Error, Merk, MerkBatch, MerkOptions,
     merk::NodeType,
     tree::{
-        kv::{ValueDefinedCostType, KV},
         AuxMerkBatch, Walker,
+        kv::{KV, ValueDefinedCostType},
     },
-    Error, Merk, MerkBatch, MerkOptions,
 };
 
 impl<'db, S> Merk<S>
@@ -245,11 +245,11 @@ where
                 match prev_key.as_ref().cmp(key.as_ref()) {
                     Ordering::Greater => {
                         return Err(Error::InvalidInputError("Keys in batch must be sorted"))
-                            .wrap_with_cost(Default::default())
+                            .wrap_with_cost(Default::default());
                     }
                     Ordering::Equal => {
                         return Err(Error::InvalidInputError("Keys in batch must be unique"))
-                            .wrap_with_cost(Default::default())
+                            .wrap_with_cost(Default::default());
                     }
                     _ => (),
                 }

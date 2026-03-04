@@ -27,7 +27,7 @@ mod single_sum_item_insert_cost_tests;
 use core::fmt;
 use std::{
     cmp::Ordering,
-    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, btree_map::Entry, hash_map::Entry as HashMapEntry},
     hash::{Hash, Hasher},
     ops::{Add, AddAssign},
     slice::Iter,
@@ -40,30 +40,30 @@ use estimated_costs::{
     worst_case_costs::WorstCaseTreeCacheKnownPaths,
 };
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_into_no_add,
-    cost_return_on_error_no_add,
+    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_into,
+    cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     storage_cost::{
-        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
         StorageCost,
+        removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     },
-    CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
+    CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndAggregateData,
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
         get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
         tree_type::ElementTreeTypeExtensions,
     },
     tree::{
+        AggregateData, NULL_HASH,
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
-        value_hash, AggregateData, NULL_HASH,
+        value_hash,
     },
-    tree_type::{CostSize, TreeType, SUM_ITEM_COST_SIZE},
-    CryptoHash, Error as MerkError, Merk, MerkType, Op, RootHashKeyAndAggregateData,
+    tree_type::{CostSize, SUM_ITEM_COST_SIZE, TreeType},
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
+    Storage, StorageBatch, StorageContext, rocksdb_storage::PrefixedRocksDbTransactionContext,
 };
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
@@ -76,14 +76,14 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 #[cfg(feature = "estimated_costs")]
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
+    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
     element::MaxReferenceHop,
     operations::{get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
-        path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
+        ReferencePathType, path_from_reference_path_type, path_from_reference_qualified_path_type,
     },
     util::TxRef,
-    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
 /// Metadata for non-Merk tree types, carrying tree-type-specific state
@@ -3463,11 +3463,11 @@ mod tests {
 
     use super::*;
     use crate::{
+        PathQuery,
         reference_path::ReferencePathType,
         tests::{
-            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
+            ANOTHER_TEST_LEAF, TEST_LEAF, common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb,
         },
-        PathQuery,
     };
 
     #[test]
@@ -3629,8 +3629,8 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db
-            .apply_batch(
+        assert!(
+            db.apply_batch(
                 ops,
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: false,
@@ -3645,7 +3645,8 @@ mod tests {
                 grove_version
             )
             .unwrap()
-            .is_ok());
+            .is_ok()
+        );
     }
 
     #[test]
@@ -4002,14 +4003,16 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db
-            .apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .is_err());
-        assert!(db
-            .get([b"key1".as_ref()].as_ref(), b"key2", None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.apply_batch(ops, None, None, grove_version)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            db.get([b"key1".as_ref()].as_ref(), b"key2", None, grove_version)
+                .unwrap()
+                .is_err()
+        );
     }
 
     #[test]
@@ -4044,18 +4047,21 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db
-            .apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .is_err());
-        assert!(db
-            .get([b"key1".as_ref()].as_ref(), b"key2", None, grove_version)
-            .unwrap()
-            .is_err());
-        assert!(db
-            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
-            .unwrap()
-            .is_err(),);
+        assert!(
+            db.apply_batch(ops, None, None, grove_version)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            db.get([b"key1".as_ref()].as_ref(), b"key2", None, grove_version)
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
+                .unwrap()
+                .is_err(),
+        );
     }
 
     #[test]
@@ -4098,10 +4104,11 @@ mod tests {
             ),
             QualifiedGroveDbOp::delete_op(vec![b"key1".to_vec()], b"key2".to_vec()),
         ];
-        assert!(db
-            .apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.apply_batch(ops, None, None, grove_version)
+                .unwrap()
+                .is_err()
+        );
     }
 
     #[test]
@@ -4178,10 +4185,11 @@ mod tests {
             b"key1".to_vec(),
             element.clone(),
         )];
-        assert!(db
-            .apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.apply_batch(ops, None, None, grove_version)
+                .unwrap()
+                .is_err()
+        );
 
         // Insertion into a tree is correct
         let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
@@ -4236,8 +4244,8 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db
-            .apply_batch(
+        assert!(
+            db.apply_batch(
                 ops,
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: true,
@@ -4252,7 +4260,8 @@ mod tests {
                 grove_version
             )
             .unwrap()
-            .is_err());
+            .is_err()
+        );
 
         // TEST_LEAF will be deleted so you can not insert underneath it
         let ops = vec![
@@ -4263,10 +4272,11 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db
-            .apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.apply_batch(ops, None, None, grove_version)
+                .unwrap()
+                .is_err()
+        );
 
         // TEST_LEAF will be deleted so you can not insert underneath it
         // We are testing with the batch apply option
@@ -4279,8 +4289,8 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db
-            .apply_batch(
+        assert!(
+            db.apply_batch(
                 ops,
                 Some(BatchApplyOptions {
                     disable_operation_consistency_check: false,
@@ -4295,7 +4305,8 @@ mod tests {
                 grove_version
             )
             .unwrap()
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]
@@ -4314,8 +4325,8 @@ mod tests {
                 Element::empty_tree(),
             ),
         ];
-        assert!(db
-            .apply_batch(
+        assert!(
+            db.apply_batch(
                 ops,
                 Some(BatchApplyOptions {
                     validate_insertion_does_not_override: true,
@@ -4330,7 +4341,8 @@ mod tests {
                 grove_version
             )
             .unwrap()
-            .is_err());
+            .is_err()
+        );
     }
 
     #[test]
@@ -4374,10 +4386,11 @@ mod tests {
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
             .expect("cannot apply batch");
-        assert!(db
-            .get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.get([TEST_LEAF, b"key1"].as_ref(), b"key2", None, grove_version)
+                .unwrap()
+                .is_err()
+        );
     }
 
     #[test]
@@ -4449,10 +4462,11 @@ mod tests {
             .unwrap()
             .expect("cannot apply batch");
 
-        assert!(db
-            .get([ANOTHER_TEST_LEAF].as_ref(), b"key1", None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.get([ANOTHER_TEST_LEAF].as_ref(), b"key1", None, grove_version)
+                .unwrap()
+                .is_err()
+        );
 
         assert_eq!(
             db.get(
@@ -4479,26 +4493,31 @@ mod tests {
         );
 
         // verify root leaves
-        assert!(db
-            .get(EMPTY_PATH, TEST_LEAF, None, grove_version)
-            .unwrap()
-            .is_ok());
-        assert!(db
-            .get(EMPTY_PATH, ANOTHER_TEST_LEAF, None, grove_version)
-            .unwrap()
-            .is_ok());
-        assert!(db
-            .get(EMPTY_PATH, b"key1", None, grove_version)
-            .unwrap()
-            .is_ok());
-        assert!(db
-            .get(EMPTY_PATH, b"key2", None, grove_version)
-            .unwrap()
-            .is_ok());
-        assert!(db
-            .get(EMPTY_PATH, b"key3", None, grove_version)
-            .unwrap()
-            .is_err());
+        assert!(
+            db.get(EMPTY_PATH, TEST_LEAF, None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            db.get(EMPTY_PATH, ANOTHER_TEST_LEAF, None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            db.get(EMPTY_PATH, b"key1", None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            db.get(EMPTY_PATH, b"key2", None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            db.get(EMPTY_PATH, b"key3", None, grove_version)
+                .unwrap()
+                .is_err()
+        );
     }
 
     #[test]
@@ -4622,10 +4641,11 @@ mod tests {
                 elem.clone(),
             ),
         ];
-        assert!(db
-            .apply_batch(batch, None, None, grove_version)
-            .unwrap()
-            .is_ok());
+        assert!(
+            db.apply_batch(batch, None, None, grove_version)
+                .unwrap()
+                .is_ok()
+        );
         assert_eq!(
             db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
                 .unwrap()

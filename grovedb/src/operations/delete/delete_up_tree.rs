@@ -1,17 +1,16 @@
 //! Delete up tree
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
+    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
-    CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::MaybeTree;
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
-    batch::QualifiedGroveDbOp, operations::delete::DeleteOptions, util::TxRef, ElementFlags, Error,
-    GroveDb, TransactionArg,
+    ElementFlags, Error, GroveDb, TransactionArg, batch::QualifiedGroveDbOp,
+    operations::delete::DeleteOptions, util::TxRef,
 };
 
 #[cfg(feature = "minimal")]

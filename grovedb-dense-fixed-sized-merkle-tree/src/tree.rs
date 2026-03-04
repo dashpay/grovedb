@@ -5,8 +5,8 @@ use grovedb_storage::StorageContext;
 
 #[cfg(feature = "storage")]
 use crate::{
-    hash::{node_hash, validate_height},
     DenseMerkleError,
+    hash::{node_hash, validate_height},
 };
 
 /// Unwrap a `CostResult`, accumulate its cost into `$cost`, and return early
@@ -276,7 +276,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
                     "expected value at position {} but found none",
                     position
                 )))
-                .wrap_with_cost(cost)
+                .wrap_with_cost(cost);
             }
         };
 

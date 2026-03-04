@@ -1,18 +1,18 @@
 use std::collections::BTreeMap;
 
 use grovedb_costs::{
+    OperationCost, TreeCostType,
     context::{CostContext, CostResult, CostsExt},
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_into,
     cost_return_on_error_into_default, cost_return_on_error_into_no_add,
     cost_return_on_error_no_add,
     error::Error,
     storage_cost::{
+        StorageCost,
         key_value_cost::KeyValueStorageCost,
         removal::{Identifier, StorageRemovedBytes, StorageRemovedBytes::*},
         transition::OperationStorageTransitionType,
-        StorageCost,
     },
-    OperationCost, TreeCostType,
 };
 use integer_encoding::VarInt;
 use intmap::IntMap;
@@ -386,32 +386,40 @@ fn storage_cost_verify_and_transition_paths() {
     assert!(cost.verify_key_storage_cost(8, true).is_err());
 
     assert!(StorageCost::default().worse_or_eq_than(&StorageCost::default()));
-    assert!(!StorageCost {
-        added_bytes: 0,
-        replaced_bytes: 0,
-        removed_bytes: BasicStorageRemoval(1),
-    }
-    .worse_or_eq_than(&StorageCost::default()));
+    assert!(
+        !StorageCost {
+            added_bytes: 0,
+            replaced_bytes: 0,
+            removed_bytes: BasicStorageRemoval(1),
+        }
+        .worse_or_eq_than(&StorageCost::default())
+    );
 
     assert!(!StorageCost::default().has_storage_change());
-    assert!(!StorageCost {
-        added_bytes: 0,
-        replaced_bytes: 1,
-        removed_bytes: NoStorageRemoval,
-    }
-    .has_storage_change());
-    assert!(StorageCost {
-        added_bytes: 1,
-        replaced_bytes: 0,
-        removed_bytes: NoStorageRemoval,
-    }
-    .has_storage_change());
-    assert!(StorageCost {
-        added_bytes: 0,
-        replaced_bytes: 0,
-        removed_bytes: BasicStorageRemoval(1),
-    }
-    .has_storage_change());
+    assert!(
+        !StorageCost {
+            added_bytes: 0,
+            replaced_bytes: 1,
+            removed_bytes: NoStorageRemoval,
+        }
+        .has_storage_change()
+    );
+    assert!(
+        StorageCost {
+            added_bytes: 1,
+            replaced_bytes: 0,
+            removed_bytes: NoStorageRemoval,
+        }
+        .has_storage_change()
+    );
+    assert!(
+        StorageCost {
+            added_bytes: 0,
+            replaced_bytes: 0,
+            removed_bytes: BasicStorageRemoval(1),
+        }
+        .has_storage_change()
+    );
 
     let mut sum = StorageCost::default();
     sum += StorageCost {

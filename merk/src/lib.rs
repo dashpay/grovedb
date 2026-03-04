@@ -49,22 +49,22 @@ pub use ed;
 pub use error::Error;
 #[cfg(feature = "minimal")]
 pub use tree::{
-    BatchEntry, Link, MerkBatch, Op, PanicSource, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32,
-    HASH_LENGTH, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
+    BatchEntry, HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH, HASH_LENGTH_U32,
+    HASH_LENGTH_U32_X2, Link, MerkBatch, Op, PanicSource,
 };
 pub use tree::{CryptoHash, TreeFeatureType};
 pub use tree_type::{MaybeTree, TreeType};
 
 #[cfg(feature = "minimal")]
 pub use crate::merk::{
+    KVIterator, Merk, MerkType, RootHashKeyAndAggregateData,
     defaults::ROOT_KEY_KEY,
     prove::{ProofConstructionResult, ProofWithoutEncodingResult},
-    KVIterator, Merk, MerkType, RootHashKeyAndAggregateData,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use crate::proofs::branch::{
-    calculate_chunk_depths, calculate_chunk_depths_with_minimum,
-    calculate_max_tree_depth_from_count, BranchQueryResult, TrunkQueryResult,
+    BranchQueryResult, TrunkQueryResult, calculate_chunk_depths,
+    calculate_chunk_depths_with_minimum, calculate_max_tree_depth_from_count,
 };
 #[cfg(feature = "minimal")]
 pub use crate::visualize::VisualizeableMerk;
