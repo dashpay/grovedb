@@ -189,4 +189,138 @@ mod tests {
             "error should mention depth limit: {msg}"
         );
     }
+
+    #[test]
+    fn test_deserialize_empty_data() {
+        let mut pos = 0;
+        let result = deserialize_tree(&[], &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("unexpected end of data"),
+            "error should mention end of data: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_unknown_tag() {
+        let data = [0x99];
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("unknown tree node tag: 0x99"),
+            "error should mention unknown tag: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_truncated_leaf() {
+        // TAG_LEAF followed by only 10 bytes (needs 33: 32 hash + 1 flags)
+        let mut data = vec![TAG_LEAF];
+        data.extend_from_slice(&[0u8; 10]);
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("truncated leaf data"),
+            "error should mention truncated leaf: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_invalid_leaf_field_element() {
+        // TAG_LEAF + 32 bytes of 0xFF (not a valid Pallas element) + flags
+        let mut data = vec![TAG_LEAF];
+        data.extend_from_slice(&[0xFF; 32]);
+        data.push(0x00); // flags
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("invalid Pallas field element in leaf"),
+            "error should mention invalid leaf: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_invalid_retention_flags() {
+        // TAG_LEAF + valid hash + invalid flags byte (0xFF has undefined bits)
+        let valid_hash = crate::commitment_frontier::merkle_hash_from_bytes(&[0u8; 32])
+            .expect("zero is valid Pallas element");
+        let mut data = vec![TAG_LEAF];
+        data.extend_from_slice(&valid_hash.to_bytes());
+        data.push(0xFF); // invalid flags (only low 3 bits are defined)
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("invalid retention flags: 0xff"),
+            "error should mention invalid flags: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_truncated_parent_annotation_flag() {
+        // TAG_PARENT but no annotation flag byte follows
+        let data = [TAG_PARENT];
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("truncated parent annotation flag"),
+            "error should mention truncated annotation flag: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_truncated_parent_annotation_hash() {
+        // TAG_PARENT + has_ann=0x01 but only 10 bytes of hash (needs 32)
+        let mut data = vec![TAG_PARENT, 0x01];
+        data.extend_from_slice(&[0u8; 10]);
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("truncated parent annotation"),
+            "error should mention truncated annotation: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_invalid_annotation_field_element() {
+        // TAG_PARENT + has_ann=0x01 + 32 bytes of 0xFF (invalid) + left=Nil + right=Nil
+        let mut data = vec![TAG_PARENT, 0x01];
+        data.extend_from_slice(&[0xFF; 32]);
+        data.push(TAG_NIL);
+        data.push(TAG_NIL);
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("invalid Pallas field element in annotation"),
+            "error should mention invalid annotation: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_invalid_annotation_flag() {
+        // TAG_PARENT + has_ann=0x42 (neither 0x00 nor 0x01)
+        let data = [TAG_PARENT, 0x42];
+        let mut pos = 0;
+        let result = deserialize_tree(&data, &mut pos);
+        assert!(result.is_err());
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("invalid parent annotation flag: 0x42"),
+            "error should mention invalid flag: {msg}"
+        );
+    }
 }
