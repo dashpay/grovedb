@@ -20,7 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       core: ${{ steps.filter.outputs.core }}
+      merk: ${{ steps.filter.outputs.merk }}
       trees: ${{ steps.filter.outputs.trees }}
+      grovedb: ${{ steps.filter.outputs.grovedb }}
       any-code: ${{ steps.filter.outputs.any-code }}
     steps:
       - uses: actions/checkout@v4
@@ -37,13 +39,43 @@ jobs:
               - 'storage/**'
               - 'grovedb-epoch-based-storage-flags/**'
               - 'grovedb-element/**'
+              - 'grovedb-query/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            merk:
               - 'merk/**'
+              - 'costs/**'
+              - 'path/**'
+              - 'visualize/**'
+              - 'grovedb-version/**'
+              - 'storage/**'
+              - 'grovedb-element/**'
               - 'grovedb-query/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
             trees:
               - 'costs/**'
+              - 'path/**'
+              - 'visualize/**'
               - 'storage/**'
+              - 'grovedb-query/**'
+              - 'grovedb-merkle-mountain-range/**'
+              - 'grovedb-dense-fixed-sized-merkle-tree/**'
+              - 'grovedb-bulk-append-tree/**'
+              - 'grovedb-commitment-tree/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            grovedb:
+              - 'grovedb/**'
+              - 'costs/**'
+              - 'path/**'
+              - 'visualize/**'
+              - 'grovedb-version/**'
+              - 'grovedbg-types/**'
+              - 'storage/**'
+              - 'grovedb-epoch-based-storage-flags/**'
+              - 'grovedb-element/**'
+              - 'merk/**'
               - 'grovedb-query/**'
               - 'grovedb-merkle-mountain-range/**'
               - 'grovedb-dense-fixed-sized-merkle-tree/**'
@@ -60,7 +92,7 @@ jobs:
     name: Test Core
     needs: detect-changes
     if: needs.detect-changes.outputs.core == 'true'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,8 +103,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run core crate tests
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
         run: >
           cargo llvm-cov
           -p grovedb-costs
@@ -83,7 +119,6 @@ jobs:
           -p grovedb-storage
           -p grovedb-epoch-based-storage-flags
           -p grovedb-element
-          -p grovedb-merk
           -p grovedb-query
           --all-features
           --lcov --output-path lcov.info
@@ -96,11 +131,11 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
 
-  test-trees:
-    name: Test Trees
+  test-merk:
+    name: Test Merk
     needs: detect-changes
-    if: needs.detect-changes.outputs.trees == 'true'
-    runs-on: ubuntu-22.04
+    if: needs.detect-changes.outputs.merk == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -111,8 +146,47 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run merk tests
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
+        run: >
+          cargo llvm-cov
+          -p grovedb-merk
+          --all-features
+          --lcov --output-path lcov.info
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          flags: merk
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+
+  test-trees:
+    name: Test Trees
+    needs: detect-changes
+    if: needs.detect-changes.outputs.trees == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run tree crate tests
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
         run: >
           cargo llvm-cov
           -p grovedb-merkle-mountain-range
@@ -131,10 +205,14 @@ jobs:
           fail_ci_if_error: true
 
   test-grovedb:
-    name: Test GroveDB
+    name: Test GroveDB (${{ matrix.partition }}/3)
     needs: detect-changes
-    if: needs.detect-changes.outputs.any-code == 'true'
-    runs-on: ubuntu-22.04
+    if: needs.detect-changes.outputs.grovedb == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -145,11 +223,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Run grovedb tests
+      - uses: taiki-e/install-action@cargo-nextest
+      - name: Run grovedb tests (shard ${{ matrix.partition }}/3)
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
         run: >
-          cargo llvm-cov
+          cargo llvm-cov nextest
           -p grovedb
+          --partition count:${{ matrix.partition }}/3
           --lcov --output-path lcov.info
       - name: Upload coverage
         if: always()
@@ -184,7 +268,7 @@ jobs:
     name: Formatting
     needs: detect-changes
     if: needs.detect-changes.outputs.any-code == 'true'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -194,7 +278,7 @@ jobs:
 
   security:
     name: Security Audit
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
