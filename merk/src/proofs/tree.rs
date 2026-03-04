@@ -869,4 +869,95 @@ mod test {
         let ref_value_count_hash = tree.hash().unwrap();
         assert_ne!(ref_value_count_hash, NULL_HASH);
     }
+
+    /// Demonstrates SEC-006: aggregate_data() panics on non-KVValueHashFeatureType nodes.
+    ///
+    /// During chunk restoration (restore.rs:383), `chunk_tree.aggregate_data()`
+    /// is called on the proof tree produced by `execute()`. An attacker who
+    /// controls chunk data can craft a proof whose root is a `Node::KV` (or
+    /// any non-KVValueHashFeatureType variant), causing a panic.
+    ///
+    /// This test shows that:
+    /// 1. `execute()` successfully produces a tree from a KV node proof
+    /// 2. Calling `aggregate_data()` on that tree panics
+    #[test]
+    #[should_panic(expected = "Expected node to be type KVValueHashFeatureType")]
+    fn attack_aggregate_data_panics_on_crafted_chunk_proof() {
+        // Simulate a malicious chunk: a valid proof that produces a tree
+        // with a Node::KV root instead of Node::KVValueHashFeatureType.
+        let malicious_ops = vec![Ok(Op::Push(Node::KV(vec![1], vec![1])))];
+
+        let tree = execute(malicious_ops.into_iter(), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        // This is exactly what restore.rs:383 does — and it panics.
+        let _aggregate = tree.aggregate_data();
+    }
+
+    /// Demonstrates SEC-005: execute() has no limit on operation count.
+    ///
+    /// An attacker can craft a proof with thousands of Push operations.
+    /// Each Push allocates a Tree node on the stack with no upper bound.
+    /// This test shows that 10,000 Push(Hash) ops are accepted without
+    /// error during execution (only failing at the end because stack.len != 1).
+    ///
+    /// In production, an attacker could use much larger counts to exhaust
+    /// memory, and combine with large KV values for amplified impact.
+    #[test]
+    fn attack_unbounded_operation_count_and_stack_growth() {
+        // Craft 10,000 Push(Hash) operations — each adds a Tree to the stack.
+        // Hash nodes are 33 bytes each in the proof, so 10k ops = ~330KB proof.
+        // But in memory each Tree node is much larger (child pointers, heights, etc).
+        let n = 10_000;
+        let ops: Vec<Result<Op, Error>> = (0..n)
+            .map(|_| Ok(Op::Push(Node::Hash([0xAA; 32]))))
+            .collect();
+
+        // execute() processes all 10k ops without any limit check.
+        // It only fails at the end because stack.len() != 1.
+        let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+        assert!(
+            result.is_err(),
+            "Should fail because stack has {n} items, not 1"
+        );
+        // The key issue: all 10,000 operations were processed and 10,000
+        // Tree nodes were allocated before the error was detected.
+        // A real attacker would use millions of ops to exhaust memory.
+    }
+
+    /// Demonstrates SEC-005: proof bytes are decoded and executed with no
+    /// size limit on the proof itself.
+    ///
+    /// An attacker can submit arbitrarily large proof byte arrays to the
+    /// Decoder. This test shows that a ~330KB proof with 10,000 Hash
+    /// operations is accepted by the decoder without any size validation.
+    #[test]
+    fn attack_unbounded_proof_bytes_accepted_by_decoder() {
+        use ed::Encode;
+
+        // Construct a large proof: 10,000 Push(Hash) operations
+        let n = 10_000usize;
+        let mut proof_bytes = Vec::new();
+        for _ in 0..n {
+            let op = Op::Push(Node::Hash([0xBB; 32]));
+            op.encode_into(&mut proof_bytes).unwrap();
+        }
+
+        // Verify the proof is large (~330KB)
+        assert!(
+            proof_bytes.len() > 300_000,
+            "Proof should be ~330KB, got {} bytes",
+            proof_bytes.len()
+        );
+
+        // Decoder accepts it without any size check
+        let decoder = super::super::Decoder::new(&proof_bytes);
+        let decoded_ops: Vec<_> = decoder.collect();
+        assert_eq!(decoded_ops.len(), n);
+        assert!(
+            decoded_ops.iter().all(|r| r.is_ok()),
+            "All ops decoded successfully — no size limit enforced"
+        );
+    }
 }
