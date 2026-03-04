@@ -13,9 +13,9 @@ mod append;
 pub mod hash;
 
 #[cfg(feature = "storage")]
-mod query;
+mod fetch;
 #[cfg(feature = "storage")]
-pub use query::{BufferQueryResult, ChunkQueryResult};
+pub use fetch::{BufferQueryResult, ChunkQueryResult};
 
 #[cfg(all(test, feature = "storage"))]
 mod tests;

@@ -20,7 +20,7 @@ mod client;
 #[cfg(feature = "client")]
 pub use client::ClientMemoryCommitmentTree;
 mod commitment_frontier;
-#[cfg(feature = "storage")]
+#[cfg(feature = "server")]
 mod commitment_tree;
 mod error;
 #[cfg(test)]
@@ -62,13 +62,13 @@ pub fn compute_commitment_tree_state_root(
     *hasher.finalize().as_bytes()
 }
 
-#[cfg(feature = "storage")]
+#[cfg(feature = "server")]
 pub use commitment_tree::{
     ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
     CommitmentTree, COMMITMENT_TREE_DATA_KEY,
 };
 pub use error::CommitmentTreeError;
-#[cfg(feature = "storage")]
+#[cfg(feature = "server")]
 pub use grovedb_bulk_append_tree::{
     deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree,
 };

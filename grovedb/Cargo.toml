@@ -81,7 +81,6 @@ minimal = [
     "grovedb-merk/minimal",
     "grovedb-commitment-tree",
     "grovedb-commitment-tree/server",
-    "grovedb-commitment-tree/storage",
     "grovedb-merkle-mountain-range",
     "grovedb-merkle-mountain-range/storage",
     "grovedb-bulk-append-tree",
@@ -108,7 +107,7 @@ verify = [
     "grovedb-dense-fixed-sized-merkle-tree",
 ]
 estimated_costs = ["full"]
-zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client", "grovedb-commitment-tree/storage"]
+zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client"]
 grovedbg = [
     "grovedbg-types",
     "tokio",

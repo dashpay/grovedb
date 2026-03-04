@@ -175,6 +175,7 @@ use debugger::start_visualizer;
 pub use element::Element;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
+#[cfg(feature = "minimal")]
 use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
