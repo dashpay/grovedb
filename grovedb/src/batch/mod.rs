@@ -1714,19 +1714,11 @@ where
                                 .get_feature_type(in_tree_type)
                                 .wrap_with_cost(OperationCost::default())
                         );
-                        // Combined empty state root: sinsemilla + bulk
-                        let empty_bulk_root =
-                            grovedb_bulk_append_tree::compute_state_root(&NULL_HASH, &NULL_HASH);
-                        let empty_state_root =
-                            grovedb_commitment_tree::compute_commitment_tree_state_root(
-                                &grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
-                                &empty_bulk_root,
-                            );
                         cost_return_on_error_into!(
                             &mut cost,
                             element.insert_subtree_into_batch_operations(
                                 key_info.get_key_clone(),
-                                empty_state_root,
+                                grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
                                 false,
                                 &mut batch_operations,
                                 merk_feature_type,

@@ -1191,6 +1191,24 @@ impl GroveDb {
             Self::query_items_to_leaf_indices(&sub_query.items, mmr_size)
         );
 
+        // Empty leaf_indices means the MMR has no matching leaves (e.g. empty
+        // tree).  Return an empty proof directly instead of calling
+        // MmrTreeProof::generate which rejects empty indices.
+        if leaf_indices.is_empty() {
+            let empty_proof = MmrTreeProof::new(mmr_size, vec![], vec![]);
+            let proof_bytes = cost_return_on_error_no_add!(
+                cost,
+                empty_proof
+                    .encode_to_vec()
+                    .map_err(|e| Error::CorruptedData(format!("{}", e)))
+            );
+            return Ok(LayerProof {
+                merk_proof: ProofBytes::MMR(proof_bytes),
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
         // Open aux storage at the subtree path
         let path_vec: Vec<Vec<u8>> = subtree_path.iter().map(|s| s.to_vec()).collect();
         let path_refs: Vec<&[u8]> = path_vec.iter().map(|v| v.as_slice()).collect();

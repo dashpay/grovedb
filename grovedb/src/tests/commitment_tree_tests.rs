@@ -2040,12 +2040,9 @@ fn test_commitment_tree_persistence_across_reopen() {
 // verify_grovedb empty tree test
 // ===========================================================================
 
-/// An empty CommitmentTree (no inserts) currently has a hash mismatch in
-/// verify_grovedb: the initial insert stores NULL_HASH ([0; 32]) as the
-/// child hash in Merk, but verify_grovedb computes the actual state root
-/// (which includes the non-zero sinsemilla empty tree root). This test
-/// documents that known behavior. After the first insert, verify_grovedb
-/// passes cleanly (see `test_verify_grovedb_commitment_tree_valid`).
+/// An empty CommitmentTree (no inserts) should pass verify_grovedb cleanly.
+/// Both batch insertion and verification now use the same pre-computed
+/// EMPTY_COMMITMENT_TREE_STATE_ROOT constant.
 #[test]
 fn test_verify_grovedb_commitment_tree_empty() {
     let grove_version = GroveVersion::latest();
@@ -2063,20 +2060,12 @@ fn test_verify_grovedb_commitment_tree_empty() {
     .unwrap()
     .expect("insert empty commitment tree");
 
-    // An empty CommitmentTree currently reports a hash mismatch because the
-    // initial child hash is NULL_HASH but the computed state root includes
-    // the non-zero sinsemilla empty tree root.
     let issues = db
         .verify_grovedb(None, true, false, grove_version)
         .expect("verify should not fail");
     assert!(
-        !issues.is_empty(),
-        "empty commitment tree should report hash mismatch (NULL_HASH vs sinsemilla empty root)"
-    );
-    // Exactly one issue for the path [b"ct"]
-    assert_eq!(
-        issues.len(),
-        1,
-        "should have exactly one issue for the empty commitment tree path"
+        issues.is_empty(),
+        "empty commitment tree should verify cleanly, got: {:?}",
+        issues
     );
 }

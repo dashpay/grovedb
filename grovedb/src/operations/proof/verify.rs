@@ -669,6 +669,12 @@ impl GroveDb {
             ));
         }
 
+        // Empty proof means no matching leaves (e.g. empty MMR tree).
+        // Return the empty-MMR root hash ([0u8; 32]) directly.
+        if mmr_proof.leaves().is_empty() {
+            return Ok([0u8; 32]);
+        }
+
         // Compute root from the proof — the Merk child hash mechanism
         // authenticates this root via combine_hash(value_hash || mmr_root)
         let (mmr_root, verified_leaves) = mmr_proof

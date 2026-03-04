@@ -292,18 +292,12 @@ impl GroveDb {
             // hash must include the empty sinsemilla root so V1 proof
             // verification works even before the first append.
             Element::CommitmentTree(..) => {
-                let empty_bulk_root =
-                    grovedb_bulk_append_tree::compute_state_root(&NULL_HASH, &NULL_HASH);
-                let empty_state_root = grovedb_commitment_tree::compute_commitment_tree_state_root(
-                    &grovedb_commitment_tree::EMPTY_SINSEMILLA_ROOT,
-                    &empty_bulk_root,
-                );
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert_subtree(
                         &mut subtree_to_insert_into,
                         key,
-                        empty_state_root,
+                        grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
                         Some(options.as_merk_options()),
                         grove_version
                     )
