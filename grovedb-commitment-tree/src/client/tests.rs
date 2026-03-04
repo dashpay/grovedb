@@ -199,6 +199,19 @@ fn test_unique_checkpoint_ids_allow_witness_for_all_notes() {
     }
 }
 
+#[test]
+fn test_append_invalid_field_element() {
+    let mut tree = ClientMemoryCommitmentTree::new(10);
+    // All 0xFF bytes is not a valid Pallas field element
+    let result = tree.append([0xFF; 32], Retention::Marked);
+    assert!(result.is_err(), "should reject invalid field element");
+    let msg = format!("{}", result.expect_err("should be error"));
+    assert!(
+        msg.contains("invalid Pallas field element"),
+        "error should mention field element: {msg}"
+    );
+}
+
 /// Verifies that witness anchors from both syncs match when using
 /// unique checkpoint IDs, and that the anchor at checkpoint depth 1
 /// differs from depth 0 (since the tree grew between checkpoints).

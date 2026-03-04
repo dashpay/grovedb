@@ -444,4 +444,55 @@ mod tests {
             .expect("for_each");
         assert_eq!(ids, vec![5, 4, 3]);
     }
+
+    #[test]
+    fn test_with_checkpoints() {
+        let mut store = test_store();
+        for i in 1..=5u32 {
+            store
+                .add_checkpoint(i, Checkpoint::at_position(Position::from(i as u64)))
+                .expect("add");
+        }
+
+        let mut ids = Vec::new();
+        store
+            .with_checkpoints(2, |id, _| {
+                ids.push(*id);
+                Ok(())
+            })
+            .expect("with_checkpoints");
+        assert_eq!(ids, vec![5, 4]);
+    }
+
+    #[test]
+    fn test_update_checkpoint_with_replacement() {
+        let mut store = test_store();
+        let cp = Checkpoint::at_position(Position::from(10));
+        store.add_checkpoint(1, cp).expect("add");
+
+        // Replace checkpoint entirely with new state + marks
+        let mut marks = BTreeSet::new();
+        marks.insert(Position::from(42));
+        marks.insert(Position::from(99));
+        let updated = store
+            .update_checkpoint_with(&1, |cp| {
+                *cp = Checkpoint::from_parts(
+                    TreeState::AtPosition(Position::from(20)),
+                    marks.clone(),
+                );
+                Ok(())
+            })
+            .expect("update with replacement");
+        assert!(updated);
+
+        // Verify the replacement was persisted
+        let loaded = store.get_checkpoint(&1).expect("get").expect("exists");
+        assert_eq!(
+            loaded.tree_state(),
+            TreeState::AtPosition(Position::from(20))
+        );
+        assert_eq!(loaded.marks_removed().len(), 2);
+        assert!(loaded.marks_removed().contains(&Position::from(42)));
+        assert!(loaded.marks_removed().contains(&Position::from(99)));
+    }
 }

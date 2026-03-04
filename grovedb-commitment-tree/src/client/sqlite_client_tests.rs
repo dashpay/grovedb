@@ -172,6 +172,19 @@ mod tests {
     }
 
     #[test]
+    fn test_append_invalid_field_element() {
+        let mut tree = memory_tree();
+        // All 0xFF bytes is not a valid Pallas field element
+        let result = tree.append([0xFF; 32], Retention::Marked);
+        assert!(result.is_err(), "should reject invalid field element");
+        let msg = format!("{}", result.expect_err("should be error"));
+        assert!(
+            msg.contains("invalid Pallas field element"),
+            "error should mention field element: {msg}"
+        );
+    }
+
+    #[test]
     fn test_shared_connection_append_and_anchor() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         let arc = Arc::new(Mutex::new(conn));
