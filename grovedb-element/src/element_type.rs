@@ -466,6 +466,31 @@ mod tests {
     }
 
     #[test]
+    fn test_proof_node_type_provable_count_sum_tree() {
+        use super::ProofNodeType;
+
+        let pcst = Some(ElementType::ProvableCountSumTree);
+
+        // Items use KvCount in ProvableCountSumTree (same as ProvableCountTree)
+        assert_eq!(
+            ElementType::Item.proof_node_type(pcst),
+            ProofNodeType::KvCount
+        );
+
+        // References use KvRefValueHashCount
+        assert_eq!(
+            ElementType::Reference.proof_node_type(pcst),
+            ProofNodeType::KvRefValueHashCount
+        );
+
+        // Subtrees use KvValueHashFeatureType
+        assert_eq!(
+            ElementType::Tree.proof_node_type(pcst),
+            ProofNodeType::KvValueHashFeatureType
+        );
+    }
+
+    #[test]
     fn test_from_serialized_value() {
         // Test with valid first bytes
         assert_eq!(

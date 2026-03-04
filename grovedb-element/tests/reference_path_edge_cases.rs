@@ -212,6 +212,14 @@ fn serialized_size_display_and_util_helpers_are_covered() {
         ),
         "AbsolutePathReference(616263(abc))"
     );
+    // Valid UTF-8 with non-alphanumeric chars: display_path shows hex only (no parenthetical)
+    assert_eq!(
+        format!(
+            "{}",
+            ReferencePathType::AbsolutePathReference(vec![b"a b".to_vec()])
+        ),
+        "AbsolutePathReference(612062)"
+    );
     assert_eq!(
         format!(
             "{}",

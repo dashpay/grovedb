@@ -183,3 +183,69 @@ fn serialize_deserialize_round_trip_all_element_types_and_errors() {
         ElementError::CorruptedData(msg) if msg.contains("unable to deserialize element")
     ));
 }
+
+/// Covers the `None` flags branch in Display for all 15 variants,
+/// the `None` max_hop branch for Reference, and the `None` root_key
+/// branch for tree-type variants.
+#[test]
+fn element_display_without_flags_covers_none_branches() {
+    use grovedb_element::reference_path::ReferencePathType;
+
+    let values: Vec<(Element, &str)> = vec![
+        // Uses non-allowed bytes to cover hex_to_ascii's else (hex) branch
+        (Element::Item(vec![0x00, 0x01], None), "Item(0x0001)"),
+        (
+            Element::Reference(
+                ReferencePathType::SiblingReference(b"k".to_vec()),
+                None,
+                None,
+            ),
+            "Reference(SiblingReference(6b), max_hop: None)",
+        ),
+        (Element::Tree(None, None), "Tree(None)"),
+        (Element::SumItem(-1, None), "SumItem(-1)"),
+        (Element::SumTree(None, 2, None), "SumTree(None, 2)"),
+        (Element::BigSumTree(None, 3, None), "BigSumTree(None, 3)"),
+        (Element::CountTree(None, 4, None), "CountTree(None, 4)"),
+        (
+            Element::CountSumTree(None, 5, 6, None),
+            "CountSumTree(None, 5, 6)",
+        ),
+        (
+            Element::ProvableCountTree(None, 7, None),
+            "ProvableCountTree(None, 7)",
+        ),
+        (
+            Element::ItemWithSumItem(b"xyz".to_vec(), 8, None),
+            "ItemWithSumItem(xyz , 8)",
+        ),
+        (
+            Element::ProvableCountSumTree(None, 9, 10, None),
+            "ProvableCountSumTree(None, 9, 10)",
+        ),
+        (
+            Element::CommitmentTree(11, 12, None),
+            "CommitmentTree(count: 11, chunk_power: 12)",
+        ),
+        (Element::MmrTree(13, None), "MmrTree(mmr_size: 13)"),
+        (
+            Element::BulkAppendTree(14, 15, None),
+            "BulkAppendTree(total_count: 14, chunk_power: 15)",
+        ),
+        (
+            Element::DenseAppendOnlyFixedSizeTree(17, 18, None),
+            "DenseAppendOnlyFixedSizeTree(count: 17, height: 18)",
+        ),
+    ];
+
+    for (element, expected_display) in values {
+        let display = format!("{element}");
+        assert_eq!(display, expected_display);
+        assert!(
+            !display.contains("flags:"),
+            "Display for {:?} should not contain 'flags:' when flags is None, got: {}",
+            element.type_str(),
+            display
+        );
+    }
+}
