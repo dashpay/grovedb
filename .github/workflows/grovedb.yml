@@ -31,42 +31,10 @@ jobs:
               - '**/Cargo.toml'
               - 'Cargo.lock'
 
-  build:
-    name: Build
-    needs: detect-changes
-    if: needs.detect-changes.outputs.any-code == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: "false"
-          shared-key: coverage-build
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: taiki-e/install-action@cargo-nextest
-      - name: Build and archive tests
-        env:
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: sccache
-        run: |
-          source <(cargo llvm-cov show-env --export-prefix)
-          cargo llvm-cov clean --workspace
-          cargo nextest archive --workspace --all-features --archive-file tests.tar.zst
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nextest-archive
-          path: tests.tar.zst
-          retention-days: 1
-
   test:
     name: Test (${{ matrix.partition }}/3)
-    needs: build
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -82,18 +50,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
-          shared-key: coverage-build
-          save-if: "false"
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@cargo-nextest
-      - uses: actions/download-artifact@v4
-        with:
-          name: nextest-archive
       - name: Run tests (shard ${{ matrix.partition }}/3)
-        run: |
-          source <(cargo llvm-cov show-env --export-prefix)
-          cargo nextest run --archive-file tests.tar.zst --partition count:${{ matrix.partition }}/3
-          cargo llvm-cov report --lcov --output-path lcov.info
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
+        run: >
+          cargo llvm-cov nextest
+          --workspace
+          --all-features
+          --partition count:${{ matrix.partition }}/3
+          --lcov --output-path lcov.info
       - name: Upload coverage
         if: always()
         uses: codecov/codecov-action@v5
