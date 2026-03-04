@@ -17,9 +17,9 @@ pub(crate) mod proof;
 pub(crate) mod tree;
 mod verify;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "storage"))]
 pub(crate) mod test_utils;
-#[cfg(test)]
+#[cfg(all(test, feature = "storage"))]
 mod tests;
 
 pub use error::DenseMerkleError;

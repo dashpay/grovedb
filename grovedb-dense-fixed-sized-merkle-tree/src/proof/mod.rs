@@ -10,11 +10,15 @@
 use std::collections::BTreeSet;
 
 use bincode::{Decode, Encode};
+#[cfg(feature = "storage")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_query::{Query, QueryItem};
+#[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
 
-use crate::{tree::DenseFixedSizedMerkleTree, DenseMerkleError};
+#[cfg(feature = "storage")]
+use crate::tree::DenseFixedSizedMerkleTree;
+use crate::DenseMerkleError;
 
 /// Decode a byte slice as a big-endian `u16` position.
 ///
@@ -118,10 +122,12 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
     Ok(positions.into_iter().collect())
 }
 
+#[cfg(all(test, feature = "storage"))]
 mod tests;
 
 /// Unwrap a `CostResult`, accumulate its cost into `$cost`, and return early
 /// (with accumulated cost) on error.
+#[cfg(feature = "storage")]
 macro_rules! cost_return_on_error {
     ($cost:ident, $expr:expr) => {
         match $expr.unwrap_add_cost(&mut $cost) {
@@ -155,6 +161,7 @@ impl DenseTreeProof {
     /// Generate a proof for the given positions.
     ///
     /// Positions must be < count. Duplicates are deduplicated.
+    #[cfg(feature = "storage")]
     pub fn generate<'db, S: StorageContext<'db>>(
         tree: &DenseFixedSizedMerkleTree<S>,
         positions: &[u16],
@@ -258,6 +265,7 @@ impl DenseTreeProof {
     /// Each [`QueryItem`] in the query is interpreted as specifying positions
     /// encoded as big-endian `u16` bytes (1-byte or 2-byte). Unbounded range
     /// ends are clamped to `0` or `count`.
+    #[cfg(feature = "storage")]
     pub fn generate_for_query<'db, S: StorageContext<'db>>(
         tree: &DenseFixedSizedMerkleTree<S>,
         query: &Query,
