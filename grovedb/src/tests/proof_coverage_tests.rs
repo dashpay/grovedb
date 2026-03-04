@@ -5329,6 +5329,334 @@ mod tests {
         assert_eq!(count, 3, "RangeAfterToInclusive (1,4] should return 2,3,4");
     }
 
+    // =========================================================================
+    // QueryItem variant coverage for MMR, Dense, and CommitmentTree types
+    //
+    // Each test sets up a non-Merk tree with several items, then loops through
+    // the 8 previously-untested QueryItem variants building a proof for each.
+    // This covers the match arms in:
+    //   generate.rs: query_items_to_positions, query_items_to_leaf_indices,
+    //                query_items_to_range
+    //   verify.rs:   extract_range_from_query_items, expand_query_to_u64_positions
+    // =========================================================================
+
+    /// Helper: build a PathQuery selecting `tree_key` inside `[b"root"]`,
+    /// with a single QueryItem as the subquery.
+    fn make_subquery_path_query(tree_key: &[u8], subquery_item: QueryItem) -> PathQuery {
+        let inner = Query {
+            items: vec![subquery_item],
+            default_subquery_branch: SubqueryBranch {
+                subquery_path: None,
+                subquery: None,
+            },
+            left_to_right: true,
+            conditional_subquery_branches: None,
+            add_parent_tree_on_subquery: false,
+        };
+        let query = Query {
+            items: vec![QueryItem::Key(tree_key.to_vec())],
+            default_subquery_branch: SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(inner)),
+            },
+            left_to_right: true,
+            conditional_subquery_branches: None,
+            add_parent_tree_on_subquery: false,
+        };
+        PathQuery::new_unsized(vec![b"root".to_vec()], query)
+    }
+
+    /// Helper: prove and verify a PathQuery, returning the number of results.
+    fn prove_and_verify_v1(
+        db: &crate::GroveDb,
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> usize {
+        let proof_bytes = db
+            .prove_query_v1(path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate v1 proof");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+        .expect("should verify v1 proof");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root, "root hash mismatch");
+        results.len()
+    }
+
+    #[test]
+    fn prove_v1_mmr_tree_query_variants() {
+        // Exercises 8 QueryItem range variants against an MmrTree.
+        // Covers generate.rs::query_items_to_leaf_indices and
+        // verify.rs::expand_query_to_u64_positions.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"mmr",
+            Element::empty_mmr_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert mmr tree");
+
+        // Append 8 leaves (leaf indices 0..8)
+        for i in 0..8u8 {
+            db.mmr_tree_append(
+                [b"root"].as_ref(),
+                b"mmr",
+                vec![i + 100],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("append to mmr");
+        }
+
+        let be = |v: u64| -> Vec<u8> { v.to_be_bytes().to_vec() };
+
+        let variants: Vec<(&str, QueryItem, usize)> = vec![
+            // Range: leaf indices 2..5 → 2, 3, 4
+            ("Range", QueryItem::Range(be(2)..be(5)), 3),
+            // RangeFrom: 5.. → 5, 6, 7
+            ("RangeFrom", QueryItem::RangeFrom(be(5)..), 3),
+            // RangeTo: ..3 → 0, 1, 2
+            ("RangeTo", QueryItem::RangeTo(..be(3)), 3),
+            // RangeToInclusive: ..=2 → 0, 1, 2
+            ("RangeToInclusive", QueryItem::RangeToInclusive(..=be(2)), 3),
+            // RangeFull: all → 0..8
+            ("RangeFull", QueryItem::RangeFull(std::ops::RangeFull), 8),
+            // RangeAfter: after 4 → 5, 6, 7
+            ("RangeAfter", QueryItem::RangeAfter(be(4)..), 3),
+            // RangeAfterTo: after 1, before 5 → 2, 3, 4
+            ("RangeAfterTo", QueryItem::RangeAfterTo(be(1)..be(5)), 3),
+            // RangeAfterToInclusive: after 1, through 4 → 2, 3, 4
+            (
+                "RangeAfterToInclusive",
+                QueryItem::RangeAfterToInclusive(be(1)..=be(4)),
+                3,
+            ),
+        ];
+
+        for (name, item, expected_count) in variants {
+            let pq = make_subquery_path_query(b"mmr", item);
+            let count = prove_and_verify_v1(&db, &pq, grove_version);
+            assert_eq!(
+                count, expected_count,
+                "MMR variant {name}: expected {expected_count} results, got {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn prove_v1_dense_tree_query_variants() {
+        // Exercises 8 QueryItem range variants against a DenseAppendOnlyFixedSizeTree.
+        // Covers generate.rs::query_items_to_positions.
+        // Keys are BE u16 (2 bytes).
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"dense",
+            Element::empty_dense_tree(4), // height=4, max 16 entries
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert dense tree");
+
+        // Insert 8 values (positions 0..8)
+        for i in 0..8u16 {
+            db.dense_tree_insert(
+                [b"root"].as_ref(),
+                b"dense",
+                vec![i as u8 + 10],
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert into dense tree");
+        }
+
+        let be = |v: u16| -> Vec<u8> { v.to_be_bytes().to_vec() };
+
+        let variants: Vec<(&str, QueryItem, usize)> = vec![
+            // Range: positions 1..4 → 1, 2, 3
+            ("Range", QueryItem::Range(be(1)..be(4)), 3),
+            // RangeFrom: 5.. → 5, 6, 7
+            ("RangeFrom", QueryItem::RangeFrom(be(5)..), 3),
+            // RangeTo: ..3 → 0, 1, 2
+            ("RangeTo", QueryItem::RangeTo(..be(3)), 3),
+            // RangeToInclusive: ..=2 → 0, 1, 2
+            ("RangeToInclusive", QueryItem::RangeToInclusive(..=be(2)), 3),
+            // RangeFull: all → 0..8
+            ("RangeFull", QueryItem::RangeFull(std::ops::RangeFull), 8),
+            // RangeAfter: after 4 → 5, 6, 7
+            ("RangeAfter", QueryItem::RangeAfter(be(4)..), 3),
+            // RangeAfterTo: after 1, before 5 → 2, 3, 4
+            ("RangeAfterTo", QueryItem::RangeAfterTo(be(1)..be(5)), 3),
+            // RangeAfterToInclusive: after 1, through 4 → 2, 3, 4
+            (
+                "RangeAfterToInclusive",
+                QueryItem::RangeAfterToInclusive(be(1)..=be(4)),
+                3,
+            ),
+        ];
+
+        for (name, item, expected_count) in variants {
+            let pq = make_subquery_path_query(b"dense", item);
+            let count = prove_and_verify_v1(&db, &pq, grove_version);
+            assert_eq!(
+                count, expected_count,
+                "DenseTree variant {name}: expected {expected_count} results, got {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn prove_v1_commitment_tree_query_variants() {
+        // Exercises 8 QueryItem range variants against a CommitmentTree.
+        // CommitmentTree wraps a BulkAppendTree + Sinsemilla frontier.
+        // Covers verify.rs::verify_commitment_tree_lower_layer and all
+        // BulkAppend generate/verify paths.
+        // Keys are BE u64 (8 bytes), same as BulkAppendTree.
+        use grovedb_commitment_tree::{DashMemo, NoteBytesData, TransmittedNoteCiphertext};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        // chunk_power=2 so compaction happens at 4 items (exercises chunked paths)
+        db.insert(
+            [b"root"].as_ref(),
+            b"pool",
+            Element::empty_commitment_tree(2),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert commitment tree");
+
+        // Helper: deterministic 32-byte cmx from index (valid Pallas field element)
+        fn ct_cmx(index: u8) -> [u8; 32] {
+            let mut bytes = [0u8; 32];
+            bytes[0] = index;
+            bytes[31] &= 0x7f;
+            bytes
+        }
+
+        fn ct_rho(index: u8) -> [u8; 32] {
+            let mut bytes = [0u8; 32];
+            bytes[0] = index;
+            bytes[1] = 0xAA;
+            bytes
+        }
+
+        fn ct_ciphertext(index: u8) -> TransmittedNoteCiphertext<DashMemo> {
+            let mut epk_bytes = [0u8; 32];
+            epk_bytes[0] = index;
+            epk_bytes[1] = index.wrapping_add(1);
+            let mut enc_data = [0u8; 104];
+            enc_data[0] = index;
+            enc_data[1] = 0xEC;
+            let enc_ciphertext = NoteBytesData(enc_data);
+            let mut out_ciphertext = [0u8; 80];
+            out_ciphertext[0] = index;
+            out_ciphertext[1] = 0x0C;
+            TransmittedNoteCiphertext::from_parts(epk_bytes, enc_ciphertext, out_ciphertext)
+        }
+
+        // Insert 6 notes (positions 0..6); chunk_power=2 means epoch_size=4,
+        // so we get at least one compacted chunk + buffer items.
+        for i in 0..6u8 {
+            db.commitment_tree_insert(
+                [b"root"].as_ref(),
+                b"pool",
+                ct_cmx(i),
+                ct_rho(i),
+                ct_ciphertext(i),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("commitment tree insert");
+        }
+
+        let be = |v: u64| -> Vec<u8> { v.to_be_bytes().to_vec() };
+
+        let variants: Vec<(&str, QueryItem, usize)> = vec![
+            ("Range", QueryItem::Range(be(1)..be(4)), 3),
+            ("RangeFrom", QueryItem::RangeFrom(be(3)..), 3),
+            ("RangeTo", QueryItem::RangeTo(..be(3)), 3),
+            ("RangeToInclusive", QueryItem::RangeToInclusive(..=be(2)), 3),
+            ("RangeFull", QueryItem::RangeFull(std::ops::RangeFull), 6),
+            ("RangeAfter", QueryItem::RangeAfter(be(1)..), 4),
+            ("RangeAfterTo", QueryItem::RangeAfterTo(be(0)..be(4)), 3),
+            (
+                "RangeAfterToInclusive",
+                QueryItem::RangeAfterToInclusive(be(0)..=be(3)),
+                3,
+            ),
+        ];
+
+        for (name, item, expected_count) in variants {
+            let pq = make_subquery_path_query(b"pool", item);
+            let count = prove_and_verify_v1(&db, &pq, grove_version);
+            assert_eq!(
+                count, expected_count,
+                "CommitmentTree variant {name}: expected {expected_count} results, got {count}"
+            );
+        }
+    }
+
     #[test]
     fn prove_v0_mixed_elements_right_to_left_with_limit() {
         // V0 proof right-to-left over a subtree with items, trees, and references
