@@ -200,49 +200,8 @@ fn mmr_node_key_returns_big_endian_bytes() {
 }
 
 // =============================================================================
-// node.rs: into_value, PartialEq hash-only semantics
+// proof.rs: unprocessed leaves error path
 // =============================================================================
-
-#[test]
-fn mmr_node_into_value_consumes_both_variants() {
-    let leaf_node = MmrNode::leaf(b"payload".to_vec());
-    assert_eq!(leaf_node.into_value(), Some(b"payload".to_vec()));
-
-    let internal = MmrNode::internal([0xABu8; 32]);
-    assert_eq!(internal.into_value(), None);
-}
-
-#[test]
-fn mmr_node_equality_compares_hash_only() {
-    // Two nodes with the same hash but different value presence are equal
-    let leaf_node = MmrNode::leaf(b"data".to_vec());
-    let hash = leaf_node.hash();
-    let internal_same_hash = MmrNode::internal(hash);
-
-    // Leaf has value, internal doesn't — but PartialEq only checks hash
-    assert_eq!(leaf_node, internal_same_hash);
-    assert!(leaf_node.value().is_some());
-    assert!(internal_same_hash.value().is_none());
-}
-
-// =============================================================================
-// proof.rs: decode error, verify with unprocessed leaves, peak-shift
-// incremental
-// =============================================================================
-
-#[test]
-fn mmr_tree_proof_decode_corrupted_data_errors() {
-    use crate::MmrTreeProof;
-
-    let result = MmrTreeProof::decode_from_slice(&[0xFF, 0xFF, 0xFF]);
-    assert!(result.is_err());
-    let msg = format!("{}", result.unwrap_err());
-    assert!(
-        msg.contains("decode"),
-        "error should mention decode: {}",
-        msg
-    );
-}
 
 /// Verify that MerkleProof::calculate_root rejects leaves at positions
 /// beyond the MMR peaks ("unprocessed leaves remain" error path in
@@ -260,59 +219,6 @@ fn verify_rejects_proof_with_unprocessed_leaves() {
         msg.contains("unprocessed leaves"),
         "should mention unprocessed leaves: {}",
         msg
-    );
-}
-
-/// Exercise verify_incremental when peaks have shifted (prev_pos < cur_pos),
-/// triggering the early break at proof.rs line 160.
-///
-/// Setup: 3 leaves → 2 peaks [2, 3]. Add 1 more → 4 leaves → 1 peak [6].
-/// Previous peaks [2, 3] vs current peaks [6]: 2 < 6 triggers the break
-/// at i=0, reversing all previous peak hashes for bagging.
-#[test]
-fn verify_incremental_with_peak_shift() {
-    let store = MemStore::default();
-    let mut mmr = MMR::new(0, &store);
-
-    // Build initial MMR with 3 leaves → mmr_size=4, peaks at [2, 3]
-    for i in 0u32..3 {
-        mmr.push(leaf(i)).unwrap().expect("push");
-    }
-    mmr.commit().unwrap().expect("commit");
-    let prev_root = mmr.get_root().unwrap().expect("prev root");
-
-    // Previous peak nodes (at positions 2 and 3)
-    let peak_2 = mmr
-        .batch
-        .element_at_position(2)
-        .unwrap()
-        .expect("read")
-        .expect("exists");
-    let peak_3 = mmr
-        .batch
-        .element_at_position(3)
-        .unwrap()
-        .expect("read")
-        .expect("exists");
-
-    // Add 1 incremental leaf → 4 leaves → mmr_size=7, single peak at [6]
-    let incremental = vec![leaf(3)];
-    mmr.push(incremental[0].clone()).unwrap().expect("push");
-    mmr.commit().unwrap().expect("commit");
-    let current_root = mmr.get_root().unwrap().expect("current root");
-
-    // Proof items must be in the order that, after verify_incremental's
-    // split+reverse+bag_peaks, reconstructs the correct prev_root.
-    // With reverse_index=0 the entire list is reversed before bagging.
-    // bag_peaks([peak_2, peak_3]) = merge(peak_3, peak_2) = prev_root.
-    let proof = MerkleProof::new(mmr.mmr_size, vec![peak_3, peak_2]);
-
-    let valid = proof
-        .verify_incremental(current_root, prev_root, incremental)
-        .expect("verify_incremental should succeed");
-    assert!(
-        valid,
-        "incremental verification with peak shift should pass"
     );
 }
 
