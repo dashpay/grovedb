@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: coverage-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   detect-changes:
@@ -103,7 +103,7 @@ jobs:
       - name: Run coverage diff analysis
         if: github.event_name == 'pull_request'
         env:
-          BASELINE_CACHE_HIT: ${{ steps.baseline.outputs.cache-hit }}
+          BASELINE_CACHE_HIT: ${{ steps.baseline.outputs.cache-matched-key != '' }}
           BASE_REF: ${{ github.base_ref }}
         run: |
           python .github/scripts/coverage-diff.py \
