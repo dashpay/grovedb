@@ -319,7 +319,15 @@ impl Tree {
             .wrap_with_cost(cost);
         }
 
-        self.height = self.height.max(child.height + 1);
+        let new_height = self.height.max(child.height + 1);
+        if new_height > MAX_PROOF_TREE_HEIGHT {
+            return Err(Error::InvalidProofError(format!(
+                "Proof tree exceeds maximum height ({})",
+                MAX_PROOF_TREE_HEIGHT
+            )))
+            .wrap_with_cost(cost);
+        }
+        self.height = new_height;
 
         // update child height
         if left {
@@ -374,10 +382,12 @@ impl Tree {
     }
 
     #[cfg(feature = "minimal")]
-    pub(crate) fn aggregate_data(&self) -> AggregateData {
+    pub(crate) fn aggregate_data(&self) -> Result<AggregateData, Error> {
         match self.node {
-            Node::KVValueHashFeatureType(.., feature_type) => feature_type.into(),
-            _ => panic!("Expected node to be type KVValueHashFeatureType"),
+            Node::KVValueHashFeatureType(.., feature_type) => Ok(feature_type.into()),
+            _ => Err(Error::InvalidProofError(
+                "Expected node to be type KVValueHashFeatureType for aggregate data".to_string(),
+            )),
         }
     }
 }
@@ -427,6 +437,34 @@ impl<'a> Iterator for LayerIter<'a> {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
+/// Maximum number of operations allowed in a single proof execution.
+///
+/// This prevents denial-of-service via crafted proofs with millions of
+/// operations. The limit is generous enough for any legitimate proof: a
+/// query returning 1000 results from a tree with 2^20 entries produces
+/// roughly 40,000 operations.
+pub const MAX_PROOF_OPS: usize = 50_000;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Maximum number of simultaneous items on the verification stack.
+///
+/// Limits peak memory during proof execution. Each stack entry is a `Tree`
+/// node whose size depends on the `Node` variant (32 bytes for `Hash`, up
+/// to ~65 KB for `KV` with a u16-length value). A depth of 10,000 is
+/// generous for any legitimate proof while preventing multi-GB allocations
+/// from crafted proofs that push many large KV nodes without combining them.
+pub const MAX_PROOF_STACK_DEPTH: usize = 10_000;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Maximum allowed height (nesting depth) of a proof tree.
+///
+/// Prevents Rust thread-stack overflow from recursive `Drop` on deeply
+/// nested trees when `collapse` is false. An AVL tree with 2^64 entries
+/// has height ≈ 92, which is the theoretical maximum for any real tree.
+/// Proof subtrees should never be deeper than the backing Merk tree.
+pub const MAX_PROOF_TREE_HEIGHT: usize = 92;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Executes a proof by stepping through its operators, modifying the
 /// verification stack as it goes. The resulting stack item is returned.
 ///
@@ -439,6 +477,9 @@ impl<'a> Iterator for LayerIter<'a> {
 /// `visit_node` will be called once for every push operation in the proof, in
 /// key-order. If `visit_node` returns an `Err` result, it will halt the
 /// execution and `execute` will return the error.
+///
+/// Enforces a limit of [`MAX_PROOF_OPS`] operations to prevent
+/// denial-of-service from malicious proofs.
 pub fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostResult<Tree, Error>
 where
     I: IntoIterator<Item = Result<Op, Error>>,
@@ -448,6 +489,7 @@ where
 
     let mut stack: Vec<Tree> = Vec::with_capacity(32);
     let mut maybe_last_key = None;
+    let mut op_count: usize = 0;
 
     fn try_pop(stack: &mut Vec<Tree>) -> Result<Tree, Error> {
         stack
@@ -456,6 +498,14 @@ where
     }
 
     for op in ops {
+        op_count += 1;
+        if op_count > MAX_PROOF_OPS {
+            return Err(Error::InvalidProofError(format!(
+                "Proof exceeds maximum operation count ({})",
+                MAX_PROOF_OPS
+            )))
+            .wrap_with_cost(cost);
+        }
         match cost_return_on_error_no_add!(cost, op) {
             Op::Parent => {
                 let (mut parent, child) = (
@@ -557,6 +607,14 @@ where
 
                 let tree: Tree = node.into();
                 stack.push(tree);
+
+                if stack.len() > MAX_PROOF_STACK_DEPTH {
+                    return Err(Error::InvalidProofError(format!(
+                        "Proof exceeds maximum stack depth ({})",
+                        MAX_PROOF_STACK_DEPTH
+                    )))
+                    .wrap_with_cost(cost);
+                }
             }
             Op::PushInverted(node) => {
                 // Check key ordering for ALL node types that contain keys
@@ -586,6 +644,14 @@ where
 
                 let tree: Tree = node.into();
                 stack.push(tree);
+
+                if stack.len() > MAX_PROOF_STACK_DEPTH {
+                    return Err(Error::InvalidProofError(format!(
+                        "Proof exceeds maximum stack depth ({})",
+                        MAX_PROOF_STACK_DEPTH
+                    )))
+                    .wrap_with_cost(cost);
+                }
             }
         }
     }
@@ -868,5 +934,248 @@ mod test {
         let tree: ProofTree = Node::KVRefValueHashCount(vec![3], vec![4], [5; 32], 9).into();
         let ref_value_count_hash = tree.hash().unwrap();
         assert_ne!(ref_value_count_hash, NULL_HASH);
+    }
+
+    /// Demonstrates SEC-006: aggregate_data() returns an error (not panic) on
+    /// non-KVValueHashFeatureType nodes.
+    ///
+    /// During chunk restoration (restore.rs:383), `chunk_tree.aggregate_data()`
+    /// is called on the proof tree produced by `execute()`. An attacker who
+    /// controls chunk data can craft a proof whose root is a `Node::KV` (or
+    /// any non-KVValueHashFeatureType variant). Before the fix this would
+    /// panic; now it returns a proper error.
+    #[test]
+    fn attack_aggregate_data_returns_error_on_crafted_chunk_proof() {
+        // Simulate a malicious chunk: a valid proof that produces a tree
+        // with a Node::KV root instead of Node::KVValueHashFeatureType.
+        let malicious_ops = vec![Ok(Op::Push(Node::KV(vec![1], vec![1])))];
+
+        let tree = execute(malicious_ops.into_iter(), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+
+        // This is exactly what restore.rs:383 does — now returns Err instead of panic.
+        let result = tree.aggregate_data();
+        assert!(
+            result.is_err(),
+            "aggregate_data on non-KVValueHashFeatureType node should return error"
+        );
+    }
+
+    /// Verifies SEC-005 fix: execute() now rejects proofs that exceed
+    /// MAX_PROOF_OPS operations.
+    ///
+    /// Uses alternating Push(Hash)/Parent pairs to keep the stack depth at
+    /// 1 while exceeding the total operation count limit.
+    #[test]
+    fn attack_operation_count_is_limited() {
+        let n = super::MAX_PROOF_OPS + 1;
+        let mut ops: Vec<Result<Op, Error>> = Vec::with_capacity(n);
+        // Seed with one Hash node
+        ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+        // Each (Push, Parent) pair = 2 ops, stack stays at depth 1.
+        // The new Hash becomes the parent, the existing tree its left child.
+        while ops.len() < n {
+            ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+            ops.push(Ok(Op::Parent));
+        }
+
+        // collapse: true to avoid deep nesting causing Rust stack overflow on drop
+        let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum operation count")),
+            "Should reject proof exceeding MAX_PROOF_OPS, got: {:?}",
+            result,
+        );
+    }
+
+    /// Verifies SEC-004 fix: execute() now rejects proofs that exceed
+    /// MAX_PROOF_STACK_DEPTH simultaneous stack entries.
+    #[test]
+    fn attack_stack_depth_is_limited() {
+        let n = super::MAX_PROOF_STACK_DEPTH + 1;
+        let ops: Vec<Result<Op, Error>> = (0..n)
+            .map(|_| Ok(Op::Push(Node::Hash([0xBB; 32]))))
+            .collect();
+
+        let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum stack depth")),
+            "Should reject proof exceeding MAX_PROOF_STACK_DEPTH, got: {:?}",
+            result,
+        );
+    }
+
+    /// Verifies SEC-004 fix: deeply nested trees are rejected before they
+    /// can overflow the Rust call stack on Drop.
+    #[test]
+    fn attack_tree_height_is_limited() {
+        // Build a left-skewed chain: Push, Push, Parent, Push, Parent, ...
+        // Each Parent nests one level deeper. After 129 Parents the tree
+        // height reaches 130, exceeding MAX_PROOF_TREE_HEIGHT (128).
+        let depth = super::MAX_PROOF_TREE_HEIGHT + 2;
+        let mut ops: Vec<Result<Op, Error>> = Vec::new();
+        ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+        for _ in 1..depth {
+            ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+            ops.push(Ok(Op::Parent));
+        }
+
+        let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum height")),
+            "Should reject proof exceeding MAX_PROOF_TREE_HEIGHT, got: {:?}",
+            result,
+        );
+    }
+
+    /// Verifies that a maximally adversarial proof targeting all three limits
+    /// simultaneously is caught.
+    ///
+    /// Strategy: build height-127 chains (just under MAX_PROOF_TREE_HEIGHT),
+    /// leave each on the stack (growing toward MAX_PROOF_STACK_DEPTH), and
+    /// keep adding ops (growing toward MAX_PROOF_OPS). One of the three
+    /// limits will trigger first depending on the chain size and counts.
+    #[test]
+    fn attack_combined_limits_prevent_resource_exhaustion() {
+        let max_ops = super::MAX_PROOF_OPS;
+        let max_stack = super::MAX_PROOF_STACK_DEPTH;
+        let max_height = super::MAX_PROOF_TREE_HEIGHT;
+
+        let mut ops: Vec<Result<Op, Error>> = Vec::new();
+        let mut current_stack_depth: usize = 0;
+
+        // Phase 1: push height-(max_height-1) chains onto the stack.
+        // Each chain: 1 Push + (max_height-2) × (Push + Parent) = 2*(max_height-1) - 1 ops.
+        // Each chain leaves 1 item on the stack (a tree of height max_height-1).
+        let ops_per_chain = 2 * (max_height - 1) - 1;
+        while ops.len() + ops_per_chain < max_ops && current_stack_depth < max_stack {
+            // Build one chain of height max_height - 1
+            ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+            for _ in 1..(max_height - 1) {
+                ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            current_stack_depth += 1;
+        }
+
+        // Phase 2: fill remaining op budget with bare Push(Hash) ops,
+        // growing the stack further.
+        while ops.len() < max_ops && current_stack_depth < max_stack {
+            ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+            current_stack_depth += 1;
+        }
+
+        // Phase 3: one more Push to exceed whichever limit is tighter.
+        ops.push(Ok(Op::Push(Node::Hash([0xFF; 32]))));
+
+        let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+        assert!(
+            result.is_err(),
+            "Adversarial proof should be rejected by one of the three limits"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("maximum operation count")
+                || err_msg.contains("maximum stack depth")
+                || err_msg.contains("maximum height"),
+            "Should be caught by one of the three limits, got: {}",
+            err_msg,
+        );
+    }
+
+    /// Verifies that proofs right at each individual limit succeed.
+    /// Each scenario maxes out one dimension while staying within the others.
+    /// Note: it's mathematically impossible to max all three simultaneously —
+    /// a balanced tree of height 128 needs 2^129 - 3 ops, far exceeding 50,000.
+    #[test]
+    fn proof_at_exact_limits_succeeds() {
+        // Scenario 1: Exactly 49,999 ops (one under MAX_PROOF_OPS of 50,000).
+        // 25,000 pushes + 24,999 parents = 49,999 ops, stack depth stays at 1-2.
+        // With collapse=true, height stays at 2.
+        {
+            let mut ops: Vec<Result<Op, Error>> = Vec::new();
+            ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+            for _ in 0..24_999 {
+                ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            assert_eq!(ops.len(), 49_999);
+            let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+            assert!(
+                result.is_ok(),
+                "49,999 ops should succeed (limit is 50,000)"
+            );
+        }
+
+        // Scenario 2: Exactly MAX_PROOF_STACK_DEPTH (10,000) simultaneous
+        // stack items. Push 10,000 items, then combine into 1 using
+        // alternating Parent/Child ops (Parent attaches left, Child
+        // attaches right). Pattern: Parent, then 4,999 × (Child, Parent).
+        {
+            let mut ops: Vec<Result<Op, Error>> = Vec::new();
+            for _ in 0..10_000 {
+                ops.push(Ok(Op::Push(Node::Hash([0xBB; 32]))));
+            }
+            // Combine 10,000 → 1: first Parent, then (Child, Parent) pairs
+            ops.push(Ok(Op::Parent));
+            for _ in 0..4_999 {
+                ops.push(Ok(Op::Child));
+                ops.push(Ok(Op::Parent));
+            }
+            assert_eq!(ops.len(), 19_999);
+            let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+            assert!(
+                result.is_ok(),
+                "10,000 stack depth should succeed (limit is 10,000)"
+            );
+        }
+
+        // Scenario 3: Tree height exactly 92 (at MAX_PROOF_TREE_HEIGHT).
+        // Build two chains of height 91 as left and right children of a
+        // root node so the final tree is balanced. Uses collapse=false
+        // since collapse=true caps height at 2.
+        {
+            let max_height = super::MAX_PROOF_TREE_HEIGHT; // 92
+            let mut ops: Vec<Result<Op, Error>> = Vec::new();
+            // Build left chain of height max_height - 1
+            ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+            for _ in 0..(max_height - 2) {
+                ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            // Push root and attach left child
+            ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+            ops.push(Ok(Op::Parent));
+            // Build right chain of height max_height - 1
+            ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+            for _ in 0..(max_height - 2) {
+                ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            // Attach right child
+            ops.push(Ok(Op::Child));
+            let expected_ops = 2 * (2 * (max_height - 2) + 1) + 3;
+            assert_eq!(ops.len(), expected_ops);
+            let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+            assert!(result.is_ok(), "Height 92 should succeed (limit is 92)");
+        }
+    }
+
+    /// Verifies that legitimate proofs within the limit still work.
+    #[test]
+    fn legitimate_proof_within_op_limit_succeeds() {
+        // A small valid proof: 3 pushes + 2 parent ops = balanced tree
+        let proof = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::Parent,
+            Op::Push(Node::KV(vec![3], vec![3])),
+            Op::Child,
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+        assert!(result.key().is_some());
     }
 }

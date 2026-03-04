@@ -380,7 +380,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let updated_key = chunk_tree
             .key()
             .expect("chunk tree must have a key during restore");
-        let updated_sum = chunk_tree.aggregate_data();
+        let updated_sum = chunk_tree.aggregate_data().map_err(|e| {
+            Error::CorruptedData(format!(
+                "chunk tree root node must be KVValueHashFeatureType for aggregate data: {e}"
+            ))
+        })?;
 
         if let Some(Link::Reference {
             key,
