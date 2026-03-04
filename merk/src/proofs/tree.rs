@@ -319,7 +319,15 @@ impl Tree {
             .wrap_with_cost(cost);
         }
 
-        self.height = self.height.max(child.height + 1);
+        let new_height = self.height.max(child.height + 1);
+        if new_height > MAX_PROOF_TREE_HEIGHT {
+            return Err(Error::InvalidProofError(format!(
+                "Proof tree exceeds maximum height ({})",
+                MAX_PROOF_TREE_HEIGHT
+            )))
+            .wrap_with_cost(cost);
+        }
+        self.height = new_height;
 
         // update child height
         if left {
@@ -436,6 +444,25 @@ impl<'a> Iterator for LayerIter<'a> {
 /// query returning 1000 results from a tree with 2^20 entries produces
 /// roughly 40,000 operations.
 pub const MAX_PROOF_OPS: usize = 50_000;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Maximum number of simultaneous items on the verification stack.
+///
+/// Limits peak memory during proof execution. Each stack entry is a `Tree`
+/// node whose size depends on the `Node` variant (32 bytes for `Hash`, up
+/// to ~65 KB for `KV` with a u16-length value). A depth of 10,000 is
+/// generous for any legitimate proof while preventing multi-GB allocations
+/// from crafted proofs that push many large KV nodes without combining them.
+pub const MAX_PROOF_STACK_DEPTH: usize = 10_000;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Maximum allowed height (nesting depth) of a proof tree.
+///
+/// Prevents Rust thread-stack overflow from recursive `Drop` on deeply
+/// nested trees when `collapse` is false. An AVL tree with 2^64 entries
+/// has height ≈ 92, so 128 is extremely generous for any real tree. Proof
+/// subtrees should never be deeper than the backing Merk tree.
+pub const MAX_PROOF_TREE_HEIGHT: usize = 128;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Executes a proof by stepping through its operators, modifying the
@@ -580,6 +607,14 @@ where
 
                 let tree: Tree = node.into();
                 stack.push(tree);
+
+                if stack.len() > MAX_PROOF_STACK_DEPTH {
+                    return Err(Error::InvalidProofError(format!(
+                        "Proof exceeds maximum stack depth ({})",
+                        MAX_PROOF_STACK_DEPTH
+                    )))
+                    .wrap_with_cost(cost);
+                }
             }
             Op::PushInverted(node) => {
                 // Check key ordering for ALL node types that contain keys
@@ -609,6 +644,14 @@ where
 
                 let tree: Tree = node.into();
                 stack.push(tree);
+
+                if stack.len() > MAX_PROOF_STACK_DEPTH {
+                    return Err(Error::InvalidProofError(format!(
+                        "Proof exceeds maximum stack depth ({})",
+                        MAX_PROOF_STACK_DEPTH
+                    )))
+                    .wrap_with_cost(cost);
+                }
             }
         }
     }
@@ -921,17 +964,67 @@ mod test {
 
     /// Verifies SEC-005 fix: execute() now rejects proofs that exceed
     /// MAX_PROOF_OPS operations.
+    ///
+    /// Uses alternating Push(Hash)/Parent pairs to keep the stack depth at
+    /// 1 while exceeding the total operation count limit.
     #[test]
     fn attack_operation_count_is_limited() {
         let n = super::MAX_PROOF_OPS + 1;
+        let mut ops: Vec<Result<Op, Error>> = Vec::with_capacity(n);
+        // Seed with one Hash node
+        ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+        // Each (Push, Parent) pair = 2 ops, stack stays at depth 1.
+        // The new Hash becomes the parent, the existing tree its left child.
+        while ops.len() < n {
+            ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+            ops.push(Ok(Op::Parent));
+        }
+
+        // collapse: true to avoid deep nesting causing Rust stack overflow on drop
+        let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum operation count")),
+            "Should reject proof exceeding MAX_PROOF_OPS, got: {:?}",
+            result,
+        );
+    }
+
+    /// Verifies SEC-004 fix: execute() now rejects proofs that exceed
+    /// MAX_PROOF_STACK_DEPTH simultaneous stack entries.
+    #[test]
+    fn attack_stack_depth_is_limited() {
+        let n = super::MAX_PROOF_STACK_DEPTH + 1;
         let ops: Vec<Result<Op, Error>> = (0..n)
-            .map(|_| Ok(Op::Push(Node::Hash([0xAA; 32]))))
+            .map(|_| Ok(Op::Push(Node::Hash([0xBB; 32]))))
             .collect();
 
         let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
         assert!(
-            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum operation count")),
-            "Should reject proof exceeding MAX_PROOF_OPS, got: {:?}",
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum stack depth")),
+            "Should reject proof exceeding MAX_PROOF_STACK_DEPTH, got: {:?}",
+            result,
+        );
+    }
+
+    /// Verifies SEC-004 fix: deeply nested trees are rejected before they
+    /// can overflow the Rust call stack on Drop.
+    #[test]
+    fn attack_tree_height_is_limited() {
+        // Build a left-skewed chain: Push, Push, Parent, Push, Parent, ...
+        // Each Parent nests one level deeper. After 129 Parents the tree
+        // height reaches 130, exceeding MAX_PROOF_TREE_HEIGHT (128).
+        let depth = super::MAX_PROOF_TREE_HEIGHT + 2;
+        let mut ops: Vec<Result<Op, Error>> = Vec::new();
+        ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+        for _ in 1..depth {
+            ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+            ops.push(Ok(Op::Parent));
+        }
+
+        let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum height")),
+            "Should reject proof exceeding MAX_PROOF_TREE_HEIGHT, got: {:?}",
             result,
         );
     }
