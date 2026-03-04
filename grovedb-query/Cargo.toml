@@ -14,7 +14,7 @@ hex = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
-ed = { version = "0.2.2" }
+ed = { workspace = true }
 byteorder = { workspace = true }
 integer-encoding = { workspace = true }
 

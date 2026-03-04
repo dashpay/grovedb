@@ -7,7 +7,7 @@ use grovedb::{Element, GroveDb, PathQuery, Query, SizedQuery};
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{prelude::*, rngs::StdRng, SeedableRng};
 #[cfg(feature = "minimal")]
 use tempfile::TempDir;
 

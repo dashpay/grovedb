@@ -29,7 +29,7 @@ grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-t
 grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-dense-fixed-sized-merkle-tree", optional = true, default-features = false }
 grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
 
-axum = { version = "0.8", features = ["macros"], optional = true }
+axum = { workspace = true, optional = true }
 bincode = { workspace = true }
 bincode_derive = { workspace = true }
 blake3 = { workspace = true }
@@ -40,19 +40,19 @@ intmap = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
-tokio-util = { version = "0.7.17", optional = true }
+tokio-util = { workspace = true, optional = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "net",
 ], optional = true }
-tower-http = { version = "0.6.8", features = ["fs"], optional = true }
+tower-http = { workspace = true, optional = true }
 zip-extensions = { version = "0.13.0", optional = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 grovedb-epoch-based-storage-flags = { version = "4.0.0", path = "../grovedb-epoch-based-storage-flags" }
 
-criterion = "0.5.1"
+criterion = { workspace = true }
 hex = { workspace = true }
 pretty_assertions = "1.4.0"
 rand = { workspace = true }
@@ -122,5 +122,5 @@ grovedbg = [
 
 [build-dependencies]
 hex-literal = "1.1.0"
-reqwest = { version = "0.12", features = ["blocking"] }
+reqwest = { version = "0.13", features = ["blocking"] }
 sha2 = "0.10.8"

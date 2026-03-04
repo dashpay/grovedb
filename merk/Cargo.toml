@@ -34,8 +34,8 @@ serde = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 byteorder = { workspace = true }
 blake3 = { workspace = true, optional = true }
-ed = { version = "0.2.2", optional = true }
-num_cpus = { version = "1.17.0", optional = true }
+ed = { workspace = true, optional = true }
+num_cpus = { workspace = true, optional = true }
 colored = { version = "3.0.0", optional = true }
 
 [features]
@@ -59,7 +59,7 @@ grovedbg = ["full"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
-criterion = "0.5.1"
+criterion = { workspace = true }
 assert_matches = { workspace = true }
 
 [[bench]]
