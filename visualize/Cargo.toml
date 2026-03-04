@@ -10,4 +10,4 @@ repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
 hex = { workspace = true }
-itertools = "0.14.0"
+itertools = { workspace = true }
