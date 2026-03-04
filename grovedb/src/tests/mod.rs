@@ -2,6 +2,7 @@
 
 pub mod common;
 
+mod aggregate_sum_query_tests;
 mod query_tests;
 
 mod sum_tree_tests;
