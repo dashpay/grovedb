@@ -3,7 +3,7 @@ extern crate criterion;
 
 use criterion::{BenchmarkId, Criterion};
 use grovedb_merkle_mountain_range::{MMRStoreReadOps, MemStore, MmrNode, MMR};
-use rand::{seq::SliceRandom, thread_rng};
+use rand::seq::SliceRandom;
 
 /// Create an MmrNode leaf from an integer (for benchmarking).
 fn leaf_from_u32(i: u32) -> MmrNode {
@@ -35,7 +35,7 @@ fn bench(c: &mut Criterion) {
     c.bench_function("MMR gen proof", |b| {
         let (mmr_size, store, positions) = prepare_mmr(100_0000);
         let mmr = MMR::new(mmr_size, &store);
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         b.iter(|| {
             mmr.gen_proof(vec![*positions.choose(&mut rng).unwrap()])
                 .unwrap()
@@ -45,7 +45,7 @@ fn bench(c: &mut Criterion) {
     c.bench_function("MMR verify", |b| {
         let (mmr_size, store, positions) = prepare_mmr(100_0000);
         let mmr = MMR::new(mmr_size, &store);
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let root = mmr.get_root().unwrap().expect("get root");
         let proofs: Vec<_> = (0..10_000)
             .map(|_| {

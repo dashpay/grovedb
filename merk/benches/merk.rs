@@ -338,12 +338,12 @@ pub fn chunkproducer_rand_1m_1_rand(c: &mut Criterion) {
         apply_batch_default(&mut merk, &batch, grove_version);
     }
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let chunk_count = merk.chunks().unwrap().len();
 
     c.bench_function("chunkproducer_rand_1m_1_rand", |b| {
         b.iter_with_large_drop(|| {
-            let index = rng.gen_range(1..=chunk_count);
+            let index = rng.random_range(1..=chunk_count);
             let _chunk = merk
                 .chunks()
                 .unwrap()
