@@ -271,7 +271,12 @@ impl Link {
     /// The encoding cost is always 8 bytes for the sum instead of a varint
     #[inline]
     pub fn encoding_cost(&self) -> Result<usize> {
-        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+        if self.key().len() >= 256 {
+            return Err(ed::Error::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Key length must be less than 256",
+            )));
+        }
 
         Ok(match self {
             Link::Reference {
@@ -361,7 +366,12 @@ impl Encode for Link {
             Link::Modified { .. } => panic!("No encoding for Link::Modified"),
         };
 
-        debug_assert!(key.len() < 256, "Key length must be less than 256");
+        if key.len() >= 256 {
+            return Err(ed::Error::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Key length must be less than 256",
+            )));
+        }
 
         out.write_all(&[key.len() as u8])?;
         out.write_all(key)?;
@@ -407,7 +417,12 @@ impl Encode for Link {
 
     #[inline]
     fn encoding_length(&self) -> Result<usize> {
-        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+        if self.key().len() >= 256 {
+            return Err(ed::Error::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Key length must be less than 256",
+            )));
+        }
 
         Ok(match self {
             Link::Reference {
@@ -831,8 +846,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
-    fn encode_link_long_key() {
+    fn encode_link_long_key_returns_error() {
         let link = Link::Reference {
             key: vec![123; 300],
             aggregate_data: AggregateData::NoAggregateData,
@@ -840,7 +854,14 @@ mod test {
             hash: [55; 32],
         };
         let mut bytes = vec![];
-        link.encode_into(&mut bytes).unwrap();
+        let result = link.encode_into(&mut bytes);
+        assert!(result.is_err(), "Should return error for key >= 256 bytes");
+
+        let result = link.encoding_length();
+        assert!(result.is_err(), "encoding_length should also return error");
+
+        let result = link.encoding_cost();
+        assert!(result.is_err(), "encoding_cost should also return error");
     }
 
     /// Demonstrates RUST-044: key length truncation via `key.len() as u8`.

@@ -451,7 +451,7 @@ impl KV {
 
     #[inline]
     fn encoding_cost(&self) -> usize {
-        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+        assert!(self.key().len() < 256, "Key length must be less than 256");
         HASH_LENGTH_X2 + self.value.len() + self.feature_type.encoding_cost()
     }
 }
@@ -470,7 +470,12 @@ impl Encode for KV {
 
     #[inline]
     fn encoding_length(&self) -> Result<usize> {
-        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+        if self.key().len() >= 256 {
+            return Err(ed::Error::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Key length must be less than 256",
+            )));
+        }
         Ok(HASH_LENGTH + HASH_LENGTH + self.value.len() + self.feature_type.encoding_length()?)
     }
 }
