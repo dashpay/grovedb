@@ -1029,6 +1029,137 @@ mod test {
         );
     }
 
+    /// Verifies that a maximally adversarial proof targeting all three limits
+    /// simultaneously is caught.
+    ///
+    /// Strategy: build height-127 chains (just under MAX_PROOF_TREE_HEIGHT),
+    /// leave each on the stack (growing toward MAX_PROOF_STACK_DEPTH), and
+    /// keep adding ops (growing toward MAX_PROOF_OPS). One of the three
+    /// limits will trigger first depending on the chain size and counts.
+    #[test]
+    fn attack_combined_limits_prevent_resource_exhaustion() {
+        let max_ops = super::MAX_PROOF_OPS;
+        let max_stack = super::MAX_PROOF_STACK_DEPTH;
+        let max_height = super::MAX_PROOF_TREE_HEIGHT;
+
+        let mut ops: Vec<Result<Op, Error>> = Vec::new();
+        let mut current_stack_depth: usize = 0;
+
+        // Phase 1: push height-(max_height-1) chains onto the stack.
+        // Each chain: 1 Push + (max_height-2) × (Push + Parent) = 2*(max_height-1) - 1 ops.
+        // Each chain leaves 1 item on the stack (a tree of height max_height-1).
+        let ops_per_chain = 2 * (max_height - 1) - 1;
+        while ops.len() + ops_per_chain < max_ops && current_stack_depth < max_stack {
+            // Build one chain of height max_height - 1
+            ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+            for _ in 1..(max_height - 1) {
+                ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            current_stack_depth += 1;
+        }
+
+        // Phase 2: fill remaining op budget with bare Push(Hash) ops,
+        // growing the stack further.
+        while ops.len() < max_ops && current_stack_depth < max_stack {
+            ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+            current_stack_depth += 1;
+        }
+
+        // Phase 3: one more Push to exceed whichever limit is tighter.
+        ops.push(Ok(Op::Push(Node::Hash([0xFF; 32]))));
+
+        let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+        assert!(
+            result.is_err(),
+            "Adversarial proof should be rejected by one of the three limits"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("maximum operation count")
+                || err_msg.contains("maximum stack depth")
+                || err_msg.contains("maximum height"),
+            "Should be caught by one of the three limits, got: {}",
+            err_msg,
+        );
+    }
+
+    /// Verifies that proofs right at each individual limit succeed.
+    /// Each scenario maxes out one dimension while staying within the others.
+    /// Note: it's mathematically impossible to max all three simultaneously —
+    /// a balanced tree of height 128 needs 2^129 - 3 ops, far exceeding 50,000.
+    #[test]
+    fn proof_at_exact_limits_succeeds() {
+        // Scenario 1: Exactly 49,999 ops (one under MAX_PROOF_OPS of 50,000).
+        // 25,000 pushes + 24,999 parents = 49,999 ops, stack depth stays at 1-2.
+        // With collapse=true, height stays at 2.
+        {
+            let mut ops: Vec<Result<Op, Error>> = Vec::new();
+            ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+            for _ in 0..24_999 {
+                ops.push(Ok(Op::Push(Node::Hash([0xAA; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            assert_eq!(ops.len(), 49_999);
+            let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+            assert!(
+                result.is_ok(),
+                "49,999 ops should succeed (limit is 50,000)"
+            );
+        }
+
+        // Scenario 2: Exactly MAX_PROOF_STACK_DEPTH (10,000) simultaneous
+        // stack items. Push 10,000 items, then combine into 1 using
+        // alternating Parent/Child ops (Parent attaches left, Child
+        // attaches right). Pattern: Parent, then 4,999 × (Child, Parent).
+        {
+            let mut ops: Vec<Result<Op, Error>> = Vec::new();
+            for _ in 0..10_000 {
+                ops.push(Ok(Op::Push(Node::Hash([0xBB; 32]))));
+            }
+            // Combine 10,000 → 1: first Parent, then (Child, Parent) pairs
+            ops.push(Ok(Op::Parent));
+            for _ in 0..4_999 {
+                ops.push(Ok(Op::Child));
+                ops.push(Ok(Op::Parent));
+            }
+            assert_eq!(ops.len(), 19_999);
+            let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
+            assert!(
+                result.is_ok(),
+                "10,000 stack depth should succeed (limit is 10,000)"
+            );
+        }
+
+        // Scenario 3: Tree height exactly 128 (at MAX_PROOF_TREE_HEIGHT).
+        // Build two chains of height 127 as left and right children of a
+        // root node so the final tree is balanced. Uses collapse=false
+        // since collapse=true caps height at 2.
+        {
+            let mut ops: Vec<Result<Op, Error>> = Vec::new();
+            // Build left chain of height 127
+            ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+            for _ in 0..126 {
+                ops.push(Ok(Op::Push(Node::Hash([0xCC; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            // Push root and attach left child
+            ops.push(Ok(Op::Push(Node::Hash([0xDD; 32]))));
+            ops.push(Ok(Op::Parent));
+            // Build right chain of height 127
+            ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+            for _ in 0..126 {
+                ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
+                ops.push(Ok(Op::Parent));
+            }
+            // Attach right child
+            ops.push(Ok(Op::Child));
+            assert_eq!(ops.len(), 509);
+            let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
+            assert!(result.is_ok(), "Height 128 should succeed (limit is 128)");
+        }
+    }
+
     /// Verifies that legitimate proofs within the limit still work.
     #[test]
     fn legitimate_proof_within_op_limit_succeeds() {
