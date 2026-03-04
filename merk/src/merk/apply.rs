@@ -245,11 +245,11 @@ where
                 match prev_key.as_ref().cmp(key.as_ref()) {
                     Ordering::Greater => {
                         return Err(Error::InvalidInputError("Keys in batch must be sorted"))
-                            .wrap_with_cost(Default::default())
+                            .wrap_with_cost(Default::default());
                     }
                     Ordering::Equal => {
                         return Err(Error::InvalidInputError("Keys in batch must be unique"))
-                            .wrap_with_cost(Default::default())
+                            .wrap_with_cost(Default::default());
                     }
                     _ => (),
                 }

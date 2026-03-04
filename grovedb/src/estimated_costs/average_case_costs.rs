@@ -414,7 +414,7 @@ impl GroveDb {
             }
             _ => {
                 return Err(Error::InvalidParameter("patching can only be on Items"))
-                    .wrap_with_cost(cost)
+                    .wrap_with_cost(cost);
             }
         };
         if let Some(level) = propagate_for_level {

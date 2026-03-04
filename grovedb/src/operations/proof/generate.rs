@@ -509,6 +509,7 @@ impl GroveDb {
         if !has_a_result_at_level
             && !done_with_results
             && prove_options.decrease_limit_on_empty_sub_query_result
+            && let Some(limit) = overall_limit.as_mut()
         {
             #[cfg(feature = "proof_debug")]
             {
@@ -520,9 +521,7 @@ impl GroveDb {
                         .join("/")
                 );
             }
-            if let Some(limit) = overall_limit.as_mut() {
-                *limit -= 1;
-            }
+            *limit -= 1;
         }
 
         let mut serialized_merk_proof = Vec::with_capacity(1024);
@@ -1145,10 +1144,9 @@ impl GroveDb {
         if !has_a_result_at_level
             && !done_with_results
             && prove_options.decrease_limit_on_empty_sub_query_result
+            && let Some(limit) = overall_limit.as_mut()
         {
-            if let Some(limit) = overall_limit.as_mut() {
-                *limit -= 1;
-            }
+            *limit -= 1;
         }
 
         let mut serialized_merk_proof = Vec::with_capacity(1024);

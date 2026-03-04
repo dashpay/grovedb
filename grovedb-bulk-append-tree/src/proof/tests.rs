@@ -649,7 +649,9 @@ mod proof_tests {
             // Flip the hash of the first node_value_hash entry
             corrupted_buffer.node_value_hashes[0].1 = [0xDD; 32];
         } else {
-            panic!("buffer proof should have at least one node_hash or node_value_hash for a partial proof");
+            panic!(
+                "buffer proof should have at least one node_hash or node_value_hash for a partial proof"
+            );
         }
 
         let corrupted_proof = BulkAppendTreeProof {

@@ -5,10 +5,10 @@ use std::{borrow::Cow, collections::VecDeque};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
 use crate::{
-    Error, MmrNode, Result,
     helper::{get_peak_map, get_peaks, parent_offset, pos_height_in_tree, sibling_offset},
     mmr_store::{MMRBatch, MMRStoreReadOps, MMRStoreWriteOps},
-    proof::{MerkleProof, take_while_vec},
+    proof::{take_while_vec, MerkleProof},
+    Error, MmrNode, Result,
 };
 
 /// A Merkle Mountain Range backed by a pluggable store.

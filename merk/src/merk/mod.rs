@@ -915,7 +915,7 @@ where
                 None => {
                     return Err(Error::InvalidOperation(
                         "branch_query cannot be performed on an empty tree",
-                    ))
+                    ));
                 }
                 Some(w) => w,
             };
@@ -931,7 +931,7 @@ where
                     return Err(Error::PathKeyNotFound(format!(
                         "key {} not found in tree",
                         hex::encode(target_key)
-                    )))
+                    )));
                 }
                 Err(e) => return Err(e),
             };

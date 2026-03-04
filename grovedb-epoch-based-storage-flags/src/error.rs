@@ -28,13 +28,13 @@ impl StorageFlagsError {
     /// Gets a mutable reference to the inner string of the error variant
     pub(crate) fn get_mut_info(&mut self) -> &mut String {
         match self {
-            StorageFlagsError::DeserializeUnknownStorageFlagsType(ref mut msg)
-            | StorageFlagsError::StorageFlagsWrongSize(ref mut msg)
-            | StorageFlagsError::RemovingAtEpochWithNoAssociatedStorage(ref mut msg)
-            | StorageFlagsError::StorageFlagsOverflow(ref mut msg)
-            | StorageFlagsError::RemovingFlagsError(ref mut msg)
-            | StorageFlagsError::MergingStorageFlagsFromDifferentOwners(ref mut msg)
-            | StorageFlagsError::MergingStorageFlagsWithDifferentBaseEpoch(ref mut msg) => msg,
+            StorageFlagsError::DeserializeUnknownStorageFlagsType(msg)
+            | StorageFlagsError::StorageFlagsWrongSize(msg)
+            | StorageFlagsError::RemovingAtEpochWithNoAssociatedStorage(msg)
+            | StorageFlagsError::StorageFlagsOverflow(msg)
+            | StorageFlagsError::RemovingFlagsError(msg)
+            | StorageFlagsError::MergingStorageFlagsFromDifferentOwners(msg)
+            | StorageFlagsError::MergingStorageFlagsWithDifferentBaseEpoch(msg) => msg,
         }
     }
 

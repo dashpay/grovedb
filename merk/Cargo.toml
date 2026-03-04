@@ -8,7 +8,7 @@ authors = [
         "Evgeny Fomin <evgeny.fomin@dash.org>",
         "Matt Bell <mappum@gmail.com>",
 ]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 homepage = "https://www.grovedb.org"
 repository = "https://github.com/dashpay/grovedb"

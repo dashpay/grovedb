@@ -206,7 +206,7 @@ where
                                 None,
                             ),
                         )
-                    })
+                    });
                 }
                 Some(tree) => {
                     cost_return_on_error!(

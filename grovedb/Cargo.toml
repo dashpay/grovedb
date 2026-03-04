@@ -4,10 +4,10 @@ description = "Fully featured database using balanced hierarchical authenticated
 version = "4.0.0"
 authors = [
     "Samuel Westrich <sam@dash.org>",
-    "Wisdom Ogwu <wisdom@dash.org",
+    "Wisdom Ogwu <wisdom@dash.org>",
     "Evgeny Fomin <evgeny.fomin@dash.org>",
 ]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 homepage = "https://www.grovedb.org"
 repository = "https://github.com/dashpay/grovedb"

@@ -218,7 +218,7 @@ impl DenseTreeProof {
                         "expected value at position {} but found none",
                         pos
                     )))
-                    .wrap_with_cost(cost)
+                    .wrap_with_cost(cost);
                 }
             };
 

@@ -99,7 +99,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
                     target_element: e,
                     target_node_value_hash: value_hash,
                 })
-                .wrap_with_cost(cost)
+                .wrap_with_cost(cost);
             }
         }
     }

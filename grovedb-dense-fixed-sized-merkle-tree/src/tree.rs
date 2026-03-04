@@ -276,7 +276,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
                     "expected value at position {} but found none",
                     position
                 )))
-                .wrap_with_cost(cost)
+                .wrap_with_cost(cost);
             }
         };
 

@@ -108,12 +108,12 @@ impl GroveTrunkQueryResult {
         let min_idx = 1;
 
         for idx in (min_idx..leaf_idx).rev() {
-            let (node_tree, ref key, hash) = &path[idx];
-            if let Some(count) = Self::get_node_count(node_tree) {
-                if count >= min_privacy_tree_count {
-                    let levels_up = (leaf_idx - idx) as u8;
-                    return Some((levels_up, count, key.clone(), *hash));
-                }
+            let (node_tree, key, hash) = &path[idx];
+            if let Some(count) = Self::get_node_count(node_tree)
+                && count >= min_privacy_tree_count
+            {
+                let levels_up = (leaf_idx - idx) as u8;
+                return Some((levels_up, count, key.clone(), *hash));
             }
         }
 

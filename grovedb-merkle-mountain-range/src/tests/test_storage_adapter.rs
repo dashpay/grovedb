@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 
 use grovedb_costs::{
-    ChildrenSizesWithIsSumTree, CostContext, CostResult, CostsExt, OperationCost,
-    storage_cost::key_value_cost::KeyValueStorageCost,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
+    CostResult, CostsExt, OperationCost,
 };
 use grovedb_storage::StorageContext;
 
 use crate::{
-    MMR, MMRStoreReadOps, MMRStoreWriteOps, MmrNode,
-    helper::{MmrKeySize, mmr_node_key_sized},
+    helper::{mmr_node_key_sized, MmrKeySize},
     storage_adapter::MmrStore,
+    MMRStoreReadOps, MMRStoreWriteOps, MmrNode, MMR,
 };
 
 // ── Minimal mock StorageContext ──────────────────────────────────────
@@ -443,18 +443,14 @@ fn mmr_store_write_multiple_elements() {
     }
 
     // Positions before and after should be empty
-    assert!(
-        MMRStoreReadOps::element_at_position(&store_ref, 2)
-            .value
-            .expect("read should succeed")
-            .is_none()
-    );
-    assert!(
-        MMRStoreReadOps::element_at_position(&store_ref, 8)
-            .value
-            .expect("read should succeed")
-            .is_none()
-    );
+    assert!(MMRStoreReadOps::element_at_position(&store_ref, 2)
+        .value
+        .expect("read should succeed")
+        .is_none());
+    assert!(MMRStoreReadOps::element_at_position(&store_ref, 8)
+        .value
+        .expect("read should succeed")
+        .is_none());
 }
 
 #[test]

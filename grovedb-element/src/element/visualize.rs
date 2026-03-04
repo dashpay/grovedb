@@ -16,19 +16,19 @@ impl Visualize for Element {
                 drawer.write(b"item: ")?;
                 drawer = value.visualize(drawer)?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::SumItem(value, flags) => {
                 drawer.write(format!("sum_item: {value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::Reference(_ref, ..) => {
@@ -48,10 +48,10 @@ impl Visualize for Element {
                 drawer.write(b"tree: ")?;
                 drawer = root_key.as_deref().visualize(drawer)?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::SumTree(root_key, value, flags) => {
@@ -59,10 +59,10 @@ impl Visualize for Element {
                 drawer = root_key.as_deref().visualize(drawer)?;
                 drawer.write(format!(" {value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::BigSumTree(root_key, value, flags) => {
@@ -70,10 +70,10 @@ impl Visualize for Element {
                 drawer = root_key.as_deref().visualize(drawer)?;
                 drawer.write(format!(" {value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::CountTree(root_key, value, flags) => {
@@ -81,10 +81,10 @@ impl Visualize for Element {
                 drawer = root_key.as_deref().visualize(drawer)?;
                 drawer.write(format!(" {value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::CountSumTree(root_key, count_value, sum_value, flags) => {
@@ -92,10 +92,10 @@ impl Visualize for Element {
                 drawer = root_key.as_deref().visualize(drawer)?;
                 drawer.write(format!("count: {count_value}, sum {sum_value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
 
@@ -104,10 +104,10 @@ impl Visualize for Element {
                 drawer = root_key.as_deref().visualize(drawer)?;
                 drawer.write(format!(" {value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::ProvableCountSumTree(root_key, count_value, sum_value, flags) => {
@@ -115,10 +115,10 @@ impl Visualize for Element {
                 drawer = root_key.as_deref().visualize(drawer)?;
                 drawer.write(format!("count: {count_value}, sum {sum_value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::ItemWithSumItem(value, sum_value, flags) => {
@@ -126,10 +126,10 @@ impl Visualize for Element {
                 drawer = value.visualize(drawer)?;
                 drawer.write(format!(" {sum_value}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::CommitmentTree(count, chunk_power, flags) => {
@@ -138,19 +138,19 @@ impl Visualize for Element {
                         .as_bytes(),
                 )?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::MmrTree(mmr_size, flags) => {
                 drawer.write(format!("mmr_tree: mmr_size: {mmr_size}").as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::BulkAppendTree(total_count, chunk_power, flags) => {
@@ -161,19 +161,19 @@ impl Visualize for Element {
                     .as_bytes(),
                 )?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
             Element::DenseAppendOnlyFixedSizeTree(count, height, flags) => {
                 drawer.write(format!("dense_tree: count: {count} height: {height}",).as_bytes())?;
 
-                if let Some(f) = flags {
-                    if !f.is_empty() {
-                        drawer = f.visualize(drawer)?;
-                    }
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
                 }
             }
         }

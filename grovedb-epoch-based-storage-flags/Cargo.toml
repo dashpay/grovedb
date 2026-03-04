@@ -3,7 +3,7 @@ name = "grovedb-epoch-based-storage-flags"
 authors = ["Samuel Westrich <sam@dash.org>"]
 description = "Epoch based storage flags for GroveDB"
 version = "4.0.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 repository = "https://github.com/dashpay/grovedb"
 

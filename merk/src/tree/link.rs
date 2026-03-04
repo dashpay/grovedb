@@ -234,22 +234,10 @@ impl Link {
     /// Return heights of children of the Link as mutable tuple
     pub(crate) fn child_heights_mut(&mut self) -> &mut (u8, u8) {
         match self {
-            Link::Reference {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Modified {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Uncommitted {
-                ref mut child_heights,
-                ..
-            } => child_heights,
-            Link::Loaded {
-                ref mut child_heights,
-                ..
-            } => child_heights,
+            Link::Reference { child_heights, .. } => child_heights,
+            Link::Modified { child_heights, .. } => child_heights,
+            Link::Uncommitted { child_heights, .. } => child_heights,
+            Link::Loaded { child_heights, .. } => child_heights,
         }
     }
 
@@ -539,10 +527,10 @@ impl Decode for Link {
         }
 
         if let Link::Reference {
-            ref mut aggregate_data,
-            ref mut key,
-            ref mut hash,
-            ref mut child_heights,
+            aggregate_data,
+            key,
+            hash,
+            child_heights,
         } = self
         {
             let length = read_u8(&mut input)? as usize;

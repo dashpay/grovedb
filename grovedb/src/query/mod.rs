@@ -362,13 +362,12 @@ impl PathQuery {
                                 .take(subquery_path.len())
                                 .zip(subquery_path)
                                 .all(|(a, b)| *a == b.as_slice())
+                                && let Some(subquery) = &subquery_branch.subquery
                             {
-                                if let Some(subquery) = &subquery_branch.subquery {
-                                    return recursive_should_add_parent_tree_at_path(
-                                        subquery,
-                                        &path_after_top_removed[subquery_path.len()..],
-                                    );
-                                }
+                                return recursive_should_add_parent_tree_at_path(
+                                    subquery,
+                                    &path_after_top_removed[subquery_path.len()..],
+                                );
                             }
                         } else if let Some(subquery) = &subquery_branch.subquery {
                             return recursive_should_add_parent_tree_at_path(
@@ -404,13 +403,12 @@ impl PathQuery {
                     .take(subquery_path.len())
                     .zip(subquery_path)
                     .all(|(a, b)| *a == b.as_slice())
+                    && let Some(subquery) = &query.default_subquery_branch.subquery
                 {
-                    if let Some(subquery) = &query.default_subquery_branch.subquery {
-                        return recursive_should_add_parent_tree_at_path(
-                            subquery,
-                            &path_after_top_removed[subquery_path.len()..],
-                        );
-                    }
+                    return recursive_should_add_parent_tree_at_path(
+                        subquery,
+                        &path_after_top_removed[subquery_path.len()..],
+                    );
                 }
             } else if let Some(subquery) = &query.default_subquery_branch.subquery {
                 return recursive_should_add_parent_tree_at_path(subquery, path_after_top_removed);
@@ -492,13 +490,12 @@ impl PathQuery {
                                 .take(subquery_path.len())
                                 .zip(subquery_path)
                                 .all(|(a, b)| *a == b.as_slice())
+                                && let Some(subquery) = &subquery_branch.subquery
                             {
-                                if let Some(subquery) = &subquery_branch.subquery {
-                                    return recursive_query_items(
-                                        subquery,
-                                        &path_after_top_removed[subquery_path.len()..],
-                                    );
-                                }
+                                return recursive_query_items(
+                                    subquery,
+                                    &path_after_top_removed[subquery_path.len()..],
+                                );
                             }
                         } else if let Some(subquery) = &subquery_branch.subquery {
                             return recursive_query_items(subquery, path_after_top_removed);
@@ -543,13 +540,12 @@ impl PathQuery {
                     .take(subquery_path.len())
                     .zip(subquery_path)
                     .all(|(a, b)| *a == b.as_slice())
+                    && let Some(subquery) = &query.default_subquery_branch.subquery
                 {
-                    if let Some(subquery) = &query.default_subquery_branch.subquery {
-                        return recursive_query_items(
-                            subquery,
-                            &path_after_top_removed[subquery_path.len()..],
-                        );
-                    }
+                    return recursive_query_items(
+                        subquery,
+                        &path_after_top_removed[subquery_path.len()..],
+                    );
                 }
             } else if let Some(subquery) = &query.default_subquery_branch.subquery {
                 return recursive_query_items(subquery, path_after_top_removed);

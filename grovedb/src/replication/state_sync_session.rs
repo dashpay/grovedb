@@ -231,7 +231,7 @@ impl<'db> MultiStateSyncSession<'db> {
     unsafe fn set_new_transaction(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
     ) -> Result<(), Error> {
-        let this = Pin::as_mut(self).get_unchecked_mut();
+        let this = unsafe { Pin::as_mut(self).get_unchecked_mut() };
         let old_tx = mem::replace(&mut this.transaction, this.db.start_transaction());
         self.db.commit_transaction(old_tx).unwrap()
     }
@@ -478,13 +478,13 @@ impl<'db> MultiStateSyncSession<'db> {
                 // Subtree is finished. We can save it.
                 let is_subtree_empty = subtree_state_sync.num_processed_chunks == 0;
                 if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
-                    if !is_subtree_empty {
-                        if let Err(err) = prefix_data.restorer.finalize(grove_version) {
-                            return Err(Error::InternalError(format!(
-                                "Unable to finalize Merk: {:?}",
-                                err
-                            )));
-                        }
+                    if !is_subtree_empty
+                        && let Err(err) = prefix_data.restorer.finalize(grove_version)
+                    {
+                        return Err(Error::InternalError(format!(
+                            "Unable to finalize Merk: {:?}",
+                            err
+                        )));
                     }
                 } else {
                     return Err(Error::InternalError(format!(

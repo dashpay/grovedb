@@ -259,7 +259,7 @@ impl GroveDb {
                         return Err(Error::CorruptedData(format!(
                             "unable to decode element while clearing subtree: {e}"
                         )))
-                        .wrap_with_cost(cost)
+                        .wrap_with_cost(cost);
                     }
                 };
                 if element.is_any_tree() {

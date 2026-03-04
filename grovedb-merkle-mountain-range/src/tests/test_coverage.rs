@@ -4,8 +4,8 @@
 //! See the Codecov file reports for error.rs, mmr_store.rs, mmr.rs, proof.rs.
 
 use crate::{
-    Error, MMR, MMRBatch, MMRStoreReadOps, MMRStoreWriteOps, MerkleProof, MmrNode,
-    mem_store::MemStore,
+    mem_store::MemStore, Error, MMRBatch, MMRStoreReadOps, MMRStoreWriteOps, MerkleProof, MmrNode,
+    MMR,
 };
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
@@ -184,7 +184,7 @@ fn merkle_proof_accessors() {
 
 #[test]
 fn mmr_node_key_returns_big_endian_bytes() {
-    use crate::helper::{MmrKeySize, mmr_node_key, mmr_node_key_sized};
+    use crate::helper::{mmr_node_key, mmr_node_key_sized, MmrKeySize};
 
     assert_eq!(mmr_node_key(0), [0u8; 8]);
     assert_eq!(mmr_node_key(1), [0, 0, 0, 0, 0, 0, 0, 1]);

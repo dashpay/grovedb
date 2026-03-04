@@ -39,15 +39,15 @@ mod tests;
 pub use error::{Error, Result};
 pub use grovedb_costs::{CostResult, CostsExt, OperationCost};
 pub use helper::{
-    MAX_U32_MMR_POSITION, MmrKey, MmrKeySize, hash_count_for_push, leaf_index_to_mmr_size,
-    leaf_index_to_mmr_size as leaf_to_mmr_size, leaf_index_to_pos,
-    leaf_index_to_pos as leaf_to_pos, mmr_node_key, mmr_node_key_sized, mmr_size_to_leaf_count,
+    hash_count_for_push, leaf_index_to_mmr_size, leaf_index_to_mmr_size as leaf_to_mmr_size,
+    leaf_index_to_pos, leaf_index_to_pos as leaf_to_pos, mmr_node_key, mmr_node_key_sized,
+    mmr_size_to_leaf_count, MmrKey, MmrKeySize, MAX_U32_MMR_POSITION,
 };
 #[cfg(any(test, feature = "mem_store"))]
 pub use mem_store::MemStore;
 pub use mmr::MMR;
 pub use mmr_store::{MMRBatch, MMRStoreReadOps, MMRStoreWriteOps};
-pub use node::{MmrNode, blake3_merge, leaf_hash};
+pub use node::{blake3_merge, leaf_hash, MmrNode};
 pub use proof::{MerkleProof, MmrTreeProof, VerifiedLeaves};
 #[cfg(feature = "storage")]
 pub use storage_adapter::MmrStore;

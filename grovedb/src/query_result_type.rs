@@ -281,10 +281,9 @@ impl QueryResultElements {
         for result_item in self.elements.into_iter() {
             if let QueryResultElement::PathKeyElementTrioResultItem((mut path, key, _)) =
                 result_item
+                && let Some(last) = path.pop()
             {
-                if let Some(last) = path.pop() {
-                    map.entry(last).or_default().push(key);
-                }
+                map.entry(last).or_default().push(key);
             }
         }
 
@@ -313,10 +312,9 @@ impl QueryResultElements {
         for result_item in self.elements.into_iter() {
             if let QueryResultElement::PathKeyElementTrioResultItem((mut path, key, element)) =
                 result_item
+                && let Some(last) = path.pop()
             {
-                if let Some(last) = path.pop() {
-                    map.entry(last).or_default().insert(key, element);
-                }
+                map.entry(last).or_default().insert(key, element);
             }
         }
 
@@ -331,10 +329,9 @@ impl QueryResultElements {
         for result_item in self.elements.into_iter() {
             if let QueryResultElement::PathKeyElementTrioResultItem((mut path, _, element)) =
                 result_item
+                && let Some(last) = path.pop()
             {
-                if let Some(last) = path.pop() {
-                    map.entry(last).or_default().push(element);
-                }
+                map.entry(last).or_default().push(element);
             }
         }
 
@@ -405,12 +402,10 @@ impl QueryResultElements {
         for result_item in self.elements.into_iter() {
             if let QueryResultElement::PathKeyElementTrioResultItem((mut path, key, _)) =
                 result_item
+                && path.pop().is_some()
+                && let Some(last) = path.pop()
             {
-                if path.pop().is_some() {
-                    if let Some(last) = path.pop() {
-                        map.entry(last).or_default().push(key);
-                    }
-                }
+                map.entry(last).or_default().push(key);
             }
         }
 

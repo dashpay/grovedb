@@ -2,7 +2,7 @@
 extern crate criterion;
 use criterion::Criterion;
 use grovedb_merkle_mountain_range::{leaf_index_to_mmr_size, leaf_index_to_pos};
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 
 fn bench(c: &mut Criterion) {
     c.bench_function("leaf_index_to_pos", |b| {

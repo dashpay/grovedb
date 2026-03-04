@@ -2,7 +2,7 @@
 extern crate criterion;
 
 use criterion::{BenchmarkId, Criterion};
-use grovedb_merkle_mountain_range::{MMR, MMRStoreReadOps, MemStore, MmrNode};
+use grovedb_merkle_mountain_range::{MMRStoreReadOps, MemStore, MmrNode, MMR};
 use rand::{seq::SliceRandom, thread_rng};
 
 /// Create an MmrNode leaf from an integer (for benchmarking).

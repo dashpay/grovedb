@@ -96,15 +96,15 @@ impl TrunkQueryResult {
         }
 
         // Recurse into non-Hash children
-        if let Some(left) = &tree.left {
-            if !matches!(left.tree.node, Node::Hash(_)) {
-                Self::collect_terminal_keys(&left.tree, keys);
-            }
+        if let Some(left) = &tree.left
+            && !matches!(left.tree.node, Node::Hash(_))
+        {
+            Self::collect_terminal_keys(&left.tree, keys);
         }
-        if let Some(right) = &tree.right {
-            if !matches!(right.tree.node, Node::Hash(_)) {
-                Self::collect_terminal_keys(&right.tree, keys);
-            }
+        if let Some(right) = &tree.right
+            && !matches!(right.tree.node, Node::Hash(_))
+        {
+            Self::collect_terminal_keys(&right.tree, keys);
         }
     }
 
