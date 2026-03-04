@@ -223,7 +223,7 @@ pub fn make_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let mut batch = Vec::with_capacity(size.try_into().unwrap());
     for _ in 0..size {
-        let n = rng.r#gen::<u64>();
+        let n = rng.random::<u64>();
         batch.push(put_entry(n));
     }
     batch.sort_by(|a, b| a.0.cmp(&b.0));
@@ -235,7 +235,7 @@ pub fn make_del_batch_rand(size: u64, seed: u64) -> Vec<BatchEntry<Vec<u8>>> {
     let mut rng: SmallRng = SeedableRng::seed_from_u64(seed);
     let mut batch = Vec::with_capacity(size.try_into().unwrap());
     for _ in 0..size {
-        let n = rng.r#gen::<u64>();
+        let n = rng.random::<u64>();
         batch.push(del_entry(n));
     }
     batch.sort_by(|a, b| a.0.cmp(&b.0));

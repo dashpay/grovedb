@@ -10,7 +10,7 @@ mod tests {
 
     use grovedb_element::Element;
     use grovedb_version::version::GroveVersion;
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{rngs::StdRng, RngExt, SeedableRng};
     use tempfile::TempDir;
 
     use crate::{tests::common::EMPTY_PATH, GroveDb};

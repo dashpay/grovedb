@@ -7,7 +7,7 @@ mod tests {
         calculate_chunk_depths, calculate_max_tree_depth_from_count,
     };
     use grovedb_version::version::GroveVersion;
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{rngs::StdRng, RngExt, SeedableRng};
 
     use crate::{
         query::PathTrunkChunkQuery,

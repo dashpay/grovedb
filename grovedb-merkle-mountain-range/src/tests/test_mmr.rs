@@ -1,6 +1,6 @@
 use faster_hex::hex_string;
 use proptest::prelude::*;
-use rand::{seq::SliceRandom, thread_rng, Rng};
+use rand::{seq::SliceRandom, RngExt};
 
 use crate::{
     helper::pos_height_in_tree, leaf_index_to_mmr_size, mem_store::MemStore, Error,
@@ -601,9 +601,9 @@ proptest! {
     #[test]
     fn test_random_mmr(count in 10u32..500u32) {
         let mut leaves: Vec<u32> = (0..count).collect();
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         leaves.shuffle(&mut rng);
-        let leaves_count = rng.gen_range(1..count - 1);
+        let leaves_count = rng.random_range(1..count - 1);
         leaves.truncate(leaves_count as usize);
         test_mmr(count, leaves);
     }

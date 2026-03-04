@@ -20,3 +20,6 @@ members = [
     "grovedb-commitment-tree",
     "grovedb-query",
 ]
+
+[workspace.dependencies]
+rand = "0.10"

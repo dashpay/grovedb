@@ -7,7 +7,7 @@ mod tests {
         branch::depth::calculate_max_tree_depth_from_count, Decoder, Node, Op,
     };
     use grovedb_version::version::GroveVersion;
-    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rand::{rngs::StdRng, RngExt, SeedableRng};
 
     use crate::{
         operations::proof::GroveDBProof,

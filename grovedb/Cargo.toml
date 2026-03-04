@@ -55,8 +55,8 @@ grovedb-epoch-based-storage-flags = { version = "4.0.0", path = "../grovedb-epoc
 criterion = "0.5.1"
 hex = "0.4.3"
 pretty_assertions = "1.4.0"
-rand = "0.9.0"
-rand_distr = "0.5"
+rand = { workspace = true }
+rand_distr = "0.6"
 assert_matches = "1.5.0"
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "time", "sync"] }
 
