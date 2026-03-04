@@ -19,7 +19,7 @@ coverage:
         target: 80%
 
 comment:
-  layout: "condensed_header, diff, flags, components, condensed_files"
+  layout: "condensed_header, diff, components, condensed_files"
   behavior: default
   require_changes: true
 
@@ -53,29 +53,3 @@ component_management:
       name: element
       paths:
         - grovedb-element/
-
-flag_management:
-  default_rules:
-    carryforward: true
-  individual_flags:
-    - name: core
-      paths:
-        - costs/
-        - path/
-        - visualize/
-        - grovedb-version/
-        - grovedbg-types/
-        - storage/
-        - grovedb-epoch-based-storage-flags/
-        - grovedb-element/
-        - merk/
-        - grovedb-query/
-    - name: trees
-      paths:
-        - grovedb-merkle-mountain-range/
-        - grovedb-dense-fixed-sized-merkle-tree/
-        - grovedb-bulk-append-tree/
-        - grovedb-commitment-tree/
-    - name: grovedb
-      paths:
-        - grovedb/
