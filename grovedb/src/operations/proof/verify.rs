@@ -669,10 +669,19 @@ impl GroveDb {
             ));
         }
 
-        // Empty proof means no matching leaves (e.g. empty MMR tree).
+        // An empty MMR (mmr_size == 0) has no leaves to verify.
         // Return the empty-MMR root hash ([0u8; 32]) directly.
         if mmr_proof.leaves().is_empty() {
-            return Ok([0u8; 32]);
+            if element_mmr_size == 0 {
+                return Ok([0u8; 32]);
+            }
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "MMR proof contains no leaves but element mmr_size is {} (expected 0)",
+                    element_mmr_size
+                ),
+            ));
         }
 
         // Compute root from the proof — the Merk child hash mechanism
