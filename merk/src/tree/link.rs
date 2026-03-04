@@ -843,6 +843,54 @@ mod test {
         link.encode_into(&mut bytes).unwrap();
     }
 
+    /// Demonstrates RUST-044: key length truncation via `key.len() as u8`.
+    ///
+    /// In release builds, `debug_assert!` is stripped, so a 300-byte key
+    /// gets its length silently truncated to `300 % 256 = 44`. This test
+    /// manually constructs the bytes that `encode_into` would produce in
+    /// release mode and shows that decode yields a corrupted key.
+    #[test]
+    fn attack_key_length_truncation_corrupts_decode() {
+        let original_key = vec![0xAB; 300]; // 300-byte key
+
+        // Simulate what encode_into does in release mode (debug_assert stripped):
+        //   out.write_all(&[key.len() as u8])?;  // 300 as u8 = 44
+        //   out.write_all(key)?;                  // all 300 bytes
+        //   out.write_all(hash)?;                 // 32 bytes
+        //   out.write_all(&[left_h, right_h])?;   // 2 bytes
+        //   out.write_all(&[0])?;                 // aggregate_data tag
+        let truncated_len: u8 = original_key.len() as u8; // 44
+        assert_eq!(truncated_len, 44, "300 as u8 should truncate to 44");
+
+        let hash = [0x55u8; 32];
+        let mut encoded = Vec::new();
+        encoded.push(truncated_len); // truncated length byte
+        encoded.extend_from_slice(&original_key); // full 300-byte key
+        encoded.extend_from_slice(&hash);
+        encoded.extend_from_slice(&[10, 11]); // child_heights
+        encoded.push(0); // NoAggregateData
+
+        // Decode: reads 44 bytes for key, then interprets bytes 44..76 as hash,
+        // bytes 76..78 as child_heights, byte 78 as aggregate_data tag.
+        // Everything is shifted and wrong.
+        let decoded = Link::decode(encoded.as_slice());
+
+        match decoded {
+            Ok(link) => {
+                // The decoded key is only the first 44 bytes, not the original 300
+                assert_eq!(link.key().len(), 44);
+                assert_ne!(link.key().len(), original_key.len());
+                // The hash is also corrupted (read from key bytes, not from actual hash)
+                assert_ne!(link.hash(), &hash);
+            }
+            Err(_) => {
+                // Alternatively the decode may fail outright due to misaligned
+                // fields (e.g. invalid aggregate_data tag from shifted bytes).
+                // Either way, data corruption is demonstrated.
+            }
+        }
+    }
+
     #[test]
     fn decode_link() {
         let bytes = vec![
