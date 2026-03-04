@@ -23,6 +23,37 @@ comment:
   behavior: default
   require_changes: true
 
+component_management:
+  individual_components:
+    - component_id: grovedb-core
+      name: grovedb-core
+      paths:
+        - grovedb/
+    - component_id: merk
+      name: merk
+      paths:
+        - merk/
+    - component_id: storage
+      name: storage
+      paths:
+        - storage/
+    - component_id: commitment-tree
+      name: commitment-tree
+      paths:
+        - grovedb-commitment-tree/
+    - component_id: mmr
+      name: mmr
+      paths:
+        - grovedb-merkle-mountain-range/
+    - component_id: bulk-append-tree
+      name: bulk-append-tree
+      paths:
+        - grovedb-bulk-append-tree/
+    - component_id: element
+      name: element
+      paths:
+        - grovedb-element/
+
 flag_management:
   default_rules:
     carryforward: true
