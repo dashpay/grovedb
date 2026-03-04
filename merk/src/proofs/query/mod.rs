@@ -210,12 +210,12 @@ where
         let (mut found_item, on_boundary_not_found, mut left_proof_items, mut right_proof_items) =
             proof_query_items.process_key(&key);
 
-        if let Some(current_limit) = proof_status.limit {
-            if current_limit == 0 {
-                left_proof_items = ProofItems::default();
-                found_item = false;
-                right_proof_items = ProofItems::default();
-            }
+        if let Some(current_limit) = proof_status.limit
+            && current_limit == 0
+        {
+            left_proof_items = ProofItems::default();
+            found_item = false;
+            right_proof_items = ProofItems::default();
         }
 
         let proof_direction = proof_params.left_to_right; // search the opposite path on second pass

@@ -2037,14 +2037,14 @@ impl GroveDb {
             .map(|c| matches!(c.tree.node, Node::Hash(_)));
 
         // If both children exist, they must both be Hash or both be non-Hash
-        if let (Some(left_hash), Some(right_hash)) = (left_is_hash, right_is_hash) {
-            if left_hash != right_hash {
-                return Err(Error::InvalidProof(
-                    PathQuery::new_unsized(Vec::new(), Query::default()),
-                    "Inconsistent trunk proof depth: one child is Hash while the other is not"
-                        .to_string(),
-                ));
-            }
+        if let (Some(left_hash), Some(right_hash)) = (left_is_hash, right_is_hash)
+            && left_hash != right_hash
+        {
+            return Err(Error::InvalidProof(
+                PathQuery::new_unsized(Vec::new(), Query::default()),
+                "Inconsistent trunk proof depth: one child is Hash while the other is not"
+                    .to_string(),
+            ));
         }
 
         // Extract key and value from this node - must exist for valid trunk proofs
@@ -2089,29 +2089,29 @@ impl GroveDb {
         }
 
         // Recurse into non-Hash children
-        if let Some(left) = &tree.left {
-            if !matches!(left.tree.node, Node::Hash(_)) {
-                Self::extract_elements_and_leaf_keys(
-                    &left.tree,
-                    elements,
-                    leaf_keys,
-                    current_depth + 1,
-                    max_depth,
-                    grove_version,
-                )?;
-            }
+        if let Some(left) = &tree.left
+            && !matches!(left.tree.node, Node::Hash(_))
+        {
+            Self::extract_elements_and_leaf_keys(
+                &left.tree,
+                elements,
+                leaf_keys,
+                current_depth + 1,
+                max_depth,
+                grove_version,
+            )?;
         }
-        if let Some(right) = &tree.right {
-            if !matches!(right.tree.node, Node::Hash(_)) {
-                Self::extract_elements_and_leaf_keys(
-                    &right.tree,
-                    elements,
-                    leaf_keys,
-                    current_depth + 1,
-                    max_depth,
-                    grove_version,
-                )?;
-            }
+        if let Some(right) = &tree.right
+            && !matches!(right.tree.node, Node::Hash(_))
+        {
+            Self::extract_elements_and_leaf_keys(
+                &right.tree,
+                elements,
+                leaf_keys,
+                current_depth + 1,
+                max_depth,
+                grove_version,
+            )?;
         }
 
         Ok(())

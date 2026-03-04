@@ -138,12 +138,12 @@ fn display_path(path: &[Vec<u8>]) -> String {
     path.iter()
         .map(|bytes| {
             let mut hx = hex::encode(bytes);
-            if let Ok(s) = String::from_utf8(bytes.clone()) {
-                if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    hx.push('(');
-                    hx.push_str(&s);
-                    hx.push(')');
-                }
+            if let Ok(s) = String::from_utf8(bytes.clone())
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                hx.push('(');
+                hx.push_str(&s);
+                hx.push(')');
             }
 
             hx

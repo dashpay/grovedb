@@ -290,12 +290,12 @@ where
 
         // ensure the limit is not less than first chunk byte length
         // if it is we can't proceed and didn't make progress so we return an error
-        if let Some(limit) = limit {
-            if chunk_byte_length > limit {
-                return Err(Error::ChunkingError(ChunkError::LimitTooSmall(
-                    "limit too small for initial chunk",
-                )));
-            }
+        if let Some(limit) = limit
+            && chunk_byte_length > limit
+        {
+            return Err(Error::ChunkingError(ChunkError::LimitTooSmall(
+                "limit too small for initial chunk",
+            )));
         }
 
         let mut iteration_index = 0;
@@ -312,19 +312,19 @@ where
                     - chunk[iteration_index].encoding_length();
 
                 // verify that this chunk doesn't make use exceed the limit
-                if let Some(limit) = limit {
-                    if new_total > limit {
-                        let next_index = match chunk_index > max_chunk_index {
-                            true => None,
-                            _ => Some(chunk_index),
-                        };
+                if let Some(limit) = limit
+                    && new_total > limit
+                {
+                    let next_index = match chunk_index > max_chunk_index {
+                        true => None,
+                        _ => Some(chunk_index),
+                    };
 
-                        return Ok(SubtreeChunk::new(
-                            chunk.into(),
-                            next_index,
-                            Some(limit - chunk_byte_length),
-                        ));
-                    }
+                    return Ok(SubtreeChunk::new(
+                        chunk.into(),
+                        next_index,
+                        Some(limit - chunk_byte_length),
+                    ));
                 }
 
                 chunk_byte_length = new_total;

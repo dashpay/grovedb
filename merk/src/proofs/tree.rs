@@ -591,13 +591,13 @@ where
                 | Node::KVDigestCount(key, ..) = &node
                 {
                     // keys should always increase
-                    if let Some(last_key) = &maybe_last_key {
-                        if key <= last_key {
-                            return Err(Error::InvalidProofError(
-                                "Incorrect key ordering".to_string(),
-                            ))
-                            .wrap_with_cost(cost);
-                        }
+                    if let Some(last_key) = &maybe_last_key
+                        && key <= last_key
+                    {
+                        return Err(Error::InvalidProofError(
+                            "Incorrect key ordering".to_string(),
+                        ))
+                        .wrap_with_cost(cost);
                     }
 
                     maybe_last_key = Some(key.clone());
@@ -628,13 +628,13 @@ where
                 | Node::KVDigestCount(key, ..) = &node
                 {
                     // keys should always decrease
-                    if let Some(last_key) = &maybe_last_key {
-                        if key >= last_key {
-                            return Err(Error::InvalidProofError(
-                                "Incorrect key ordering inverted".to_string(),
-                            ))
-                            .wrap_with_cost(cost);
-                        }
+                    if let Some(last_key) = &maybe_last_key
+                        && key >= last_key
+                    {
+                        return Err(Error::InvalidProofError(
+                            "Incorrect key ordering inverted".to_string(),
+                        ))
+                        .wrap_with_cost(cost);
                     }
 
                     maybe_last_key = Some(key.clone());

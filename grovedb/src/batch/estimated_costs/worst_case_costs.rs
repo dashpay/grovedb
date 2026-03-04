@@ -405,20 +405,20 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         let mut cost = OperationCost::default();
         cost.seek_count += 1;
         let base_path = KeyInfoPath(vec![]);
-        if let Some(_estimated_layer_info) = self.paths.get(&base_path) {
+        if let Some(_estimated_layer_info) = self.paths.get(&base_path)
+            && !self.cached_merks.contains(&base_path)
+        {
             // Then we have to get the tree
-            if !self.cached_merks.contains(&base_path) {
-                cost_return_on_error_no_add!(
-                    cost,
-                    GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
-                        &mut cost,
-                        &base_path,
-                        TreeType::NormalTree,
-                        grove_version,
-                    )
-                );
-                self.cached_merks.insert(base_path);
-            }
+            cost_return_on_error_no_add!(
+                cost,
+                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                    &mut cost,
+                    &base_path,
+                    TreeType::NormalTree,
+                    grove_version,
+                )
+            );
+            self.cached_merks.insert(base_path);
         }
         Ok(()).wrap_with_cost(cost)
     }

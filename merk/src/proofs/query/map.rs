@@ -38,12 +38,12 @@ impl MapBuilder {
             | Node::KVValueHash(key, value, ..)
             | Node::KVCount(key, value, _)
             | Node::KVValueHashFeatureType(key, value, ..) => {
-                if let Some((prev_key, _)) = self.0.entries.last_key_value() {
-                    if key <= prev_key {
-                        return Err(Error::KeyOrderingError(
-                            "Expected nodes to be in increasing key order",
-                        ));
-                    }
+                if let Some((prev_key, _)) = self.0.entries.last_key_value()
+                    && key <= prev_key
+                {
+                    return Err(Error::KeyOrderingError(
+                        "Expected nodes to be in increasing key order",
+                    ));
                 }
 
                 let value = (self.0.right_edge, value.clone());

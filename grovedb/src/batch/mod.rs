@@ -3052,12 +3052,12 @@ impl GroveDb {
         let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
             .iter()
             .filter_map(|op| {
-                if let GroveOp::DeleteTree(tree_type) = &op.op {
-                    if tree_type.uses_non_merk_data_storage() {
-                        let mut child_path = op.path.to_path();
-                        child_path.push(op.key.as_ref()?.as_slice().to_vec());
-                        return Some(child_path);
-                    }
+                if let GroveOp::DeleteTree(tree_type) = &op.op
+                    && tree_type.uses_non_merk_data_storage()
+                {
+                    let mut child_path = op.path.to_path();
+                    child_path.push(op.key.as_ref()?.as_slice().to_vec());
+                    return Some(child_path);
                 }
                 None
             })
@@ -3234,12 +3234,12 @@ impl GroveDb {
         let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
             .iter()
             .filter_map(|op| {
-                if let GroveOp::DeleteTree(tree_type) = &op.op {
-                    if tree_type.uses_non_merk_data_storage() {
-                        let mut child_path = op.path.to_path();
-                        child_path.push(op.key.as_ref()?.as_slice().to_vec());
-                        return Some(child_path);
-                    }
+                if let GroveOp::DeleteTree(tree_type) = &op.op
+                    && tree_type.uses_non_merk_data_storage()
+                {
+                    let mut child_path = op.path.to_path();
+                    child_path.push(op.key.as_ref()?.as_slice().to_vec());
+                    return Some(child_path);
                 }
                 None
             })

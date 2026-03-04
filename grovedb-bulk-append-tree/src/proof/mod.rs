@@ -143,11 +143,11 @@ fn query_to_ranges(query: &Query, total_count: u64) -> Result<Vec<(u64, u64)>, B
     ranges.sort();
     let mut merged: Vec<(u64, u64)> = Vec::new();
     for (s, e) in ranges {
-        if let Some(last) = merged.last_mut() {
-            if s <= last.1 {
-                last.1 = last.1.max(e);
-                continue;
-            }
+        if let Some(last) = merged.last_mut()
+            && s <= last.1
+        {
+            last.1 = last.1.max(e);
+            continue;
         }
         merged.push((s, e));
     }

@@ -117,14 +117,14 @@ where
             let mut storage_costs =
                 TreeNode::storage_cost_for_update(new_storage_cost, old_storage_cost);
 
-            if let Some(old_element_flags) = maybe_old_flags.as_mut() {
-                if let BasicStorageRemoval(removed_bytes) = storage_costs.removed_bytes {
-                    let (_, value_removed_bytes) = cost_return_on_error_no_add!(
-                        cost,
-                        split_removal_bytes(old_element_flags, 0, removed_bytes)
-                    );
-                    storage_costs.removed_bytes = value_removed_bytes;
-                }
+            if let Some(old_element_flags) = maybe_old_flags.as_mut()
+                && let BasicStorageRemoval(removed_bytes) = storage_costs.removed_bytes
+            {
+                let (_, value_removed_bytes) = cost_return_on_error_no_add!(
+                    cost,
+                    split_removal_bytes(old_element_flags, 0, removed_bytes)
+                );
+                storage_costs.removed_bytes = value_removed_bytes;
             }
 
             let mut new_element_cloned = original_new_element.clone();
