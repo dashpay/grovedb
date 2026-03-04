@@ -10,10 +10,10 @@ mod tests {
 
     use grovedb_element::Element;
     use grovedb_version::version::GroveVersion;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{rngs::StdRng, Rng, SeedableRng};
     use tempfile::TempDir;
 
-    use crate::{GroveDb, tests::common::EMPTY_PATH};
+    use crate::{tests::common::EMPTY_PATH, GroveDb};
 
     /// Helper to get total size of files with a given extension in a directory
     fn get_files_size(path: &std::path::Path, extension: &str) -> u64 {

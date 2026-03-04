@@ -1,7 +1,7 @@
 use grovedb_merk::proofs::Query;
 use grovedb_version::version::GroveVersion;
 
-use crate::{Element, GroveDb, PathQuery, tests::make_test_grovedb};
+use crate::{tests::make_test_grovedb, Element, GroveDb, PathQuery};
 
 #[test]
 fn test_provable_count_tree_fresh_proof() {

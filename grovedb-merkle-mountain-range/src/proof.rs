@@ -14,7 +14,6 @@ use bincode::{Decode, Encode};
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 
 use crate::{
-    Error, MMRStoreReadOps, MMRStoreWriteOps, MmrNode, Result,
     helper::{
         get_peak_map, get_peaks, leaf_index_to_mmr_size, leaf_index_to_pos,
         leaf_index_to_pos as leaf_to_pos, mmr_size_to_leaf_count, parent_offset,
@@ -22,6 +21,7 @@ use crate::{
     },
     leaf_hash,
     mmr::bag_peaks,
+    Error, MMRStoreReadOps, MMRStoreWriteOps, MmrNode, Result,
 };
 
 // =============================================================================
@@ -701,7 +701,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MMR, MMRStoreReadOps, mem_store::MemStore};
+    use crate::{mem_store::MemStore, MMRStoreReadOps, MMR};
 
     /// Push MmrNode leaves into a MemStore and return (store, mmr_size).
     fn build_mmr(values: &[&[u8]]) -> (MemStore, u64) {
@@ -1011,8 +1011,8 @@ mod tests {
     #[test]
     fn test_lazy_node_store_short_circuits_on_prior_error() {
         use std::sync::{
-            Arc,
             atomic::{AtomicU64, Ordering},
+            Arc,
         };
 
         let call_count = Arc::new(AtomicU64::new(0));

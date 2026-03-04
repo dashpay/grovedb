@@ -4,13 +4,13 @@
 use std::io::Write;
 
 // TODO: figure out better nomenclature
-use crate::{Error, proofs::chunk::binary_range::BinaryRange};
+use crate::{proofs::chunk::binary_range::BinaryRange, Error};
 use crate::{
-    Error::InternalError,
     proofs::chunk::{
         chunk::{LEFT, RIGHT},
         error::{ChunkError, ChunkError::BadTraversalInstruction},
     },
+    Error::InternalError,
 };
 
 /// Represents the height as a linear combination of 3 amd 2

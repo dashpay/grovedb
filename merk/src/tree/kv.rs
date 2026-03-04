@@ -14,16 +14,16 @@ use integer_encoding::VarInt;
 use super::hash::{CryptoHash, HASH_LENGTH, NULL_HASH};
 #[cfg(feature = "minimal")]
 use crate::{
-    HASH_LENGTH_U32, HASH_LENGTH_U32_X2, Link,
-    tree::{
-        hash::{HASH_LENGTH_X2, combine_hash, kv_digest_to_kv_hash, value_hash},
-        tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerkNode},
-    },
+    merk::NodeType,
+    tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
 };
 #[cfg(feature = "minimal")]
 use crate::{
-    merk::NodeType,
-    tree::kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
+    tree::{
+        hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
+        tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerkNode},
+    },
+    Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
 };
 // TODO: maybe use something similar to Vec but without capacity field,
 //       (should save 16 bytes per entry). also, maybe a shorter length

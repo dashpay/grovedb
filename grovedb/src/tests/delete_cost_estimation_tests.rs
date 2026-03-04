@@ -14,8 +14,8 @@ use grovedb_version::version::GroveVersion;
 use intmap::IntMap;
 
 use crate::{
+    batch::{key_info::KeyInfo::KnownKey, GroveOp, KeyInfoPath},
     GroveDb,
-    batch::{GroveOp, KeyInfoPath, key_info::KeyInfo::KnownKey},
 };
 
 fn normal_layer_info() -> EstimatedLayerInformation {

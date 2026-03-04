@@ -6,8 +6,8 @@
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use grovedb_merk::{
+    proofs::{tree::Tree, Node},
     CryptoHash, TreeFeatureType,
-    proofs::{Node, tree::Tree},
 };
 
 use crate::Element;

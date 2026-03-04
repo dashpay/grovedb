@@ -2,13 +2,13 @@
 
 use std::{
     cell::{Cell, UnsafeCell},
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{btree_map::Entry, BTreeMap},
 };
 
-use grovedb_costs::{CostResult, CostsExt, cost_return_on_error};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt};
 use grovedb_merk::Merk;
 use grovedb_path::SubtreePathBuilder;
-use grovedb_storage::{StorageBatch, rocksdb_storage::PrefixedRocksDbTransactionContext};
+use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
 use crate::{Error, GroveDb, Transaction};
@@ -206,8 +206,8 @@ mod tests {
 
     use super::MerkCache;
     use crate::{
+        tests::{make_deep_tree, make_test_grovedb, TEST_LEAF},
         Element,
-        tests::{TEST_LEAF, make_deep_tree, make_test_grovedb},
     };
 
     #[test]

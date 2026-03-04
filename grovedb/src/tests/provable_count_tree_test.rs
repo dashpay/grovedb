@@ -4,7 +4,7 @@
 mod tests {
     use grovedb_version::version::GroveVersion;
 
-    use crate::{Element, GroveDb, PathQuery, Query, SizedQuery, tests::make_test_grovedb};
+    use crate::{tests::make_test_grovedb, Element, GroveDb, PathQuery, Query, SizedQuery};
 
     #[test]
     fn test_provable_count_tree_basic_operations() {
@@ -490,12 +490,10 @@ mod tests {
         let (root, results) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
             .expect("original should verify");
         assert_eq!(root, expected_root);
-        assert!(
-            results[0]
-                .value
-                .windows(b"100_coins".len())
-                .any(|w| w == b"100_coins")
-        );
+        assert!(results[0]
+            .value
+            .windows(b"100_coins".len())
+            .any(|w| w == b"100_coins"));
 
         // Now tamper: change "100_coins" to "999_coins" (same length!)
         let mut tampered = proof.clone();

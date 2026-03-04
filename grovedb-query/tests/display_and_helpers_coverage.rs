@@ -1,6 +1,7 @@
 use grovedb_query::{
-    ProofItems, ProofStatus, Query, QueryItem, SubqueryBranch, hex_to_ascii,
-    proofs::{Node, Op, TreeFeatureType, encode_into},
+    hex_to_ascii,
+    proofs::{encode_into, Node, Op, TreeFeatureType},
+    ProofItems, ProofStatus, Query, QueryItem, SubqueryBranch,
 };
 
 fn k(v: u8) -> Vec<u8> {
@@ -292,10 +293,8 @@ fn query_item_display_all_variants() {
     assert!(format!("{}", QueryItem::RangeToInclusive(..=k(8))).contains("RangeToInclusive("));
     assert!(format!("{}", QueryItem::RangeAfter(k(3)..)).contains("RangeAfter("));
     assert!(format!("{}", QueryItem::RangeAfterTo(k(1)..k(5))).contains("RangeAfterTo("));
-    assert!(
-        format!("{}", QueryItem::RangeAfterToInclusive(k(1)..=k(5)))
-            .contains("RangeAfterToInclusive(")
-    );
+    assert!(format!("{}", QueryItem::RangeAfterToInclusive(k(1)..=k(5)))
+        .contains("RangeAfterToInclusive("));
 }
 
 // ─── QueryItem processing_footprint ──────────────────────────────────
@@ -332,16 +331,12 @@ fn query_item_keys_consume_for_key_and_ranges() {
 #[test]
 fn query_item_keys_consume_multi_byte_errors() {
     // Multi-byte start
-    assert!(
-        QueryItem::Range(vec![1, 2]..vec![5])
-            .keys_consume()
-            .is_err()
-    );
-    assert!(
-        QueryItem::RangeInclusive(vec![1, 2]..=vec![5])
-            .keys_consume()
-            .is_err()
-    );
+    assert!(QueryItem::Range(vec![1, 2]..vec![5])
+        .keys_consume()
+        .is_err());
+    assert!(QueryItem::RangeInclusive(vec![1, 2]..=vec![5])
+        .keys_consume()
+        .is_err());
 }
 
 #[test]

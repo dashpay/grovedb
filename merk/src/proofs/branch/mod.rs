@@ -20,7 +20,7 @@ mod tests;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{
     error::Error,
-    proofs::{Node, Op, tree::execute},
+    proofs::{tree::execute, Node, Op},
     tree::CryptoHash,
 };
 

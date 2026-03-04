@@ -10,12 +10,12 @@ use grovedb_merk::{Merk, VisualizeableMerk};
 use grovedb_path::SubtreePathBuilder;
 use grovedb_storage::{Storage, StorageContext};
 use grovedb_version::version::GroveVersion;
-use grovedb_visualize::{Drawer, Visualize, visualize_stdout};
+use grovedb_visualize::{visualize_stdout, Drawer, Visualize};
 
 use crate::{
-    GroveDb, TransactionArg,
-    element::{Element, elements_iterator::ElementIteratorExtensions},
+    element::{elements_iterator::ElementIteratorExtensions, Element},
     util::TxRef,
+    GroveDb, TransactionArg,
 };
 
 impl GroveDb {

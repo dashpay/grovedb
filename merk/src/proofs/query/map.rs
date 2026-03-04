@@ -3,7 +3,7 @@
 #![allow(unstable_name_collisions)]
 
 use std::{
-    collections::{BTreeMap, btree_map, btree_map::Iter},
+    collections::{btree_map, btree_map::Iter, BTreeMap},
     ops::{Bound, RangeBounds},
 };
 

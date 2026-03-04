@@ -4,7 +4,7 @@
 use ed::{Decode, Encode};
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
 use grovedb_storage::StorageContext;
@@ -15,9 +15,9 @@ use super::TreeNode;
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::{
-    Error::StorageError,
     error::{Error, Error::EdError},
     tree::TreeNodeInner,
+    Error::StorageError,
 };
 
 #[cfg(feature = "minimal")]
@@ -148,8 +148,8 @@ impl TreeNode {
 mod tests {
     use super::{super::Link, *};
     use crate::{
-        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
         tree::AggregateData,
+        TreeFeatureType::{BasicMerkNode, SummedMerkNode},
     };
 
     #[test]

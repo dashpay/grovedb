@@ -9,11 +9,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use grovedb_merk::{
-        TreeFeatureType,
         proofs::{
-            Node,
             tree::{Child, Tree},
+            Node,
         },
+        TreeFeatureType,
     };
 
     use crate::{Element, GroveBranchQueryResult, GroveTrunkQueryResult, LeafInfo};

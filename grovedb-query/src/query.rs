@@ -1,13 +1,13 @@
 use std::{collections::HashSet, fmt, ops::RangeFull};
 
 use bincode::{
-    BorrowDecode, Decode, Encode,
     enc::write::Writer,
     error::{DecodeError, EncodeError},
+    BorrowDecode, Decode, Encode,
 };
 use indexmap::IndexMap;
 
-use crate::{Key, Path, SubqueryBranch, error::Error, query_item::QueryItem};
+use crate::{error::Error, query_item::QueryItem, Key, Path, SubqueryBranch};
 
 /// `Query` represents one or more keys or ranges of keys, which can be used to
 /// resolve a proof which will include all the requested values.
@@ -40,7 +40,7 @@ impl Encode for Query {
         match &self.conditional_subquery_branches {
             Some(conditional_subquery_branches) => {
                 encoder.writer().write(&[1])?; // Write a flag indicating presence of data
-                // Encode the length of the map
+                                               // Encode the length of the map
                 (conditional_subquery_branches.len() as u64).encode(encoder)?;
                 // Encode each key-value pair in the IndexMap
                 for (key, value) in conditional_subquery_branches {
@@ -50,7 +50,7 @@ impl Encode for Query {
             }
             None => {
                 encoder.writer().write(&[0])?; // Write a flag indicating
-                // absence of data
+                                               // absence of data
             }
         }
 

@@ -7,25 +7,25 @@ use std::{
 };
 
 #[cfg(feature = "minimal")]
-use Op::*;
-#[cfg(feature = "minimal")]
 use grovedb_costs::{
-    CostContext, CostResult, CostsExt, OperationCost, cost_return_on_error,
-    cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::{
-        StorageCost,
         key_value_cost::KeyValueStorageCost,
         removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
+        StorageCost,
     },
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
+#[cfg(feature = "minimal")]
+use Op::*;
 
 #[cfg(feature = "minimal")]
 use super::{Fetch, Link, TreeNode, Walker};
 #[cfg(feature = "minimal")]
-use crate::{CryptoHash, HASH_LENGTH_U32, error::Error, tree::tree_feature_type::TreeFeatureType};
+use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
 use crate::{
     merk::KeyUpdates,
     tree::kv::{ValueDefinedCostType, ValueDefinedCostType::SpecializedValueDefinedCost},

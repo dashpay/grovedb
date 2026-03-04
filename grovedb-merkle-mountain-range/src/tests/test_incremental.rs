@@ -1,6 +1,6 @@
 use proptest::proptest;
 
-use crate::{MMR, MmrNode, mem_store::MemStore};
+use crate::{mem_store::MemStore, MmrNode, MMR};
 
 /// Create an MmrNode leaf from an integer (for test convenience).
 fn leaf_from_u32(i: u32) -> MmrNode {

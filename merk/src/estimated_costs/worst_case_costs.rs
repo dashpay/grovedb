@@ -37,10 +37,10 @@ use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::{
-    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH,
     error::Error,
     merk::defaults::MAX_PREFIXED_KEY_SIZE,
-    tree::{Link, TreeNode, kv::KV},
+    tree::{kv::KV, Link, TreeNode},
+    HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH,
 };
 
 #[cfg(feature = "minimal")]

@@ -4,15 +4,15 @@
 //! verified through the GroveDB V1 proof system.
 
 use grovedb_merk::proofs::{
-    Query,
     query::{QueryItem, SubqueryBranch},
+    Query,
 };
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    Element, GroveDb, PathQuery, SizedQuery,
     operations::proof::GroveDBProof,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
+    Element, GroveDb, PathQuery, SizedQuery,
 };
 
 // ===========================================================================

@@ -26,17 +26,17 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost, cost_return_on_error};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_element::{ElementType, ProofNodeType};
 use grovedb_version::version::GroveVersion;
 
 // TODO: add copyright comment
 use crate::proofs::{Node, Op, Tree};
 use crate::{
-    CryptoHash, Error,
     proofs::{chunk::error::ChunkError, tree::execute},
-    tree::{Fetch, RefWalker, kv::ValueDefinedCostType},
+    tree::{kv::ValueDefinedCostType, Fetch, RefWalker},
     tree_type::TreeType,
+    CryptoHash, Error,
 };
 
 pub const LEFT: bool = true;
@@ -305,15 +305,15 @@ pub mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        PanicSource, TreeFeatureType,
         proofs::{
-            Node, Op,
-            chunk::chunk::{LEFT, RIGHT, verify_height_proof},
+            chunk::chunk::{verify_height_proof, LEFT, RIGHT},
             tree::execute,
+            Node, Op,
         },
         test_utils::make_tree_seq_with_start_key,
-        tree::{RefWalker, TreeNode, kv::ValueDefinedCostType},
+        tree::{kv::ValueDefinedCostType, RefWalker, TreeNode},
         tree_type::TreeType,
+        PanicSource, TreeFeatureType,
     };
 
     fn build_tree_10_nodes() -> TreeNode {

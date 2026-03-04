@@ -3,7 +3,7 @@ fn main() {
     use std::{env, fs::File, io::Cursor, path::PathBuf};
 
     use hex_literal::hex;
-    use sha2::{Digest, Sha256, digest::FixedOutput};
+    use sha2::{digest::FixedOutput, Digest, Sha256};
 
     const GROVEDBG_SHA256: [u8; 32] =
         hex!("da31eb2c93d553abb730455b53761a6e3913d876d0371b4a4a7e08a7398322ed");

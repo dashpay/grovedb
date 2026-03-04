@@ -28,7 +28,7 @@
 
 //! Merk benches ops
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 use grovedb_merk::{
     owner::Owner,
     test_utils::{

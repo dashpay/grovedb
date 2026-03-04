@@ -19,7 +19,7 @@ use orchard::{
     zcash_note_encryption::note_bytes::NoteBytes,
 };
 
-use crate::{CommitmentFrontier, CommitmentTreeError, compute_commitment_tree_state_root};
+use crate::{compute_commitment_tree_state_root, CommitmentFrontier, CommitmentTreeError};
 
 mod tests;
 

@@ -2,16 +2,16 @@
 
 use std::collections::HashSet;
 
-use grovedb_costs::{CostResult, CostsExt, cost_return_on_error, cost_return_on_error_into_no_add};
+use grovedb_costs::{cost_return_on_error, cost_return_on_error_into_no_add, CostResult, CostsExt};
 pub use grovedb_element::reference_path::*;
-use grovedb_merk::{CryptoHash, element::get::ElementFetchFromStorageExtensions};
+use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, CryptoHash};
 use grovedb_path::SubtreePathBuilder;
 use grovedb_version::check_grovedb_v0_with_cost;
 
 use crate::{
-    Element, Error,
     merk_cache::{MerkCache, MerkHandle},
     operations::MAX_REFERENCE_HOPS,
+    Element, Error,
 };
 
 pub(crate) struct ResolvedReference<'db, 'b, 'c, B> {
@@ -167,13 +167,13 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>>(
 
 #[cfg(test)]
 mod tests {
-    use grovedb_element::{Element, reference_path::ReferencePathType};
+    use grovedb_element::{reference_path::ReferencePathType, Element};
     use grovedb_merk::proofs::Query;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        tests::{make_deep_tree, TEST_LEAF},
         GroveDb, PathQuery,
-        tests::{TEST_LEAF, make_deep_tree},
     };
 
     #[test]

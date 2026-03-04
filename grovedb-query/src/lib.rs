@@ -32,7 +32,7 @@ mod subquery_branch;
 pub use proof_items::ProofItems;
 pub use proof_status::ProofStatus;
 pub use query::Query;
-pub use query_item::{QueryItem, intersect::QueryItemIntersectionResult};
+pub use query_item::{intersect::QueryItemIntersectionResult, QueryItem};
 pub use subquery_branch::SubqueryBranch;
 
 /// Type alias for a path.

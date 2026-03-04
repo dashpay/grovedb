@@ -8,13 +8,13 @@ use std::{
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::average_case_costs::{
-    EstimatedLayerInformation, average_case_merk_propagate,
+    average_case_merk_propagate, EstimatedLayerInformation,
 };
-use grovedb_merk::{RootHashKeyAndAggregateData, tree::AggregateData, tree_type::TreeType};
+use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
@@ -24,11 +24,11 @@ use itertools::Itertools;
 use crate::Element;
 #[cfg(feature = "minimal")]
 use crate::{
-    Error, GroveDb,
     batch::{
-        BatchApplyOptions, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache, key_info::KeyInfo,
-        mode::BatchRunMode,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
+        QualifiedGroveDbOp, TreeCache,
     },
+    Error, GroveDb,
 };
 
 #[cfg(feature = "minimal")]
@@ -140,7 +140,7 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 // Additional cost: frontier I/O (data storage load + save),
                 // buffer entry write, and Sinsemilla hashing.
                 //
@@ -179,7 +179,7 @@ impl GroveOp {
                 // push() writes 1 leaf + trailing_ones(leaf_count) internal
                 // nodes. Average trailing_ones ≈ 1, so ~2 writes + 1 sibling
                 // read for merging.
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 // Internal node: 33 bytes (1 flag + 32 hash)
                 const INTERNAL_NODE_SIZE: u32 = 33;
                 // Leaf node: 37 + value_len (1 flag + 32 hash + 4 length + value)
@@ -213,7 +213,7 @@ impl GroveOp {
                 // Additional cost: buffer write + running hash.
                 // Most appends only write to the buffer (O(1)). Compaction
                 // happens once per epoch_size appends and is amortized.
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let entry_size = value.len() as u32;
                 // 1 blake3 hash for running buffer hash chain
                 const AVG_HASH_CALLS: u32 = 1;
@@ -242,7 +242,7 @@ impl GroveOp {
                 // compute_root_hash visits all filled positions: each does
                 // 1 storage read + 2 hash calls (value_hash + node_hash).
                 // Average count ≈ 8 (half-full tree, height 4).
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let value_size = value.len() as u32;
                 const AVG_COUNT: u32 = 8;
                 // 2 hash calls per filled node (value_hash + node_hash)
@@ -450,8 +450,8 @@ mod tests {
     use std::collections::HashMap;
 
     use grovedb_costs::{
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
-        storage_cost::{StorageCost, removal::StorageRemovedBytes::NoStorageRemoval},
     };
     use grovedb_merk::{
         estimated_costs::average_case_costs::{
@@ -465,12 +465,12 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        Element, GroveDb,
         batch::{
-            KeyInfoPath, QualifiedGroveDbOp,
             estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo,
+            KeyInfoPath, QualifiedGroveDbOp,
         },
         tests::{common::EMPTY_PATH, make_empty_grovedb},
+        Element, GroveDb,
     };
 
     #[test]

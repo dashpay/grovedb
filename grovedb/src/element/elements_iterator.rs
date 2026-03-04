@@ -1,12 +1,12 @@
 use grovedb_costs::{
-    CostContext, CostResult, CostsExt, OperationCost, cost_return_on_error_into_no_add,
+    cost_return_on_error_into_no_add, CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::Element;
 use grovedb_merk::element::decode::ElementDecodeExtensions;
 use grovedb_storage::RawIterator;
 use grovedb_version::version::GroveVersion;
 
-use crate::{Error, query_result_type::KeyElementPair};
+use crate::{query_result_type::KeyElementPair, Error};
 
 pub trait ElementIteratorExtensions {
     fn iterator<I: RawIterator>(raw_iter: I) -> CostContext<ElementsIterator<I>>;

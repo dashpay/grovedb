@@ -213,8 +213,8 @@ mod tests {
     use std::io::{Error, ErrorKind, Write};
 
     use super::{
-        DebugByteVectors, DebugBytes, Drawer, Visualize, to_hex, visualize_stderr,
-        visualize_stdout, visualize_to_vec,
+        to_hex, visualize_stderr, visualize_stdout, visualize_to_vec, DebugByteVectors, DebugBytes,
+        Drawer, Visualize,
     };
 
     fn visualized<T: Visualize + ?Sized>(value: &T) -> String {

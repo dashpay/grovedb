@@ -3,10 +3,10 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    tree::{kv::ValueDefinedCostType, TreeNode},
     CryptoHash, Error,
     Error::StorageError,
     Merk, TreeFeatureType,
-    tree::{TreeNode, kv::ValueDefinedCostType},
 };
 
 impl<'db, S> Merk<S>
@@ -359,7 +359,7 @@ mod test {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        Op, TreeFeatureType::BasicMerkNode, test_utils::TempMerk, tree::kv::ValueDefinedCostType,
+        test_utils::TempMerk, tree::kv::ValueDefinedCostType, Op, TreeFeatureType::BasicMerkNode,
     };
 
     #[test]

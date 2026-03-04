@@ -1,6 +1,6 @@
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use incrementalmerkletree::{Hashable, Level, Position, frontier::Frontier};
-use orchard::{Anchor, NOTE_COMMITMENT_TREE_DEPTH, tree::MerkleHashOrchard};
+use incrementalmerkletree::{frontier::Frontier, Hashable, Level, Position};
+use orchard::{tree::MerkleHashOrchard, Anchor, NOTE_COMMITMENT_TREE_DEPTH};
 
 pub use crate::error::CommitmentTreeError;
 

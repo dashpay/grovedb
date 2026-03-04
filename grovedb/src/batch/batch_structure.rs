@@ -5,8 +5,9 @@ use std::{collections::BTreeMap, fmt};
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    CostResult, CostsExt, OperationCost, cost_return_on_error,
-    storage_cost::{StorageCost, removal::StorageRemovedBytes},
+    cost_return_on_error,
+    storage_cost::{removal::StorageRemovedBytes, StorageCost},
+    CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 #[cfg(feature = "minimal")]
@@ -16,8 +17,8 @@ use intmap::IntMap;
 
 #[cfg(feature = "minimal")]
 use crate::{
+    batch::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache},
     ElementFlags, Error,
-    batch::{GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache, key_info::KeyInfo},
 };
 
 #[cfg(feature = "minimal")]

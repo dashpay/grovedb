@@ -1,12 +1,12 @@
 //! Append and compaction logic for BulkAppendTree.
 
 use grovedb_merkle_mountain_range::{
-    MMR, MmrKeySize, MmrNode, MmrStore, hash_count_for_push, mmr_size_to_leaf_count,
+    hash_count_for_push, mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR,
 };
 use grovedb_storage::StorageContext;
 
-use super::{AppendResult, BulkAppendTree, capacity_for_height, hash::compute_state_root};
-use crate::{BulkAppendError, chunk::serialize_chunk_blob};
+use super::{capacity_for_height, hash::compute_state_root, AppendResult, BulkAppendTree};
+use crate::{chunk::serialize_chunk_blob, BulkAppendError};
 
 impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Create a new empty tree.

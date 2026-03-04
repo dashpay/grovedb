@@ -1,7 +1,7 @@
 use incrementalmerkletree::{Position, Retention};
 use orchard::tree::Anchor;
 
-use crate::{ClientMemoryCommitmentTree, test_utils::test_leaf};
+use crate::{test_utils::test_leaf, ClientMemoryCommitmentTree};
 
 #[test]
 fn test_empty_tree() {

@@ -1,6 +1,6 @@
-use grovedb_costs::storage_cost::{StorageCost, transition::OperationStorageTransitionType};
+use grovedb_costs::storage_cost::{transition::OperationStorageTransitionType, StorageCost};
 
-use crate::{ElementFlags, MergingOwnersStrategy, StorageFlags, error::StorageFlagsError};
+use crate::{error::StorageFlagsError, ElementFlags, MergingOwnersStrategy, StorageFlags};
 
 impl StorageFlags {
     pub fn update_element_flags(
@@ -141,7 +141,7 @@ impl StorageFlags {
 mod tests {
     use std::collections::BTreeMap;
 
-    use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
 
     use crate::StorageFlags;
 
@@ -274,11 +274,9 @@ mod tests {
         let error = StorageFlags::update_element_flags(&cost, Some(old), &mut new_flags)
             .expect_err("expected error");
 
-        assert!(
-            error
-                .to_string()
-                .contains("removing flags from an item with flags is not allowed")
-        );
+        assert!(error
+            .to_string()
+            .contains("removing flags from an item with flags is not allowed"));
     }
 
     #[test]
@@ -292,11 +290,9 @@ mod tests {
 
         let old_error = StorageFlags::update_element_flags(&cost, Some(vec![255]), &mut new_flags)
             .expect_err("expected old flag parse error");
-        assert!(
-            old_error
-                .to_string()
-                .contains("drive did not understand flags of old item being updated")
-        );
+        assert!(old_error
+            .to_string()
+            .contains("drive did not understand flags of old item being updated"));
 
         let mut invalid_new = vec![255];
         let new_error = StorageFlags::update_element_flags(
@@ -305,10 +301,8 @@ mod tests {
             &mut invalid_new,
         )
         .expect_err("expected new flag parse error");
-        assert!(
-            new_error
-                .to_string()
-                .contains("drive did not understand updated item flag information")
-        );
+        assert!(new_error
+            .to_string()
+            .contains("drive did not understand updated item flag information"));
     }
 }

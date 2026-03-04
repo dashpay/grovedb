@@ -9,13 +9,13 @@ mod tests {
     use orchard::tree::MerkleHashOrchard;
     use rusqlite::Connection;
     use shardtree::{
-        LocatedTree, Node, PrunableTree, RetentionFlags, Tree,
         store::{Checkpoint, ShardStore, TreeState},
+        LocatedTree, Node, PrunableTree, RetentionFlags, Tree,
     };
 
     use crate::client::sqlite_store::{
-        SHARD_HEIGHT, SqliteShardStore,
         tree_serialization::{deserialize_tree, serialize_tree},
+        SqliteShardStore, SHARD_HEIGHT,
     };
 
     fn test_store() -> SqliteShardStore {
@@ -354,12 +354,10 @@ mod tests {
             .expect("exists");
         assert_eq!(id, 3);
 
-        assert!(
-            store
-                .get_checkpoint_at_depth(10)
-                .expect("depth 10")
-                .is_none()
-        );
+        assert!(store
+            .get_checkpoint_at_depth(10)
+            .expect("depth 10")
+            .is_none());
     }
 
     #[test]

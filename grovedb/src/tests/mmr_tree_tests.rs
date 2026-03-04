@@ -6,15 +6,15 @@
 use std::{cell::RefCell, collections::BTreeMap};
 
 use grovedb_merkle_mountain_range::{
-    CostResult, CostsExt, MMR, MMRStoreReadOps, MMRStoreWriteOps, MmrNode, OperationCost,
+    CostResult, CostsExt, MMRStoreReadOps, MMRStoreWriteOps, MmrNode, OperationCost, MMR,
 };
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    Element, Error, GroveDb,
     batch::QualifiedGroveDbOp,
     operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
+    Element, Error, GroveDb,
 };
 
 /// In-memory MMR store for test helpers.
@@ -1566,8 +1566,8 @@ fn test_mmr_tree_batch_transaction_rollback() {
 #[test]
 fn test_mmr_tree_v1_proof_empty() {
     use grovedb_merk::proofs::{
-        Query,
         query::{QueryItem, SubqueryBranch},
+        Query,
     };
 
     use crate::{PathQuery, SizedQuery};

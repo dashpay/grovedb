@@ -1,16 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb_merk::{
-    CryptoHash, TreeFeatureType, calculate_chunk_depths, calculate_max_tree_depth_from_count,
+    calculate_chunk_depths, calculate_max_tree_depth_from_count,
     element::tree_type::ElementTreeTypeExtensions,
     proofs::{
-        Decoder, Node, Op, Query, execute,
+        execute,
         query::{PathKey, QueryProofVerify, VerifyOptions},
+        Decoder, Node, Op, Query,
     },
-    tree::{NULL_HASH, combine_hash, value_hash},
+    tree::{combine_hash, value_hash, NULL_HASH},
+    CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
-    TryFromVersioned, TryIntoVersioned, check_grovedb_v0, version::GroveVersion,
+    check_grovedb_v0, version::GroveVersion, TryFromVersioned, TryIntoVersioned,
 };
 
 #[cfg(feature = "proof_debug")]
@@ -18,14 +20,14 @@ use crate::operations::proof::util::{
     hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
 };
 use crate::{
-    Element, Error, GroveDb, PathQuery,
     operations::proof::{
+        util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
         GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof, ProofBytes,
         ProveOptions,
-        util::{ProvedPathKeyOptionalValue, ProvedPathKeyValues},
     },
     query::{GroveTrunkQueryResult, PathTrunkChunkQuery},
     query_result_type::PathKeyOptionalElementTrio,
+    Element, Error, GroveDb, PathQuery,
 };
 
 impl GroveDb {

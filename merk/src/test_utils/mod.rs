@@ -40,13 +40,13 @@ use rand::prelude::*;
 pub use temp_merk::TempMerk;
 
 use crate::{
-    Merk,
-    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
     tree::{
+        kv::{ValueDefinedCostType, KV},
         BatchEntry, MerkBatch, NoopCommit, Op, PanicSource, TreeNode, Walker,
-        kv::{KV, ValueDefinedCostType},
     },
     tree_type::TreeType,
+    Merk,
+    TreeFeatureType::{BasicMerkNode, SummedMerkNode},
 };
 
 /// Assert tree invariants

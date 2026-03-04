@@ -1,7 +1,7 @@
 //! Insertion Benchmark
 
 #[cfg(feature = "minimal")]
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(feature = "minimal")]
 use grovedb::{Element, GroveDb};
 use grovedb_path::SubtreePath;

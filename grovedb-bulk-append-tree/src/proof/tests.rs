@@ -3,7 +3,7 @@ mod proof_tests {
     use grovedb_merkle_mountain_range::MmrTreeProof;
     use grovedb_query::{Query, QueryItem};
 
-    use crate::{BulkAppendTree, proof::*, test_utils::MemStorageContext};
+    use crate::{proof::*, test_utils::MemStorageContext, BulkAppendTree};
 
     /// Helper: build a test tree and return it (tree owns the storage).
     fn build_test_tree(

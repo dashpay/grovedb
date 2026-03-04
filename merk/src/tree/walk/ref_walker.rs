@@ -12,9 +12,9 @@ use super::{
     super::{Link, TreeNode},
     Fetch,
 };
+use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::Error;
-use crate::tree::kv::ValueDefinedCostType;
 
 #[cfg(feature = "minimal")]
 /// Allows read-only traversal of a `Tree`, fetching from the given source when

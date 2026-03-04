@@ -3,20 +3,20 @@
 use std::{collections::HashMap, option::Option::None};
 
 use grovedb_costs::{
-    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_into,
-    cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
+    CostsExt, OperationCost,
 };
 use grovedb_element::reference_path::path_from_reference_path_type;
 use grovedb_merk::{
-    Merk, MerkOptions,
-    element::{ElementExt, costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions},
+    element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions, ElementExt},
     tree::NULL_HASH,
+    Merk, MerkOptions,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch, rocksdb_storage::PrefixedRocksDbTransactionContext};
+use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{Element, Error, GroveDb, Transaction, TransactionArg, util::TxRef};
+use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
 #[derive(Clone)]
 /// Insert options
@@ -493,16 +493,16 @@ impl GroveDb {
 #[cfg(test)]
 mod tests {
     use grovedb_costs::{
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
-        storage_cost::{StorageCost, removal::StorageRemovedBytes::NoStorageRemoval},
     };
     use grovedb_version::version::GroveVersion;
     use pretty_assertions::assert_eq;
 
     use crate::{
-        Element, Error,
         operations::insert::InsertOptions,
-        tests::{TEST_LEAF, common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb},
+        tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
+        Element, Error,
     };
 
     #[test]
@@ -676,8 +676,8 @@ mod tests {
         let db = make_test_grovedb(grove_version);
 
         // Insert twice at the same path
-        assert!(
-            db.insert_if_not_exists(
+        assert!(db
+            .insert_if_not_exists(
                 [TEST_LEAF].as_ref(),
                 b"key1",
                 Element::empty_tree(),
@@ -685,10 +685,9 @@ mod tests {
                 grove_version
             )
             .unwrap()
-            .expect("Provided valid path")
-        );
-        assert!(
-            !db.insert_if_not_exists(
+            .expect("Provided valid path"));
+        assert!(!db
+            .insert_if_not_exists(
                 [TEST_LEAF].as_ref(),
                 b"key1",
                 Element::empty_tree(),
@@ -696,8 +695,7 @@ mod tests {
                 grove_version
             )
             .unwrap()
-            .expect("Provided valid path")
-        );
+            .expect("Provided valid path"));
 
         // Should propagate errors from insertion
         let result = db
@@ -1974,8 +1972,8 @@ mod tests {
     }
 
     #[test]
-    fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item_parent_sum_tree_already_big()
-     {
+    fn test_one_update_same_cost_in_underlying_sum_tree_bigger_sum_item_parent_sum_tree_already_big(
+    ) {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();

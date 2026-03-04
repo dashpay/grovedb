@@ -8,17 +8,17 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::{
-        TreeFeatureType::SummedMerkNode,
         proofs::{
-            Query,
             query::{QueryItem, SubqueryBranch},
+            Query,
         },
+        TreeFeatureType::SummedMerkNode,
     };
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        tests::{make_deep_tree, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
-        tests::{ANOTHER_TEST_LEAF, TEST_LEAF, make_deep_tree, make_test_grovedb},
     };
 
     // =========================================================================

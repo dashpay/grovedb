@@ -3,17 +3,17 @@
 
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::proofs::{Query, query::query_item::QueryItem};
+    use grovedb_merk::proofs::{query::query_item::QueryItem, Query};
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        Element, Error, PathQuery, SizedQuery,
         operations::{delete::DeleteOptions, insert::InsertOptions},
         query_result_type::{QueryResultElement, QueryResultType},
         reference_path::ReferencePathType,
         tests::{
-            ANOTHER_TEST_LEAF, TEST_LEAF, common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb,
+            common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
+        Element, Error, PathQuery, SizedQuery,
     };
 
     // -----------------------------------------------------------------------

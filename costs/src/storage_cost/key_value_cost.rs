@@ -34,8 +34,8 @@ use std::{
 use integer_encoding::VarInt;
 
 use crate::{
+    storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
     BasicStorageRemoval, StorageRemovedBytes,
-    storage_cost::{StorageCost, removal::StorageRemovedBytes::NoStorageRemoval},
 };
 
 /// Storage only operation costs separated by key and value

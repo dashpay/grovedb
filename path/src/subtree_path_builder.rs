@@ -32,9 +32,9 @@
 use std::hash::{Hash, Hasher};
 
 use crate::{
-    SubtreePath, SubtreePathIter,
     subtree_path::SubtreePathInner,
     util::{CompactBytes, CowLike},
+    SubtreePath, SubtreePathIter,
 };
 
 /// Path to a GroveDB's subtree.

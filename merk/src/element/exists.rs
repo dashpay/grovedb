@@ -6,7 +6,7 @@ use grovedb_element::Element;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
-use crate::{Error, Merk, element::costs::ElementCostExtensions};
+use crate::{element::costs::ElementCostExtensions, Error, Merk};
 
 pub trait ElementExistsInStorageExtensions {
     /// Helper function that returns whether an element at the key for the

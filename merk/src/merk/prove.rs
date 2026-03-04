@@ -5,9 +5,9 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    Error, Merk,
-    proofs::{Op as ProofOp, Query, encode_into, query::QueryItem},
+    proofs::{encode_into, query::QueryItem, Op as ProofOp, Query},
     tree::RefWalker,
+    Error, Merk,
 };
 
 impl<'db, S> Merk<S>

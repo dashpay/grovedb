@@ -2,16 +2,16 @@ use std::fmt;
 
 use grovedb_element::Element;
 use grovedb_merk::proofs::{
-    Query,
     query::{Path, SubqueryBranch},
+    Query,
 };
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 use crate::{
-    TransactionArg,
     element::query_options::QueryOptions,
     operations::proof::util::hex_to_ascii,
     query_result_type::{QueryResultElement, QueryResultType},
+    TransactionArg,
 };
 
 /// Path query push arguments

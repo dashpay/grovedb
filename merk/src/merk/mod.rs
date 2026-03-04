@@ -50,37 +50,37 @@ use std::{
 
 use committer::MerkCommitter;
 use grovedb_costs::{
-    ChildrenSizesWithValue, CostContext, CostResult, CostsExt, FeatureSumLength, OperationCost,
-    TreeCostType, cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
-    storage_cost::key_value_cost::KeyValueStorageCost,
+    cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
+    storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithValue, CostContext,
+    CostResult, CostsExt, FeatureSumLength, OperationCost, TreeCostType,
 };
 use grovedb_storage::{self, Batch, RawIterator, StorageContext};
 use grovedb_version::version::GroveVersion;
 use source::MerkSource;
 
 use crate::{
-    Error::{CostsError, EdError, StorageError},
-    Link,
-    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
     error::Error,
     merk::{defaults::ROOT_KEY_KEY, options::MerkOptions},
     proofs::{
-        Query,
         branch::{
-            BranchQueryResult, TrunkQueryResult, calculate_chunk_depths,
-            calculate_chunk_depths_with_minimum, calculate_max_tree_depth_from_count,
+            calculate_chunk_depths, calculate_chunk_depths_with_minimum,
+            calculate_max_tree_depth_from_count, BranchQueryResult, TrunkQueryResult,
         },
         chunk::{
             chunk::{LEFT, RIGHT},
             util::traversal_instruction_as_vec_bytes,
         },
         query::query_item::QueryItem,
+        Query,
     },
     tree::{
-        AggregateData, AuxMerkBatch, CryptoHash, Fetch, NULL_HASH, Op, RefWalker, TreeNode,
-        kv::ValueDefinedCostType,
+        kv::ValueDefinedCostType, AggregateData, AuxMerkBatch, CryptoHash, Fetch, Op, RefWalker,
+        TreeNode, NULL_HASH,
     },
     tree_type::TreeType,
+    Error::{CostsError, EdError, StorageError},
+    Link,
+    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
 
 /// Key update types
@@ -429,7 +429,7 @@ where
                     // empty tree, delete pointer to root
                     let cost = if options.base_root_storage_is_free {
                         Some(KeyValueStorageCost::default()) // don't pay for
-                    // root costs
+                                                             // root costs
                     } else {
                         None // means it will be calculated
                     };
@@ -548,12 +548,12 @@ where
             self.storage
                 .put_root(ROOT_KEY_KEY, key.as_slice(), None)
                 .map_err(Error::StorageError) // todo: maybe
-        // change None?
+                                              // change None?
         } else {
             self.storage
                 .delete_root(ROOT_KEY_KEY, None)
                 .map_err(Error::StorageError) // todo: maybe
-            // change None?
+                                              // change None?
         }
     }
 
@@ -1034,16 +1034,16 @@ mod test {
 
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
-        RawIterator, Storage, StorageBatch, StorageContext,
         rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
+        RawIterator, Storage, StorageBatch, StorageContext,
     };
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use super::{Merk, RefWalker};
     use crate::{
-        Op, TreeFeatureType::BasicMerkNode, merk::source::MerkSource, test_utils::*,
-        tree::kv::ValueDefinedCostType, tree_type::TreeType,
+        merk::source::MerkSource, test_utils::*, tree::kv::ValueDefinedCostType,
+        tree_type::TreeType, Op, TreeFeatureType::BasicMerkNode,
     };
     // TODO: Close and then reopen test
 
@@ -1203,8 +1203,8 @@ mod test {
         let mut merk = TempMerk::new(grove_version);
 
         // no root
-        assert!(
-            merk.get(
+        assert!(merk
+            .get(
                 &[1, 2, 3],
                 true,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1212,8 +1212,7 @@ mod test {
             )
             .unwrap()
             .unwrap()
-            .is_none()
-        );
+            .is_none());
 
         // cached
         merk.apply::<_, Vec<_>>(
@@ -1224,8 +1223,8 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert!(
-            merk.get(
+        assert!(merk
+            .get(
                 &[1, 2, 3],
                 true,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1233,8 +1232,7 @@ mod test {
             )
             .unwrap()
             .unwrap()
-            .is_none()
-        );
+            .is_none());
 
         // uncached
         merk.apply::<_, Vec<_>>(
@@ -1249,8 +1247,8 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        assert!(
-            merk.get(
+        assert!(merk
+            .get(
                 &[3, 3, 3],
                 true,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1258,8 +1256,7 @@ mod test {
             )
             .unwrap()
             .unwrap()
-            .is_none()
-        );
+            .is_none());
     }
 
     // TODO: what this test should do?

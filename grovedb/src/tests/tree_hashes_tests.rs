@@ -29,14 +29,14 @@
 //! Tree hashes tests
 
 use grovedb_merk::tree::{
-    NULL_HASH, combine_hash, kv::ValueDefinedCostType, kv_digest_to_kv_hash, node_hash, value_hash,
+    combine_hash, kv::ValueDefinedCostType, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH,
 };
 use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    tests::{make_test_grovedb, TEST_LEAF},
     Element,
-    tests::{TEST_LEAF, make_test_grovedb},
 };
 
 #[test]

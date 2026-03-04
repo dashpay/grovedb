@@ -98,7 +98,7 @@ impl Iterator for Iter<'_> {
 #[cfg(test)]
 #[cfg(feature = "minimal")]
 mod tests {
-    use crate::tree::{TreeFeatureType::BasicMerkNode, TreeNode, tree_feature_type::AggregateData};
+    use crate::tree::{tree_feature_type::AggregateData, TreeFeatureType::BasicMerkNode, TreeNode};
 
     #[test]
     fn iter_single_node() {

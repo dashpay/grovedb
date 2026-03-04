@@ -45,12 +45,12 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::{
+        proofs::{query::query_item::QueryItem, Query},
         TreeFeatureType,
-        proofs::{Query, query::query_item::QueryItem},
     };
     use grovedb_version::version::GroveVersion;
 
-    use crate::{Element, GroveDb, PathQuery, SizedQuery, tests::make_empty_grovedb};
+    use crate::{tests::make_empty_grovedb, Element, GroveDb, PathQuery, SizedQuery};
 
     #[test]
     fn test_provable_count_tree_with_mixed_subtrees() {
@@ -913,8 +913,8 @@ mod tests {
         //!    - kv_hash = kv_digest_to_kv_hash(key, combined_value_hash)
 
         use grovedb_merk::tree::hash::{
-            NULL_HASH, combine_hash, kv_digest_to_kv_hash, node_hash, node_hash_with_count,
-            value_hash,
+            combine_hash, kv_digest_to_kv_hash, node_hash, node_hash_with_count, value_hash,
+            NULL_HASH,
         };
 
         let grove_version = GroveVersion::latest();
@@ -1230,8 +1230,8 @@ mod tests {
         //!    - For CountTree: regular node_hash
 
         use grovedb_merk::tree::hash::{
-            NULL_HASH, combine_hash, kv_digest_to_kv_hash, node_hash, node_hash_with_count,
-            value_hash,
+            combine_hash, kv_digest_to_kv_hash, node_hash, node_hash_with_count, value_hash,
+            NULL_HASH,
         };
 
         let grove_version = GroveVersion::latest();

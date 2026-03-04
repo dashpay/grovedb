@@ -1,4 +1,4 @@
-use grovedb_query::{Query, QueryItem, SubqueryBranch, error::Error};
+use grovedb_query::{error::Error, Query, QueryItem, SubqueryBranch};
 
 fn k(v: u8) -> Vec<u8> {
     vec![v]

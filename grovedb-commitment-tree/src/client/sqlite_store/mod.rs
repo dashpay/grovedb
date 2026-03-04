@@ -22,8 +22,8 @@ use incrementalmerkletree::Address;
 use orchard::tree::MerkleHashOrchard;
 use rusqlite::Connection;
 use shardtree::{
-    LocatedPrunableTree, PrunableTree,
     store::{Checkpoint, ShardStore},
+    LocatedPrunableTree, PrunableTree,
 };
 use sql_helpers::*;
 

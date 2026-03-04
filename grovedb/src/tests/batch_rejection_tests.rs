@@ -19,11 +19,11 @@ use grovedb_merk::tree::AggregateData;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    Element, Error,
     batch::{
-        GroveOp, KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp, key_info::KeyInfo::KnownKey,
+        key_info::KeyInfo::KnownKey, GroveOp, KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp,
     },
     tests::{common::EMPTY_PATH, make_empty_grovedb},
+    Element, Error,
 };
 
 #[test]

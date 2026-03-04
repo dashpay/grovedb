@@ -11,8 +11,8 @@ use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use crate::Error;
 #[cfg(feature = "minimal")]
 use crate::{
+    batch::{key_info::KeyInfo, KeyInfoPath},
     GroveDb,
-    batch::{KeyInfoPath, key_info::KeyInfo},
 };
 
 #[cfg(feature = "minimal")]

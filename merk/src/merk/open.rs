@@ -5,10 +5,10 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    Error, Merk, MerkType,
-    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
     tree::kv::ValueDefinedCostType,
     tree_type::TreeType,
+    Error, Merk, MerkType,
+    MerkType::{BaseMerk, LayeredMerk, StandaloneMerk},
 };
 
 impl<'db, S> Merk<S>
@@ -96,15 +96,15 @@ mod test {
     use grovedb_costs::OperationCost;
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
+        rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
         Storage, StorageBatch,
-        rocksdb_storage::{RocksDbStorage, test_utils::TempStorage},
     };
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use crate::{
-        Merk, Op, TreeFeatureType::BasicMerkNode, tree::kv::ValueDefinedCostType,
-        tree_type::TreeType,
+        tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk, Op,
+        TreeFeatureType::BasicMerkNode,
     };
 
     #[test]

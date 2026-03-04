@@ -1,10 +1,10 @@
 use faster_hex::hex_string;
 use proptest::prelude::*;
-use rand::{Rng, seq::SliceRandom, thread_rng};
+use rand::{seq::SliceRandom, thread_rng, Rng};
 
 use crate::{
-    Error, MMR, MMRStoreReadOps, MerkleProof, MmrNode, MmrTreeProof, helper::pos_height_in_tree,
-    leaf_index_to_mmr_size, mem_store::MemStore,
+    helper::pos_height_in_tree, leaf_index_to_mmr_size, mem_store::MemStore, Error,
+    MMRStoreReadOps, MerkleProof, MmrNode, MmrTreeProof, MMR,
 };
 
 /// Create an MmrNode leaf from an integer (for test convenience).
@@ -218,24 +218,18 @@ fn test_invalid_proof_verification(
 
     match mmr.gen_proof(positions_to_verify.clone()).unwrap() {
         Ok(proof) => {
-            assert!(
-                proof
-                    .verify(root.clone(), entries_to_verify)
-                    .expect("verify valid")
-            );
-            assert!(
-                !proof
-                    .verify(root, tampered_entries_to_verify)
-                    .expect("verify tampered")
-            );
+            assert!(proof
+                .verify(root.clone(), entries_to_verify)
+                .expect("verify valid"));
+            assert!(!proof
+                .verify(root, tampered_entries_to_verify)
+                .expect("verify tampered"));
         }
         Err(Error::NodeProofsNotSupported) => {
             // if couldn't generate proof, then it contained a non-leaf
-            assert!(
-                positions_to_verify
-                    .iter()
-                    .any(|pos| pos_height_in_tree(*pos) > 0)
-            );
+            assert!(positions_to_verify
+                .iter()
+                .any(|pos| pos_height_in_tree(*pos) > 0));
         }
         Err(e) => panic!("Unexpected error: {}", e),
     }

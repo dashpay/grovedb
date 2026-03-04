@@ -37,15 +37,15 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        Element,
         replication::{
-            CURRENT_STATE_SYNC_VERSION,
             utils::{
                 decode_global_chunk_id, decode_vec_ops, encode_global_chunk_id, encode_vec_ops,
                 pack_nested_bytes, path_to_string, unpack_nested_bytes,
             },
+            CURRENT_STATE_SYNC_VERSION,
         },
         tests::make_test_grovedb,
+        Element,
     };
 
     // -----------------------------------------------------------------------
@@ -138,7 +138,7 @@ mod tests {
         // Header says 1 element, but no length/data follows
         let mut packed = vec![];
         packed.extend_from_slice(&1u16.to_be_bytes()); // num_elements = 1
-        // No length bytes or data follow
+                                                       // No length bytes or data follow
         let result = unpack_nested_bytes(&packed);
         assert!(
             result.is_err(),
@@ -320,7 +320,7 @@ mod tests {
         let app_hash = [0x00u8; 32];
         let mut data = vec![0xBBu8; 32]; // prefix
         data.push(0); // root_key_size = 0 (no root key)
-        // Missing tree type byte
+                      // Missing tree type byte
         let result = decode_global_chunk_id(&data, &app_hash);
         assert!(
             result.is_err(),

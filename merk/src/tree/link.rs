@@ -11,13 +11,13 @@ use ed::{Decode, Encode, Result, Terminated};
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 #[cfg(feature = "minimal")]
-use super::{TreeNode, hash::CryptoHash};
-#[cfg(feature = "minimal")]
-use crate::HASH_LENGTH_U32;
+use super::{hash::CryptoHash, TreeNode};
 #[cfg(feature = "minimal")]
 use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
 use crate::tree::tree_feature_type::AggregateData;
+#[cfg(feature = "minimal")]
+use crate::HASH_LENGTH_U32;
 // TODO: optimize memory footprint
 
 #[cfg(feature = "minimal")]
@@ -180,7 +180,11 @@ impl Link {
     #[inline]
     pub const fn height(&self) -> u8 {
         const fn max(a: u8, b: u8) -> u8 {
-            if a >= b { a } else { b }
+            if a >= b {
+                a
+            } else {
+                b
+            }
         }
 
         let (left_height, right_height) = match self {
@@ -593,7 +597,7 @@ fn read_u8<R: Read>(mut input: R) -> Result<u8> {
 #[cfg(test)]
 mod test {
     use super::{
-        super::{TreeNode, hash::NULL_HASH},
+        super::{hash::NULL_HASH, TreeNode},
         *,
     };
     use crate::TreeFeatureType::BasicMerkNode;

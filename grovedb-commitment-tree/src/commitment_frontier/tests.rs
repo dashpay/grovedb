@@ -1,11 +1,11 @@
 use incrementalmerkletree::{Hashable, Level};
 use orchard::{
-    NOTE_COMMITMENT_TREE_DEPTH,
     tree::{Anchor, MerkleHashOrchard},
+    NOTE_COMMITMENT_TREE_DEPTH,
 };
 
 use crate::{
-    commitment_frontier::{CommitmentFrontier, EMPTY_SINSEMILLA_ROOT, empty_sinsemilla_root},
+    commitment_frontier::{empty_sinsemilla_root, CommitmentFrontier, EMPTY_SINSEMILLA_ROOT},
     test_utils::test_leaf,
 };
 

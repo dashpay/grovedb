@@ -1,11 +1,11 @@
 use std::{collections::BTreeSet, fmt};
 
 use crate::{
-    ProofParams,
     query_item::{
-        QueryItem,
         intersect::{Direction, RangeSetBorrowed},
+        QueryItem,
     },
+    ProofParams,
 };
 
 /// Holds the partitioned query items (keys and ranges) used during proof

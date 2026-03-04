@@ -16,9 +16,9 @@ use grovedb_query::{Query, QueryItem};
 #[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
 
-use crate::DenseMerkleError;
 #[cfg(feature = "storage")]
 use crate::tree::DenseFixedSizedMerkleTree;
+use crate::DenseMerkleError;
 
 /// Decode a byte slice as a big-endian `u16` position.
 ///

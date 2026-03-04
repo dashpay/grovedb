@@ -11,19 +11,19 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::{
+        proofs::{encoding::Decoder, tree::execute, Node, Op, Query},
+        tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType,
-        proofs::{Node, Op, Query, encoding::Decoder, tree::execute},
-        tree::{AggregateData, kv::ValueDefinedCostType},
     };
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        Element, GroveDb, PathQuery,
         batch::QualifiedGroveDbOp,
         operations::proof::GroveDBProof,
         query::SizedQuery,
-        tests::{TEST_LEAF, make_test_grovedb},
+        tests::{make_test_grovedb, TEST_LEAF},
+        Element, GroveDb, PathQuery,
     };
 
     /// Extract count from a proof Node

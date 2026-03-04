@@ -27,11 +27,11 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::storage_cost::{
-    StorageCost,
     transition::OperationStorageTransitionType::{
         OperationDelete, OperationInsertNew, OperationNone, OperationReplace,
         OperationUpdateBiggerSize, OperationUpdateSameSize, OperationUpdateSmallerSize,
     },
+    StorageCost,
 };
 
 /// Based off of storage_cost changes what type of transition has occurred?

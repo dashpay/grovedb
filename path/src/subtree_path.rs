@@ -41,9 +41,9 @@ use std::{
 };
 
 use crate::{
-    SubtreePathIter,
     subtree_path_builder::{SubtreePathBuilder, SubtreePathRelative},
     util::CowLike,
+    SubtreePathIter,
 };
 
 /// Path to a GroveDB's subtree with no owned data and cheap to clone.

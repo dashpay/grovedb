@@ -15,8 +15,8 @@ use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
+    batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
     Element, GroveDb,
-    batch::{KeyInfoPath, key_info::KeyInfo::KnownKey},
 };
 
 /// Helper to build a standard `EstimatedLayerInformation` for a normal tree

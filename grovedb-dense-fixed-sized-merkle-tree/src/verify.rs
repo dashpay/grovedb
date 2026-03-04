@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb_query::Query;
 
-use crate::{DenseMerkleError, hash::node_hash, proof::DenseTreeProof};
+use crate::{hash::node_hash, proof::DenseTreeProof, DenseMerkleError};
 
 impl DenseTreeProof {
     /// Verify the proof against an expected root hash.

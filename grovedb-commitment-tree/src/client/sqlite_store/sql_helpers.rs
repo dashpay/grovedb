@@ -7,15 +7,15 @@ use std::collections::BTreeSet;
 
 use incrementalmerkletree::{Address, Level, Position};
 use orchard::tree::MerkleHashOrchard;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use shardtree::{
-    LocatedPrunableTree, LocatedTree, PrunableTree, Tree,
     store::{Checkpoint, TreeState},
+    LocatedPrunableTree, LocatedTree, PrunableTree, Tree,
 };
 
 use super::{
-    SHARD_HEIGHT, SqliteShardStoreError,
     tree_serialization::{deserialize_tree, serialize_tree},
+    SqliteShardStoreError, SHARD_HEIGHT,
 };
 
 pub(crate) fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreError> {

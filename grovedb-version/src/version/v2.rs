@@ -1,5 +1,4 @@
 use crate::version::{
-    GroveVersion,
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
         GroveDBOperationsAverageCaseVersions, GroveDBOperationsDeleteUpTreeVersions,
@@ -10,6 +9,7 @@ use crate::version::{
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{MerkAverageCaseCostsVersions, MerkVersions},
+    GroveVersion,
 };
 
 pub const GROVE_V2: GroveVersion = GroveVersion {

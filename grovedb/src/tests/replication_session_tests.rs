@@ -8,9 +8,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::{
-        Element, GroveDb,
         replication::CURRENT_STATE_SYNC_VERSION,
-        tests::{ANOTHER_TEST_LEAF, TEST_LEAF, TempGroveDb, make_empty_grovedb, make_test_grovedb},
+        tests::{make_empty_grovedb, make_test_grovedb, TempGroveDb, ANOTHER_TEST_LEAF, TEST_LEAF},
+        Element, GroveDb,
     };
 
     /// Helper: perform a full state sync from source to destination using

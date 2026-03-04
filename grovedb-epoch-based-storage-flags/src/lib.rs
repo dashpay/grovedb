@@ -5,8 +5,8 @@ mod split_removal_bytes;
 mod update_element_flags;
 
 use crate::{
-    StorageFlags::{MultiEpoch, MultiEpochOwned, SingleEpoch, SingleEpochOwned},
     error::StorageFlagsError,
+    StorageFlags::{MultiEpoch, MultiEpochOwned, SingleEpoch, SingleEpochOwned},
 };
 
 const DEFAULT_HASH_SIZE_U32: u32 = 32;
@@ -777,7 +777,7 @@ impl StorageFlags {
                         sectioned_storage_removal.insert(*epoch_index, bytes_left);
                         bytes_left = 0; // All required bytes have been removed, stop processing
                         break; // Exit the loop as there's no need to process
-                        // further epochs
+                               // further epochs
                     }
                 } else {
                     break;
@@ -860,8 +860,8 @@ mod storage_flags_tests {
     use intmap::IntMap;
 
     use crate::{
-        BaseEpoch, BytesAddedInEpoch, MINIMUM_NON_BASE_FLAGS_SIZE, MergingOwnersStrategy, OwnerId,
-        StorageFlags,
+        BaseEpoch, BytesAddedInEpoch, MergingOwnersStrategy, OwnerId, StorageFlags,
+        MINIMUM_NON_BASE_FLAGS_SIZE,
     };
     #[test]
     fn test_storage_flags_combine() {
@@ -1241,8 +1241,8 @@ mod storage_flags_tests {
         for i in 1..200 {
             other_epochs.insert(i, MINIMUM_NON_BASE_FLAGS_SIZE + 1);
             removed_bytes.insert(i, 1); // anything between 1 and
-            // MINIMUM_NON_BASE_FLAGS_SIZE +
-            // 1 would be the same
+                                        // MINIMUM_NON_BASE_FLAGS_SIZE +
+                                        // 1 would be the same
         }
 
         let left_flag = StorageFlags::MultiEpochOwned(left_base_index, other_epochs, owner_id);
@@ -1594,7 +1594,7 @@ mod storage_flags_additional_tests {
     use integer_encoding::VarInt;
     use intmap::IntMap;
 
-    use crate::{MergingOwnersStrategy, StorageFlags, error::StorageFlagsError};
+    use crate::{error::StorageFlagsError, MergingOwnersStrategy, StorageFlags};
 
     fn owner(byte: u8) -> [u8; 32] {
         [byte; 32]

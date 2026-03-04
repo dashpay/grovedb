@@ -64,13 +64,13 @@ pub fn compute_commitment_tree_state_root(
 
 #[cfg(feature = "server")]
 pub use commitment_tree::{
-    COMMITMENT_TREE_DATA_KEY, CommitmentAppendResult, CommitmentTree, ciphertext_payload_size,
-    deserialize_ciphertext, serialize_ciphertext,
+    ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
+    CommitmentTree, COMMITMENT_TREE_DATA_KEY,
 };
 pub use error::CommitmentTreeError;
 #[cfg(feature = "server")]
 pub use grovedb_bulk_append_tree::{
-    BulkAppendError, BulkAppendTree, deserialize_chunk_blob, serialize_chunk_blob,
+    deserialize_chunk_blob, serialize_chunk_blob, BulkAppendError, BulkAppendTree,
 };
 pub use grovedb_costs::{self};
 pub use incrementalmerkletree::{Hashable, Level, Position, Retention};
@@ -128,14 +128,14 @@ pub use orchard::note_encryption::{CompactAction, OrchardDomain};
 // Byte wrapper and trait for constructing note ciphertexts
 pub use orchard::zcash_note_encryption::note_bytes::{NoteBytes, NoteBytesData};
 pub use orchard::{
-    Action, Address as PaymentAddress, Bundle, NOTE_COMMITMENT_TREE_DEPTH, Note, Proof,
     note::Rho,
     primitives::redpallas,
     tree::{Anchor, MerkleHashOrchard, MerklePath},
     value::{NoteValue, ValueCommitment},
     zcash_note_encryption::{
-        Domain, EphemeralKeyBytes, ShieldedOutput, try_compact_note_decryption, try_note_decryption,
+        try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
     },
+    Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
 };
 #[cfg(feature = "sqlite")]
 pub use rusqlite;

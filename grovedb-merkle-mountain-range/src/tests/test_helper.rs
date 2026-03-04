@@ -2,10 +2,10 @@ use lazy_static::lazy_static;
 use proptest::prelude::*;
 
 use crate::{
-    MMR, MmrNode,
     helper::{get_peak_map, get_peaks, pos_height_in_tree},
     leaf_index_to_mmr_size, leaf_index_to_pos,
     mem_store::MemStore,
+    MmrNode, MMR,
 };
 
 /// Create an MmrNode leaf from an integer (for test convenience).

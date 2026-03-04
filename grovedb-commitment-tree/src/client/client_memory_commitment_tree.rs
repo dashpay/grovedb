@@ -1,12 +1,12 @@
 use incrementalmerkletree::{Position, Retention};
 use orchard::{
-    Anchor, NOTE_COMMITMENT_TREE_DEPTH,
     tree::{MerkleHashOrchard, MerklePath},
+    Anchor, NOTE_COMMITMENT_TREE_DEPTH,
 };
-use shardtree::{ShardTree, store::memory::MemoryShardStore};
+use shardtree::{store::memory::MemoryShardStore, ShardTree};
 
 use super::SHARD_HEIGHT;
-use crate::commitment_frontier::{CommitmentTreeError, merkle_hash_from_bytes};
+use crate::commitment_frontier::{merkle_hash_from_bytes, CommitmentTreeError};
 
 /// Client-side Orchard commitment tree with full Merkle witness support.
 ///

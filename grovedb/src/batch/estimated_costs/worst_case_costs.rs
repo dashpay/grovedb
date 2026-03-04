@@ -8,13 +8,13 @@ use std::{
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    CostResult, CostsExt, OperationCost, cost_return_on_error, cost_return_on_error_no_add,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
-    WorstCaseLayerInformation, worst_case_merk_propagate,
+    worst_case_merk_propagate, WorstCaseLayerInformation,
 };
-use grovedb_merk::{RootHashKeyAndAggregateData, tree::AggregateData, tree_type::TreeType};
+use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
@@ -24,11 +24,11 @@ use itertools::Itertools;
 use crate::Element;
 #[cfg(feature = "minimal")]
 use crate::{
-    Error, GroveDb,
     batch::{
-        BatchApplyOptions, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache, key_info::KeyInfo,
-        mode::BatchRunMode,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
+        QualifiedGroveDbOp, TreeCache,
     },
+    Error, GroveDb,
 };
 
 #[cfg(feature = "minimal")]
@@ -138,7 +138,7 @@ impl GroveOp {
                     propagate,
                     grove_version,
                 );
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 // Worst-case frontier size with 32 ommers (max depth):
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 = 1066
                 const MAX_FRONTIER_SIZE: u32 = 1066;
@@ -174,7 +174,7 @@ impl GroveOp {
                 // Worst-case data I/O: push writes 1 + trailing_ones(leaf_count)
                 // nodes. Maximum trailing_ones for u64 is 64 (at 2^64-1 leaves).
                 // Each merge reads 1 sibling.
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 // Internal node: 33 bytes (1 flag + 32 hash)
                 const INTERNAL_NODE_SIZE: u32 = 33;
                 // Leaf node: 37 + value_len (1 flag + 32 hash + 4 length + value)
@@ -209,7 +209,7 @@ impl GroveOp {
                 );
                 // Worst case: compaction trigger. Buffer fills → serialize
                 // chunk blob → compute dense Merkle root → push to MMR.
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 // Chunk blob worst case depends on epoch_size. For a single
                 // append the value itself is always written. If compaction
                 // triggers, the chunk blob is epoch_size * avg_value_size.
@@ -252,10 +252,10 @@ impl GroveOp {
                 // 1 read + 2 hashes (value_hash + node_hash).
                 // Max height = 15 (u16 count), so max positions = 2^15-1 = 32767.
                 // Using practical max: height 8 → 255 positions.
-                use grovedb_costs::storage_cost::{StorageCost, removal::StorageRemovedBytes};
+                use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
                 let value_size = value.len() as u32;
                 const MAX_COUNT: u32 = 255; // practical worst case (height 8)
-                // 2 hash calls per node (value_hash + node_hash)
+                                            // 2 hash calls per node (value_hash + node_hash)
                 const MAX_HASH_CALLS: u32 = MAX_COUNT * 2;
                 item_cost.add_cost(OperationCost {
                     seek_count: 1 + MAX_COUNT, // 1 write + MAX_COUNT reads
@@ -430,20 +430,20 @@ mod tests {
     use std::collections::HashMap;
 
     use grovedb_costs::{
+        storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
         OperationCost,
-        storage_cost::{StorageCost, removal::StorageRemovedBytes::NoStorageRemoval},
     };
     #[rustfmt::skip]
     use grovedb_merk::estimated_costs::worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        Element, GroveDb,
         batch::{
-            KeyInfoPath, QualifiedGroveDbOp,
             estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo,
+            KeyInfoPath, QualifiedGroveDbOp,
         },
         tests::{common::EMPTY_PATH, make_empty_grovedb},
+        Element, GroveDb,
     };
 
     #[test]

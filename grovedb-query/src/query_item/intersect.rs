@@ -5,10 +5,10 @@ use std::{
 };
 
 use crate::query_item::{
-    QueryItem,
     intersect::RangeSetItem::{
         ExclusiveEnd, ExclusiveStart, Inclusive, UnboundedEnd, UnboundedStart,
     },
+    QueryItem,
 };
 
 /// Result of intersecting two `RangeSet`s, splitting them into the shared
@@ -711,7 +711,7 @@ mod test {
         ops::{Range, RangeInclusive},
     };
 
-    use crate::query_item::{QueryItem, intersect::RangeSetItem};
+    use crate::query_item::{intersect::RangeSetItem, QueryItem};
 
     #[test]
     pub fn test_range_set_query_item_conversion() {

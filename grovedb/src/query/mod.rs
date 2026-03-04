@@ -17,10 +17,10 @@ pub use grove_branch_query_result::GroveBranchQueryResult;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
 #[cfg(any(feature = "minimal", feature = "verify"))]
-use grovedb_merk::proofs::Query;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use grovedb_merk::proofs::Query;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -28,11 +28,11 @@ pub use path_branch_chunk_query::PathBranchChunkQuery;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use path_trunk_chunk_query::PathTrunkChunkQuery;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
-use crate::Error;
 use crate::operations::proof::util::hex_to_ascii;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::query_result_type::PathKey;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+use crate::Error;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
@@ -725,17 +725,17 @@ mod tests {
 
     use bincode::{config::standard, decode_from_slice, encode_to_vec};
     use grovedb_merk::proofs::{
+        query::{query_item::QueryItem, SubqueryBranch},
         Query,
-        query::{SubqueryBranch, query_item::QueryItem},
     };
     use grovedb_version::version::GroveVersion;
     use indexmap::IndexMap;
 
     use crate::{
-        Element, GroveDb, PathQuery, SizedQuery,
         query::{HasSubquery, SinglePathSubquery},
         query_result_type::QueryResultType,
-        tests::{TEST_LEAF, common::compare_result_tuples, make_deep_tree},
+        tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
+        Element, GroveDb, PathQuery, SizedQuery,
     };
 
     #[test]
@@ -1352,14 +1352,12 @@ mod tests {
 
         // we expect all items (a range full)
         assert_eq!(merged_path_query.query.query.items.len(), 1);
-        assert!(
-            merged_path_query
-                .query
-                .query
-                .items
-                .iter()
-                .all(|a| a == &QueryItem::RangeFull(RangeFull))
-        );
+        assert!(merged_path_query
+            .query
+            .query
+            .items
+            .iter()
+            .all(|a| a == &QueryItem::RangeFull(RangeFull)));
 
         // we expect a conditional subquery on deeper 1 for all elements
         let conditional_subquery_branches = merged_path_query

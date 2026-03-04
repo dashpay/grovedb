@@ -35,22 +35,23 @@ use grovedb_storage::{Batch, StorageContext};
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    CryptoHash, Error,
-    Error::{CostsError, StorageError},
-    Link, Merk, TreeFeatureType, merk,
+    merk,
     merk::MerkSource,
     proofs::{
-        Node, Op,
         chunk::{
             chunk::{LEFT, RIGHT},
             chunk_op::ChunkOp,
             error::{ChunkError, ChunkError::InternalError},
             util::{traversal_instruction_as_vec_bytes, vec_bytes_as_traversal_instruction},
         },
-        tree::{Child, Tree as ProofTree, execute},
+        tree::{execute, Child, Tree as ProofTree},
+        Node, Op,
     },
-    tree::{RefWalker, TreeNode, combine_hash, kv::ValueDefinedCostType, value_hash},
+    tree::{combine_hash, kv::ValueDefinedCostType, value_hash, RefWalker, TreeNode},
     tree_type::TreeType,
+    CryptoHash, Error,
+    Error::{CostsError, StorageError},
+    Link, Merk, TreeFeatureType,
 };
 
 /// Restorer handles verification of chunks and replication of Merk trees.
@@ -619,23 +620,23 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 mod tests {
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
-        RawIterator, Storage,
         rocksdb_storage::{
-            PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext,
-            test_utils::TempStorage,
+            test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext,
+            PrefixedRocksDbTransactionContext,
         },
+        RawIterator, Storage,
     };
 
     use super::*;
     use crate::{
-        Error::ChunkRestoringError,
-        Merk, PanicSource,
         merk::chunks::ChunkProducer,
         proofs::chunk::{
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
-        test_utils::{TempMerk, make_batch_seq},
+        test_utils::{make_batch_seq, TempMerk},
         tree_type::TreeType,
+        Error::ChunkRestoringError,
+        Merk, PanicSource,
     };
 
     #[test]
@@ -647,14 +648,12 @@ mod tests {
             Op::Push(Node::KV(vec![3], vec![3])),
             Op::Parent,
         ];
-        assert!(
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-                non_avl_tree_proof,
-                &[0; 32],
-                &None
-            )
-            .is_err()
-        );
+        assert!(Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
+            non_avl_tree_proof,
+            &[0; 32],
+            &None
+        )
+        .is_err());
     }
 
     #[test]

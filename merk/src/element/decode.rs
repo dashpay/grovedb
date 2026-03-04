@@ -1,7 +1,7 @@
 use grovedb_element::Element;
 use grovedb_version::version::GroveVersion;
 
-use crate::{Error, element::costs::ElementCostExtensions, tree::TreeNode};
+use crate::{element::costs::ElementCostExtensions, tree::TreeNode, Error};
 
 pub trait ElementDecodeExtensions {
     /// Decode from bytes

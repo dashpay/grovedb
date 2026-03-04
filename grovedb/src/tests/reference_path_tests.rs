@@ -8,10 +8,10 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        Element, Error,
         merk_cache::MerkCache,
-        reference_path::{ReferencePathType, follow_reference, follow_reference_once},
-        tests::{TEST_LEAF, make_test_grovedb},
+        reference_path::{follow_reference, follow_reference_once, ReferencePathType},
+        tests::{make_test_grovedb, TEST_LEAF},
+        Element, Error,
     };
 
     /// Helper: extract the `Err` from a `CostResult` whose `Ok` type does not

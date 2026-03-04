@@ -73,13 +73,13 @@ use std::{
 use grovedb_costs::OperationCost;
 use grovedb_element::Element;
 use grovedb_merk::{
-    TreeFeatureType,
     proofs::{Node, Op},
     test_utils::TempMerk,
     tree_type::TreeType,
+    TreeFeatureType,
 };
 use grovedb_version::version::GroveVersion;
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 
 /// Tracks which terminal key each remaining key should be queried under.
 /// Uses BST path tracing through proof structure, not value-based boundaries.

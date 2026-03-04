@@ -5,8 +5,8 @@ use grovedb_storage::StorageContext;
 
 #[cfg(feature = "storage")]
 use crate::{
-    DenseMerkleError,
     hash::{node_hash, validate_height},
+    DenseMerkleError,
 };
 
 /// Unwrap a `CostResult`, accumulate its cost into `$cost`, and return early

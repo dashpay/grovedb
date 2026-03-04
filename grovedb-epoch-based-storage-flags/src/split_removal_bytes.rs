@@ -2,7 +2,7 @@ use grovedb_costs::storage_cost::removal::{
     StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval,
 };
 
-use crate::{ElementFlags, StorageFlags, error::StorageFlagsError};
+use crate::{error::StorageFlagsError, ElementFlags, StorageFlags};
 
 impl StorageFlags {
     pub fn split_removal_bytes(

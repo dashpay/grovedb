@@ -7,8 +7,8 @@
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use grovedb_merk::{
+    proofs::{tree::Tree, Node},
     CryptoHash, TreeFeatureType,
-    proofs::{Node, tree::Tree},
 };
 
 use super::grove_trunk_query_result::LeafInfo;

@@ -11,19 +11,19 @@ use bincode::{Decode, Encode};
 use grovedb_bulk_append_tree::BulkAppendTreeProof;
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
-    CryptoHash,
     proofs::{
-        Decoder, Node, Op,
         query::{Key, VerifyOptions},
+        Decoder, Node, Op,
     },
+    CryptoHash,
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    Error, GroveDb, PathQuery,
-    operations::proof::util::{ProvedPathKeyValues, element_hex_to_ascii, hex_to_ascii},
+    operations::proof::util::{element_hex_to_ascii, hex_to_ascii, ProvedPathKeyValues},
     query_result_type::PathKeyOptionalElementTrio,
+    Error, GroveDb, PathQuery,
 };
 
 #[derive(Debug, Clone, Copy, Encode, Decode)]

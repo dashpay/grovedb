@@ -11,24 +11,24 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::{
-        Query,
         query::{QueryItem, SubqueryBranch, VerifyOptions},
+        Query,
     };
     use grovedb_version::version::GroveVersion;
     use indexmap::IndexMap;
 
     use crate::{
-        Element, GroveDb, PathQuery, SizedQuery,
         operations::proof::{
-            GroveDBProof, ProveOptions,
             util::{
-                ProvedPathKeyOptionalValue, ProvedPathKeyValue, hex_to_ascii,
-                path_as_slices_hex_to_ascii, path_hex_to_ascii,
+                hex_to_ascii, path_as_slices_hex_to_ascii, path_hex_to_ascii,
+                ProvedPathKeyOptionalValue, ProvedPathKeyValue,
             },
+            GroveDBProof, ProveOptions,
         },
         tests::{
-            TEST_LEAF, common::EMPTY_PATH, make_deep_tree, make_empty_grovedb, make_test_grovedb,
+            common::EMPTY_PATH, make_deep_tree, make_empty_grovedb, make_test_grovedb, TEST_LEAF,
         },
+        Element, GroveDb, PathQuery, SizedQuery,
     };
 
     // =========================================================================

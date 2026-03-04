@@ -7,7 +7,7 @@ use integer_encoding::VarInt;
 use crate::{
     element::{Element, ElementFlags},
     error::ElementError,
-    reference_path::{ReferencePathType, path_from_reference_path_type},
+    reference_path::{path_from_reference_path_type, ReferencePathType},
 };
 
 impl Element {

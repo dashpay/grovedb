@@ -1,14 +1,14 @@
 use std::fmt;
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost, cost_return_on_error};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 
 #[cfg(feature = "minimal")]
 use crate::proofs::query::{Map, MapBuilder};
 use crate::{
-    CryptoHash as MerkHash, CryptoHash,
     error::Error,
-    proofs::{Decoder, Node, Query, hex_to_ascii, tree::execute},
+    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
     tree::value_hash,
+    CryptoHash as MerkHash, CryptoHash,
 };
 
 /// Verify proof against expected hash
