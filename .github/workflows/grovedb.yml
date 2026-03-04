@@ -86,9 +86,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Run clippy
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
         run: cargo clippy --workspace --all-features -- -D warnings
       - name: Check verify feature
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
         run: cargo build --no-default-features --features verify -p grovedb
 
   formatting:
