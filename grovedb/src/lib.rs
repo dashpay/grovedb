@@ -1069,7 +1069,7 @@ impl GroveDb {
         match element {
             Element::CommitmentTree(total_count, chunk_power, _) => {
                 if *total_count == 0 {
-                    return merk_root_hash;
+                    return grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT;
                 }
                 let storage_ctx = self
                     .db

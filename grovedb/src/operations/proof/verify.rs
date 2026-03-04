@@ -669,6 +669,21 @@ impl GroveDb {
             ));
         }
 
+        // An empty MMR (mmr_size == 0) has no leaves to verify.
+        // Return the empty-MMR root hash ([0u8; 32]) directly.
+        if mmr_proof.leaves().is_empty() {
+            if element_mmr_size == 0 {
+                return Ok([0u8; 32]);
+            }
+            return Err(Error::InvalidProof(
+                query.clone(),
+                format!(
+                    "MMR proof contains no leaves but element mmr_size is {} (expected 0)",
+                    element_mmr_size
+                ),
+            ));
+        }
+
         // Compute root from the proof — the Merk child hash mechanism
         // authenticates this root via combine_hash(value_hash || mmr_root)
         let (mmr_root, verified_leaves) = mmr_proof

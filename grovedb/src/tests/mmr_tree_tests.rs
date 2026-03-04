@@ -14,7 +14,7 @@ use crate::{
     batch::QualifiedGroveDbOp,
     operations::delete::DeleteOptions,
     tests::{common::EMPTY_PATH, make_empty_grovedb},
-    Element, Error,
+    Element, Error, GroveDb,
 };
 
 /// In-memory MMR store for test helpers.
@@ -1620,32 +1620,25 @@ fn test_mmr_tree_v1_proof_empty() {
         },
     };
 
-    // Empty MmrTree proof generation currently errors because
-    // MmrTreeProof::generate rejects empty leaf_indices.
-    let result = db.prove_query_v1(&path_query, None, grove_version).unwrap();
+    // Proving an empty MmrTree should succeed with an empty result set.
+    let proof = db
+        .prove_query_v1(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove_query_v1 should succeed for empty MmrTree");
 
-    match result {
-        Err(Error::CorruptedData(msg)) => {
-            assert!(
-                msg.contains("leaf_indices must not be empty"),
-                "error should mention empty leaf_indices, got: {}",
-                msg
-            );
-        }
-        Err(other) => {
-            panic!(
-                "expected CorruptedData error about empty leaf_indices, got: {:?}",
-                other
-            );
-        }
-        Ok(_) => {
-            // If a future fix makes this succeed, verify the result is correct
-            panic!(
-                "prove_query_v1 succeeded for empty MmrTree; if this is intentional, update this \
-                 test to verify the proof produces an empty result set"
-            );
-        }
-    }
+    // Verify the proof and confirm an empty result set.
+    let (root_hash, results) = GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+        .expect("proof verification should succeed for empty MmrTree");
+
+    assert!(
+        results.is_empty(),
+        "expected empty result set for empty MmrTree, got {} results",
+        results.len()
+    );
+
+    // Root hash should match the current GroveDB root.
+    let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+    assert_eq!(root_hash, expected_root);
 }
 
 // ===========================================================================

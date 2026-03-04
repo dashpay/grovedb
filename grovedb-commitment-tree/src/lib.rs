@@ -31,6 +31,18 @@ pub use client::ClientPersistentCommitmentTree;
 #[cfg(feature = "sqlite")]
 pub use client::{SqliteShardStore, SqliteShardStoreError};
 pub use commitment_frontier::*;
+
+/// Pre-computed state root for an empty CommitmentTree.
+///
+/// `blake3("ct_state" || EMPTY_SINSEMILLA_ROOT || blake3("bulk_state" || [0;32] || [0;32]))`
+///
+/// This avoids re-hashing at runtime every time we need the empty root (e.g.
+/// during batch insertion and verification).
+pub const EMPTY_COMMITMENT_TREE_STATE_ROOT: [u8; 32] = [
+    0xe8, 0x1f, 0x97, 0x6c, 0xfc, 0x6e, 0xaf, 0x83, 0x69, 0xe8, 0x56, 0xa4, 0x69, 0x04, 0x75, 0x69,
+    0x89, 0xa4, 0x85, 0x26, 0x1b, 0xaf, 0xb6, 0x78, 0xec, 0x8f, 0xac, 0x63, 0x70, 0xa6, 0x11, 0x97,
+];
+
 /// Compute the combined CommitmentTree state root that binds the Sinsemilla
 /// anchor to the BulkAppendTree data root.
 ///
@@ -127,3 +139,27 @@ pub use orchard::{
 };
 #[cfg(feature = "sqlite")]
 pub use rusqlite;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_commitment_tree_state_root_constant() {
+        let null = [0u8; 32];
+        // Inline the bulk-append-tree empty state root computation
+        // (blake3("bulk_state" || [0;32] || [0;32])) to avoid an optional dep.
+        let empty_bulk_root = {
+            let mut h = blake3::Hasher::new();
+            h.update(b"bulk_state");
+            h.update(&null);
+            h.update(&null);
+            *h.finalize().as_bytes()
+        };
+        let computed = compute_commitment_tree_state_root(&EMPTY_SINSEMILLA_ROOT, &empty_bulk_root);
+        assert_eq!(
+            computed, EMPTY_COMMITMENT_TREE_STATE_ROOT,
+            "EMPTY_COMMITMENT_TREE_STATE_ROOT constant does not match runtime computation"
+        );
+    }
+}
