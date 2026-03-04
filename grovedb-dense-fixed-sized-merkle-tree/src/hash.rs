@@ -1,6 +1,7 @@
 use crate::DenseMerkleError;
 
 /// Validate that height is in the allowed range [1, 16].
+#[cfg_attr(not(feature = "storage"), allow(dead_code))]
 pub(crate) fn validate_height(height: u8) -> Result<(), DenseMerkleError> {
     if !(1..=16).contains(&height) {
         return Err(DenseMerkleError::InvalidData(format!(

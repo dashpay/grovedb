@@ -8,20 +8,25 @@
 //! State root = blake3("bulk_state" || mmr_root || dense_tree_root) — changes
 //! on every append.
 
+#[cfg(feature = "storage")]
 mod append;
 pub mod hash;
 
-mod query;
-pub use query::{BufferQueryResult, ChunkQueryResult};
+#[cfg(feature = "storage")]
+mod fetch;
+#[cfg(feature = "storage")]
+pub use fetch::{BufferQueryResult, ChunkQueryResult};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "storage"))]
 mod tests;
 
 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
 
+#[cfg(feature = "storage")]
 use crate::BulkAppendError;
 
 /// Result returned by `BulkAppendTree::append`.
+#[cfg(feature = "storage")]
 #[derive(Debug, Clone)]
 pub struct AppendResult {
     /// The new state root after this append.
@@ -110,6 +115,7 @@ impl<S> BulkAppendTree<S> {
 }
 
 /// Compute capacity from height: `2^height - 1`.
+#[cfg(feature = "storage")]
 fn capacity_for_height(height: u8) -> Result<u16, BulkAppendError> {
     if !(1..=16).contains(&height) {
         return Err(BulkAppendError::InvalidInput(format!(

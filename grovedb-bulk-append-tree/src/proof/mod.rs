@@ -12,16 +12,20 @@ use std::collections::BTreeSet;
 
 use bincode::{Decode, Encode};
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
-use grovedb_merkle_mountain_range::{MMRStoreReadOps, MmrKeySize, MmrNode, MmrStore, MmrTreeProof};
+use grovedb_merkle_mountain_range::MmrTreeProof;
+#[cfg(feature = "storage")]
+use grovedb_merkle_mountain_range::{MMRStoreReadOps, MmrKeySize, MmrNode, MmrStore};
 use grovedb_query::{Query, QueryItem};
+#[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
 
+#[cfg(feature = "storage")]
+use crate::BulkAppendTree;
 use crate::{
     compute_state_root, deserialize_chunk_blob, error::BulkAppendError, leaf_count_to_mmr_size,
-    BulkAppendTree,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "storage"))]
 mod tests;
 // ── Query → global position helpers ────────────────────────────────────
 
@@ -192,6 +196,7 @@ impl BulkAppendTreeProof {
     /// # Arguments
     /// * `query` - Query describing the positions to prove
     /// * `tree` - The BulkAppendTree to prove against
+    #[cfg(feature = "storage")]
     pub fn generate<'db, S: StorageContext<'db>>(
         query: &Query,
         tree: &BulkAppendTree<S>,

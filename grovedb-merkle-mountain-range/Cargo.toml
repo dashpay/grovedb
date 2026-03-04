@@ -13,6 +13,7 @@ homepage = "https://www.grovedb.org"
 documentation = "https://docs.rs/grovedb"
 
 [features]
+default = ["storage"]
 storage = ["grovedb-storage"]
 mem_store = []
 

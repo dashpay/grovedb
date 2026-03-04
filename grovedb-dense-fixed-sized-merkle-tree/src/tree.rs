@@ -1,6 +1,9 @@
+#[cfg(feature = "storage")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+#[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
 
+#[cfg(feature = "storage")]
 use crate::{
     hash::{node_hash, validate_height},
     DenseMerkleError,
@@ -8,6 +11,7 @@ use crate::{
 
 /// Unwrap a `CostResult`, accumulate its cost into `$cost`, and return early
 /// (with accumulated cost) on error.
+#[cfg(feature = "storage")]
 macro_rules! cost_return_on_error {
     ($cost:ident, $expr:expr) => {
         match $expr.unwrap_add_cost(&mut $cost) {
@@ -66,6 +70,7 @@ impl<S> DenseFixedSizedMerkleTree<S> {
 
 // ── Storage-dependent operations ──────────────────────────────────────
 
+#[cfg(feature = "storage")]
 impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// Create a new empty tree with the given height and storage.
     ///
