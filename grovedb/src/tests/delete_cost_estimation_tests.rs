@@ -14,7 +14,7 @@ use grovedb_version::version::GroveVersion;
 use intmap::IntMap;
 
 use crate::{
-    batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
+    batch::{key_info::KeyInfo::KnownKey, GroveOp, KeyInfoPath},
     GroveDb,
 };
 
@@ -95,6 +95,11 @@ fn test_average_case_delete_up_tree_multi_level() {
 
     let ops = result.value.expect("should return ops");
     assert_eq!(ops.len(), 3, "3-level path should produce 3 ops");
+
+    // The leaf iteration (height == path_len - 1) uses the provided key.
+    let first = &ops[0];
+    assert_eq!(first.op, GroveOp::Delete);
+    assert_eq!(first.key, Some(KnownKey(b"leaf".to_vec())));
 }
 
 /// Covers error branch 1 (lines 49-54): path.len() < stop_path_height.
@@ -261,6 +266,13 @@ fn test_worst_case_delete_up_tree_multi_level() {
 
     let ops = result.value.expect("should return ops");
     assert_eq!(ops.len(), 3, "3-level path should produce 3 ops");
+
+    // Because `if height == path_len` (line 64) is dead code, the else branch
+    // always runs and uses the last path segment as the key — NOT the provided
+    // `key` ("leaf"). The first iteration pops "c" from the path.
+    let first = &ops[0];
+    assert_eq!(first.op, GroveOp::Delete);
+    assert_eq!(first.key, Some(KnownKey(b"c".to_vec())));
 }
 
 /// Covers error branch 1 (lines 44-49): path.len() < stop_path_height.
