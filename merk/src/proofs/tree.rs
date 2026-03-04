@@ -374,10 +374,12 @@ impl Tree {
     }
 
     #[cfg(feature = "minimal")]
-    pub(crate) fn aggregate_data(&self) -> AggregateData {
+    pub(crate) fn aggregate_data(&self) -> Result<AggregateData, Error> {
         match self.node {
-            Node::KVValueHashFeatureType(.., feature_type) => feature_type.into(),
-            _ => panic!("Expected node to be type KVValueHashFeatureType"),
+            Node::KVValueHashFeatureType(.., feature_type) => Ok(feature_type.into()),
+            _ => Err(Error::InvalidProofError(
+                "Expected node to be type KVValueHashFeatureType for aggregate data".to_string(),
+            )),
         }
     }
 }
@@ -427,6 +429,15 @@ impl<'a> Iterator for LayerIter<'a> {
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
+/// Maximum number of operations allowed in a single proof execution.
+///
+/// This prevents denial-of-service via crafted proofs with millions of
+/// operations. The limit is generous enough for any legitimate proof: a
+/// query returning 1000 results from a tree with 2^20 entries produces
+/// roughly 40,000 operations.
+pub const MAX_PROOF_OPS: usize = 50_000;
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Executes a proof by stepping through its operators, modifying the
 /// verification stack as it goes. The resulting stack item is returned.
 ///
@@ -439,6 +450,9 @@ impl<'a> Iterator for LayerIter<'a> {
 /// `visit_node` will be called once for every push operation in the proof, in
 /// key-order. If `visit_node` returns an `Err` result, it will halt the
 /// execution and `execute` will return the error.
+///
+/// Enforces a limit of [`MAX_PROOF_OPS`] operations to prevent
+/// denial-of-service from malicious proofs.
 pub fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostResult<Tree, Error>
 where
     I: IntoIterator<Item = Result<Op, Error>>,
@@ -448,6 +462,7 @@ where
 
     let mut stack: Vec<Tree> = Vec::with_capacity(32);
     let mut maybe_last_key = None;
+    let mut op_count: usize = 0;
 
     fn try_pop(stack: &mut Vec<Tree>) -> Result<Tree, Error> {
         stack
@@ -456,6 +471,14 @@ where
     }
 
     for op in ops {
+        op_count += 1;
+        if op_count > MAX_PROOF_OPS {
+            return Err(Error::InvalidProofError(format!(
+                "Proof exceeds maximum operation count ({})",
+                MAX_PROOF_OPS
+            )))
+            .wrap_with_cost(cost);
+        }
         match cost_return_on_error_no_add!(cost, op) {
             Op::Parent => {
                 let (mut parent, child) = (
@@ -870,19 +893,16 @@ mod test {
         assert_ne!(ref_value_count_hash, NULL_HASH);
     }
 
-    /// Demonstrates SEC-006: aggregate_data() panics on non-KVValueHashFeatureType nodes.
+    /// Demonstrates SEC-006: aggregate_data() returns an error (not panic) on
+    /// non-KVValueHashFeatureType nodes.
     ///
     /// During chunk restoration (restore.rs:383), `chunk_tree.aggregate_data()`
     /// is called on the proof tree produced by `execute()`. An attacker who
     /// controls chunk data can craft a proof whose root is a `Node::KV` (or
-    /// any non-KVValueHashFeatureType variant), causing a panic.
-    ///
-    /// This test shows that:
-    /// 1. `execute()` successfully produces a tree from a KV node proof
-    /// 2. Calling `aggregate_data()` on that tree panics
+    /// any non-KVValueHashFeatureType variant). Before the fix this would
+    /// panic; now it returns a proper error.
     #[test]
-    #[should_panic(expected = "Expected node to be type KVValueHashFeatureType")]
-    fn attack_aggregate_data_panics_on_crafted_chunk_proof() {
+    fn attack_aggregate_data_returns_error_on_crafted_chunk_proof() {
         // Simulate a malicious chunk: a valid proof that produces a tree
         // with a Node::KV root instead of Node::KVValueHashFeatureType.
         let malicious_ops = vec![Ok(Op::Push(Node::KV(vec![1], vec![1])))];
@@ -891,73 +911,45 @@ mod test {
             .unwrap()
             .unwrap();
 
-        // This is exactly what restore.rs:383 does — and it panics.
-        let _aggregate = tree.aggregate_data();
+        // This is exactly what restore.rs:383 does — now returns Err instead of panic.
+        let result = tree.aggregate_data();
+        assert!(
+            result.is_err(),
+            "aggregate_data on non-KVValueHashFeatureType node should return error"
+        );
     }
 
-    /// Demonstrates SEC-005: execute() has no limit on operation count.
-    ///
-    /// An attacker can craft a proof with thousands of Push operations.
-    /// Each Push allocates a Tree node on the stack with no upper bound.
-    /// This test shows that 10,000 Push(Hash) ops are accepted without
-    /// error during execution (only failing at the end because stack.len != 1).
-    ///
-    /// In production, an attacker could use much larger counts to exhaust
-    /// memory, and combine with large KV values for amplified impact.
+    /// Verifies SEC-005 fix: execute() now rejects proofs that exceed
+    /// MAX_PROOF_OPS operations.
     #[test]
-    fn attack_unbounded_operation_count_and_stack_growth() {
-        // Craft 10,000 Push(Hash) operations — each adds a Tree to the stack.
-        // Hash nodes are 33 bytes each in the proof, so 10k ops = ~330KB proof.
-        // But in memory each Tree node is much larger (child pointers, heights, etc).
-        let n = 10_000;
+    fn attack_operation_count_is_limited() {
+        let n = super::MAX_PROOF_OPS + 1;
         let ops: Vec<Result<Op, Error>> = (0..n)
             .map(|_| Ok(Op::Push(Node::Hash([0xAA; 32]))))
             .collect();
 
-        // execute() processes all 10k ops without any limit check.
-        // It only fails at the end because stack.len() != 1.
         let result = execute(ops.into_iter(), false, |_| Ok(())).unwrap();
         assert!(
-            result.is_err(),
-            "Should fail because stack has {n} items, not 1"
+            matches!(result, Err(Error::InvalidProofError(ref s)) if s.contains("maximum operation count")),
+            "Should reject proof exceeding MAX_PROOF_OPS, got: {:?}",
+            result,
         );
-        // The key issue: all 10,000 operations were processed and 10,000
-        // Tree nodes were allocated before the error was detected.
-        // A real attacker would use millions of ops to exhaust memory.
     }
 
-    /// Demonstrates SEC-005: proof bytes are decoded and executed with no
-    /// size limit on the proof itself.
-    ///
-    /// An attacker can submit arbitrarily large proof byte arrays to the
-    /// Decoder. This test shows that a ~330KB proof with 10,000 Hash
-    /// operations is accepted by the decoder without any size validation.
+    /// Verifies that legitimate proofs within the limit still work.
     #[test]
-    fn attack_unbounded_proof_bytes_accepted_by_decoder() {
-        use ed::Encode;
-
-        // Construct a large proof: 10,000 Push(Hash) operations
-        let n = 10_000usize;
-        let mut proof_bytes = Vec::new();
-        for _ in 0..n {
-            let op = Op::Push(Node::Hash([0xBB; 32]));
-            op.encode_into(&mut proof_bytes).unwrap();
-        }
-
-        // Verify the proof is large (~330KB)
-        assert!(
-            proof_bytes.len() > 300_000,
-            "Proof should be ~330KB, got {} bytes",
-            proof_bytes.len()
-        );
-
-        // Decoder accepts it without any size check
-        let decoder = super::super::Decoder::new(&proof_bytes);
-        let decoded_ops: Vec<_> = decoder.collect();
-        assert_eq!(decoded_ops.len(), n);
-        assert!(
-            decoded_ops.iter().all(|r| r.is_ok()),
-            "All ops decoded successfully — no size limit enforced"
-        );
+    fn legitimate_proof_within_op_limit_succeeds() {
+        // A small valid proof: 3 pushes + 2 parent ops = balanced tree
+        let proof = vec![
+            Op::Push(Node::KV(vec![1], vec![1])),
+            Op::Push(Node::KV(vec![2], vec![2])),
+            Op::Parent,
+            Op::Push(Node::KV(vec![3], vec![3])),
+            Op::Child,
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+        assert!(result.key().is_some());
     }
 }
