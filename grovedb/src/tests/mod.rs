@@ -14,6 +14,7 @@ mod chunk_branch_proof_tests;
 mod commitment_tree_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
+mod delete_cost_estimation_tests;
 mod delete_up_tree_tests;
 mod dense_tree_tests;
 mod error_display_tests;
