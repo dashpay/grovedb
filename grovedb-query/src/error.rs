@@ -33,4 +33,8 @@ pub enum Error {
     /// Ed encoding/decoding error
     #[error("ed error: {0}")]
     EdError(ed::Error),
+
+    /// Arithmetic overflow during query merging or aggregation.
+    #[error("overflow error: {0}")]
+    Overflow(&'static str),
 }
