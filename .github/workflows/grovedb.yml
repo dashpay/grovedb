@@ -66,12 +66,15 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run core crate tests
         run: >
-          cargo test
+          cargo llvm-cov
           -p grovedb-costs
           -p grovedb-path
           -p grovedb-visualize
@@ -83,6 +86,15 @@ jobs:
           -p grovedb-merk
           -p grovedb-query
           --all-features
+          --lcov --output-path lcov.info
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          flags: core
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
 
   test-trees:
     name: Test Trees
@@ -94,17 +106,29 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run tree crate tests
         run: >
-          cargo test
+          cargo llvm-cov
           -p grovedb-merkle-mountain-range
           -p grovedb-dense-fixed-sized-merkle-tree
           -p grovedb-bulk-append-tree
           -p grovedb-commitment-tree
           --all-features
+          --lcov --output-path lcov.info
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          flags: trees
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
 
   test-grovedb:
     name: Test GroveDB
@@ -116,11 +140,25 @@ jobs:
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run grovedb tests
-        run: cargo test -p grovedb
+        run: >
+          cargo llvm-cov
+          -p grovedb
+          --lcov --output-path lcov.info
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          flags: grovedb
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
 
   linting:
     name: Linting
