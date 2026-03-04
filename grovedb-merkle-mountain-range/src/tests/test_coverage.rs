@@ -317,7 +317,7 @@ fn verify_incremental_with_peak_shift() {
 }
 
 /// Exercise push error path when find_element_at_position encounters a
-/// store error during merge (mmr.rs line 94).
+/// store error during merge (mmr.rs Err(e) branch).
 ///
 /// Use mmr_size=1 (pretend one element already exists in store) with
 /// ErrorStore. When push triggers a merge, it reads pos 0 from the store,
@@ -334,6 +334,58 @@ fn push_propagates_store_read_error_during_merge() {
     assert!(
         msg.contains("read error"),
         "should propagate store error: {}",
+        msg
+    );
+}
+
+/// Exercise find_element_at_position returning InconsistentStore when
+/// the batch returns Ok(None) for a position that should exist (mmr.rs
+/// Ok(None) => InconsistentStore branch).
+#[test]
+fn push_returns_inconsistent_store_when_merge_element_missing() {
+    let store = EmptyStore;
+    let mut mmr = MMR::new(1, &store);
+
+    // Push triggers merge with element at position 0, but EmptyStore
+    // returns Ok(None) → InconsistentStore
+    let result = mmr.push(leaf(1)).unwrap();
+    assert_eq!(result, Err(Error::InconsistentStore));
+}
+
+/// Exercise the `break` in MMRBatch::element_at_position when the
+/// requested position falls past a batch entry's range (mmr_store.rs
+/// else-break branch).
+#[test]
+fn batch_element_at_position_break_falls_through_to_store() {
+    let store = MemStore::default();
+    let mut mmr = MMR::new(0, &store);
+    mmr.push(leaf(0)).unwrap().expect("push");
+    // batch has entry (0, [leaf(0)]). Position 5 is past this range,
+    // triggering the break and falling through to the store.
+    let result = mmr
+        .batch
+        .element_at_position(5)
+        .unwrap()
+        .expect("read should succeed");
+    assert!(result.is_none(), "position 5 should not exist");
+}
+
+/// Exercise verify_and_get_root error mapping when calculate_root fails
+/// (proof.rs map_err at verify_and_get_root).
+#[test]
+fn verify_and_get_root_surfaces_calculate_root_error() {
+    use crate::MmrTreeProof;
+
+    // mmr_size=7 (4 leaves), proving leaf 0. Empty proof_items means
+    // calculate_peak_root runs out of proof items → error propagates
+    // through the map_err in verify_and_get_root.
+    let proof = MmrTreeProof::new(7, vec![(0, b"val".to_vec())], vec![]);
+    let result = proof.verify_and_get_root();
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("calculation failed"),
+        "should map calculate_root error: {}",
         msg
     );
 }
