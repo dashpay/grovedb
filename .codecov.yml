@@ -1,11 +1,12 @@
 codecov:
-  require_ci_to_pass: false
+  require_ci_to_pass: true
 
 ignore:
   - "**/test_utils.rs"
   - "**/test_utils/**"
   - "**/tests.rs"
   - "**/tests/**"
+  - "fuzz/**"
 
 coverage:
   status:
@@ -13,40 +14,37 @@ coverage:
       default:
         target: auto
         threshold: 2%
+    patch:
+      default:
+        target: 80%
 
-component_management:
-  individual_components:
-    - component_id: grovedb-core
-      name: GroveDB Core
-      paths:
-        - grovedb/src/**
+comment:
+  layout: "condensed_header, diff, flags, components, condensed_files"
+  behavior: default
+  require_changes: true
 
-    - component_id: merk
-      name: Merk
+flag_management:
+  default_rules:
+    carryforward: true
+  individual_flags:
+    - name: core
       paths:
-        - merk/src/**
-
-    - component_id: storage
-      name: Storage
+        - costs/
+        - path/
+        - visualize/
+        - grovedb-version/
+        - grovedbg-types/
+        - storage/
+        - grovedb-epoch-based-storage-flags/
+        - grovedb-element/
+        - merk/
+        - grovedb-query/
+    - name: trees
       paths:
-        - storage/src/**
-
-    - component_id: commitment-tree
-      name: Commitment Tree
+        - grovedb-merkle-mountain-range/
+        - grovedb-dense-fixed-sized-merkle-tree/
+        - grovedb-bulk-append-tree/
+        - grovedb-commitment-tree/
+    - name: grovedb
       paths:
-        - grovedb-commitment-tree/src/**
-
-    - component_id: mmr
-      name: MMR
-      paths:
-        - grovedb-merkle-mountain-range/src/**
-
-    - component_id: bulk-append-tree
-      name: BulkAppendTree
-      paths:
-        - grovedb-bulk-append-tree/src/**
-
-    - component_id: element
-      name: Element
-      paths:
-        - grovedb-element/src/**
+        - grovedb/
