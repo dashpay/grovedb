@@ -52,9 +52,10 @@ impl AggregateData {
             AggregateData::NoAggregateData => 0,
             AggregateData::Sum(s) => *s,
             AggregateData::BigSum(i) => {
-                let max = i64::MAX as i128;
-                if *i > max {
+                if *i > i64::MAX as i128 {
                     i64::MAX
+                } else if *i < i64::MIN as i128 {
+                    i64::MIN
                 } else {
                     *i as i64
                 }
@@ -154,6 +155,11 @@ mod tests {
         assert_eq!(
             AggregateData::BigSum(i64::MAX as i128 + 1).as_sum_i64(),
             i64::MAX
+        );
+        // BigSum underflow => saturates to i64::MIN
+        assert_eq!(
+            AggregateData::BigSum(i64::MIN as i128 - 1).as_sum_i64(),
+            i64::MIN
         );
         assert_eq!(AggregateData::Count(99).as_sum_i64(), 0);
         assert_eq!(AggregateData::CountAndSum(5, 20).as_sum_i64(), 20);
