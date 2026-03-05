@@ -295,7 +295,12 @@ impl Link {
                     key.len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
             },
-            Link::Modified { .. } => panic!("No encoding for Link::Modified"),
+            Link::Modified { .. } => {
+                return Err(ed::Error::IOError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no encoding for Link::Modified",
+                )))
+            }
             Link::Uncommitted {
                 tree,
                 aggregate_data,
@@ -346,7 +351,12 @@ impl Encode for Link {
                 child_heights,
             } => (hash, aggregate_data, tree.key(), child_heights),
 
-            Link::Modified { .. } => panic!("No encoding for Link::Modified"),
+            Link::Modified { .. } => {
+                return Err(ed::Error::IOError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no encoding for Link::Modified",
+                )))
+            }
         };
 
         debug_assert!(key.len() < 256, "Key length must be less than 256");
@@ -454,7 +464,12 @@ impl Encode for Link {
                     key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
             },
-            Link::Modified { .. } => panic!("No encoding for Link::Modified"),
+            Link::Modified { .. } => {
+                return Err(ed::Error::IOError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no encoding for Link::Modified",
+                )))
+            }
             Link::Uncommitted {
                 tree,
                 aggregate_data,

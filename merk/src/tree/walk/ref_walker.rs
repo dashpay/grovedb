@@ -75,7 +75,10 @@ where
                     return Err(e).wrap_with_cost(cost);
                 }
             }
-            Link::Modified { .. } => panic!("Cannot traverse Link::Modified"),
+            Link::Modified { .. } => {
+                return Err(Error::CorruptedState("cannot traverse Link::Modified"))
+                    .wrap_with_cost(cost)
+            }
             Link::Uncommitted { .. } | Link::Loaded { .. } => {}
         }
 
