@@ -181,3 +181,24 @@ impl AggregateSumQuery {
         self.items.iter().all(|a| a.is_key())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_ascending_includes_right_arrow_and_sum_limit() {
+        let q = AggregateSumQuery::new(42, None);
+        let s = format!("{}", q);
+        assert!(s.contains("→"));
+        assert!(s.contains("42"));
+    }
+
+    #[test]
+    fn display_descending_includes_left_arrow() {
+        let q = AggregateSumQuery::new_descending(99, None);
+        let s = format!("{}", q);
+        assert!(s.contains("←"));
+        assert!(s.contains("99"));
+    }
+}

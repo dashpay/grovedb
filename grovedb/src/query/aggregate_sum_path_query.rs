@@ -67,7 +67,8 @@ impl AggregateSumPathQuery {
         }
     }
 
-    /// Combines multiple aggregate sum queries into one equivalent aggregate sum query
+    /// Combines multiple aggregate sum path queries into one equivalent aggregate sum path query.
+    /// All path queries must share the same path.
     pub fn merge(
         mut path_queries: Vec<&AggregateSumPathQuery>,
         grove_version: &GroveVersion,
@@ -112,5 +113,103 @@ impl AggregateSumPathQuery {
             path: common_path.clone(),
             aggregate_sum_query: merged_query,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
+    use grovedb_merk::proofs::query::QueryItem;
+    use grovedb_version::version::GroveVersion;
+
+    use super::*;
+
+    #[test]
+    fn display_includes_path_and_query() {
+        let q = AggregateSumPathQuery::new(
+            vec![b"root".to_vec(), b"leaf".to_vec()],
+            AggregateSumQuery::new(42, None),
+        );
+        let s = format!("{}", q);
+        assert!(s.contains("AggregateSumPathQuery"));
+        assert!(s.contains("root"));
+        assert!(s.contains("leaf"));
+        assert!(s.contains("42"));
+    }
+
+    #[test]
+    fn new_single_key_constructor() {
+        let q = AggregateSumPathQuery::new_single_key(vec![b"p".to_vec()], b"mykey".to_vec(), 100);
+        assert_eq!(q.path, vec![b"p".to_vec()]);
+        assert_eq!(q.aggregate_sum_query.sum_limit, 100);
+        assert_eq!(
+            q.aggregate_sum_query.items,
+            vec![QueryItem::Key(b"mykey".to_vec())]
+        );
+    }
+
+    #[test]
+    fn new_single_query_item_constructor() {
+        let q = AggregateSumPathQuery::new_single_query_item(
+            vec![b"p".to_vec()],
+            QueryItem::RangeFull(..),
+            50,
+            Some(10),
+        );
+        assert_eq!(q.aggregate_sum_query.sum_limit, 50);
+        assert_eq!(q.aggregate_sum_query.limit_of_items_to_check, Some(10));
+    }
+
+    #[test]
+    fn merge_empty_returns_error() {
+        let grove_version = GroveVersion::latest();
+        let err = AggregateSumPathQuery::merge(vec![], grove_version).unwrap_err();
+        assert!(
+            format!("{}", err).contains("at least 1"),
+            "expected 'at least 1' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn merge_single_returns_clone() {
+        let grove_version = GroveVersion::latest();
+        let q =
+            AggregateSumPathQuery::new(vec![b"path".to_vec()], AggregateSumQuery::new(42, Some(5)));
+        let merged = AggregateSumPathQuery::merge(vec![&q], grove_version).unwrap();
+        assert_eq!(merged, q);
+    }
+
+    #[test]
+    fn merge_mismatched_paths_returns_error() {
+        let grove_version = GroveVersion::latest();
+        let q1 =
+            AggregateSumPathQuery::new(vec![b"path_a".to_vec()], AggregateSumQuery::new(10, None));
+        let q2 =
+            AggregateSumPathQuery::new(vec![b"path_b".to_vec()], AggregateSumQuery::new(10, None));
+        let err = AggregateSumPathQuery::merge(vec![&q1, &q2], grove_version).unwrap_err();
+        assert!(
+            format!("{}", err).contains("same path"),
+            "expected 'same path' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn merge_two_queries_sums_limits() {
+        let grove_version = GroveVersion::latest();
+        let q1 = AggregateSumPathQuery::new(
+            vec![b"p".to_vec()],
+            AggregateSumQuery::new_with_keys(vec![vec![1]], 10, Some(2)),
+        );
+        let q2 = AggregateSumPathQuery::new(
+            vec![b"p".to_vec()],
+            AggregateSumQuery::new_with_keys(vec![vec![2]], 20, Some(3)),
+        );
+        let merged = AggregateSumPathQuery::merge(vec![&q1, &q2], grove_version).unwrap();
+        assert_eq!(merged.path, vec![b"p".to_vec()]);
+        assert_eq!(merged.aggregate_sum_query.sum_limit, 30);
+        assert_eq!(merged.aggregate_sum_query.limit_of_items_to_check, Some(5));
+        assert_eq!(merged.aggregate_sum_query.items.len(), 2);
     }
 }

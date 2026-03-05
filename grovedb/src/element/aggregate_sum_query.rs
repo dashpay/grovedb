@@ -1244,4 +1244,26 @@ mod tests {
             vec![(b"c".to_vec(), 3),]
         );
     }
+
+    #[test]
+    fn display_aggregate_sum_query_options_default() {
+        let opts = AggregateSumQueryOptions::default();
+        let s = format!("{}", opts);
+        assert!(s.contains("allow_get_raw: false"));
+        assert!(s.contains("allow_cache: true"));
+        assert!(s.contains("error_if_intermediate_path_tree_not_present: true"));
+    }
+
+    #[test]
+    fn display_aggregate_sum_query_options_custom() {
+        let opts = AggregateSumQueryOptions {
+            allow_get_raw: true,
+            allow_cache: false,
+            error_if_intermediate_path_tree_not_present: false,
+        };
+        let s = format!("{}", opts);
+        assert!(s.contains("allow_get_raw: true"));
+        assert!(s.contains("allow_cache: false"));
+        assert!(s.contains("error_if_intermediate_path_tree_not_present: false"));
+    }
 }

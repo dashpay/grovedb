@@ -68,3 +68,100 @@ impl AggregateSumQuery {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_multiple_empty_returns_noop() {
+        let result = AggregateSumQuery::merge_multiple(vec![]).unwrap();
+        assert_eq!(result.sum_limit, 0);
+        assert_eq!(result.limit_of_items_to_check, Some(0));
+    }
+
+    #[test]
+    fn merge_multiple_single_returns_same() {
+        let q = AggregateSumQuery::new(42, Some(3));
+        let result = AggregateSumQuery::merge_multiple(vec![q.clone()]).unwrap();
+        assert_eq!(result.sum_limit, 42);
+        assert_eq!(result.limit_of_items_to_check, Some(3));
+    }
+
+    #[test]
+    fn merge_multiple_sums_limits() {
+        let q1 = AggregateSumQuery::new(10, Some(2));
+        let q2 = AggregateSumQuery::new(20, Some(3));
+        let result = AggregateSumQuery::merge_multiple(vec![q1, q2]).unwrap();
+        assert_eq!(result.sum_limit, 30);
+        assert_eq!(result.limit_of_items_to_check, Some(5));
+    }
+
+    #[test]
+    fn merge_multiple_direction_mismatch_errors() {
+        let q1 = AggregateSumQuery::new(10, None);
+        let q2 = AggregateSumQuery::new_descending(20, None);
+        let err = AggregateSumQuery::merge_multiple(vec![q1, q2]).unwrap_err();
+        assert!(err.to_string().contains("left_to_right"));
+    }
+
+    #[test]
+    fn merge_multiple_sum_overflow_errors() {
+        let q1 = AggregateSumQuery::new(u64::MAX, None);
+        let q2 = AggregateSumQuery::new(1, None);
+        assert!(AggregateSumQuery::merge_multiple(vec![q1, q2]).is_err());
+    }
+
+    #[test]
+    fn merge_multiple_limit_overflow_errors() {
+        let q1 = AggregateSumQuery::new(1, Some(u16::MAX));
+        let q2 = AggregateSumQuery::new(1, Some(1));
+        assert!(AggregateSumQuery::merge_multiple(vec![q1, q2]).is_err());
+    }
+
+    #[test]
+    fn merge_multiple_none_limit_gives_none() {
+        let q1 = AggregateSumQuery::new(10, None);
+        let q2 = AggregateSumQuery::new(10, Some(5));
+        let result = AggregateSumQuery::merge_multiple(vec![q1, q2]).unwrap();
+        assert_eq!(result.limit_of_items_to_check, None);
+    }
+
+    #[test]
+    fn merge_with_adds_limits() {
+        let mut q1 = AggregateSumQuery::new(10, Some(2));
+        let q2 = AggregateSumQuery::new(20, Some(3));
+        q1.merge_with(q2).unwrap();
+        assert_eq!(q1.sum_limit, 30);
+        assert_eq!(q1.limit_of_items_to_check, Some(5));
+    }
+
+    #[test]
+    fn merge_with_direction_mismatch_errors() {
+        let mut q1 = AggregateSumQuery::new(10, None);
+        let q2 = AggregateSumQuery::new_descending(20, None);
+        assert!(q1.merge_with(q2).is_err());
+    }
+
+    #[test]
+    fn merge_with_sum_overflow_errors() {
+        let mut q1 = AggregateSumQuery::new(u64::MAX, None);
+        let q2 = AggregateSumQuery::new(1, None);
+        assert!(q1.merge_with(q2).is_err());
+    }
+
+    #[test]
+    fn merge_with_limit_overflow_errors() {
+        let mut q1 = AggregateSumQuery::new(1, Some(u16::MAX));
+        let q2 = AggregateSumQuery::new(1, Some(1));
+        assert!(q1.merge_with(q2).is_err());
+    }
+
+    #[test]
+    fn merge_with_none_limit_gives_none() {
+        let mut q1 = AggregateSumQuery::new(5, Some(3));
+        let q2 = AggregateSumQuery::new(5, None);
+        q1.merge_with(q2).unwrap();
+        assert_eq!(q1.limit_of_items_to_check, None);
+    }
+}
