@@ -468,16 +468,20 @@ impl RocksDbStorage {
             return Ok(()); // CF is already empty
         };
         iter.seek_to_last();
-        let last_key = iter
-            .key()
-            .expect("CF has at least one key since first_key exists");
+        let Some(last_key) = iter.key() else {
+            return Ok(());
+        };
         // delete_range_cf is [from, to) exclusive — extend last_key by a zero byte
         // to ensure it's included in the range.
         let mut upper = last_key.to_vec();
         upper.push(0);
         self.db
             .delete_range_cf(&cf_handle, first_key, upper)
-            .map_err(RocksDBError)?;
+            .map_err(|e| {
+                Error::StorageError(format!(
+                    "wipe_column_family({column_family_name}) delete_range_cf failed: {e}"
+                ))
+            })?;
         Ok(())
     }
 }
