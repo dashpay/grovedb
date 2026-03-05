@@ -165,9 +165,15 @@ impl NonMerkTreeMeta {
     }
 }
 
-/// Operations
+/// Operations for batch processing.
+///
+/// User-facing variants: `InsertOnly`, `InsertOrReplace`, `Replace`, `Patch`,
+/// `RefreshReference`, `Delete`, `DeleteTree`, `CommitmentTreeInsert`,
+/// `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`.
+/// Other variants are internal and produced by batch propagation.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum GroveOp {
+    /// **Internal only — do not construct directly.**
     /// Replace tree root key for standard Merk trees.
     ///
     /// Used by propagation to update an existing Merk tree's root hash
@@ -202,6 +208,7 @@ pub enum GroveOp {
         /// Byte change
         change_in_bytes: i32,
     },
+    /// **Internal only — do not construct directly.**
     /// Insert tree with root hash for standard Merk trees.
     ///
     /// Created during batch propagation from an `InsertOrReplace`/`InsertOnly`
@@ -217,6 +224,7 @@ pub enum GroveOp {
         /// Aggregate Data such as sum
         aggregate_data: AggregateData,
     },
+    /// **Internal only — do not construct directly.**
     /// Replace root hash for a non-Merk tree (CommitmentTree, MmrTree,
     /// BulkAppendTree, DenseTree). Produced by preprocessing functions.
     ReplaceNonMerkTreeRoot {
@@ -225,6 +233,7 @@ pub enum GroveOp {
         /// Tree-type-specific metadata (count, chunk_power, height, etc.).
         meta: NonMerkTreeMeta,
     },
+    /// **Internal only — do not construct directly.**
     /// Insert a non-Merk tree with root hash during propagation.
     ///
     /// Created when propagation encounters an occupied entry that is a
