@@ -137,7 +137,7 @@ mod tests {
     fn unpack_truncated_bytes_error_missing_element_data() {
         // Header says 1 element, but no length/data follows
         let mut packed = vec![];
-        packed.extend_from_slice(&1u16.to_be_bytes()); // num_elements = 1
+        packed.extend_from_slice(&1u32.to_be_bytes()); // num_elements = 1
                                                        // No length bytes or data follow
         let result = unpack_nested_bytes(&packed);
         assert!(
@@ -149,11 +149,11 @@ mod tests {
     #[test]
     fn unpack_truncated_bytes_error_incomplete_length_prefix() {
         // Header says 1 element, but only 1-3 bytes of the 4-byte length prefix
-        // are present. This exercises the boundary where the guard (index + 1)
-        // is weaker than the subsequent 4-byte read.
+        // are present. This exercises the boundary where the guard (index + 4)
+        // catches insufficient data for the subsequent 4-byte read.
         for trailing in 1..=3u8 {
             let mut packed = vec![];
-            packed.extend_from_slice(&1u16.to_be_bytes()); // num_elements = 1
+            packed.extend_from_slice(&1u32.to_be_bytes()); // num_elements = 1
             packed.extend(vec![0xAA; trailing as usize]); // partial length prefix
             let result = unpack_nested_bytes(&packed);
             assert!(
@@ -167,7 +167,7 @@ mod tests {
     fn unpack_truncated_bytes_error_short_element_content() {
         // Header says 1 element of length 10, but only 3 bytes of content provided
         let mut packed = vec![];
-        packed.extend_from_slice(&1u16.to_be_bytes()); // num_elements = 1
+        packed.extend_from_slice(&1u32.to_be_bytes()); // num_elements = 1
         packed.extend_from_slice(&10u32.to_be_bytes()); // element length = 10
         packed.extend_from_slice(&[0xAA, 0xBB, 0xCC]); // only 3 bytes
         let result = unpack_nested_bytes(&packed);
