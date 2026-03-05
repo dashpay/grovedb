@@ -647,14 +647,16 @@ where
     ) -> (BTreeMap<Vec<u8>, CryptoHash>, BTreeMap<Vec<u8>, Vec<u8>>) {
         let tree = self.tree.take();
 
+        let Some(ref tree_node) = tree else {
+            return (BTreeMap::new(), BTreeMap::new());
+        };
+
         let mut bad_link_map: BTreeMap<Vec<u8>, CryptoHash> = BTreeMap::new();
         let mut parent_keys: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         let mut root_traversal_instruction = vec![];
 
-        // TODO: remove clone
         self.verify_tree(
-            // TODO: handle unwrap
-            &tree.clone().unwrap(),
+            tree_node,
             &mut root_traversal_instruction,
             &mut bad_link_map,
             &mut parent_keys,
