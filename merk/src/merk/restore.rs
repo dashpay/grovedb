@@ -105,9 +105,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
         if root_traversal_instruction.is_empty() {
-            let _ = self
-                .merk
-                .set_base_root_key(chunk_tree.key().map(|k| k.to_vec()));
+            self.merk
+                .set_base_root_key(chunk_tree.key().map(|k| k.to_vec()))
+                .value?;
         } else {
             // every non root chunk has some associated parent with an placeholder link
             // here we update the placeholder link to represent the true data
