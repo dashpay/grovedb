@@ -778,7 +778,7 @@ impl ElementAggregateSumQueryExtensions for Element {
             *limit = limit.saturating_sub(1);
         }
 
-        *sum_limit_left = sum_limit_left.saturating_sub(value);
+        *sum_limit_left = sum_limit_left.saturating_sub(value.saturating_abs());
 
         Ok(())
     }

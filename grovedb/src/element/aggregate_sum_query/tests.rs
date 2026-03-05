@@ -2536,9 +2536,9 @@ fn test_negative_sum_values() {
     .unwrap()
     .expect("cannot insert element");
 
-    // sum_limit=12: a(10) leaves 2, b(-3) increases remaining to 5, c(5) leaves 0
-    // All three should be returned
-    let aggregate_sum_query = AggregateSumQuery::new(12, None);
+    // sum_limit=18: a(10) leaves 8, b(|-3|=3) leaves 5, c(5) leaves 0
+    // All three should be returned because budget is consumed by absolute values
+    let aggregate_sum_query = AggregateSumQuery::new(18, None);
     let aggregate_sum_path_query = AggregateSumPathQuery {
         path: vec![TEST_LEAF.to_vec()],
         aggregate_sum_query,
@@ -2559,7 +2559,30 @@ fn test_negative_sum_values() {
         vec![(b"a".to_vec(), 10), (b"b".to_vec(), -3), (b"c".to_vec(), 5),]
     );
 
-    // sum_limit=8: a(10) leaves -2, which is <= 0, so stop after a
+    // sum_limit=12: a(10) leaves 2, b(|-3|=3) leaves 0 (saturated), stop after b
+    // Negative items consume budget by their absolute value, not increase it
+    let aggregate_sum_query = AggregateSumQuery::new(12, None);
+    let aggregate_sum_path_query = AggregateSumPathQuery {
+        path: vec![TEST_LEAF.to_vec()],
+        aggregate_sum_query,
+    };
+
+    let result = Element::get_aggregate_sum_query(
+        &db.db,
+        &aggregate_sum_path_query,
+        AggregateSumQueryOptions::default(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("expected successful get_query");
+
+    assert_eq!(
+        result.results,
+        vec![(b"a".to_vec(), 10), (b"b".to_vec(), -3)]
+    );
+
+    // sum_limit=8: a(10) leaves -2, which saturates to 0, so stop after a
     let aggregate_sum_query = AggregateSumQuery::new(8, None);
     let aggregate_sum_path_query = AggregateSumPathQuery {
         path: vec![TEST_LEAF.to_vec()],
