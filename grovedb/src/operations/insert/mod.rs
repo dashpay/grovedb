@@ -72,6 +72,11 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.insert.insert
         );
 
+        if key.len() > 255 {
+            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
+                .wrap_with_cost(OperationCost::default());
+        }
+
         let subtree_path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
 
@@ -374,6 +379,11 @@ impl GroveDb {
                 .insert_if_not_exists
         );
 
+        if key.len() > 255 {
+            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
+                .wrap_with_cost(OperationCost::default());
+        }
+
         let mut cost = OperationCost::default();
         let subtree_path: SubtreePath<_> = path.into();
 
@@ -429,6 +439,11 @@ impl GroveDb {
                 .insert_if_not_exists_return_existing_element
         );
 
+        if key.len() > 255 {
+            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
+                .wrap_with_cost(OperationCost::default());
+        }
+
         let mut cost = OperationCost::default();
         let subtree_path: SubtreePath<_> = path.into();
 
@@ -468,6 +483,11 @@ impl GroveDb {
                 .insert
                 .insert_if_changed_value
         );
+
+        if key.len() > 255 {
+            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
+                .wrap_with_cost(OperationCost::default());
+        }
 
         let mut cost = OperationCost::default();
         let subtree_path: SubtreePath<B> = path.into();
