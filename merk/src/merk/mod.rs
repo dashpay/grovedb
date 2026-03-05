@@ -731,12 +731,17 @@ where
                 child_heights: _,
                 aggregate_data,
                 tree,
+            }
+            | Link::Uncommitted {
+                hash,
+                child_heights: _,
+                aggregate_data,
+                tree,
             } => (
                 hash.to_owned(),
                 tree.key().to_vec(),
                 aggregate_data.to_owned(),
             ),
-            _ => todo!(),
         };
 
         let instruction_id = traversal_instruction_as_vec_bytes(traversal_instruction);
