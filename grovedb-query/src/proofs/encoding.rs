@@ -15,6 +15,22 @@ use crate::{
 /// allocations.
 const MAX_VALUE_LEN: u32 = 64 * 1024 * 1024;
 
+/// Validates that a key length fits in a single byte (< 256).
+///
+/// Proof encoding stores key lengths as a u8. Keys with 256 or more bytes
+/// would have their length silently truncated via `as u8`, corrupting the
+/// proof. This function enforces the limit at runtime.
+#[inline]
+fn validate_key_len(key: &[u8]) -> ed::Result<()> {
+    if key.len() >= 256 {
+        return Err(ed::Error::IOError(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "key length must be less than 256",
+        )));
+    }
+    Ok(())
+}
+
 impl Encode for Op {
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
         match self {
@@ -28,6 +44,7 @@ impl Encode for Op {
                 dest.write_all(kv_hash)?;
             }
             Op::Push(Node::KV(key, value)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x03, key.len() as u8])?;
@@ -42,6 +59,7 @@ impl Encode for Op {
                 }
             }
             Op::Push(Node::KVValueHash(key, value, value_hash)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x04, key.len() as u8])?;
@@ -58,6 +76,7 @@ impl Encode for Op {
                 }
             }
             Op::Push(Node::KVDigest(key, value_hash)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
 
                 dest.write_all(&[0x05, key.len() as u8])?;
@@ -65,6 +84,7 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
             }
             Op::Push(Node::KVRefValueHash(key, value, value_hash)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x06, key.len() as u8])?;
@@ -81,6 +101,7 @@ impl Encode for Op {
                 }
             }
             Op::Push(Node::KVValueHashFeatureType(key, value, value_hash, feature_type)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x07, key.len() as u8])?;
@@ -99,6 +120,7 @@ impl Encode for Op {
                 }
             }
             Op::Push(Node::KVCount(key, value, count)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x14, key.len() as u8])?;
@@ -120,6 +142,7 @@ impl Encode for Op {
                 count.encode_into(dest)?;
             }
             Op::Push(Node::KVRefValueHashCount(key, value, value_hash, count)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x18, key.len() as u8])?;
@@ -138,6 +161,7 @@ impl Encode for Op {
                 }
             }
             Op::Push(Node::KVDigestCount(key, value_hash, count)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
 
                 dest.write_all(&[0x1a, key.len() as u8])?;
@@ -156,6 +180,7 @@ impl Encode for Op {
                 dest.write_all(kv_hash)?;
             }
             Op::PushInverted(Node::KV(key, value)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x0a, key.len() as u8])?;
@@ -170,6 +195,7 @@ impl Encode for Op {
                 }
             }
             Op::PushInverted(Node::KVValueHash(key, value, value_hash)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x0b, key.len() as u8])?;
@@ -186,6 +212,7 @@ impl Encode for Op {
                 }
             }
             Op::PushInverted(Node::KVDigest(key, value_hash)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
 
                 dest.write_all(&[0x0c, key.len() as u8])?;
@@ -193,6 +220,7 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
             }
             Op::PushInverted(Node::KVRefValueHash(key, value, value_hash)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x0d, key.len() as u8])?;
@@ -214,6 +242,7 @@ impl Encode for Op {
                 value_hash,
                 feature_type,
             )) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x0e, key.len() as u8])?;
@@ -232,6 +261,7 @@ impl Encode for Op {
                 }
             }
             Op::PushInverted(Node::KVCount(key, value, count)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x16, key.len() as u8])?;
@@ -253,6 +283,7 @@ impl Encode for Op {
                 count.encode_into(dest)?;
             }
             Op::PushInverted(Node::KVRefValueHashCount(key, value, value_hash, count)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
                 if value.len() < 65536 {
                     dest.write_all(&[0x19, key.len() as u8])?;
@@ -271,6 +302,7 @@ impl Encode for Op {
                 }
             }
             Op::PushInverted(Node::KVDigestCount(key, value_hash, count)) => {
+                validate_key_len(key)?;
                 debug_assert!(key.len() < 256);
 
                 dest.write_all(&[0x1b, key.len() as u8])?;
