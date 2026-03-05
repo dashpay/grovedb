@@ -140,6 +140,11 @@ impl GroveDBProof {
 
     /// Verifies a query using the proof and returns the root hash and the query
     /// result.
+    ///
+    /// Note: `verify_proof_succinctness` is requested but **not yet
+    /// implemented** — cross-subtree completeness is not currently checked.
+    /// Within a single Merk tree, boundary proof verification does enforce
+    /// completeness.
     pub fn verify(
         &self,
         query: &PathQuery,
@@ -160,6 +165,9 @@ impl GroveDBProof {
 
     /// Verifies a query with an absence proof and returns the root hash and the
     /// query result.
+    ///
+    /// Note: `verify_proof_succinctness` is requested but **not yet
+    /// implemented** — cross-subtree completeness is not currently checked.
     pub fn verify_with_absence_proof(
         &self,
         query: &PathQuery,

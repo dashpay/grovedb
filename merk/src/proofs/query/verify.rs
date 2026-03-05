@@ -40,8 +40,17 @@ pub struct VerifyOptions {
     /// When set to true, this will give back absence proofs for any query items
     /// that are keys. This means QueryItem::Key(), and not the ranges.
     pub absence_proofs_for_non_existing_searched_keys: bool,
-    /// Verifies that we have all the data. Todo: verify that this works
-    /// properly
+    /// **NOT YET IMPLEMENTED.** This field is accepted but currently ignored.
+    ///
+    /// When implemented, setting this to `true` should verify that the proof
+    /// contains results for ALL keys/ranges matching the query (i.e., the
+    /// prover did not omit any results). Without this check, a malicious
+    /// prover could return a valid but incomplete proof.
+    ///
+    /// Succinctness within a single Merk tree IS enforced by the boundary
+    /// proof verification. The gap is at the GroveDB layer for cross-subtree
+    /// result completeness.
+    // TODO: implement cross-subtree succinctness verification
     pub verify_proof_succinctness: bool,
     /// Should return empty trees in the result?
     pub include_empty_trees_in_result: bool,
