@@ -21,6 +21,7 @@ use crate::{
     CryptoHash, Error, Merk,
 };
 
+/// Extension trait for fetching elements from Merk storage.
 pub trait ElementFetchFromStorageExtensions {
     /// Get an element from Merk under a key; path should be resolved and proper
     /// Merk should be loaded by this moment

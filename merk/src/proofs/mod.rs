@@ -4,6 +4,7 @@
 pub mod branch;
 #[cfg(feature = "minimal")]
 pub mod chunk;
+/// Query proof generation and verification.
 pub mod query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree;

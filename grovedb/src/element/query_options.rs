@@ -1,8 +1,11 @@
 use std::fmt;
 
+/// Options controlling how an element query is executed.
 #[derive(Copy, Clone, Debug)]
 pub struct QueryOptions {
+    /// If true, allows fetching raw (unprocessed) elements.
     pub allow_get_raw: bool,
+    /// If true, allows reading from cache instead of forcing fresh disk reads.
     pub allow_cache: bool,
     /// Should we decrease the limit of elements found when we have no
     /// subelements in the subquery? This should generally be set to true,
@@ -11,6 +14,9 @@ pub struct QueryOptions {
     /// sub elements have no matches, hence the limit would not decrease and
     /// hence we would continue on the increasingly expensive query.
     pub decrease_limit_on_range_with_no_sub_elements: bool,
+    /// If true (default), returns an error when an intermediate path tree does
+    /// not exist. When false, a missing intermediate tree is silently treated
+    /// as empty.
     pub error_if_intermediate_path_tree_not_present: bool,
 }
 

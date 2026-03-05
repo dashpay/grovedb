@@ -28,18 +28,26 @@
 
 //! Merk
 
+/// Chunk-based tree replication.
 pub mod chunks;
 pub(crate) mod defaults;
 
 pub mod options;
 
+/// Applying operations (inserts, updates, deletes) to a Merk tree.
 pub mod apply;
+/// Clearing all data from a Merk tree.
 pub mod clear;
+/// Commit logic for writing tree nodes to storage.
 pub mod committer;
+/// Getting values by key from a Merk tree.
 pub mod get;
+/// Opening and loading a Merk tree from storage.
 pub mod open;
+/// Generating Merkle proofs for queries against a Merk tree.
 pub mod prove;
 pub mod restore;
+/// Source implementation for fetching tree nodes from storage.
 pub mod source;
 
 use std::{
@@ -85,9 +93,13 @@ use crate::{
 
 /// Key update types
 pub struct KeyUpdates {
+    /// Keys that were newly inserted.
     pub new_keys: BTreeSet<Vec<u8>>,
+    /// Keys whose values were updated.
     pub updated_keys: BTreeSet<Vec<u8>>,
+    /// Keys that were deleted, along with their storage costs.
     pub deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
+    /// The previous root key if the root key changed.
     pub updated_root_key_from: Option<Vec<u8>>,
 }
 
@@ -293,7 +305,9 @@ impl<S> fmt::Debug for Merk<S> {
     }
 }
 
-// key, maybe value, maybe child reference hooks, maybe key value storage costs
+/// Result type for tree mutation operations, containing tuples of
+/// (key, optional cost type and feature sum length, children sizes with value,
+/// key-value storage cost).
 pub type UseTreeMutResult = CostResult<
     Vec<(
         Vec<u8>,

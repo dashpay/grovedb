@@ -59,15 +59,19 @@ impl fmt::Display for QueryResultElements {
     }
 }
 
+/// A node in the hierarchical query result tree: either a nested level or a leaf element.
 #[derive(Debug, Clone)]
 pub enum BTreeMapLevelResultOrItem {
+    /// A nested level containing further key-value results.
     BTreeMapLevelResult(BTreeMapLevelResult),
+    /// A leaf element result.
     ResultItem(Element),
 }
 
 /// BTreeMap level result
 #[derive(Debug, Clone)]
 pub struct BTreeMapLevelResult {
+    /// The mapping of keys to their result values at this level.
     pub key_values: BTreeMap<Key, BTreeMapLevelResultOrItem>,
 }
 
@@ -114,6 +118,7 @@ impl BTreeMapLevelResult {
 }
 
 impl BTreeMapLevelResult {
+    /// Returns the number of values at the given path within this result tree.
     pub fn len_of_values_at_path(&self, path: &[&[u8]]) -> u16 {
         let mut current = self;
 

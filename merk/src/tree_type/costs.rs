@@ -45,7 +45,9 @@ pub const BULK_APPEND_TREE_COST_SIZE: u32 = 9 + 1 + 2; // 12
 /// height (u8) + 2 bytes overhead)
 pub const DENSE_TREE_COST_SIZE: u32 = 3 + 1 + 2; // 6
 
+/// Provides the serialized cost size in bytes for a tree type.
 pub trait CostSize {
+    /// Returns the cost size in bytes for this value.
     fn cost_size(&self) -> u32;
 }
 

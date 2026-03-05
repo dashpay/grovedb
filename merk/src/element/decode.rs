@@ -3,6 +3,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{element::costs::ElementCostExtensions, tree::TreeNode, Error};
 
+/// Extension trait for decoding elements from raw bytes.
 pub trait ElementDecodeExtensions {
     /// Decode from bytes
     fn raw_decode(bytes: &[u8], grove_version: &GroveVersion) -> Result<Element, Error>;

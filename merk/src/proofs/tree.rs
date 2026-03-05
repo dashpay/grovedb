@@ -40,6 +40,8 @@ pub struct Child {
 }
 
 impl Child {
+    /// Converts this child into a `Link::Reference` for use during tree
+    /// reconstruction.
     #[cfg(feature = "minimal")]
     pub fn as_link(&self) -> Link {
         let (key, aggregate_data) = match &self.tree.node {

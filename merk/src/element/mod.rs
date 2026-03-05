@@ -4,8 +4,10 @@ use grovedb_element::{error::ElementError, Element};
 use crate::tree::value_hash;
 
 #[cfg(feature = "minimal")]
+/// Element cost calculation extensions.
 pub mod costs;
 #[cfg(feature = "minimal")]
+/// Element decoding extensions.
 pub mod decode;
 #[cfg(feature = "minimal")]
 pub mod delete;
@@ -17,9 +19,12 @@ pub mod get;
 pub mod insert;
 #[cfg(feature = "minimal")]
 pub mod reconstruct;
+/// Element tree type extensions.
 pub mod tree_type;
 
+/// Extension trait for computing element value hashes.
 pub trait ElementExt {
+    /// Computes the value hash for this element.
     fn value_hash(
         &self,
         grove_version: &grovedb_version::version::GroveVersion,

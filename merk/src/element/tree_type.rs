@@ -8,6 +8,7 @@ use crate::{
     TreeType,
 };
 
+/// Extension trait for determining tree type information from elements.
 pub trait ElementTreeTypeExtensions {
     /// Check if the element is a tree and return the root_tree info and tree
     /// type

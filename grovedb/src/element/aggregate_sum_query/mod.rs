@@ -104,17 +104,29 @@ pub struct AggregateSumPathQueryPushArgs<'db, 'ctx, 'a>
 where
     'db: 'ctx,
 {
+    /// The RocksDB storage instance.
     pub storage: &'db RocksDbStorage,
+    /// The optional transaction context for transactional reads.
     pub transaction: TransactionArg<'db, 'ctx>,
+    /// The key of the current element being processed, if any.
     pub key: Option<&'a [u8]>,
+    /// The element to process and potentially add to results.
     pub element: Element,
+    /// The path segments leading to the current subtree.
     pub path: &'a [&'a [u8]],
+    /// Whether to iterate from left to right (ascending order).
     pub left_to_right: bool,
+    /// Options controlling query behavior (caching, error handling, etc.).
     pub query_options: AggregateSumQueryOptions,
+    /// Accumulator for the query result key-sum pairs.
     pub results: &'a mut Vec<KeySumValuePair>,
+    /// Remaining item count limit; decremented as results are added.
     pub limit: &'a mut Option<u16>,
+    /// Remaining sum budget; decremented by each element's sum value.
     pub sum_limit_left: &'a mut SumValue,
+    /// Counter of elements scanned so far.
     pub elements_scanned: &'a mut u16,
+    /// Hard cap on total elements that may be scanned.
     pub max_elements_scanned: u16,
 }
 
@@ -160,7 +172,9 @@ where
 }
 
 #[cfg(feature = "minimal")]
+/// Extension trait providing aggregate sum query operations on `Element`.
 pub trait ElementAggregateSumQueryExtensions {
+    /// Executes an aggregate sum path query and returns matching key-sum pairs.
     fn get_aggregate_sum_query(
         storage: &RocksDbStorage,
         aggregate_sum_path_query: &AggregateSumPathQuery,
@@ -168,6 +182,7 @@ pub trait ElementAggregateSumQueryExtensions {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<AggregateSumQueryResult, Error>;
+    /// Executes an aggregate sum query using a custom element-processing function.
     fn get_aggregate_sum_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
@@ -180,10 +195,12 @@ pub trait ElementAggregateSumQueryExtensions {
         ) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<AggregateSumQueryResult, Error>;
+    /// Processes a single element and pushes it to the aggregate sum query results.
     fn aggregate_sum_path_query_push(
         args: AggregateSumPathQueryPushArgs,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+    /// Processes a single query item (key or range) within an aggregate sum query.
     fn aggregate_sum_query_item(
         storage: &RocksDbStorage,
         item: &QueryItem,
@@ -202,6 +219,7 @@ pub trait ElementAggregateSumQueryExtensions {
         max_elements_scanned: u16,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+    /// Extracts the sum value from an element and appends it to the results.
     fn basic_aggregate_sum_push(
         args: AggregateSumPathQueryPushArgs,
         grove_version: &GroveVersion,

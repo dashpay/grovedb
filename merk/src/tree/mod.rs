@@ -169,6 +169,8 @@ impl TreeNode {
         self.inner.kv.feature_type.node_type()
     }
 
+    /// Computes the storage cost when updating a value, comparing old and new
+    /// byte costs.
     pub fn storage_cost_for_update(current_value_byte_cost: u32, old_cost: u32) -> StorageCost {
         let mut value_storage_cost = StorageCost {
             ..Default::default()

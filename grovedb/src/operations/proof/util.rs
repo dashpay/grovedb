@@ -8,15 +8,19 @@ use grovedb_version::version::GroveVersion;
 
 use crate::Element;
 
+/// A collection of proved key-value pairs.
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedKeyValues = Vec<ProvedKeyValue>;
 
+/// A collection of proved key-value pairs where values are optional.
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedKeyOptionalValues = Vec<ProvedKeyOptionalValue>;
 
+/// A collection of proved path-key-value triples.
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedPathKeyValues = Vec<ProvedPathKeyValue>;
 
+/// A collection of proved path-key-value triples where values are optional.
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub type ProvedPathKeyOptionalValues = Vec<ProvedPathKeyOptionalValue>;
 
@@ -186,6 +190,7 @@ impl ProvedPathKeyOptionalValue {
     }
 }
 
+/// Converts a byte slice to an ASCII string if all bytes are printable, otherwise hex-encodes it.
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
     // Define the set of allowed characters
     const ALLOWED_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
@@ -203,6 +208,7 @@ pub fn hex_to_ascii(hex_value: &[u8]) -> String {
     }
 }
 
+/// Converts a path (vector of byte vectors) to a human-readable slash-separated string.
 pub fn path_hex_to_ascii(path: &Path) -> String {
     path.iter()
         .map(|e| hex_to_ascii(e.as_slice()))
@@ -210,12 +216,14 @@ pub fn path_hex_to_ascii(path: &Path) -> String {
         .join("/")
 }
 
+/// Converts a path of byte slices to a human-readable slash-separated string.
 pub fn path_as_slices_hex_to_ascii(path: &[&[u8]]) -> String {
     path.iter()
         .map(|e| hex_to_ascii(e))
         .collect::<Vec<_>>()
         .join("/")
 }
+/// Converts optional serialized element bytes to a display string, returning "None" if absent.
 pub fn optional_element_hex_to_ascii(hex_value: Option<&Vec<u8>>) -> Result<String, fmt::Error> {
     match hex_value {
         None => Ok("None".to_string()),
@@ -223,6 +231,7 @@ pub fn optional_element_hex_to_ascii(hex_value: Option<&Vec<u8>>) -> Result<Stri
     }
 }
 
+/// Deserializes element bytes and returns the element's display string.
 pub fn element_hex_to_ascii(hex_value: &[u8]) -> Result<String, fmt::Error> {
     let element =
         Element::deserialize(hex_value, GroveVersion::latest()).map_err(|_| fmt::Error)?;

@@ -69,6 +69,7 @@ pub enum ChunkError {
     #[error("invalid multi chunk: {0}")]
     InvalidMultiChunk(&'static str),
 
+    /// Finalize called before all expected chunks have been received
     #[error("called finalize too early still expecting chunks")]
     RestorationNotComplete,
 

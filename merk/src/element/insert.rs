@@ -18,6 +18,7 @@ use crate::{
     BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
 };
 
+/// Extension trait for inserting elements into Merk storage.
 pub trait ElementInsertToStorageExtensions {
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment

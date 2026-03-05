@@ -10,6 +10,7 @@ use crate::{
     element::costs::ElementCostExtensions, BatchEntry, Error, Merk, MerkOptions, Op, TreeType,
 };
 
+/// Extension trait for deleting elements from Merk storage.
 pub trait ElementDeleteFromStorageExtensions {
     /// Delete an element from Merk under a key
     fn delete<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(

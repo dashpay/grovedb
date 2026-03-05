@@ -31,6 +31,8 @@ use crate::{
 };
 
 impl GroveDb {
+    /// Verifies a proof against a path query with the given options, returning
+    /// the root hash and deserialized results.
     pub fn verify_query_with_options(
         proof: &[u8],
         query: &PathQuery,
@@ -126,6 +128,8 @@ impl GroveDb {
         Ok((root_hash, tree_feature_type, result))
     }
 
+    /// Verifies a proof against a path query and returns the root hash
+    /// with raw (not deserialized) proved key-value results.
     pub fn verify_query_raw(
         proof: &[u8],
         query: &PathQuery,
@@ -1512,6 +1516,8 @@ impl GroveDb {
         Ok(root_hash)
     }
 
+    /// Verifies a proof against a path query with succinctness checks,
+    /// returning the root hash and deserialized results.
     pub fn verify_query(
         proof: &[u8],
         query: &PathQuery,
@@ -1533,6 +1539,8 @@ impl GroveDb {
         )
     }
 
+    /// Verifies a proof against a path query without succinctness checks,
+    /// allowing the proof to contain extra data beyond what the query requires.
     pub fn verify_subset_query(
         proof: &[u8],
         query: &PathQuery,
@@ -1604,6 +1612,8 @@ impl GroveDb {
         )
     }
 
+    /// Verifies a proof that includes absence proofs for non-existing searched
+    /// keys, returning the root hash and deserialized results.
     pub fn verify_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,
@@ -1629,6 +1639,8 @@ impl GroveDb {
         )
     }
 
+    /// Verifies a subset proof that includes absence proofs for non-existing
+    /// searched keys, without succinctness checks.
     pub fn verify_subset_query_with_absence_proof(
         proof: &[u8],
         query: &PathQuery,

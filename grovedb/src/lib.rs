@@ -126,6 +126,7 @@
 //! [Tutorial](https://www.grovedb.org/tutorials.html)
 
 // Pre-existing patterns throughout the crate; fix incrementally.
+#![deny(missing_docs)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::result_large_err)]
@@ -156,6 +157,7 @@ pub mod query_result_type;
 #[allow(dead_code)] // WIP module, will be used in future batch rework
 pub mod reference_path;
 #[cfg(feature = "minimal")]
+/// State replication and synchronization support.
 pub mod replication;
 #[cfg(all(test, feature = "minimal"))]
 mod tests;

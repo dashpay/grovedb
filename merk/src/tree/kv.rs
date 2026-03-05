@@ -255,6 +255,7 @@ impl KV {
         &self.hash
     }
 
+    /// Returns the feature type of this key-value node.
     pub fn feature_type(&self) -> TreeFeatureType {
         self.feature_type
     }

@@ -2,6 +2,7 @@
 
 #[cfg(feature = "minimal")]
 mod generate;
+/// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
 
@@ -26,6 +27,7 @@ use crate::{
     Error, GroveDb, PathQuery,
 };
 
+/// Options controlling proof generation behavior.
 #[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct ProveOptions {
     /// This tells the proof system to decrease the available limit of the query
@@ -60,32 +62,46 @@ impl Default for ProveOptions {
     }
 }
 
+/// A single layer of a legacy (v0) GroveDB proof containing only merk proofs.
 #[derive(Encode, Decode)]
 pub struct MerkOnlyLayerProof {
+    /// Encoded merk proof bytes for this layer.
     pub merk_proof: Vec<u8>,
+    /// Proofs for child subtrees keyed by their key in the parent tree.
     pub lower_layers: BTreeMap<Key, MerkOnlyLayerProof>,
 }
 
+/// Encoded proof bytes for different tree backing store types.
 #[derive(Encode, Decode)]
 pub enum ProofBytes {
+    /// Merk (Merkle AVL) tree proof bytes.
     Merk(Vec<u8>),
+    /// Merkle Mountain Range tree proof bytes.
     MMR(Vec<u8>),
+    /// Bulk-append tree proof bytes.
     BulkAppendTree(Vec<u8>),
+    /// Dense fixed-size Merkle tree proof bytes.
     DenseTree(Vec<u8>),
     /// CommitmentTree proof: `sinsemilla_root (32 bytes) || bulk_append_proof`.
     /// Binds the Orchard anchor to the GroveDB root hash.
     CommitmentTree(Vec<u8>),
 }
 
+/// A single layer of a v1 GroveDB proof supporting multiple tree types.
 #[derive(Encode, Decode)]
 pub struct LayerProof {
+    /// Proof bytes for this layer (may be any supported tree type).
     pub merk_proof: ProofBytes,
+    /// Proofs for child subtrees keyed by their key in the parent tree.
     pub lower_layers: BTreeMap<Key, LayerProof>,
 }
 
+/// A versioned GroveDB proof that can be verified against a path query.
 #[derive(Encode, Decode)]
 pub enum GroveDBProof {
+    /// Legacy proof format using only merk proofs.
     V0(GroveDBProofV0),
+    /// Current proof format supporting multiple tree backing store types.
     V1(GroveDBProofV1),
 }
 
@@ -203,15 +219,21 @@ impl GroveDBProof {
     }
 }
 
+/// Legacy (v0) GroveDB proof containing only merk layer proofs.
 #[derive(Encode, Decode)]
 pub struct GroveDBProofV0 {
+    /// The root layer proof for the top-level tree.
     pub root_layer: MerkOnlyLayerProof,
+    /// Options that were used when generating this proof.
     pub prove_options: ProveOptions,
 }
 
+/// Current (v1) GroveDB proof supporting multiple tree backing store types.
 #[derive(Encode, Decode)]
 pub struct GroveDBProofV1 {
+    /// The root layer proof for the top-level tree.
     pub root_layer: LayerProof,
+    /// Options that were used when generating this proof.
     pub prove_options: ProveOptions,
 }
 

@@ -121,9 +121,11 @@ pub enum Error {
     /// Version error
     VersionError(grovedb_version::error::GroveVersionError),
 
+    /// Big sum tree under normal sum tree error
     #[error("big sum tree under normal sum tree error {0}")]
     BigSumTreeUnderNormalSumTree(String),
 
+    /// Unknown tree type error
     #[error("unknown tree type {0}")]
     UnknownTreeType(String),
 
@@ -208,7 +210,9 @@ impl From<grovedb_query::error::Error> for Error {
     }
 }
 
+/// Extension trait for adding context to merk error results.
 pub trait MerkErrorExt {
+    /// Appends additional context to the error message.
     fn add_context(self, append: impl AsRef<str>) -> Self;
 }
 

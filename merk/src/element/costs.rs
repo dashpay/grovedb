@@ -17,6 +17,7 @@ use crate::{
     Error,
 };
 
+/// Extension trait for element cost calculations.
 pub trait ElementCostExtensions {
     /// Get tree costs for a key value
     fn specialized_costs_for_key_value(
@@ -43,6 +44,7 @@ pub trait ElementCostExtensions {
     ) -> Option<ValueDefinedCostType>;
 }
 
+/// Private extension trait for internal element cost operations.
 pub trait ElementCostPrivateExtensions {
     /// Get tree cost for the element
     fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error>;

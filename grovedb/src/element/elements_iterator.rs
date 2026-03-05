@@ -8,7 +8,9 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{query_result_type::KeyElementPair, Error};
 
+/// Extension trait providing an iterator constructor on `Element`.
 pub trait ElementIteratorExtensions {
+    /// Creates a new `ElementsIterator` positioned at the first entry.
     fn iterator<I: RawIterator>(raw_iter: I) -> CostContext<ElementsIterator<I>>;
 }
 
@@ -21,15 +23,19 @@ impl ElementIteratorExtensions for Element {
     }
 }
 
+/// An iterator over stored elements, wrapping a low-level storage iterator.
 pub struct ElementsIterator<I: RawIterator> {
+    /// The underlying raw storage iterator.
     raw_iter: I,
 }
 
 impl<I: RawIterator> ElementsIterator<I> {
+    /// Creates a new `ElementsIterator` from the given raw iterator.
     pub fn new(raw_iter: I) -> Self {
         ElementsIterator { raw_iter }
     }
 
+    /// Advances the iterator and returns the next key-element pair, or `None` if exhausted.
     pub fn next_element(
         &mut self,
         grove_version: &GroveVersion,

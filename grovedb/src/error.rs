@@ -172,6 +172,7 @@ pub enum Error {
 }
 
 impl Error {
+    /// Appends additional context to the error message.
     pub fn add_context(&mut self, append: impl AsRef<str>) {
         match self {
             Self::MissingReference(s)
@@ -203,7 +204,9 @@ impl Error {
     }
 }
 
+/// Extension trait for adding context to GroveDB error results.
 pub trait GroveDbErrorExt {
+    /// Appends additional context to the error within this result.
     fn add_context(self, append: impl AsRef<str>) -> Self;
 }
 

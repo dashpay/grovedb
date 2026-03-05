@@ -12,19 +12,28 @@ use self::TreeFeatureType::{
 use crate::tree_type::TreeType;
 
 #[cfg(feature = "minimal")]
+/// Aggregate data associated with tree nodes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AggregateData {
+    /// No aggregate data.
     NoAggregateData,
+    /// A signed 64-bit sum value.
     Sum(i64),
+    /// A signed 128-bit sum value for large sums.
     BigSum(i128),
+    /// An unsigned 64-bit element count.
     Count(u64),
+    /// A combined element count and sum.
     CountAndSum(u64, i64),
+    /// A provable unsigned 64-bit element count.
     ProvableCount(u64),
+    /// A provable combined element count and sum.
     ProvableCountAndSum(u64, i64),
 }
 
 #[cfg(feature = "minimal")]
 impl AggregateData {
+    /// Returns the tree type corresponding to this aggregate data variant.
     pub fn parent_tree_type(&self) -> TreeType {
         match self {
             AggregateData::NoAggregateData => TreeType::NormalTree,
@@ -37,6 +46,7 @@ impl AggregateData {
         }
     }
 
+    /// Returns the sum value as `i64`, or 0 if not a sum variant.
     pub fn as_sum_i64(&self) -> i64 {
         match self {
             AggregateData::NoAggregateData => 0,
@@ -56,6 +66,7 @@ impl AggregateData {
         }
     }
 
+    /// Returns the count value as `u64`, or 0 if not a count variant.
     pub fn as_count_u64(&self) -> u64 {
         match self {
             AggregateData::NoAggregateData => 0,
@@ -68,6 +79,7 @@ impl AggregateData {
         }
     }
 
+    /// Returns the sum value as `i128`, or 0 if not a sum variant.
     pub fn as_summed_i128(&self) -> i128 {
         match self {
             AggregateData::NoAggregateData => 0,

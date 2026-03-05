@@ -27,7 +27,9 @@ use crate::{
     Error, PathQuery, SizedQuery, TransactionArg,
 };
 
+/// Extension trait providing query operations on `Element`.
 pub trait ElementQueryExtensions {
+    /// Executes a query against a subtree and returns matching elements.
     fn get_query(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -37,6 +39,7 @@ pub trait ElementQueryExtensions {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<QueryResultElements, Error>;
+    /// Executes a query and returns only the element values (no keys or paths).
     fn get_query_values(
         storage: &RocksDbStorage,
         merk_path: &[&[u8]],
@@ -45,6 +48,7 @@ pub trait ElementQueryExtensions {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Element>, Error>;
+    /// Executes a sized query using a custom element-processing function.
     fn get_query_apply_function(
         storage: &RocksDbStorage,
         path: &[&[u8]],
@@ -55,6 +59,7 @@ pub trait ElementQueryExtensions {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(QueryResultElements, u16), Error>;
+    /// Executes a path query, resolving the path and running the sized query within it.
     fn get_path_query(
         storage: &RocksDbStorage,
         path_query: &PathQuery,
@@ -106,6 +111,7 @@ pub trait ElementQueryExtensions {
         add_element_function: fn(PathQueryPushArgs, &GroveVersion) -> CostResult<(), Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+    /// Default push function that adds an element to the query results.
     fn basic_push(args: PathQueryPushArgs, grove_version: &GroveVersion) -> Result<(), Error>;
 }
 
