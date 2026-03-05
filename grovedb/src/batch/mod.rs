@@ -508,7 +508,7 @@ impl KeyInfoPath {
 }
 
 /// Batch operation
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct QualifiedGroveDbOp {
     /// Path to a subtree - subject to an operation
     pub path: KeyInfoPath,
@@ -806,53 +806,41 @@ impl QualifiedGroveDbOp {
             .map(|op| (op.clone(), 1))
             .collect();
 
-        let ops_len = ops.len();
-        // operations should not have any duplicates
+        // operations should not have any duplicates — O(n) via HashMap
         let mut repeated_ops = internal_only_ops;
-        for (i, op) in ops.iter().enumerate() {
-            if i == ops_len {
-                continue;
-            } // Don't do last one
-            let count = ops
-                .split_at(i + 1)
-                .1
-                .iter()
-                .filter(|&current_op| current_op == op)
-                .count() as u16;
-            if count > 1 {
-                repeated_ops.push((op.clone(), count));
+        {
+            let mut op_counts: HashMap<&QualifiedGroveDbOp, u16> = HashMap::new();
+            for op in ops.iter() {
+                *op_counts.entry(op).or_insert(0) += 1;
+            }
+            for (op, count) in op_counts {
+                if count > 1 {
+                    repeated_ops.push((op.clone(), count));
+                }
             }
         }
 
-        let mut same_path_key_ops = vec![];
-
-        // No double insert or delete of same key in same path.
+        // No double insert or delete of same key in same path — O(n) via HashMap.
         // Keyless ops (append-only tree ops) can't conflict — skip them.
-        for (i, op) in ops.iter().enumerate() {
-            if i == ops_len {
-                continue;
-            } // Don't do last one
-            if op.key.is_none() {
-                continue;
-            } // Keyless ops can't conflict
-            let mut doubled_ops = ops
-                .split_at(i + 1)
-                .1
-                .iter()
-                .filter_map(|current_op| {
-                    if current_op.key.is_some()
-                        && current_op.path == op.path
-                        && current_op.key == op.key
-                    {
-                        Some(current_op.op.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<GroveOp>>();
-            if !doubled_ops.is_empty() {
-                doubled_ops.push(op.op.clone());
-                same_path_key_ops.push((op.path.clone(), op.key.clone(), doubled_ops));
+        let mut same_path_key_ops = vec![];
+        {
+            let mut path_key_ops: HashMap<(&KeyInfoPath, &KeyInfo), Vec<&GroveOp>> = HashMap::new();
+            for op in ops.iter() {
+                if let Some(ref key) = op.key {
+                    path_key_ops
+                        .entry((&op.path, key))
+                        .or_default()
+                        .push(&op.op);
+                }
+            }
+            for ((path, key), op_list) in path_key_ops {
+                if op_list.len() > 1 {
+                    same_path_key_ops.push((
+                        path.clone(),
+                        Some(key.clone()),
+                        op_list.into_iter().cloned().collect(),
+                    ));
+                }
             }
         }
 
