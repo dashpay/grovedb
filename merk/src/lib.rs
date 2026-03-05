@@ -11,6 +11,7 @@
 #[cfg(feature = "minimal")]
 pub mod merk;
 
+/// Debug inspection support for GroveDbg.
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
 
