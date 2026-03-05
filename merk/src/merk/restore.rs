@@ -507,19 +507,33 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         // get the latest version of the root node
-        let _ = self.merk.load_base_root(
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        );
+        self.merk
+            .load_base_root(
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .value
+            .map_err(|_| {
+                Error::ChunkRestoringError(ChunkError::InternalError(
+                    "failed to load base root during finalize",
+                ))
+            })?;
 
         // if height values are wrong, rewrite height
         if self.verify_height(grove_version).is_err() {
-            let _ = self.rewrite_heights(grove_version);
+            self.rewrite_heights(grove_version)?;
             // update the root node after height rewrite
-            let _ = self.merk.load_base_root(
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                grove_version,
-            );
+            self.merk
+                .load_base_root(
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
+                .value
+                .map_err(|_| {
+                    Error::ChunkRestoringError(ChunkError::InternalError(
+                        "failed to reload base root after height rewrite",
+                    ))
+                })?;
         }
 
         if !self
