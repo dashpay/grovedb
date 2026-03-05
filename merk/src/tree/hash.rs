@@ -30,8 +30,9 @@ pub fn value_hash(value: &[u8]) -> CostContext<CryptoHash> {
     // TODO: make generic to allow other hashers
     let mut hasher = blake3::Hasher::new();
 
-    let val_length = value.len().encode_var_vec();
-    hasher.update(val_length.as_slice());
+    let mut val_length_buf = [0u8; 10];
+    let val_length_len = value.len().encode_var(&mut val_length_buf);
+    hasher.update(&val_length_buf[..val_length_len]);
     hasher.update(value);
 
     let hashes = 1 + (hasher.count() - 1) / 64;
@@ -55,8 +56,9 @@ pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<CryptoHash> {
     // TODO: make generic to allow other hashers
     let mut hasher = blake3::Hasher::new();
 
-    let key_length = key.len().encode_var_vec();
-    hasher.update(key_length.as_slice());
+    let mut key_length_buf = [0u8; 10];
+    let key_length_len = key.len().encode_var(&mut key_length_buf);
+    hasher.update(&key_length_buf[..key_length_len]);
     hasher.update(key);
 
     let value_hash = value_hash(value);
@@ -77,8 +79,9 @@ pub fn kv_hash(key: &[u8], value: &[u8]) -> CostContext<CryptoHash> {
 pub fn kv_digest_to_kv_hash(key: &[u8], value_hash: &CryptoHash) -> CostContext<CryptoHash> {
     let mut hasher = blake3::Hasher::new();
 
-    let key_length = key.len().encode_var_vec();
-    hasher.update(key_length.as_slice());
+    let mut key_length_buf = [0u8; 10];
+    let key_length_len = key.len().encode_var(&mut key_length_buf);
+    hasher.update(&key_length_buf[..key_length_len]);
     hasher.update(key);
 
     hasher.update(value_hash.as_slice());
