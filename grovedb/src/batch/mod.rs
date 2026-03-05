@@ -5015,4 +5015,46 @@ mod tests {
             _ => panic!("expected DenseAppendOnlyFixedSizeTree element"),
         }
     }
+
+    #[test]
+    fn test_batch_rejects_key_longer_than_255_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        // Create a key that is 256 bytes long (one byte over the limit)
+        let oversized_key = vec![b'x'; 256];
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            oversized_key,
+            Element::new_item(b"value".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, Some(&tx), grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "batch with oversized key should be rejected"
+        );
+        match result {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("255"),
+                    "error should mention the 255 byte limit, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidInput error, got: {:?}", other),
+            Ok(_) => unreachable!(),
+        }
+
+        // Verify that a key of exactly 255 bytes is accepted
+        let max_key = vec![b'y'; 255];
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            max_key,
+            Element::new_item(b"value".to_vec()),
+        )];
+        db.apply_batch(ops, None, Some(&tx), grove_version)
+            .unwrap()
+            .expect("batch with 255-byte key should succeed");
+    }
 }
