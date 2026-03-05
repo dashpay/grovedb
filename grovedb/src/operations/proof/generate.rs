@@ -73,7 +73,7 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
         check_grovedb_v0_with_cost!(
-            "prove_query_many",
+            "prove_query",
             grove_version.grovedb_versions.operations.proof.prove_query
         );
         let mut cost = OperationCost::default();
