@@ -10,6 +10,7 @@
 - [存储层](storage-layer.md)
 - [证明系统](proof-system.md)
 - [查询系统](query-system.md)
+- [聚合求和查询](aggregate-sum-queries.md)
 - [批量操作](batch-operations.md)
 - [开销追踪](cost-tracking.md)
 - [MMR 树](mmr-tree.md)

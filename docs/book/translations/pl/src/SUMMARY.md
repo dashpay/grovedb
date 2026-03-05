@@ -10,6 +10,7 @@
 - [Warstwa magazynowania](storage-layer.md)
 - [System dowodow](proof-system.md)
 - [System zapytan](query-system.md)
+- [Zapytania o sumy agregujace](aggregate-sum-queries.md)
 - [Operacje wsadowe](batch-operations.md)
 - [Sledzenie kosztow](cost-tracking.md)
 - [Drzewo MMR](mmr-tree.md)

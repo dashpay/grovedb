@@ -10,6 +10,7 @@
 - [Depolama Katmani](storage-layer.md)
 - [Ispat Sistemi](proof-system.md)
 - [Sorgu Sistemi](query-system.md)
+- [Toplu Toplam Sorgulari](aggregate-sum-queries.md)
 - [Toplu Islemler](batch-operations.md)
 - [Maliyet Takibi](cost-tracking.md)
 - [MMR Agaci](mmr-tree.md)

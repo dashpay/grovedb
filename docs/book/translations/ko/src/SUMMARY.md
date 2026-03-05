@@ -10,6 +10,7 @@
 - [스토리지 레이어](storage-layer.md)
 - [증명 시스템](proof-system.md)
 - [쿼리 시스템](query-system.md)
+- [집계 합계 쿼리](aggregate-sum-queries.md)
 - [배치 연산](batch-operations.md)
 - [비용 추적](cost-tracking.md)
 - [MMR 트리](mmr-tree.md)

@@ -10,6 +10,7 @@
 - [ชั้นจัดเก็บข้อมูล](storage-layer.md)
 - [ระบบ Proof](proof-system.md)
 - [ระบบ Query](query-system.md)
+- [การ Query ผลรวมสะสม](aggregate-sum-queries.md)
 - [การดำเนินการแบบ Batch](batch-operations.md)
 - [การติดตามต้นทุน](cost-tracking.md)
 - [MMR Tree](mmr-tree.md)

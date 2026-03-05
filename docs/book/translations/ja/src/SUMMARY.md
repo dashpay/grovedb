@@ -10,6 +10,7 @@
 - [ストレージ層](storage-layer.md)
 - [証明システム](proof-system.md)
 - [クエリシステム](query-system.md)
+- [集約サムクエリ](aggregate-sum-queries.md)
 - [バッチ操作](batch-operations.md)
 - [コスト追跡](cost-tracking.md)
 - [MMR ツリー](mmr-tree.md)
