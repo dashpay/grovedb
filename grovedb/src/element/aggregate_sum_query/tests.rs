@@ -3,7 +3,7 @@ use grovedb_merk::proofs::query::QueryItem;
 use grovedb_version::version::GroveVersion;
 
 use crate::element::aggregate_sum_query::{
-    AggregateSumQueryOptions, AggregateSumQueryResult, ElementAggregateSumQueryExtensions,
+    AggregateSumQueryOptions, ElementAggregateSumQueryExtensions,
 };
 use crate::reference_path::ReferencePathType;
 use crate::{
@@ -741,6 +741,45 @@ fn display_aggregate_sum_query_options_custom() {
     assert!(s.contains("error_if_intermediate_path_tree_not_present: false"));
     assert!(s.contains("error_if_non_sum_item_found: false"));
     assert!(s.contains("ignore_references: true"));
+}
+
+#[test]
+fn display_aggregate_sum_path_query_push_args() {
+    use crate::element::aggregate_sum_query::AggregateSumPathQueryPushArgs;
+
+    let grove_version = GroveVersion::latest();
+    let db = make_test_sum_tree_grovedb(grove_version);
+
+    let path: &[&[u8]] = &[TEST_LEAF];
+    let mut results = vec![(b"prev".to_vec(), 42i64)];
+    let mut limit = Some(5u16);
+    let mut sum_limit_left = 100i64;
+    let mut elements_scanned = 3u16;
+
+    let args = AggregateSumPathQueryPushArgs {
+        storage: &db.db,
+        transaction: None,
+        key: Some(b"mykey"),
+        element: Element::new_sum_item(7),
+        path,
+        left_to_right: true,
+        query_options: AggregateSumQueryOptions::default(),
+        results: &mut results,
+        limit: &mut limit,
+        sum_limit_left: &mut sum_limit_left,
+        elements_scanned: &mut elements_scanned,
+        max_elements_scanned: 1024,
+    };
+
+    let s = format!("{}", args);
+    assert!(s.contains("AggregateSumPathQueryPushArgs"));
+    assert!(s.contains("key:"));
+    assert!(s.contains("left_to_right: true"));
+    assert!(s.contains("limit: Some(5)"));
+    assert!(s.contains("sum_limit: 100"));
+    assert!(s.contains("elements_scanned: 3"));
+    assert!(s.contains("max_elements_scanned: 1024"));
+    assert!(s.contains("0x70726576: 42")); // "prev" in hex
 }
 
 #[test]

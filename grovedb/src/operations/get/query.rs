@@ -2225,4 +2225,120 @@ mod tests {
             None
         ); // because we didn't query for it
     }
+
+    #[test]
+    fn test_query_aggregate_sums() {
+        use grovedb_merk::proofs::query::AggregateSumQuery;
+
+        use crate::{
+            tests::{make_test_sum_tree_grovedb, TEST_LEAF},
+            AggregateSumPathQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_sum_item(5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        let aggregate_sum_query = AggregateSumQuery::new(20, None);
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = db
+            .query_aggregate_sums(&aggregate_sum_path_query, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful query");
+
+        assert_eq!(result.results, vec![(b"a".to_vec(), 7), (b"b".to_vec(), 5)]);
+        assert!(!result.hard_limit_reached);
+    }
+
+    #[test]
+    fn test_query_aggregate_sums_with_options() {
+        use grovedb_merk::proofs::query::AggregateSumQuery;
+
+        use crate::{
+            element::aggregate_sum_query::AggregateSumQueryOptions,
+            tests::{make_test_sum_tree_grovedb, TEST_LEAF},
+            AggregateSumPathQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_item(b"not_a_sum".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"c",
+            Element::new_sum_item(3),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        let aggregate_sum_query = AggregateSumQuery::new(100, None);
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        // With error_if_non_sum_item_found=false, Item "b" is skipped
+        let result = db
+            .query_aggregate_sums_with_options(
+                &aggregate_sum_path_query,
+                AggregateSumQueryOptions {
+                    error_if_non_sum_item_found: false,
+                    ..AggregateSumQueryOptions::default()
+                },
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("expected successful query");
+
+        assert_eq!(result.results, vec![(b"a".to_vec(), 7), (b"c".to_vec(), 3)]);
+        assert!(!result.hard_limit_reached);
+    }
 }
