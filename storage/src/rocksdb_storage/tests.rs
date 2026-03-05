@@ -1340,4 +1340,109 @@ mod storage_management {
         assert!(verify_context.get_root(b"rk").unwrap().unwrap().is_none());
         assert!(verify_context.get_meta(b"mk").unwrap().unwrap().is_none());
     }
+
+    #[test]
+    fn test_wipe_range_deletion_with_many_keys() {
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context([b"many"].as_ref().into(), &tx)
+            .unwrap();
+
+        // Insert many keys across all column families
+        for i in 0u32..100 {
+            let key = format!("key_{:04}", i);
+            let val = format!("val_{}", i);
+            context
+                .put(key.as_bytes(), val.as_bytes(), None, None)
+                .unwrap()
+                .unwrap();
+            context
+                .put_aux(key.as_bytes(), val.as_bytes(), None)
+                .unwrap()
+                .unwrap();
+            context
+                .put_root(key.as_bytes(), val.as_bytes(), None)
+                .unwrap()
+                .unwrap();
+            context
+                .put_meta(key.as_bytes(), val.as_bytes(), None)
+                .unwrap()
+                .unwrap();
+        }
+
+        storage
+            .commit_transaction(tx)
+            .unwrap()
+            .expect("tx commit should succeed");
+
+        storage.wipe().expect("wipe should succeed");
+
+        // Verify all keys are gone
+        let verify_tx = storage.start_transaction();
+        let verify_ctx = storage
+            .get_immediate_storage_context([b"many"].as_ref().into(), &verify_tx)
+            .unwrap();
+
+        for i in 0u32..100 {
+            let key = format!("key_{:04}", i);
+            assert!(
+                verify_ctx.get(key.as_bytes()).unwrap().unwrap().is_none(),
+                "default CF key {key} should be gone after wipe"
+            );
+            assert!(
+                verify_ctx
+                    .get_aux(key.as_bytes())
+                    .unwrap()
+                    .unwrap()
+                    .is_none(),
+                "aux CF key {key} should be gone after wipe"
+            );
+            assert!(
+                verify_ctx
+                    .get_root(key.as_bytes())
+                    .unwrap()
+                    .unwrap()
+                    .is_none(),
+                "roots CF key {key} should be gone after wipe"
+            );
+            assert!(
+                verify_ctx
+                    .get_meta(key.as_bytes())
+                    .unwrap()
+                    .unwrap()
+                    .is_none(),
+                "meta CF key {key} should be gone after wipe"
+            );
+        }
+
+        // Verify DB is still functional after wipe — can insert new data
+        drop(verify_ctx);
+        storage
+            .commit_transaction(verify_tx)
+            .unwrap()
+            .expect("verify tx commit should succeed");
+
+        let tx2 = storage.start_transaction();
+        let ctx2 = storage
+            .get_immediate_storage_context([b"many"].as_ref().into(), &tx2)
+            .unwrap();
+        ctx2.put(b"after_wipe", b"works", None, None)
+            .unwrap()
+            .unwrap();
+        storage
+            .commit_transaction(tx2)
+            .unwrap()
+            .expect("post-wipe tx commit should succeed");
+
+        let tx3 = storage.start_transaction();
+        let ctx3 = storage
+            .get_immediate_storage_context([b"many"].as_ref().into(), &tx3)
+            .unwrap();
+        assert_eq!(
+            ctx3.get(b"after_wipe").unwrap().unwrap().as_deref(),
+            Some(b"works".as_ref()),
+            "DB should be functional after wipe"
+        );
+    }
 }
