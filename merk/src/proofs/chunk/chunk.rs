@@ -303,6 +303,7 @@ pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
     })
 }
 
+/// Tests for chunk verification and height proofs.
 #[cfg(test)]
 pub mod tests {
     use ed::Encode;
