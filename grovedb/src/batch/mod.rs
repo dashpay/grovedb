@@ -870,54 +870,46 @@ impl QualifiedGroveDbOp {
             }
         }
 
-        let inserts = ops
-            .iter()
-            .filter_map(|current_op| match current_op.op {
-                GroveOp::InsertOrReplace { .. } | GroveOp::Replace { .. } => {
-                    Some(current_op.clone())
-                }
-                _ => None,
-            })
-            .collect::<Vec<QualifiedGroveDbOp>>();
-
-        let deletes = ops
-            .iter()
-            .filter_map(|current_op| {
-                if let GroveOp::Delete = current_op.op {
-                    Some(current_op.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<QualifiedGroveDbOp>>();
-
-        let mut insert_ops_below_deleted_ops = vec![];
-
         // No inserts under a deleted path
-        for deleted_op in deletes.iter() {
-            let Some(ref deleted_key) = deleted_op.key else {
-                continue;
-            };
-            let mut deleted_qualified_path = deleted_op.path.clone();
-            deleted_qualified_path.push(deleted_key.clone());
-            let inserts_with_deleted_ops_above = inserts
-                .iter()
-                .filter_map(|inserted_op| {
-                    if deleted_op.path.len() < inserted_op.path.len()
-                        && deleted_qualified_path
-                            .iterator()
-                            .zip(inserted_op.path.iterator())
-                            .all(|(a, b)| a == b)
-                    {
-                        Some(inserted_op.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<QualifiedGroveDbOp>>();
-            if !inserts_with_deleted_ops_above.is_empty() {
-                insert_ops_below_deleted_ops
-                    .push((deleted_op.clone(), inserts_with_deleted_ops_above));
+        // Build a map of deleted_qualified_path -> indices of delete ops
+        let mut deleted_path_to_op_indices: HashMap<KeyInfoPath, Vec<usize>> = HashMap::new();
+        for (idx, op) in ops.iter().enumerate() {
+            if let GroveOp::Delete = op.op {
+                let Some(ref key) = op.key else {
+                    continue;
+                };
+                let mut qualified_path = op.path.clone();
+                qualified_path.push(key.clone());
+                deleted_path_to_op_indices
+                    .entry(qualified_path)
+                    .or_default()
+                    .push(idx);
+            }
+        }
+
+        // For each insert, check if any prefix of its path is a deleted path
+        let mut conflicts: HashMap<KeyInfoPath, Vec<usize>> = HashMap::new();
+        for (idx, op) in ops.iter().enumerate() {
+            match op.op {
+                GroveOp::InsertOrReplace { .. } | GroveOp::Replace { .. } => {}
+                _ => continue,
+            }
+            for prefix_len in 1..=op.path.len() as usize {
+                let prefix = KeyInfoPath(op.path.iterator().take(prefix_len).cloned().collect());
+                if deleted_path_to_op_indices.contains_key(&prefix) {
+                    conflicts.entry(prefix).or_default().push(idx);
+                    break;
+                }
+            }
+        }
+
+        // Build output (clone only conflicting ops)
+        let mut insert_ops_below_deleted_ops = Vec::new();
+        for (deleted_path, insert_indices) in conflicts {
+            let inserts: Vec<QualifiedGroveDbOp> =
+                insert_indices.iter().map(|&i| ops[i].clone()).collect();
+            for &del_idx in &deleted_path_to_op_indices[&deleted_path] {
+                insert_ops_below_deleted_ops.push((ops[del_idx].clone(), inserts.clone()));
             }
         }
 
