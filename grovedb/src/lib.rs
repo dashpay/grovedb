@@ -305,8 +305,8 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
+    /// Starts a visualizer server for the GroveDB instance.
     #[cfg(feature = "grovedbg")]
-    // Start visualizer server for the GroveDB instance
     pub fn start_visualizer<A>(self: &Arc<Self>, addr: A)
     where
         A: ToSocketAddrs + Send + 'static,
