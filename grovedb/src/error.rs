@@ -246,3 +246,9 @@ impl From<grovedb_element::error::ElementError> for Error {
         Error::ElementError(value)
     }
 }
+
+impl From<grovedb_query::error::Error> for Error {
+    fn from(value: grovedb_query::error::Error) -> Self {
+        Error::QueryError(value)
+    }
+}

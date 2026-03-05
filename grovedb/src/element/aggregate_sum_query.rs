@@ -22,9 +22,9 @@ use grovedb_merk::element::decode::ElementDecodeExtensions;
 use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
 #[cfg(feature = "minimal")]
 use grovedb_merk::error::MerkErrorExt;
-use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
 #[cfg(feature = "minimal")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
+use grovedb_merk::proofs::query::AggregateSumQuery;
 #[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
@@ -230,7 +230,17 @@ impl ElementAggregateSumQueryExtensions for Element {
 
         let mut limit = aggregate_sum_query.limit_of_items_to_check;
 
-        let mut sum_limit = aggregate_sum_query.sum_limit as SumValue;
+        let mut sum_limit: SumValue = cost_return_on_error_no_add!(
+            cost,
+            aggregate_sum_query
+                .sum_limit
+                .try_into()
+                .map_err(|_| Error::Overflow("sum_limit exceeds i64::MAX"))
+        );
+
+        if sum_limit <= 0 || limit == Some(0) {
+            return Ok(results).wrap_with_cost(cost);
+        }
 
         if aggregate_sum_query.left_to_right {
             for item in aggregate_sum_query.iter() {
@@ -446,19 +456,26 @@ impl ElementAggregateSumQueryExtensions for Element {
                 .iter_is_valid_for_type(&iter, *limit, Some(*sum_limit_left), left_to_right)
                 .unwrap_add_cost(&mut cost)
             {
+                let value_bytes = cost_return_on_error_no_add!(
+                    cost,
+                    iter.value()
+                        .unwrap_add_cost(&mut cost)
+                        .ok_or(Error::CorruptedData(
+                            "expected iterator value but got None".to_string(),
+                        ))
+                );
                 let element = cost_return_on_error_into_no_add!(
                     cost,
-                    Element::raw_decode(
-                        iter.value()
-                            .unwrap_add_cost(&mut cost)
-                            .expect("if key exists then value should too"),
-                        grove_version
-                    )
+                    Element::raw_decode(value_bytes, grove_version)
                 );
-                let key = iter
-                    .key()
-                    .unwrap_add_cost(&mut cost)
-                    .expect("key should exist");
+                let key = cost_return_on_error_no_add!(
+                    cost,
+                    iter.key()
+                        .unwrap_add_cost(&mut cost)
+                        .ok_or(Error::CorruptedData(
+                            "expected iterator key but got None".to_string(),
+                        ))
+                );
                 let result_with_cost = add_element_function(
                     AggregateSumPathQueryPushArgs {
                         storage,
@@ -533,10 +550,10 @@ impl ElementAggregateSumQueryExtensions for Element {
         ))?;
         results.push((key.to_vec(), value));
         if let Some(limit) = limit {
-            *limit -= 1;
+            *limit = limit.saturating_sub(1);
         }
 
-        *sum_limit_left -= value;
+        *sum_limit_left = sum_limit_left.saturating_sub(value);
 
         Ok(())
     }
@@ -545,7 +562,7 @@ impl ElementAggregateSumQueryExtensions for Element {
 #[cfg(feature = "minimal")]
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
+    use grovedb_merk::proofs::query::AggregateSumQuery;
     use grovedb_merk::proofs::query::QueryItem;
     use grovedb_version::version::GroveVersion;
 
@@ -1511,5 +1528,46 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], (b"c".to_vec(), 3));
+    }
+
+    #[test]
+    fn test_zero_sum_limit_with_key_query_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        // sum_limit = 0 with a single key query should return empty
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys(vec![b"a".to_vec()], 0, None);
+
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = Element::get_aggregate_sum_query(
+            &db.db,
+            &aggregate_sum_path_query,
+            AggregateSumQueryOptions::default(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful get_query");
+
+        assert!(
+            result.is_empty(),
+            "sum_limit=0 should return no results, got: {:?}",
+            result
+        );
     }
 }

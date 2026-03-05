@@ -1,6 +1,5 @@
 //! Merk proofs
 
-pub mod aggregate_sum_query;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod branch;
 #[cfg(feature = "minimal")]

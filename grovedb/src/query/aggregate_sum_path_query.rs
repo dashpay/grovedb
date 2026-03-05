@@ -1,7 +1,7 @@
 use crate::operations::proof::util::hex_to_ascii;
 use crate::Error;
 use bincode::{Decode, Encode};
-use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
+use grovedb_merk::proofs::query::AggregateSumQuery;
 use grovedb_merk::proofs::query::QueryItem;
 use grovedb_version::check_grovedb_v0;
 use grovedb_version::version::GroveVersion;
@@ -118,7 +118,7 @@ impl AggregateSumPathQuery {
 
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::proofs::aggregate_sum_query::AggregateSumQuery;
+    use grovedb_merk::proofs::query::AggregateSumQuery;
     use grovedb_merk::proofs::query::QueryItem;
     use grovedb_version::version::GroveVersion;
 
