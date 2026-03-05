@@ -979,7 +979,12 @@ impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
 
 #[allow(dead_code)] // get_batch_run_mode is defined for future use
 trait TreeCache<G, SR> {
-    fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error>;
+    fn insert(
+        &mut self,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        tree_type: TreeType,
+    ) -> CostResult<(), Error>;
 
     fn get_batch_run_mode(&self) -> BatchRunMode;
 
@@ -1572,16 +1577,15 @@ where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
-    fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error> {
+    fn insert(
+        &mut self,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        tree_type: TreeType,
+    ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        let mut inserted_path = op.path.to_path();
-        let key = cost_return_on_error_no_add!(
-            cost,
-            op.key
-                .as_ref()
-                .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
-        );
+        let mut inserted_path = path.to_path();
         inserted_path.push(key.get_key_clone());
         if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
             let mut merk =
