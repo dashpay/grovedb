@@ -349,19 +349,21 @@ pub(crate) mod utils {
 
         let (chunk_prefix_key, remaining) = global_chunk_id.split_at(chunk_prefix_length);
 
-        let root_key_size_length: usize = 1;
+        let root_key_size_length: usize = 2;
         if remaining.len() < root_key_size_length {
             return Err(Error::CorruptedData(
                 "unable to decode root key size".to_string(),
             ));
         }
-        let (root_key_size, remaining) = remaining.split_at(root_key_size_length);
-        if remaining.len() < root_key_size[0] as usize {
+        let (root_key_size_bytes, remaining) = remaining.split_at(root_key_size_length);
+        let root_key_len =
+            u16::from_be_bytes([root_key_size_bytes[0], root_key_size_bytes[1]]) as usize;
+        if remaining.len() < root_key_len {
             return Err(Error::CorruptedData(
                 "unable to decode root key".to_string(),
             ));
         }
-        let (root_key, remaining) = remaining.split_at(root_key_size[0] as usize);
+        let (root_key, remaining) = remaining.split_at(root_key_len);
         let tree_type_length: usize = 1;
         if remaining.len() < tree_type_length {
             return Err(Error::CorruptedData(
@@ -417,10 +419,10 @@ pub(crate) mod utils {
         res.extend(subtree_prefix);
 
         if let Some(root_key) = root_key_opt {
-            res.push(root_key.len() as u8);
+            res.extend_from_slice(&(root_key.len() as u16).to_be_bytes());
             res.extend(root_key);
         } else {
-            res.push(0u8);
+            res.extend_from_slice(&0u16.to_be_bytes());
         }
 
         res.push(tree_type.discriminant());

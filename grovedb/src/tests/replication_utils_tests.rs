@@ -298,7 +298,7 @@ mod tests {
         let result = decode_global_chunk_id(&data, &app_hash);
         assert!(
             result.is_err(),
-            "32-byte data not matching app_hash should fail (no root key size byte)"
+            "32-byte data not matching app_hash should fail (no root key size bytes)"
         );
     }
 
@@ -306,7 +306,7 @@ mod tests {
     fn decode_global_chunk_id_truncated_root_key_error() {
         let app_hash = [0x00u8; 32];
         let mut data = vec![0xAA; 32]; // prefix
-        data.push(10); // root_key_size = 10
+        data.extend_from_slice(&10u16.to_be_bytes()); // root_key_size = 10
         data.extend_from_slice(&[0x01, 0x02]); // only 2 bytes of root key (need 10)
         let result = decode_global_chunk_id(&data, &app_hash);
         assert!(
@@ -319,8 +319,8 @@ mod tests {
     fn decode_global_chunk_id_missing_tree_type_error() {
         let app_hash = [0x00u8; 32];
         let mut data = vec![0xBBu8; 32]; // prefix
-        data.push(0); // root_key_size = 0 (no root key)
-                      // Missing tree type byte
+        data.extend_from_slice(&0u16.to_be_bytes()); // root_key_size = 0 (no root key)
+                                                     // Missing tree type byte
         let result = decode_global_chunk_id(&data, &app_hash);
         assert!(
             result.is_err(),
