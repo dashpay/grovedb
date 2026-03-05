@@ -561,6 +561,7 @@ mod tests {
                 None,
                 grove_version,
             )
+            .unwrap()
             .expect("should clear subtree");
         assert!(cleared, "clear_subtree should return true on success");
 
@@ -2542,16 +2543,18 @@ mod tests {
         // Clear with check_for_subtrees=true, allow_deleting_subtrees=false,
         // trying_to_clear_with_subtrees_returns_error=true
         use crate::operations::delete::ClearOptions;
-        let result = db.clear_subtree(
-            [TEST_LEAF, b"parent"].as_ref(),
-            Some(ClearOptions {
-                check_for_subtrees: true,
-                allow_deleting_subtrees: false,
-                trying_to_clear_with_subtrees_returns_error: true,
-            }),
-            None,
-            grove_version,
-        );
+        let result = db
+            .clear_subtree(
+                [TEST_LEAF, b"parent"].as_ref(),
+                Some(ClearOptions {
+                    check_for_subtrees: true,
+                    allow_deleting_subtrees: false,
+                    trying_to_clear_with_subtrees_returns_error: true,
+                }),
+                None,
+                grove_version,
+            )
+            .unwrap();
 
         assert!(
             matches!(result, Err(Error::ClearingTreeWithSubtreesNotAllowed(_))),
@@ -2601,6 +2604,7 @@ mod tests {
                 None,
                 grove_version,
             )
+            .unwrap()
             .expect("should not error");
 
         assert!(
@@ -2660,6 +2664,7 @@ mod tests {
                 None,
                 grove_version,
             )
+            .unwrap()
             .expect("should clear subtree with subtree deletion allowed");
 
         assert!(cleared, "should return true on successful clear");

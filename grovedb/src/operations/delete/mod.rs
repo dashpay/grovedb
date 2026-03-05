@@ -164,13 +164,12 @@ impl GroveDb {
         options: Option<ClearOptions>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> Result<bool, Error>
+    ) -> CostResult<bool, Error>
     where
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
         self.clear_subtree_with_costs(path, options, transaction, grove_version)
-            .unwrap()
     }
 
     /// Delete all elements in a specified subtree and get back costs
@@ -1803,6 +1802,7 @@ mod tests {
 
         let root_hash_before_clear = db.root_hash(None, grove_version).unwrap().unwrap();
         db.clear_subtree([TEST_LEAF, b"key1"].as_ref(), None, None, grove_version)
+            .unwrap()
             .expect_err("unable to delete subtree");
 
         let success = db
@@ -1816,6 +1816,7 @@ mod tests {
                 None,
                 grove_version,
             )
+            .unwrap()
             .expect("expected no error");
         assert!(!success);
 
@@ -1830,6 +1831,7 @@ mod tests {
                 None,
                 grove_version,
             )
+            .unwrap()
             .expect("unable to delete subtree");
 
         assert!(success);
