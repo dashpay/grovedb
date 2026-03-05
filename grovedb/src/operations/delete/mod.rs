@@ -588,9 +588,7 @@ impl GroveDb {
                         .iter()
                         .filter_map(|op| match op.op {
                             GroveOp::Delete | GroveOp::DeleteTree(_) => {
-                                // todo: to_path clones (best to figure out how to compare
-                                // without cloning)
-                                if op.path.to_path() == subtree_merk_path_vec {
+                                if op.path.eq_path_vec(&subtree_merk_path_vec) {
                                     Some(op.key.as_ref()?.as_slice())
                                 } else {
                                     None
@@ -619,8 +617,7 @@ impl GroveDb {
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
                     GroveOp::Delete | GroveOp::DeleteTree(_) => false,
-                    // todo: fix for to_path (it clones)
-                    _ => op.path.to_path() == subtree_merk_path_vec,
+                    _ => op.path.eq_path_vec(&subtree_merk_path_vec),
                 });
 
                 let result = if !options.allow_deleting_non_empty_trees && !is_empty {
