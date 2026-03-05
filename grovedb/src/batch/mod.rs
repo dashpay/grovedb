@@ -4687,4 +4687,197 @@ mod tests {
             Err(Error::ReferenceLimit)
         ));
     }
+
+    #[test]
+    fn test_batch_replace_item_with_sum_item_flags_update() {
+        // Exercises the Element::ItemWithSumItem branch in MerkCache's
+        // flags update closure (line ~2136).
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        // Create a sum tree that can hold ItemWithSumItem elements.
+        db.insert(
+            EMPTY_PATH,
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+
+        // Insert an ItemWithSumItem with flags.
+        db.insert(
+            [b"sum_tree".as_ref()].as_ref(),
+            b"key1",
+            Element::new_item_with_sum_item_with_flags(b"hello".to_vec(), 42, Some(b"f1".to_vec())),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item_with_sum_item");
+
+        // Replace via batch with flags update returning true.
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![b"sum_tree".to_vec()],
+            b"key1".to_vec(),
+            Element::new_item_with_sum_item_with_flags(
+                b"world".to_vec(),
+                100,
+                Some(b"f2".to_vec()),
+            ),
+        )];
+
+        db.apply_batch_with_element_flags_update(
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(true),
+            |_flags, removed_key_bytes, removed_value_bytes| {
+                Ok((
+                    StorageRemovedBytes::BasicStorageRemoval(removed_key_bytes),
+                    StorageRemovedBytes::BasicStorageRemoval(removed_value_bytes),
+                ))
+            },
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("batch replace item_with_sum_item");
+
+        // Verify the element was updated.
+        let elem = db
+            .get(
+                [b"sum_tree".as_ref()].as_ref(),
+                b"key1",
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("get replaced element");
+        assert_eq!(
+            elem,
+            Element::new_item_with_sum_item_with_flags(
+                b"world".to_vec(),
+                100,
+                Some(b"f2".to_vec()),
+            )
+        );
+    }
+
+    #[test]
+    fn test_batch_delete_non_merk_tree_cleans_data_storage() {
+        // Exercises the non-Merk delete path collection (line ~3057)
+        // and data storage cleanup (line ~3101).
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        // Insert a CommitmentTree.
+        db.insert(
+            EMPTY_PATH,
+            b"ct",
+            Element::empty_commitment_tree(4),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert commitment tree");
+
+        // Delete it via batch.
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            b"ct".to_vec(),
+            grovedb_merk::tree_type::TreeType::CommitmentTree(4),
+        )];
+
+        db.apply_batch(ops, None, Some(&tx), grove_version)
+            .unwrap()
+            .expect("batch delete non-merk tree");
+
+        // Verify it's gone.
+        assert!(db
+            .get(EMPTY_PATH, b"ct", Some(&tx), grove_version)
+            .unwrap()
+            .is_err());
+    }
+
+    #[test]
+    fn test_batch_delete_mmr_tree_cleans_data_storage() {
+        // Same as above but with MmrTree.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        db.insert(
+            EMPTY_PATH,
+            b"mmr",
+            Element::empty_mmr_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert mmr tree");
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            b"mmr".to_vec(),
+            grovedb_merk::tree_type::TreeType::MmrTree,
+        )];
+
+        db.apply_batch(ops, None, Some(&tx), grove_version)
+            .unwrap()
+            .expect("batch delete mmr tree");
+
+        assert!(db
+            .get(EMPTY_PATH, b"mmr", Some(&tx), grove_version)
+            .unwrap()
+            .is_err());
+    }
+
+    #[test]
+    fn test_partial_batch_delete_non_merk_tree_cleans_data_storage() {
+        // Exercises the non-Merk delete cleanup in
+        // apply_partial_batch_with_element_flags_update (line ~3239, ~3337).
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        // Insert a DenseAppendOnlyFixedSizeTree.
+        db.insert(
+            EMPTY_PATH,
+            b"dense",
+            Element::empty_dense_tree(3),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert dense tree");
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![],
+            b"dense".to_vec(),
+            grovedb_merk::tree_type::TreeType::DenseAppendOnlyFixedSizeTree(3),
+        )];
+
+        db.apply_partial_batch(
+            ops,
+            None,
+            |_cost, _left_over_ops| Ok(vec![]),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("partial batch delete non-merk tree");
+
+        assert!(db
+            .get(EMPTY_PATH, b"dense", Some(&tx), grove_version)
+            .unwrap()
+            .is_err());
+    }
 }

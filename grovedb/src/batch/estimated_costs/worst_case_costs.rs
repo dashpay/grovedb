@@ -435,13 +435,15 @@ mod tests {
     };
     #[rustfmt::skip]
     use grovedb_merk::estimated_costs::worst_case_costs::WorstCaseLayerInformation::MaxElementsNumber;
+    use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
         batch::{
-            estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo,
-            KeyInfoPath, QualifiedGroveDbOp,
+            estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo, GroveOp,
+            KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp,
         },
+        reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,
     };
@@ -787,5 +789,382 @@ mod tests {
             worst_case_cost_result.cost.storage_cost.added_bytes,
             cost.storage_cost.added_bytes
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Tests for previously uncovered GroveOp match arms in worst_case_cost
+    // ---------------------------------------------------------------
+
+    // Approach 1: Tests via estimated_case_operations_for_batch (keyed ops)
+
+    #[test]
+    fn test_refresh_reference_worst_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::refresh_reference_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            None,
+            true,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for refresh reference");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_patch_worst_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::patch_op(
+            vec![vec![7]],
+            b"patch_key".to_vec(),
+            Element::new_item(b"patched_value".to_vec()),
+            5,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for patch");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_delete_worst_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::delete_op(
+            vec![vec![7]],
+            b"del_key".to_vec(),
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for delete");
+        assert!(cost.seek_count > 0);
+    }
+
+    #[test]
+    fn test_delete_tree_worst_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![vec![7]],
+            b"tree_key".to_vec(),
+            TreeType::NormalTree,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for delete tree");
+        assert!(cost.seek_count > 0);
+    }
+
+    // Approach 2: Direct worst_case_cost() tests (keyless/internal ops)
+
+    #[test]
+    fn test_commitment_tree_insert_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::CommitmentTreeInsert {
+            cmx: [1u8; 32],
+            rho: [2u8; 32],
+            payload: vec![0u8; 100],
+        };
+        let key = KeyInfo::KnownKey(b"tree_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for commitment tree insert");
+        assert!(cost.seek_count > 0);
+        assert!(cost.sinsemilla_hash_calls > 0);
+    }
+
+    #[test]
+    fn test_commitment_tree_insert_worst_case_cost_with_propagate() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::CommitmentTreeInsert {
+            cmx: [1u8; 32],
+            rho: [2u8; 32],
+            payload: vec![0u8; 50],
+        };
+        let key = KeyInfo::KnownKey(b"tree_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                true,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for commitment tree insert with propagate");
+        assert!(cost.seek_count > 0);
+        assert!(cost.sinsemilla_hash_calls > 0);
+        // propagate adds additional hash calls for merk propagation
+        assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_mmr_tree_append_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::MmrTreeAppend {
+            value: vec![0u8; 64],
+        };
+        let key = KeyInfo::KnownKey(b"mmr_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for mmr tree append");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+        // MMR append uses blake3, not sinsemilla
+        assert_eq!(cost.sinsemilla_hash_calls, 0);
+    }
+
+    #[test]
+    fn test_bulk_append_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::BulkAppend {
+            value: vec![0u8; 128],
+        };
+        let key = KeyInfo::KnownKey(b"bulk_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for bulk append");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+        assert_eq!(cost.sinsemilla_hash_calls, 0);
+    }
+
+    #[test]
+    fn test_dense_tree_insert_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::DenseTreeInsert {
+            value: vec![0u8; 32],
+        };
+        let key = KeyInfo::KnownKey(b"dense_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for dense tree insert");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+        assert_eq!(cost.sinsemilla_hash_calls, 0);
+    }
+
+    #[test]
+    fn test_replace_non_merk_tree_root_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::ReplaceNonMerkTreeRoot {
+            hash: [3u8; 32],
+            meta: NonMerkTreeMeta::CommitmentTree {
+                total_count: 10,
+                chunk_power: 4,
+            },
+        };
+        let key = KeyInfo::KnownKey(b"nmerk_key".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                true,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for replace non-merk tree root");
+        // With propagation the merk replace tree operation produces seeks
+        assert!(cost.seek_count > 0 || cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_replace_non_merk_tree_root_mmr_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::ReplaceNonMerkTreeRoot {
+            hash: [4u8; 32],
+            meta: NonMerkTreeMeta::MmrTree { mmr_size: 100 },
+        };
+        let key = KeyInfo::KnownKey(b"nmerk_mmr".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(50),
+                true,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for replace non-merk mmr tree root");
+        assert!(cost.seek_count > 0);
+    }
+
+    #[test]
+    fn test_insert_non_merk_tree_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        use grovedb_merk::tree::AggregateData;
+        let op = GroveOp::InsertNonMerkTree {
+            hash: [5u8; 32],
+            root_key: None,
+            flags: None,
+            aggregate_data: AggregateData::NoAggregateData,
+            meta: NonMerkTreeMeta::DenseTree {
+                count: 0,
+                height: 8,
+            },
+        };
+        let key = KeyInfo::KnownKey(b"new_dense".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for insert non-merk tree");
+        assert!(cost.seek_count > 0);
+    }
+
+    #[test]
+    fn test_insert_non_merk_tree_with_flags_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        use grovedb_merk::tree::AggregateData;
+        let op = GroveOp::InsertNonMerkTree {
+            hash: [6u8; 32],
+            root_key: Some(b"rk".to_vec()),
+            flags: Some(b"flag_data".to_vec()),
+            aggregate_data: AggregateData::NoAggregateData,
+            meta: NonMerkTreeMeta::BulkAppendTree {
+                total_count: 0,
+                chunk_power: 3,
+            },
+        };
+        let key = KeyInfo::KnownKey(b"new_bulk".to_vec());
+        let cost = op
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                true,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for insert non-merk tree with flags");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_replace_worst_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::replace_op(
+            vec![vec![7]],
+            b"key1".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for replace");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
     }
 }
