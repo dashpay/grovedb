@@ -547,10 +547,20 @@ where {
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
-    /// Retrieves only SumItem elements that match a path query.
+    /// Retrieves SumItem values using an [`AggregateSumPathQuery`] with
+    /// budget-limited scanning (max elements scanned is capped by
+    /// [`GroveDBQueryLimits::max_aggregate_sum_query_elements_scanned`]).
+    ///
+    /// Returns an [`AggregateSumQueryResult`] containing both the accumulated
+    /// sum and per-item results with detailed error handling options.
+    ///
     /// Uses default options: errors on non-sum items, follows references.
     /// For full control over skip/ignore behavior, use
-    /// `query_aggregate_sums_with_options`.
+    /// [`query_aggregate_sums_with_options`](Self::query_aggregate_sums_with_options).
+    ///
+    /// **See also:** [`query_sums`](Self::query_sums) for a simpler API that
+    /// uses a regular [`PathQuery`] and returns raw `Vec<i64>` values without
+    /// aggregate scanning limits.
     pub fn query_aggregate_sums(
         &self,
         aggregate_sum_path_query: &AggregateSumPathQuery,
@@ -582,8 +592,12 @@ where {
         )
     }
 
-    /// Retrieves SumItem elements matching a path query with full control
-    /// over query behavior via `AggregateSumQueryOptions`.
+    /// Retrieves SumItem values using an [`AggregateSumPathQuery`] with full
+    /// control over query behavior via [`AggregateSumQueryOptions`].
+    ///
+    /// Like [`query_aggregate_sums`](Self::query_aggregate_sums) but lets the
+    /// caller configure error handling for non-sum items and reference
+    /// following.
     pub fn query_aggregate_sums_with_options(
         &self,
         aggregate_sum_path_query: &AggregateSumPathQuery,
@@ -609,7 +623,16 @@ where {
         )
     }
 
-    /// Retrieves only SumItem elements that match a path query
+    /// Retrieves SumItem values that match a regular [`PathQuery`], returning
+    /// a `Vec<i64>` of the raw sum values and the number of skipped elements.
+    ///
+    /// This is a simpler alternative to
+    /// [`query_aggregate_sums`](Self::query_aggregate_sums) — it uses a
+    /// standard [`PathQuery`] (not [`AggregateSumPathQuery`]) and has no
+    /// aggregate scanning budget limit.
+    ///
+    /// References are followed only for `AbsolutePathReference`; the resolved
+    /// element must be a `SumItem`.
     pub fn query_sums(
         &self,
         path_query: &PathQuery,
