@@ -551,6 +551,17 @@ pub(crate) mod utils {
             packed_data[2],
             packed_data[3],
         ]) as usize;
+
+        // Each element requires at least 4 bytes for its length prefix, so
+        // num_elements cannot exceed the remaining data divided by 4.
+        let remaining = packed_data.len() - 4;
+        let max_elements = remaining / 4;
+        if num_elements > max_elements {
+            return Err(Error::CorruptedData(format!(
+                "Declared element count ({num_elements}) exceeds what the input can hold ({max_elements} max)"
+            )));
+        }
+
         let mut nested_bytes = Vec::with_capacity(num_elements);
         let mut index = 4;
 
