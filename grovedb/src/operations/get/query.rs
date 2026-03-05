@@ -2,10 +2,11 @@
 
 #[cfg(feature = "minimal")]
 use crate::element::SumValue;
-use crate::query_result_type::KeySumValuePair;
 use crate::{
     element::{
-        aggregate_sum_query::{AggregateSumQueryOptions, ElementAggregateSumQueryExtensions},
+        aggregate_sum_query::{
+            AggregateSumQueryOptions, AggregateSumQueryResult, ElementAggregateSumQueryExtensions,
+        },
         query::ElementQueryExtensions,
         query_options::QueryOptions,
         BigSumValue, CountValue,
@@ -546,7 +547,10 @@ where {
         Ok((results, skipped)).wrap_with_cost(cost)
     }
 
-    /// Retrieves only SumItem elements that match a path query
+    /// Retrieves only SumItem elements that match a path query.
+    /// Uses default options: errors on non-sum items, follows references.
+    /// For full control over skip/ignore behavior, use
+    /// `query_aggregate_sums_with_options`.
     pub fn query_aggregate_sums(
         &self,
         aggregate_sum_path_query: &AggregateSumPathQuery,
@@ -554,7 +558,7 @@ where {
         error_if_intermediate_path_tree_not_present: bool,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<KeySumValuePair>, Error> {
+    ) -> CostResult<AggregateSumQueryResult, Error> {
         check_grovedb_v0_with_cost!(
             "query_sums",
             grove_version
@@ -568,12 +572,38 @@ where {
             &self.db,
             aggregate_sum_path_query,
             AggregateSumQueryOptions {
-                allow_get_raw: true,
                 allow_cache,
                 error_if_intermediate_path_tree_not_present,
-                skip_items: false,
-                skip_references: false,
+                error_if_non_sum_item_found: true,
+                ignore_references: false,
             },
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// Retrieves SumItem elements matching a path query with full control
+    /// over query behavior via `AggregateSumQueryOptions`.
+    pub fn query_aggregate_sums_with_options(
+        &self,
+        aggregate_sum_path_query: &AggregateSumPathQuery,
+        query_options: AggregateSumQueryOptions,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<AggregateSumQueryResult, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_sums",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_sums
+        );
+
+        Element::get_aggregate_sum_query(
+            &self.db,
+            aggregate_sum_path_query,
+            query_options,
             transaction,
             grove_version,
         )

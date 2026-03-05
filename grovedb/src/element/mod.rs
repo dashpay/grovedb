@@ -3,7 +3,7 @@
 //! Merk API to GroveDB needs.
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub(crate) mod aggregate_sum_query;
+pub mod aggregate_sum_query;
 #[cfg(feature = "minimal")]
 pub mod elements_iterator;
 #[cfg(feature = "minimal")]
