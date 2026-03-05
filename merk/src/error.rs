@@ -203,6 +203,7 @@ impl From<grovedb_query::error::Error> for Error {
             grovedb_query::error::Error::InvalidProofError(s) => Error::InvalidProofError(s),
             grovedb_query::error::Error::KeyOrderingError(s) => Error::KeyOrderingError(s),
             grovedb_query::error::Error::EdError(e) => Error::EdError(e),
+            grovedb_query::error::Error::Overflow(s) => Error::Overflow(s),
         }
     }
 }

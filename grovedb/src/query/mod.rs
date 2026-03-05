@@ -1,5 +1,6 @@
 //! Queries
 
+pub mod aggregate_sum_path_query;
 mod grove_branch_query_result;
 mod grove_trunk_query_result;
 mod path_branch_chunk_query;
@@ -19,7 +20,7 @@ pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+
 use grovedb_merk::proofs::Query;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
@@ -29,12 +30,11 @@ pub use path_branch_chunk_query::PathBranchChunkQuery;
 pub use path_trunk_chunk_query::PathTrunkChunkQuery;
 
 use crate::operations::proof::util::hex_to_ascii;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+
 use crate::query_result_type::PathKey;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+
 use crate::Error;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Path query
@@ -48,7 +48,6 @@ pub struct PathQuery {
     pub query: SizedQuery,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for PathQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PathQuery {{ path: [")?;
@@ -62,7 +61,6 @@ impl fmt::Display for PathQuery {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Holds a query to apply to a tree and an optional limit/offset value.
@@ -76,7 +74,6 @@ pub struct SizedQuery {
     pub offset: Option<u16>,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for SizedQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "SizedQuery {{ query: {}", self.query)?;
@@ -90,7 +87,6 @@ impl fmt::Display for SizedQuery {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl SizedQuery {
     /// New sized query
     pub const fn new(query: Query, limit: Option<u16>, offset: Option<u16>) -> Self {
@@ -120,7 +116,6 @@ impl SizedQuery {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl PathQuery {
     /// New path query
     pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
@@ -586,7 +581,6 @@ impl PathQuery {
     }
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum HasSubquery<'a> {
     NoSubquery,
@@ -594,7 +588,6 @@ pub enum HasSubquery<'a> {
     Conditionally(Cow<'a, IndexMap<QueryItem, SubqueryBranch>>),
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for HasSubquery<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -626,7 +619,7 @@ impl HasSubquery<'_> {
 
 /// This represents a query where the items might be borrowed, it is used to get
 /// subquery information
-#[cfg(any(feature = "minimal", feature = "verify"))]
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SinglePathSubquery<'a> {
     /// Items
@@ -640,7 +633,6 @@ pub struct SinglePathSubquery<'a> {
     pub in_path: Option<Cow<'a, Key>>,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
 impl fmt::Display for SinglePathSubquery<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "InternalCowItemsQuery {{")?;

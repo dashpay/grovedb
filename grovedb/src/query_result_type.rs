@@ -9,6 +9,7 @@ use std::{
 pub use grovedb_merk::proofs::query::{Key, Path, PathKey};
 use grovedb_version::{version::GroveVersion, TryFromVersioned};
 
+use crate::element::SumValue;
 use crate::{
     operations::proof::util::{
         hex_to_ascii, path_hex_to_ascii, ProvedPathKeyOptionalValue, ProvedPathKeyValue,
@@ -485,6 +486,10 @@ impl QueryResultElement {
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for key-element common pattern.
 pub type KeyElementPair = (Key, Element);
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Type alias for key-sum value common pattern.
+pub type KeySumValuePair = (Key, SumValue);
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 /// Type alias for key optional_element common pattern.

@@ -172,6 +172,8 @@ use std::{collections::HashMap, option::Option::None, path::Path};
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQueryResult};
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::Element;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use element::ElementFlags;
@@ -238,8 +240,8 @@ use grovedb_version::version::GroveVersion;
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
-    GroveBranchQueryResult, GroveTrunkQueryResult, LeafInfo, PathBranchChunkQuery, PathQuery,
-    PathTrunkChunkQuery, SizedQuery,
+    aggregate_sum_path_query::AggregateSumPathQuery, GroveBranchQueryResult, GroveTrunkQueryResult,
+    LeafInfo, PathBranchChunkQuery, PathQuery, PathTrunkChunkQuery, SizedQuery,
 };
 #[cfg(feature = "minimal")]
 use reference_path::path_from_reference_path_type;

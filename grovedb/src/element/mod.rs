@@ -2,6 +2,8 @@
 //! Subtrees handling is isolated so basically this module is about adapting
 //! Merk API to GroveDB needs.
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod aggregate_sum_query;
 #[cfg(feature = "minimal")]
 pub mod elements_iterator;
 #[cfg(feature = "minimal")]

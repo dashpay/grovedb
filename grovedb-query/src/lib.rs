@@ -9,6 +9,9 @@
 /// Error types for query operations.
 pub mod error;
 
+/// Aggregate sum query for sum-up-to style queries.
+pub mod aggregate_sum_query;
+
 mod common_path;
 
 mod insert;
@@ -29,6 +32,7 @@ mod query;
 
 mod subquery_branch;
 
+pub use aggregate_sum_query::AggregateSumQuery;
 pub use proof_items::ProofItems;
 pub use proof_status::ProofStatus;
 pub use query::Query;

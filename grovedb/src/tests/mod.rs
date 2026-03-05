@@ -118,6 +118,21 @@ pub fn make_test_grovedb(grove_version: &GroveVersion) -> TempGroveDb {
     }
 }
 
+/// A helper method to create GroveDB with one leaf for a root tree
+pub fn make_test_sum_tree_grovedb(grove_version: &GroveVersion) -> TempGroveDb {
+    // Tree Structure
+    // root
+    //  test_leaf
+    //  another_test_leaf
+    let tmp_dir = TempDir::new().unwrap();
+    let mut db = GroveDb::open(tmp_dir.path()).unwrap();
+    add_test_sum_tree_leaves(&mut db, grove_version);
+    TempGroveDb {
+        _tmp_dir: tmp_dir,
+        grove_db: db,
+    }
+}
+
 fn add_test_leaves(db: &mut GroveDb, grove_version: &GroveVersion) {
     db.insert(
         EMPTY_PATH,
@@ -133,6 +148,29 @@ fn add_test_leaves(db: &mut GroveDb, grove_version: &GroveVersion) {
         EMPTY_PATH,
         ANOTHER_TEST_LEAF,
         Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("successful root tree leaf 2 insert");
+}
+
+fn add_test_sum_tree_leaves(db: &mut GroveDb, grove_version: &GroveVersion) {
+    db.insert(
+        EMPTY_PATH,
+        TEST_LEAF,
+        Element::empty_sum_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("successful root tree leaf insert");
+    db.insert(
+        EMPTY_PATH,
+        ANOTHER_TEST_LEAF,
+        Element::empty_sum_tree(),
         None,
         None,
         grove_version,

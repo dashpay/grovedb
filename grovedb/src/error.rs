@@ -162,6 +162,10 @@ pub enum Error {
     /// Cyclic reference
     CyclicError(&'static str),
 
+    #[error("overflow error: {0}")]
+    /// Overflow error
+    Overflow(&'static str),
+
     #[error("commitment tree error: {0}")]
     /// Commitment tree operation error
     CommitmentTreeError(String),
@@ -240,5 +244,11 @@ impl From<grovedb_version::error::GroveVersionError> for Error {
 impl From<grovedb_element::error::ElementError> for Error {
     fn from(value: grovedb_element::error::ElementError) -> Self {
         Error::ElementError(value)
+    }
+}
+
+impl From<grovedb_query::error::Error> for Error {
+    fn from(value: grovedb_query::error::Error) -> Self {
+        Error::QueryError(value)
     }
 }

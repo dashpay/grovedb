@@ -1,5 +1,26 @@
 //! Query operations
 
+#[cfg(feature = "minimal")]
+use crate::element::SumValue;
+use crate::{
+    element::{
+        aggregate_sum_query::{
+            AggregateSumQueryOptions, AggregateSumQueryResult, ElementAggregateSumQueryExtensions,
+        },
+        query::ElementQueryExtensions,
+        query_options::QueryOptions,
+        BigSumValue, CountValue,
+    },
+    operations::proof::ProveOptions,
+    query_result_type::PathKeyOptionalElementTrio,
+    AggregateSumPathQuery,
+};
+#[cfg(feature = "minimal")]
+use crate::{
+    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
+    reference_path::ReferencePathType,
+    Element, Error, GroveDb, PathQuery, TransactionArg,
+};
 use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
@@ -8,22 +29,6 @@ use grovedb_costs::{
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
-
-#[cfg(feature = "minimal")]
-use crate::element::SumValue;
-use crate::{
-    element::{
-        query::ElementQueryExtensions, query_options::QueryOptions, BigSumValue, CountValue,
-    },
-    operations::proof::ProveOptions,
-    query_result_type::PathKeyOptionalElementTrio,
-};
-#[cfg(feature = "minimal")]
-use crate::{
-    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
-    reference_path::ReferencePathType,
-    Element, Error, GroveDb, PathQuery, TransactionArg,
-};
 
 #[cfg(feature = "minimal")]
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -540,6 +545,68 @@ where {
 
         let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
+    }
+
+    /// Retrieves only SumItem elements that match a path query.
+    /// Uses default options: errors on non-sum items, follows references.
+    /// For full control over skip/ignore behavior, use
+    /// `query_aggregate_sums_with_options`.
+    pub fn query_aggregate_sums(
+        &self,
+        aggregate_sum_path_query: &AggregateSumPathQuery,
+        allow_cache: bool,
+        error_if_intermediate_path_tree_not_present: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<AggregateSumQueryResult, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_sums",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_sums
+        );
+
+        Element::get_aggregate_sum_query(
+            &self.db,
+            aggregate_sum_path_query,
+            AggregateSumQueryOptions {
+                allow_cache,
+                error_if_intermediate_path_tree_not_present,
+                error_if_non_sum_item_found: true,
+                ignore_references: false,
+            },
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// Retrieves SumItem elements matching a path query with full control
+    /// over query behavior via `AggregateSumQueryOptions`.
+    pub fn query_aggregate_sums_with_options(
+        &self,
+        aggregate_sum_path_query: &AggregateSumPathQuery,
+        query_options: AggregateSumQueryOptions,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<AggregateSumQueryResult, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_sums",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_sums
+        );
+
+        Element::get_aggregate_sum_query(
+            &self.db,
+            aggregate_sum_path_query,
+            query_options,
+            transaction,
+            grove_version,
+        )
     }
 
     /// Retrieves only SumItem elements that match a path query
@@ -2157,5 +2224,121 @@ mod tests {
             )),
             None
         ); // because we didn't query for it
+    }
+
+    #[test]
+    fn test_query_aggregate_sums() {
+        use grovedb_merk::proofs::query::AggregateSumQuery;
+
+        use crate::{
+            tests::{make_test_sum_tree_grovedb, TEST_LEAF},
+            AggregateSumPathQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_sum_item(5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        let aggregate_sum_query = AggregateSumQuery::new(20, None);
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = db
+            .query_aggregate_sums(&aggregate_sum_path_query, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful query");
+
+        assert_eq!(result.results, vec![(b"a".to_vec(), 7), (b"b".to_vec(), 5)]);
+        assert!(!result.hard_limit_reached);
+    }
+
+    #[test]
+    fn test_query_aggregate_sums_with_options() {
+        use grovedb_merk::proofs::query::AggregateSumQuery;
+
+        use crate::{
+            element::aggregate_sum_query::AggregateSumQueryOptions,
+            tests::{make_test_sum_tree_grovedb, TEST_LEAF},
+            AggregateSumPathQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_item(b"not_a_sum".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"c",
+            Element::new_sum_item(3),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        let aggregate_sum_query = AggregateSumQuery::new(100, None);
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        // With error_if_non_sum_item_found=false, Item "b" is skipped
+        let result = db
+            .query_aggregate_sums_with_options(
+                &aggregate_sum_path_query,
+                AggregateSumQueryOptions {
+                    error_if_non_sum_item_found: false,
+                    ..AggregateSumQueryOptions::default()
+                },
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("expected successful query");
+
+        assert_eq!(result.results, vec![(b"a".to_vec(), 7), (b"c".to_vec(), 3)]);
+        assert!(!result.hard_limit_reached);
     }
 }
