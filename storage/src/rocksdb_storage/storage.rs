@@ -440,15 +440,18 @@ impl RocksDbStorage {
         }
     }
 
-    /// Destroys the OptimisticTransactionDB and drops instance
+    /// Clears all data from the database using range deletion on each
+    /// column family. Uses a single range tombstone per CF instead of
+    /// iterating and deleting every key individually.
     pub fn wipe(&self) -> Result<(), Error> {
-        // TODO: fix this
-        // very inefficient way of doing this, time complexity is O(n)
-        // we can do O(1)
-        self.wipe_column_family(DEFAULT_COLUMN_FAMILY_NAME)?;
-        self.wipe_column_family(ROOTS_CF_NAME)?;
-        self.wipe_column_family(AUX_CF_NAME)?;
-        self.wipe_column_family(META_CF_NAME)?;
+        for cf_name in [
+            DEFAULT_COLUMN_FAMILY_NAME,
+            ROOTS_CF_NAME,
+            AUX_CF_NAME,
+            META_CF_NAME,
+        ] {
+            self.wipe_column_family(cf_name)?;
+        }
         Ok(())
     }
 
@@ -461,11 +464,24 @@ impl RocksDbStorage {
             ))?;
         let mut iter = self.db.raw_iterator_cf(&cf_handle);
         iter.seek_to_first();
-        while iter.valid() {
-            let key = iter.key().expect("should have key").to_vec();
-            self.db.delete_cf(&cf_handle, key)?;
-            iter.next()
-        }
+        let Some(first_key) = iter.key().map(|k| k.to_vec()) else {
+            return Ok(()); // CF is already empty
+        };
+        iter.seek_to_last();
+        let Some(last_key) = iter.key() else {
+            return Ok(());
+        };
+        // delete_range_cf is [from, to) exclusive — extend last_key by a zero byte
+        // to ensure it's included in the range.
+        let mut upper = last_key.to_vec();
+        upper.push(0);
+        self.db
+            .delete_range_cf(&cf_handle, first_key, upper)
+            .map_err(|e| {
+                Error::StorageError(format!(
+                    "wipe_column_family({column_family_name}) delete_range_cf failed: {e}"
+                ))
+            })?;
         Ok(())
     }
 }
