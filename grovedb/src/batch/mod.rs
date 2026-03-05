@@ -1199,8 +1199,8 @@ where
         if let Some(referenced_element) = referenced_element {
             let element = cost_return_on_error_no_add!(
                 cost,
-                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|_| {
-                    Error::CorruptedData(String::from("unable to deserialize element"))
+                Element::deserialize(referenced_element.as_slice(), grove_version).map_err(|e| {
+                    Error::CorruptedData(format!("unable to deserialize element: {e}"))
                 })
             );
 
@@ -1601,7 +1601,7 @@ where
 
         merk.set_base_root_key(root_key)
             .add_cost(cost)
-            .map_err(|_| Error::InternalError("unable to set base root key".to_string()))
+            .map_err(|e| Error::InternalError(format!("unable to set base root key: {e}")))
     }
 
     fn execute_ops_on_path(
@@ -1801,8 +1801,8 @@ where
                         );
                         cost_return_on_error_no_add!(
                             cost,
-                            Element::deserialize(value.as_slice(), grove_version).map_err(|_| {
-                                Error::CorruptedData(String::from("unable to deserialize element"))
+                            Element::deserialize(value.as_slice(), grove_version).map_err(|e| {
+                                Error::CorruptedData(format!("unable to deserialize element: {e}"))
                             })
                         )
                     };
@@ -2930,8 +2930,10 @@ impl GroveDb {
                         Some(&Element::value_defined_cost_for_serialized_value),
                         grove_version,
                     )
-                    .map_err(|_| {
-                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot open a subtree with given root key: {e}"
+                        ))
                     })
                     .add_cost(cost)
                 } else {
@@ -2955,7 +2957,7 @@ impl GroveDb {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
-            .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+            .map_err(|e| Error::CorruptedData(format!("cannot open the root subtree: {e}")))
             .add_cost(cost)
         }
     }
