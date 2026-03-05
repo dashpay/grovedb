@@ -5766,4 +5766,153 @@ mod tests {
             "right-to-left with limit=3: d_ref + c_item (b_tree empty consumes limit)"
         );
     }
+
+    #[test]
+    fn verify_no_underflow_when_limit_zero_and_empty_subtree() {
+        // Regression test for H4: u16 limit underflow in proof verification.
+        //
+        // When `decrease_limit_on_empty_sub_query_result` is true and the
+        // limit reaches 0 after processing one empty subtree, encountering
+        // another empty subtree must NOT wrap `0u16 - 1` to 65535.
+        //
+        // Setup: create multiple empty subtrees under TEST_LEAF so that
+        // with limit=1, the first empty subtree decrements limit to 0
+        // and the second one would have caused underflow before the fix.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert three empty subtrees under TEST_LEAF.
+        // With limit=1 and decrease_limit_on_empty=true, the first empty
+        // subtree consumes the limit (1->0). Before the fix, the second
+        // empty subtree would attempt 0u16 - 1, causing underflow.
+        for key in [b"empty_1".as_slice(), b"empty_2", b"empty_3"] {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                key,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert empty subtree");
+        }
+
+        let mut inner = Query::new();
+        inner.insert_all();
+        let mut outer = Query::new();
+        outer.insert_all();
+        outer.set_subquery(inner);
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            SizedQuery::new(outer, Some(1), None),
+        );
+
+        let options = ProveOptions {
+            decrease_limit_on_empty_sub_query_result: true,
+        };
+
+        // Generate proof with the same limit and options
+        let proof_bytes = db
+            .prove_query(&path_query, Some(options), grove_version)
+            .unwrap()
+            .expect("should prove with limit=1 and empty subtrees");
+
+        // Before the fix, this verification would panic in debug mode
+        // (attempt to subtract with overflow) or silently wrap limit_left
+        // from 0 to 65535 in release mode, accepting oversized result sets.
+        let verify_result = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        );
+
+        assert!(
+            verify_result.is_ok(),
+            "verification should not panic or error on limit underflow: {:?}",
+            verify_result.err()
+        );
+
+        let (root_hash, results) = verify_result.unwrap();
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        // With limit=1 and decrease_limit_on_empty=true, only one empty
+        // subtree should consume the limit, yielding 0 actual results
+        // (since empty subtrees produce no result items).
+        assert!(
+            results.len() <= 1,
+            "with limit=1, should have at most 1 result, got {}",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn verify_v1_no_underflow_when_limit_zero_and_empty_subtree() {
+        // Same regression test as above but for V1 proof path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        for key in [b"empty_v1_1".as_slice(), b"empty_v1_2", b"empty_v1_3"] {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                key,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert empty subtree");
+        }
+
+        let mut inner = Query::new();
+        inner.insert_all();
+        let mut outer = Query::new();
+        outer.insert_all();
+        outer.set_subquery(inner);
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            SizedQuery::new(outer, Some(1), None),
+        );
+
+        let options = ProveOptions {
+            decrease_limit_on_empty_sub_query_result: true,
+        };
+
+        let proof_bytes = db
+            .prove_query_v1(&path_query, Some(options), grove_version)
+            .unwrap()
+            .expect("should prove v1 with limit=1 and empty subtrees");
+
+        let verify_result = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        );
+
+        assert!(
+            verify_result.is_ok(),
+            "v1 verification should not panic or error on limit underflow: {:?}",
+            verify_result.err()
+        );
+
+        let (root_hash, results) = verify_result.unwrap();
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert!(
+            results.len() <= 1,
+            "v1: with limit=1, should have at most 1 result, got {}",
+            results.len()
+        );
+    }
 }
