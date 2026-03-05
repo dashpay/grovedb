@@ -10,6 +10,7 @@
 - [Die Speicherschicht](storage-layer.md)
 - [Das Beweissystem](proof-system.md)
 - [Das Abfragesystem](query-system.md)
+- [Aggregierte Summenabfragen](aggregate-sum-queries.md)
 - [Stapeloperationen](batch-operations.md)
 - [Kostenerfassung](cost-tracking.md)
 - [Der MMR-Baum](mmr-tree.md)

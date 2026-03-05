@@ -10,6 +10,7 @@
 - [Уровень хранения](storage-layer.md)
 - [Система доказательств](proof-system.md)
 - [Система запросов](query-system.md)
+- [Агрегатные запросы сумм](aggregate-sum-queries.md)
 - [Пакетные операции](batch-operations.md)
 - [Отслеживание затрат](cost-tracking.md)
 - [MMR-дерево](mmr-tree.md)

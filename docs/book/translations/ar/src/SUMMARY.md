@@ -10,6 +10,7 @@
 - [طبقة التخزين](storage-layer.md)
 - [نظام البراهين](proof-system.md)
 - [نظام الاستعلامات](query-system.md)
+- [استعلامات المجموع التجميعي](aggregate-sum-queries.md)
 - [العمليات الدفعية](batch-operations.md)
 - [تتبع التكاليف](cost-tracking.md)
 - [شجرة MMR](mmr-tree.md)

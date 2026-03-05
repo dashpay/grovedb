@@ -10,6 +10,7 @@
 - [Lapisan Penyimpanan](storage-layer.md)
 - [Sistem Proof](proof-system.md)
 - [Sistem Query](query-system.md)
+- [Query Jumlah Agregat](aggregate-sum-queries.md)
 - [Operasi Batch](batch-operations.md)
 - [Pelacakan Biaya](cost-tracking.md)
 - [MMR Tree](mmr-tree.md)

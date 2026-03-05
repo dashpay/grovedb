@@ -10,6 +10,7 @@
 - [Vrstva uloziste](storage-layer.md)
 - [System dukazu](proof-system.md)
 - [System dotazu](query-system.md)
+- [Agregatni soucetove dotazy](aggregate-sum-queries.md)
 - [Davkove operace](batch-operations.md)
 - [Sledovani nakladu](cost-tracking.md)
 - [Strom MMR](mmr-tree.md)

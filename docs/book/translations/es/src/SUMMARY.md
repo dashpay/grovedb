@@ -10,6 +10,7 @@
 - [La Capa de Almacenamiento](storage-layer.md)
 - [El Sistema de Pruebas](proof-system.md)
 - [El Sistema de Consultas](query-system.md)
+- [Consultas de Suma Agregada](aggregate-sum-queries.md)
 - [Operaciones por Lotes](batch-operations.md)
 - [Seguimiento de Costos](cost-tracking.md)
 - [El Árbol MMR](mmr-tree.md)

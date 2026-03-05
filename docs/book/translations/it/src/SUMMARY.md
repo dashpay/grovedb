@@ -10,6 +10,7 @@
 - [Il livello di archiviazione](storage-layer.md)
 - [Il sistema di prove](proof-system.md)
 - [Il sistema di query](query-system.md)
+- [Query di somma aggregata](aggregate-sum-queries.md)
 - [Operazioni batch](batch-operations.md)
 - [Tracciamento dei costi](cost-tracking.md)
 - [L'albero MMR](mmr-tree.md)

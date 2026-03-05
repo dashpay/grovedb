@@ -10,6 +10,7 @@
 - [A Camada de Armazenamento](storage-layer.md)
 - [O Sistema de Provas](proof-system.md)
 - [O Sistema de Consultas](query-system.md)
+- [Consultas de Soma Agregada](aggregate-sum-queries.md)
 - [Operações em Lote](batch-operations.md)
 - [Rastreamento de Custos](cost-tracking.md)
 - [A Árvore MMR](mmr-tree.md)

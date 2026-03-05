@@ -10,6 +10,7 @@
 - [Tầng lưu trữ](storage-layer.md)
 - [Hệ thống chứng minh](proof-system.md)
 - [Hệ thống truy vấn](query-system.md)
+- [Truy vấn Tổng hợp Sum](aggregate-sum-queries.md)
 - [Thao tác theo lô](batch-operations.md)
 - [Theo dõi chi phí](cost-tracking.md)
 - [Cây MMR](mmr-tree.md)

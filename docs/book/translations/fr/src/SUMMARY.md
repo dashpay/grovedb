@@ -10,6 +10,7 @@
 - [La couche de stockage](storage-layer.md)
 - [Le système de preuves](proof-system.md)
 - [Le système de requêtes](query-system.md)
+- [Les requêtes de somme agrégée](aggregate-sum-queries.md)
 - [Les opérations par lots](batch-operations.md)
 - [Le suivi des coûts](cost-tracking.md)
 - [L'arbre MMR](mmr-tree.md)
