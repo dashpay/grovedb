@@ -4787,6 +4787,20 @@ mod tests {
         .unwrap()
         .expect("insert commitment tree");
 
+        // Write actual data to populate data storage (frontier + bulk data).
+        // Payload must be ciphertext_payload_size::<DashMemo>() = 32+104+80 = 216 bytes.
+        db.commitment_tree_insert_raw(
+            EMPTY_PATH,
+            b"ct",
+            [1u8; 32],
+            [2u8; 32],
+            vec![0u8; 216],
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert commitment tree data");
+
         // Delete it via batch.
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
@@ -4798,16 +4812,55 @@ mod tests {
             .unwrap()
             .expect("batch delete non-merk tree");
 
-        // Verify it's gone.
+        // Verify element is gone.
         assert!(db
             .get(EMPTY_PATH, b"ct", Some(&tx), grove_version)
             .unwrap()
             .is_err());
+
+        // Recreate the tree and insert fresh data. CommitmentTree::open
+        // validates that the stored frontier's tree_size matches total_count.
+        // If cleanup failed, stale frontier (tree_size=1) would conflict with
+        // total_count=0 and cause an error — proving data-storage cleanup.
+        db.insert(
+            EMPTY_PATH,
+            b"ct",
+            Element::empty_commitment_tree(4),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("recreate commitment tree");
+
+        db.commitment_tree_insert_raw(
+            EMPTY_PATH,
+            b"ct",
+            [3u8; 32],
+            [4u8; 32],
+            vec![0u8; 216],
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert into recreated commitment tree");
+
+        // Verify the recreated tree has exactly 1 note (fresh start).
+        let elem = db
+            .get(EMPTY_PATH, b"ct", Some(&tx), grove_version)
+            .unwrap()
+            .expect("get recreated ct");
+        match elem {
+            Element::CommitmentTree(count, _, _) => {
+                assert_eq!(count, 1, "recreated tree should have count 1");
+            }
+            _ => panic!("expected CommitmentTree element"),
+        }
     }
 
     #[test]
     fn test_batch_delete_mmr_tree_cleans_data_storage() {
-        // Same as above but with MmrTree.
+        // Exercises non-Merk data-storage cleanup for MmrTree.
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
         let tx = db.start_transaction();
@@ -4823,6 +4876,13 @@ mod tests {
         .unwrap()
         .expect("insert mmr tree");
 
+        // Populate data storage with MMR nodes.
+        for i in 0..3u8 {
+            db.mmr_tree_append(EMPTY_PATH, b"mmr", vec![i], Some(&tx), grove_version)
+                .unwrap()
+                .expect("append mmr value");
+        }
+
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"mmr".to_vec(),
@@ -4833,10 +4893,39 @@ mod tests {
             .unwrap()
             .expect("batch delete mmr tree");
 
+        // Verify element is gone.
         assert!(db
             .get(EMPTY_PATH, b"mmr", Some(&tx), grove_version)
             .unwrap()
             .is_err());
+
+        // Recreate and verify fresh start.
+        db.insert(
+            EMPTY_PATH,
+            b"mmr",
+            Element::empty_mmr_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("recreate mmr tree");
+
+        db.mmr_tree_append(
+            EMPTY_PATH,
+            b"mmr",
+            b"fresh".to_vec(),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("append to recreated mmr");
+
+        let count = db
+            .mmr_tree_leaf_count(EMPTY_PATH, b"mmr", Some(&tx), grove_version)
+            .unwrap()
+            .expect("leaf count");
+        assert_eq!(count, 1, "recreated MMR should have 1 leaf");
     }
 
     #[test]
@@ -4859,6 +4948,13 @@ mod tests {
         .unwrap()
         .expect("insert dense tree");
 
+        // Populate data storage with dense tree values.
+        for i in 0..3u8 {
+            db.dense_tree_insert(EMPTY_PATH, b"dense", vec![i; 32], Some(&tx), grove_version)
+                .unwrap()
+                .expect("insert dense tree value");
+        }
+
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"dense".to_vec(),
@@ -4875,9 +4971,43 @@ mod tests {
         .unwrap()
         .expect("partial batch delete non-merk tree");
 
+        // Verify element is gone.
         assert!(db
             .get(EMPTY_PATH, b"dense", Some(&tx), grove_version)
             .unwrap()
             .is_err());
+
+        // Recreate and verify fresh start.
+        db.insert(
+            EMPTY_PATH,
+            b"dense",
+            Element::empty_dense_tree(3),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("recreate dense tree");
+
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            vec![99u8; 32],
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert into recreated dense tree");
+
+        let elem = db
+            .get(EMPTY_PATH, b"dense", Some(&tx), grove_version)
+            .unwrap()
+            .expect("get recreated dense tree");
+        match elem {
+            Element::DenseAppendOnlyFixedSizeTree(count, _, _) => {
+                assert_eq!(count, 1, "recreated dense tree should have count 1");
+            }
+            _ => panic!("expected DenseAppendOnlyFixedSizeTree element"),
+        }
     }
 }
