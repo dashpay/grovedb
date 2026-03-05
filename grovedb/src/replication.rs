@@ -476,8 +476,9 @@ pub(crate) mod utils {
     /// vector.
     ///
     /// The encoding format is as follows:
-    /// 1. The first byte stores the number of elements.
-    /// 2. Each element is prefixed with its length as a 2-byte (`u16`) value in
+    /// 1. The first four bytes store the number of elements as a `u32` in
+    ///    big-endian format.
+    /// 2. Each element is prefixed with its length as a 4-byte (`u32`) value in
     ///    big-endian format.
     /// 3. The actual byte sequence of the element is then appended.
     ///
@@ -493,8 +494,8 @@ pub(crate) mod utils {
     pub fn pack_nested_bytes(nested_bytes: Vec<Vec<u8>>) -> Vec<u8> {
         let mut packed_data = Vec::new();
 
-        // Store the number of elements (2 bytes)
-        packed_data.extend_from_slice(&(nested_bytes.len() as u16).to_be_bytes());
+        // Store the number of elements (4 bytes)
+        packed_data.extend_from_slice(&(nested_bytes.len() as u32).to_be_bytes());
 
         for bytes in nested_bytes {
             // Store length as 4 bytes (big-endian)
@@ -514,8 +515,9 @@ pub(crate) mod utils {
     /// representation.
     ///
     /// # Encoding Format:
-    /// - The first two bytes represents the number of nested byte arrays.
-    /// - Each nested array is prefixed with a **2-byte (u16) length** in
+    /// - The first four bytes represent the number of nested byte arrays
+    ///   (u32, big-endian).
+    /// - Each nested array is prefixed with a **4-byte (u32) length** in
     ///   big-endian format.
     /// - The byte sequence of each nested array follows.
     ///
@@ -536,14 +538,21 @@ pub(crate) mod utils {
     /// - The number of expected chunks does not match the actual data length.
     /// - The data is truncated or malformed.
     pub fn unpack_nested_bytes(packed_data: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
-        if packed_data.is_empty() {
-            return Err(Error::CorruptedData("Input data is empty".to_string()));
+        if packed_data.len() < 4 {
+            return Err(Error::CorruptedData(
+                "Input data is too short to contain element count".to_string(),
+            ));
         }
 
-        // Read num_elements as u16 (big-endian)
-        let num_elements = u16::from_be_bytes([packed_data[0], packed_data[1]]) as usize;
+        // Read num_elements as u32 (big-endian)
+        let num_elements = u32::from_be_bytes([
+            packed_data[0],
+            packed_data[1],
+            packed_data[2],
+            packed_data[3],
+        ]) as usize;
         let mut nested_bytes = Vec::with_capacity(num_elements);
-        let mut index = 2;
+        let mut index = 4;
 
         for i in 0..num_elements {
             // Ensure there is enough data to read the 4-byte length
