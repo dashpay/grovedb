@@ -571,6 +571,8 @@ where {
                 allow_get_raw: true,
                 allow_cache,
                 error_if_intermediate_path_tree_not_present,
+                skip_items: false,
+                skip_references: false,
             },
             transaction,
             grove_version,

@@ -8,6 +8,20 @@ pub struct GroveDBVersions {
     pub aggregate_sum_path_query_methods: GroveDBAggregateSumPathQueryMethodVersions,
     pub path_query_methods: GroveDBPathQueryMethodVersions,
     pub replication: GroveDBReplicationVersions,
+    pub query_limits: GroveDBQueryLimits,
+}
+
+#[derive(Clone, Debug)]
+pub struct GroveDBQueryLimits {
+    pub max_aggregate_sum_query_elements_scanned: u16,
+}
+
+impl Default for GroveDBQueryLimits {
+    fn default() -> Self {
+        Self {
+            max_aggregate_sum_query_elements_scanned: 1024,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]

@@ -6,7 +6,7 @@ use crate::version::{
         GroveDBOperationsDeleteVersions, GroveDBOperationsGetVersions,
         GroveDBOperationsInsertVersions, GroveDBOperationsProofVersions,
         GroveDBOperationsQueryVersions, GroveDBOperationsVersions,
-        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions,
+        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
     merk_versions::{MerkAverageCaseCostsVersions, MerkVersions},
@@ -195,6 +195,9 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             fetch_chunk: 0,
             start_snapshot_syncing: 0,
             apply_chunk: 0,
+        },
+        query_limits: GroveDBQueryLimits {
+            max_aggregate_sum_query_elements_scanned: 1024,
         },
     },
     merk_versions: MerkVersions {
