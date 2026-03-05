@@ -117,32 +117,34 @@ where
         let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> = BTreeMap::new();
 
         for op in ops.into_iter() {
+            let QualifiedGroveDbOp {
+                path: op_path,
+                key: op_key,
+                op: grove_op,
+            } = op;
+
             // Keyless ops (append-only tree ops) are handled by preprocessing.
             // In estimated-cost paths they have no cost model yet — skip.
-            let key = match op.key {
+            let key = match op_key {
                 Some(k) => k,
                 None => continue,
             };
 
-            let mut path = op.path.clone();
-            path.push(key.clone());
-            ops_by_qualified_paths.insert(path.to_path_consume(), op.op.clone());
+            // Build qualified path (path + key) for reference lookups
+            let mut qualified_path = op_path.clone();
+            qualified_path.push(key.clone());
+            ops_by_qualified_paths.insert(qualified_path.to_path_consume(), grove_op.clone());
+
             let op_cost = OperationCost::default();
-            let op_result = match &op.op {
+            let op_result = match &grove_op {
                 GroveOp::InsertOnly { element }
                 | GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
                 | GroveOp::Patch { element, .. } => {
                     if let Some(tree_type) = element.tree_type() {
-                        // Reconstruct op with key for insert call
-                        let keyed_op = QualifiedGroveDbOp {
-                            path: op.path.clone(),
-                            key: Some(key.clone()),
-                            op: op.op.clone(),
-                        };
                         cost_return_on_error!(
                             &mut cost,
-                            merk_tree_cache.insert(&keyed_op, tree_type)
+                            merk_tree_cache.insert(&op_path, &key, tree_type)
                         );
                     }
                     Ok(())
@@ -170,26 +172,17 @@ where
                 return Err(e).wrap_with_cost(op_cost);
             }
 
-            let level = op.path.len();
-            if let Some(ops_on_level) = ops_by_level_paths.get_mut(level) {
-                if let Some(ops_on_path) = ops_on_level.get_mut(&op.path) {
-                    ops_on_path.insert(key, op.op);
-                } else {
-                    let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
-                    ops_on_path.insert(key, op.op);
-                    ops_on_level.insert(op.path.clone(), ops_on_path);
-                }
-            } else {
-                let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
-                ops_on_path.insert(key, op.op);
-                let mut ops_on_level: BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>> =
-                    BTreeMap::new();
-                ops_on_level.insert(op.path, ops_on_path);
-                ops_by_level_paths.insert(level, ops_on_level);
+            let level = op_path.len();
+            let ops_on_level = ops_by_level_paths.entry(level).or_insert_with(|| {
                 if current_last_level < level {
                     current_last_level = level;
                 }
-            }
+                BTreeMap::new()
+            });
+            ops_on_level
+                .entry(op_path)
+                .or_default()
+                .insert(key, grove_op);
         }
 
         Ok(BatchStructure {

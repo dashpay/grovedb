@@ -25,8 +25,7 @@ use crate::Element;
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
-        QualifiedGroveDbOp, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath, TreeCache,
     },
     Error, GroveDb,
 };
@@ -312,16 +311,15 @@ impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
 
 #[cfg(feature = "minimal")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
-    fn insert(&mut self, op: &QualifiedGroveDbOp, tree_type: TreeType) -> CostResult<(), Error> {
+    fn insert(
+        &mut self,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        tree_type: TreeType,
+    ) -> CostResult<(), Error> {
         let mut average_case_cost = OperationCost::default();
-        let mut inserted_path = op.path.clone();
-        let key = cost_return_on_error_no_add!(
-            average_case_cost,
-            op.key
-                .clone()
-                .ok_or(Error::InvalidBatchOperation("insert op is missing a key"))
-        );
-        inserted_path.push(key);
+        let mut inserted_path = path.clone();
+        inserted_path.push(key.clone());
         // There is no need to pay for getting a merk, because we know the merk to be
         // empty at this point.
         // There is however a hash call that creates the prefix
