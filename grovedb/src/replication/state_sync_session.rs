@@ -227,16 +227,29 @@ impl<'db> MultiStateSyncSession<'db> {
         // SAFETY: the struct isn't used anymore and no storage contexts would access
         // transaction
         let session = unsafe { Pin::into_inner_unchecked(self) };
-        session.db.commit_transaction(session.transaction).unwrap()
+        session
+            .db
+            .commit_transaction(session.transaction)
+            .value
+            .map_err(|e| Error::InternalError(format!("failed to commit sync transaction: {e}")))?;
+        Ok(())
     }
 
     // SAFETY: This is unsafe as it requires `self.current_prefixes` to be empty
+    // so no storage contexts hold references to the transaction being replaced.
     unsafe fn set_new_transaction(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
     ) -> Result<(), Error> {
+        debug_assert!(
+            self.current_prefixes.is_empty(),
+            "current_prefixes must be empty before replacing transaction"
+        );
         let this = unsafe { Pin::as_mut(self).get_unchecked_mut() };
         let old_tx = mem::replace(&mut this.transaction, this.db.start_transaction());
-        self.db.commit_transaction(old_tx).unwrap()
+        self.db.commit_transaction(old_tx).value.map_err(|e| {
+            Error::InternalError(format!("failed to commit old transaction during sync: {e}"))
+        })?;
+        Ok(())
     }
 
     /// Adds synchronization information for a subtree into the current
@@ -317,30 +330,30 @@ impl<'db> MultiStateSyncSession<'db> {
     fn current_prefixes(
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeMap<SubtreePrefix, SubtreeStateSyncInfo<'db>> {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaction` so it will be safe to modify them
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.current_prefixes
     }
 
     fn processed_prefixes(
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut BTreeSet<SubtreePrefix> {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaction` so it will be safe to modify them
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.processed_prefixes
     }
 
     fn num_processed_subtrees_in_batch(self: Pin<&mut MultiStateSyncSession<'db>>) -> &mut usize {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaction` so it will be safe to modify them
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.num_processed_subtrees_in_batch
     }
 
     fn pending_discovered_subtrees(
         self: Pin<&mut MultiStateSyncSession<'db>>,
     ) -> &mut Option<SubtreesMetadata> {
-        // SAFETY: no memory-sensitive assumptions are made about fields except the
-        // `transaction` so it will be safe to modify them
+        // SAFETY: we only access a single field and do not move the struct;
+        // the pin invariant only protects `transaction` from being moved.
         &mut unsafe { self.get_unchecked_mut() }.pending_discovered_subtrees
     }
 
