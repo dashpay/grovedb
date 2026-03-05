@@ -806,13 +806,9 @@ impl QualifiedGroveDbOp {
             .map(|op| (op.clone(), 1))
             .collect();
 
-        let ops_len = ops.len();
         // operations should not have any duplicates
         let mut repeated_ops = internal_only_ops;
         for (i, op) in ops.iter().enumerate() {
-            if i == ops_len {
-                continue;
-            } // Don't do last one
             let count = ops
                 .split_at(i + 1)
                 .1
@@ -829,9 +825,6 @@ impl QualifiedGroveDbOp {
         // No double insert or delete of same key in same path.
         // Keyless ops (append-only tree ops) can't conflict — skip them.
         for (i, op) in ops.iter().enumerate() {
-            if i == ops_len {
-                continue;
-            } // Don't do last one
             if op.key.is_none() {
                 continue;
             } // Keyless ops can't conflict
