@@ -213,13 +213,19 @@ impl PathQuery {
             }
             path_query
                 .to_subquery_branch_with_offset_start_index(next_index)
-                .map(|unsized_path_query| {
+                .and_then(|unsized_path_query| {
                     if unsized_path_query.subquery_path.is_none() {
-                        queries_for_common_path_this_level
-                            .push(*unsized_path_query.subquery.unwrap());
+                        queries_for_common_path_this_level.push(
+                            *unsized_path_query
+                                .subquery
+                                .ok_or(Error::CorruptedCodeExecution(
+                                    "subquery must exist when subquery_path is none in merge",
+                                ))?,
+                        );
                     } else {
                         queries_for_common_path_sub_level.push(unsized_path_query);
                     }
+                    Ok(())
                 })
         })?;
 
