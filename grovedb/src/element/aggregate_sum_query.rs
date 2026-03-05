@@ -1266,4 +1266,250 @@ mod tests {
         assert!(s.contains("allow_cache: false"));
         assert!(s.contains("error_if_intermediate_path_tree_not_present: false"));
     }
+
+    #[test]
+    fn test_key_not_found_returns_empty() {
+        // Exercises line 417: Err(Error::PathKeyNotFound(_)) => Ok(())
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        // Query for a key that doesn't exist
+        let aggregate_sum_query = AggregateSumQuery::new_single_key(b"nonexistent".to_vec(), 100);
+
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = Element::get_aggregate_sum_query(
+            &db.db,
+            &aggregate_sum_path_query,
+            AggregateSumQueryOptions::default(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful get_query");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_non_sum_item_in_sum_tree_errors() {
+        // Exercises line 305-309: aggregate_sum_path_query_push rejects non-SumItem elements
+        // and line 527-528: basic_aggregate_sum_push rejects non-SumItem
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        // Insert a regular Item (not SumItem) into a sum tree
+        // This is normally prevented, but we can test the error path via
+        // key query with an Item that's not a SumItem
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        // Query for the existing key - this works
+        let aggregate_sum_query = AggregateSumQuery::new_single_key(b"a".to_vec(), 100);
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = Element::get_aggregate_sum_query(
+            &db.db,
+            &aggregate_sum_path_query,
+            AggregateSumQueryOptions::default(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful get_query");
+        assert_eq!(result, vec![(b"a".to_vec(), 7)]);
+    }
+
+    #[test]
+    fn test_query_with_limit_of_items_to_check() {
+        // Exercises line 256-258: limit == Some(0) break path in ascending
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_sum_item(2),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"c",
+            Element::new_sum_item(3),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        // sum_limit is high but limit_of_items_to_check is 1
+        let aggregate_sum_query = AggregateSumQuery::new(1000, Some(1));
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = Element::get_aggregate_sum_query(
+            &db.db,
+            &aggregate_sum_path_query,
+            AggregateSumQueryOptions::default(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful get_query");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], (b"a".to_vec(), 1));
+    }
+
+    #[test]
+    fn test_query_multiple_keys_with_some_missing() {
+        // Exercises line 417 PathKeyNotFound for some keys, success for others
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"c",
+            Element::new_sum_item(3),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        // Query for 3 keys, but "b" doesn't exist
+        let aggregate_sum_query = AggregateSumQuery::new_with_keys(
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+            100,
+            None,
+        );
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = Element::get_aggregate_sum_query(
+            &db.db,
+            &aggregate_sum_path_query,
+            AggregateSumQueryOptions::default(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful get_query");
+
+        // Should return only a and c, skipping the missing b
+        assert_eq!(result, vec![(b"a".to_vec(), 7), (b"c".to_vec(), 3)]);
+    }
+
+    #[test]
+    fn test_descending_query_with_limit_break() {
+        // Exercises line 281-283: limit == Some(0) break path in descending branch
+        let grove_version = GroveVersion::latest();
+        let db = make_test_sum_tree_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_sum_item(1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_sum_item(2),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"c",
+            Element::new_sum_item(3),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot insert element");
+
+        // descending with items-to-check limit of 1
+        let aggregate_sum_query = AggregateSumQuery::new_descending(1000, Some(1));
+        let aggregate_sum_path_query = AggregateSumPathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            aggregate_sum_query,
+        };
+
+        let result = Element::get_aggregate_sum_query(
+            &db.db,
+            &aggregate_sum_path_query,
+            AggregateSumQueryOptions::default(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful get_query");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], (b"c".to_vec(), 3));
+    }
 }
