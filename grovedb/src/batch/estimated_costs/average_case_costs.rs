@@ -464,11 +464,14 @@ mod tests {
     };
     use grovedb_version::version::GroveVersion;
 
+    use grovedb_merk::tree::AggregateData;
+
     use crate::{
         batch::{
-            estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo,
-            KeyInfoPath, QualifiedGroveDbOp,
+            estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo, GroveOp,
+            KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp,
         },
+        reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,
     };
@@ -1028,6 +1031,456 @@ mod tests {
         assert_eq!(
             cost.storage_cost.added_bytes,
             average_case_cost.storage_cost.added_bytes
+        );
+    }
+
+    #[test]
+    fn test_refresh_reference_average_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::refresh_reference_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            None,
+            true,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: PotentiallyAtMaxElements,
+                estimated_layer_sizes: AllItems(32, 64, None),
+            },
+        );
+        let result = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs for refresh reference");
+        // RefreshReference delegates to average_case_merk_replace_element, so there
+        // should be seeks for getting the merk and replacing the element plus
+        // hash calls for propagation.
+        assert!(
+            result.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            result.seek_count
+        );
+        assert!(
+            result.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            result.hash_node_calls
+        );
+    }
+
+    #[test]
+    fn test_patch_average_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::patch_op(
+            vec![vec![7]],
+            b"patch_key".to_vec(),
+            Element::new_item(b"patched_value".to_vec()),
+            5, // change_in_bytes
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: PotentiallyAtMaxElements,
+                estimated_layer_sizes: AllItems(32, 64, None),
+            },
+        );
+        let result = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs for patch");
+        // Patch delegates to average_case_merk_patch_element which performs
+        // seeks and hash calls.
+        assert!(
+            result.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            result.seek_count
+        );
+        assert!(
+            result.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            result.hash_node_calls
+        );
+    }
+
+    #[test]
+    fn test_delete_average_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::delete_op(
+            vec![vec![7]],
+            b"del_key".to_vec(),
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: PotentiallyAtMaxElements,
+                estimated_layer_sizes: AllItems(32, 64, None),
+            },
+        );
+        let result = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs for delete");
+        // Delete delegates to average_case_merk_delete_element which requires
+        // seeks to find and remove the element.
+        assert!(
+            result.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            result.seek_count
+        );
+        assert!(
+            result.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            result.hash_node_calls
+        );
+    }
+
+    #[test]
+    fn test_delete_tree_average_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![vec![7]],
+            b"tree_key".to_vec(),
+            TreeType::NormalTree,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: PotentiallyAtMaxElements,
+                estimated_layer_sizes: AllSubtrees(32, NoSumTrees, None),
+            },
+        );
+        let result = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs for delete tree");
+        // DeleteTree delegates to average_case_merk_delete_tree which requires
+        // seeks and hash calls.
+        assert!(
+            result.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            result.seek_count
+        );
+        assert!(
+            result.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            result.hash_node_calls
+        );
+    }
+
+    // Direct average_case_cost tests for keyless/internal GroveOp variants.
+    // These ops are either skipped by from_ops (key=None) or are internal-only,
+    // so we call average_case_cost() directly on the GroveOp instance.
+
+    #[test]
+    fn test_commitment_tree_insert_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::CommitmentTreeInsert {
+            cmx: [1u8; 32],
+            rho: [2u8; 32],
+            payload: vec![0u8; 100],
+        };
+        let key = KeyInfo::KnownKey(b"tree_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(10),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for commitment tree insert");
+        // CommitmentTreeInsert includes frontier I/O and buffer writes plus
+        // Sinsemilla hashing for the commitment tree anchor.
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.sinsemilla_hash_calls > 0,
+            "expected sinsemilla_hash_calls > 0, got {}",
+            cost.sinsemilla_hash_calls
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+        // Buffer entry size = 32 + payload.len() = 132
+        // Frontier replaced bytes = 554
+        assert!(
+            cost.storage_cost.added_bytes > 0,
+            "expected added_bytes > 0, got {}",
+            cost.storage_cost.added_bytes
+        );
+        assert!(
+            cost.storage_cost.replaced_bytes > 0,
+            "expected replaced_bytes > 0, got {}",
+            cost.storage_cost.replaced_bytes
+        );
+    }
+
+    #[test]
+    fn test_mmr_tree_append_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::MmrTreeAppend {
+            value: vec![42u8; 64],
+        };
+        let key = KeyInfo::KnownKey(b"mmr_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(5),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for mmr tree append");
+        // MmrTreeAppend includes parent replace cost plus MMR node I/O.
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+        // Leaf node + internal node writes
+        assert!(
+            cost.storage_cost.added_bytes > 0,
+            "expected added_bytes > 0, got {}",
+            cost.storage_cost.added_bytes
+        );
+        // Sibling read for merging
+        assert!(
+            cost.storage_loaded_bytes > 0,
+            "expected storage_loaded_bytes > 0, got {}",
+            cost.storage_loaded_bytes
+        );
+    }
+
+    #[test]
+    fn test_bulk_append_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::BulkAppend {
+            value: vec![99u8; 50],
+        };
+        let key = KeyInfo::KnownKey(b"bulk_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(5),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for bulk append");
+        // BulkAppend includes parent replace cost plus buffer write + running
+        // hash.
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+        // Buffer entry write adds bytes equal to value length
+        assert!(
+            cost.storage_cost.added_bytes > 0,
+            "expected added_bytes > 0, got {}",
+            cost.storage_cost.added_bytes
+        );
+    }
+
+    #[test]
+    fn test_dense_tree_insert_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::DenseTreeInsert {
+            value: vec![77u8; 32],
+        };
+        let key = KeyInfo::KnownKey(b"dense_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(5),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for dense tree insert");
+        // DenseTreeInsert includes parent replace cost plus value write and
+        // full root recomputation (AVG_COUNT reads + hashes).
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+        assert!(
+            cost.storage_cost.added_bytes > 0,
+            "expected added_bytes > 0, got {}",
+            cost.storage_cost.added_bytes
+        );
+        assert!(
+            cost.storage_loaded_bytes > 0,
+            "expected storage_loaded_bytes > 0, got {}",
+            cost.storage_loaded_bytes
+        );
+    }
+
+    #[test]
+    fn test_replace_non_merk_tree_root_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::ReplaceNonMerkTreeRoot {
+            hash: [0xABu8; 32],
+            meta: NonMerkTreeMeta::CommitmentTree {
+                total_count: 100,
+                chunk_power: 4,
+            },
+        };
+        let key = KeyInfo::KnownKey(b"nmerk_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(5),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for replace non-merk tree root");
+        // ReplaceNonMerkTreeRoot delegates to average_case_merk_replace_tree.
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+    }
+
+    #[test]
+    fn test_insert_non_merk_tree_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let op = GroveOp::InsertNonMerkTree {
+            hash: [0xCDu8; 32],
+            root_key: None,
+            flags: None,
+            aggregate_data: AggregateData::NoAggregateData,
+            meta: NonMerkTreeMeta::MmrTree { mmr_size: 50 },
+        };
+        let key = KeyInfo::KnownKey(b"inmerk_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(0),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost = op
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected cost for insert non-merk tree");
+        // InsertNonMerkTree delegates to average_case_merk_insert_tree.
+        assert!(
+            cost.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            cost.seek_count
+        );
+        assert!(
+            cost.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            cost.hash_node_calls
+        );
+        // Inserting a new tree adds bytes.
+        assert!(
+            cost.storage_cost.added_bytes > 0,
+            "expected added_bytes > 0, got {}",
+            cost.storage_cost.added_bytes
         );
     }
 }
