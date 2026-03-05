@@ -442,6 +442,16 @@ impl KeyInfoPath {
         self.0.iter().map(|k| k.get_key_clone()).collect()
     }
 
+    /// Compare with a byte-vector path without allocating
+    pub fn eq_path_vec(&self, other: &[Vec<u8>]) -> bool {
+        self.0.len() == other.len()
+            && self
+                .0
+                .iter()
+                .zip(other.iter())
+                .all(|(a, b)| a.as_slice() == b.as_slice())
+    }
+
     /// To a path of refs
     pub fn to_path_refs(&self) -> Vec<&[u8]> {
         self.0.iter().map(|k| k.as_slice()).collect()
