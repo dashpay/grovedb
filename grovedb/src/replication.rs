@@ -28,10 +28,12 @@ pub type ChunkIdentifier = (
     Vec<Vec<u8>>,
 );
 
+/// Current version of the state sync protocol.
 pub const CURRENT_STATE_SYNC_VERSION: u16 = 1;
 
 #[cfg(feature = "minimal")]
 impl GroveDb {
+    /// Starts a new state synchronization session with the given app hash and batch size.
     pub fn start_syncing_session(
         &self,
         app_hash: [u8; 32],
@@ -40,6 +42,7 @@ impl GroveDb {
         MultiStateSyncSession::new(self, app_hash, subtrees_batch_size)
     }
 
+    /// Commits a completed state synchronization session.
     pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) -> Result<(), Error> {
         session
             .commit()

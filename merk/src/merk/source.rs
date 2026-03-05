@@ -21,6 +21,7 @@ where
 }
 
 #[derive(Debug)]
+/// A `Fetch` implementation that loads tree nodes from Merk storage.
 pub struct MerkSource<'s, S> {
     storage: &'s S,
     tree_type: TreeType,

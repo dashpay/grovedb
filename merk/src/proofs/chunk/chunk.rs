@@ -39,7 +39,9 @@ use crate::{
     CryptoHash, Error,
 };
 
+/// Traversal direction constant representing a left child.
 pub const LEFT: bool = true;
+/// Traversal direction constant representing a right child.
 pub const RIGHT: bool = false;
 
 impl<S> RefWalker<'_, S>
@@ -267,7 +269,8 @@ where
     }
 }
 
-// TODO: add documentation
+/// Verifies a height proof against the expected root hash and returns the
+/// proven height of the tree.
 pub fn verify_height_proof(proof: Vec<Op>, expected_root_hash: CryptoHash) -> Result<usize, Error> {
     // todo: remove unwrap
     let height_proof_tree = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap()?;
@@ -283,7 +286,8 @@ pub fn verify_height_proof(proof: Vec<Op>, expected_root_hash: CryptoHash) -> Re
     verify_height_tree(&height_proof_tree)
 }
 
-// TODO: add documentation
+/// Recursively verifies a height proof tree and returns the height by
+/// counting left-child KVHash nodes.
 pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
     Ok(match height_proof_tree.child(LEFT) {
         Some(child) => {
@@ -299,6 +303,7 @@ pub fn verify_height_tree(height_proof_tree: &Tree) -> Result<usize, Error> {
     })
 }
 
+/// Tests for chunk verification and height proofs.
 #[cfg(test)]
 pub mod tests {
     use ed::Encode;

@@ -339,6 +339,8 @@ pub fn vec_bytes_as_traversal_instruction(
         .collect()
 }
 
+/// Writes the given byte slice to a writer, mapping I/O errors to
+/// `InternalError`.
 pub fn write_to_vec<W: Write>(dest: &mut W, value: &[u8]) -> Result<(), Error> {
     dest.write_all(value)
         .map_err(|_e| InternalError("failed to write to vector"))

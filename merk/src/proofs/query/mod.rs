@@ -41,6 +41,8 @@ use crate::TreeFeatureType;
 #[cfg(feature = "minimal")]
 use crate::TreeType;
 
+/// Result type for proof generation: contains the proof ops, a tuple indicating
+/// left/right absence, and the current proof status (remaining limit).
 #[cfg(feature = "minimal")]
 pub type ProofAbsenceLimit = (LinkedList<Op>, (bool, bool), ProofStatus);
 

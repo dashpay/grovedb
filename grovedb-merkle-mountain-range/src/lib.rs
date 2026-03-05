@@ -18,7 +18,7 @@
 //! - [`MmrStore`] — GroveDB `StorageContext` adapter (requires `storage`
 //!   feature).
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 mod error;
 /// MMR helper functions for position arithmetic, storage keys, and cost

@@ -27,12 +27,17 @@ use crate::{
 /// ChunkProof for replication of a single subtree
 #[derive(Debug)]
 pub struct SubtreeChunk {
+    /// The proof operations representing this chunk.
     chunk: Vec<Op>,
+    /// The index of the next chunk, or `None` if this is the last.
     next_index: Option<usize>,
+    /// The remaining byte budget after producing this chunk.
     remaining_limit: Option<usize>,
 }
 
 impl SubtreeChunk {
+    /// Creates a new `SubtreeChunk` with the given proof ops, next index, and
+    /// remaining limit.
     pub fn new(chunk: Vec<Op>, next_index: Option<usize>, remaining_limit: Option<usize>) -> Self {
         Self {
             chunk,
@@ -45,12 +50,17 @@ impl SubtreeChunk {
 /// ChunkProof for the replication of multiple subtrees.
 #[derive(Debug)]
 pub struct MultiChunk {
+    /// The chunk operations representing multiple subtree chunks.
     pub chunk: Vec<ChunkOp>,
+    /// The chunk identifier for the next chunk, or `None` if complete.
     pub next_index: Option<Vec<u8>>,
+    /// The remaining byte budget after producing these chunks.
     pub remaining_limit: Option<usize>,
 }
 
 impl MultiChunk {
+    /// Creates a new `MultiChunk` with the given chunk ops, next index, and
+    /// remaining limit.
     pub fn new(
         chunk: Vec<ChunkOp>,
         next_index: Option<Vec<u8>>,
@@ -353,6 +363,7 @@ where
         number_of_chunks(self.height)
     }
 
+    /// Returns `true` if the tree has no chunks.
     pub fn is_empty(&self) -> bool {
         number_of_chunks(self.height) == 0
     }
@@ -392,6 +403,8 @@ impl<'db, S> ChunkProducer<'db, S>
 where
     S: StorageContext<'db>,
 {
+    /// Returns the next chunk in iteration order, or `None` if all chunks
+    /// have been yielded.
     pub fn next(
         &mut self,
         grove_version: &GroveVersion,

@@ -4,7 +4,7 @@
 //! used throughout GroveDB for specifying which keys and ranges to include in
 //! proofs and query results.
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 /// Error types for query operations.
 pub mod error;

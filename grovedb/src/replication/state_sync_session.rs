@@ -202,10 +202,12 @@ impl<'db> MultiStateSyncSession<'db> {
         })
     }
 
+    /// Returns true if there are no prefixes currently being synced.
     pub fn is_empty(&self) -> bool {
         self.current_prefixes.is_empty()
     }
 
+    /// Returns true if all subtrees have been fully synchronized.
     pub fn is_sync_completed(&self) -> bool {
         for (_, subtree_state_info) in self.current_prefixes.iter() {
             if !subtree_state_info.pending_chunks.is_empty() {
@@ -220,6 +222,7 @@ impl<'db> MultiStateSyncSession<'db> {
         true
     }
 
+    /// Commits the sync session by finalizing the underlying transaction.
     pub fn commit(self: Pin<Box<Self>>) -> Result<(), Error> {
         // SAFETY: the struct isn't used anymore and no storage contexts would access
         // transaction

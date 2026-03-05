@@ -10,24 +10,39 @@ use grovedb_element::ElementType;
 use crate::merk::NodeType;
 use crate::{Error, TreeFeatureType};
 
+/// Represents a value that is either a tree or not a tree.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum MaybeTree {
+    /// The value is a tree of the given type.
     Tree(TreeType),
+    /// The value is not a tree.
     NotTree,
 }
 
+/// The type of a Merk subtree, determining its node structure and aggregation behavior.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum TreeType {
+    /// A standard Merk tree with no aggregation.
     NormalTree,
+    /// A tree that maintains a running sum of descendant sum items.
     SumTree,
+    /// A tree that maintains a 256-bit running sum of descendant sum items.
     BigSumTree,
+    /// A tree that counts its elements.
     CountTree,
+    /// A tree that both counts elements and maintains a running sum.
     CountSumTree,
+    /// A count tree with provable count support.
     ProvableCountTree,
+    /// A count-sum tree with provable count support.
     ProvableCountSumTree,
+    /// A commitment tree with a configurable chunk power parameter.
     CommitmentTree(u8),
+    /// A Merkle Mountain Range tree.
     MmrTree,
+    /// A bulk-append optimized tree with a configurable chunk power parameter.
     BulkAppendTree(u8),
+    /// A dense append-only tree with fixed-size entries and a configurable height.
     DenseAppendOnlyFixedSizeTree(u8),
 }
 
@@ -106,6 +121,7 @@ impl TreeType {
         )
     }
 
+    /// Returns whether this tree type allows sum items as children.
     pub fn allows_sum_item(&self) -> bool {
         match self {
             TreeType::NormalTree => false,
@@ -123,6 +139,7 @@ impl TreeType {
     }
 
     #[cfg(feature = "minimal")]
+    /// Returns the inner node type used by nodes within this tree type.
     pub const fn inner_node_type(&self) -> NodeType {
         match self {
             TreeType::NormalTree => NodeType::NormalNode,
@@ -139,6 +156,7 @@ impl TreeType {
         }
     }
 
+    /// Returns the feature type for an empty tree of this type.
     pub fn empty_tree_feature_type(&self) -> TreeFeatureType {
         match self {
             TreeType::NormalTree => TreeFeatureType::BasicMerkNode,

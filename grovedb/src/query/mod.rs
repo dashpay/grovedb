@@ -313,6 +313,7 @@ impl PathQuery {
         }
     }
 
+    /// Returns whether the parent tree element should be included in results at the given path.
     pub fn should_add_parent_tree_at_path(
         &self,
         path: &[&[u8]],
@@ -433,6 +434,7 @@ impl PathQuery {
         })
     }
 
+    /// Returns the query items applicable at the given path, if any.
     pub fn query_items_at_path(
         &self,
         path: &[&[u8]],

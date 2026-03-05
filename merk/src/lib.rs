@@ -1,7 +1,6 @@
 //! High-performance Merkle key/value store
 
-// #![deny(missing_docs)]
-
+#![deny(missing_docs)]
 // Pre-existing patterns throughout the crate; fix incrementally.
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
@@ -12,6 +11,7 @@
 #[cfg(feature = "minimal")]
 pub mod merk;
 
+/// Debug inspection support for GroveDbg.
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
 
@@ -39,7 +39,9 @@ pub mod error;
 /// Estimated costs
 pub mod estimated_costs;
 
+/// Element definitions for Merk tree entries.
 pub mod element;
+/// Tree type definitions describing the different kinds of Merk trees.
 pub mod tree_type;
 #[cfg(feature = "minimal")]
 mod visualize;

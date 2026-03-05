@@ -21,6 +21,7 @@ use crate::{
     ElementFlags, Error,
 };
 
+/// Mapping from path to operations keyed by key info.
 #[cfg(feature = "minimal")]
 pub type OpsByPath = BTreeMap<KeyInfoPath, BTreeMap<KeyInfo, GroveOp>>;
 /// Level, path, key, op

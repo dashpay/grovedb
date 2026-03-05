@@ -9,7 +9,7 @@
 //!
 //! Nodes without children use `[0; 32]` for both child hashes.
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 mod error;
 pub(crate) mod hash;

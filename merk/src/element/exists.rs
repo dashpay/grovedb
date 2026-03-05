@@ -8,6 +8,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{element::costs::ElementCostExtensions, Error, Merk};
 
+/// Extension trait for checking element existence in Merk storage.
 pub trait ElementExistsInStorageExtensions {
     /// Helper function that returns whether an element at the key for the
     /// element already exists.

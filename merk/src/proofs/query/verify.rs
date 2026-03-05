@@ -34,6 +34,7 @@ pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
     })
 }
 
+/// Options controlling proof verification behavior.
 #[derive(Copy, Clone, Debug)]
 pub struct VerifyOptions {
     /// When set to true, this will give back absence proofs for any query items

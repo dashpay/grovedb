@@ -13,6 +13,7 @@ mod multi_insert_cost_tests;
 
 #[cfg(test)]
 mod just_in_time_cost_tests;
+/// Just-in-time reference update handling for batch operations.
 pub mod just_in_time_reference_update;
 mod options;
 #[cfg(test)]
@@ -248,9 +249,13 @@ pub enum GroveOp {
     /// disk before write If it is false, the provided information is only
     /// used for average case and worse case costs
     RefreshReference {
+        /// The type of reference path to use.
         reference_path_type: ReferencePathType,
+        /// Maximum number of hops allowed when resolving the reference.
         max_reference_hop: MaxReferenceHop,
+        /// Optional element flags for the reference.
         flags: Option<ElementFlags>,
+        /// If true, skip verifying the element on disk before writing.
         trust_refresh_reference: bool,
     },
     /// Delete

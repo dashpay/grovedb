@@ -1,4 +1,4 @@
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 //! Orchard-style commitment tree integration for GroveDB.
 //!
 //! This crate provides a lightweight frontier-based Sinsemilla Merkle tree

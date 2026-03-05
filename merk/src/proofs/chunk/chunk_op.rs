@@ -36,7 +36,10 @@ use crate::proofs::Op;
 /// Represents the chunk generated from a given starting chunk id
 #[derive(PartialEq, Debug)]
 pub enum ChunkOp {
+    /// A chunk identifier represented as a traversal instruction (sequence of
+    /// left/right booleans).
     ChunkId(Vec<bool>),
+    /// A chunk of proof operations.
     Chunk(Vec<Op>),
 }
 

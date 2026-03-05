@@ -4,6 +4,7 @@ use crate::{
     Error,
 };
 
+/// Collects tree nodes during commit for batch writing to storage.
 pub struct MerkCommitter {
     /// The batch has a key, maybe a value, with the value bytes, maybe the left
     /// child size and maybe the right child size, then the
