@@ -28,8 +28,13 @@ impl StorageFlags {
             .ok_or(StorageFlagsError::RemovingFlagsError(
                 "removing flags from an item with flags is not allowed".to_string(),
             ))?;
-        let binding = maybe_old_storage_flags.clone().unwrap();
-        let old_epoch_index_map = binding.epoch_index_map();
+        let old_storage_flags =
+            maybe_old_storage_flags
+                .clone()
+                .ok_or(StorageFlagsError::RemovingFlagsError(
+                    "old storage flags missing during update".to_string(),
+                ))?;
+        let old_epoch_index_map = old_storage_flags.epoch_index_map();
         let new_epoch_index_map = new_storage_flags.epoch_index_map();
         if old_epoch_index_map.is_some() || new_epoch_index_map.is_some() {
             // println!("> old:{:?} new:{:?}", old_epoch_index_map,
