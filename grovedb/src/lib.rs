@@ -382,10 +382,10 @@ impl GroveDb {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
-            .map_err(|_| {
-                Error::CorruptedData(
-                    "cannot open a subtree by prefix with given root key".to_owned(),
-                )
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "cannot open a subtree by prefix with given root key: {e}"
+                ))
             })
             .add_cost(cost)
         } else {
@@ -395,7 +395,7 @@ impl GroveDb {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
-            .map_err(|_| Error::CorruptedData("cannot open a root subtree by prefix".to_owned()))
+            .map_err(|e| Error::CorruptedData(format!("cannot open a root subtree by prefix: {e}")))
             .add_cost(cost)
         }
     }
@@ -441,8 +441,10 @@ impl GroveDb {
                         Some(&Element::value_defined_cost_for_serialized_value),
                         grove_version,
                     )
-                    .map_err(|_| {
-                        Error::CorruptedData("cannot open a subtree with given root key".to_owned())
+                    .map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cannot open a subtree with given root key: {e}"
+                        ))
                     })
                     .unwrap()?,
                     root_key,
@@ -461,7 +463,7 @@ impl GroveDb {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .map_err(|_| Error::CorruptedData("cannot open a the root subtree".to_owned()))
+                .map_err(|e| Error::CorruptedData(format!("cannot open the root subtree: {e}")))
                 .unwrap()?,
                 None,
                 TreeType::NormalTree,
@@ -522,8 +524,8 @@ impl GroveDb {
                     grove_version,
                 )
                 .map(|merk_res| {
-                    merk_res.map_err(|_| {
-                        crate::Error::CorruptedData("cannot open a subtree".to_owned())
+                    merk_res.map_err(|e| {
+                        crate::Error::CorruptedData(format!("cannot open a subtree: {e}"))
                     })
                 })
             })
@@ -719,8 +721,10 @@ impl GroveDb {
                 Some(&Element::value_defined_cost_for_serialized_value),
                 grove_version,
             )
-            .map_err(|_| {
-                Error::InvalidPath("can't find subtree in parent during propagation".to_owned())
+            .map_err(|e| {
+                Error::InvalidPath(format!(
+                    "can't find subtree in parent during propagation: {e}"
+                ))
             })
             .map_ok(|subtree_opt| {
                 subtree_opt.ok_or_else(|| {
@@ -739,10 +743,10 @@ impl GroveDb {
             })
             .flatten()
             .map_ok(|element_bytes| {
-                Element::deserialize(&element_bytes, grove_version).map_err(|_| {
-                    Error::CorruptedData(
-                        "failed to deserialized parent during propagation".to_owned(),
-                    )
+                Element::deserialize(&element_bytes, grove_version).map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "failed to deserialize parent during propagation: {e}"
+                    ))
                 })
             })
             .flatten()
