@@ -51,6 +51,18 @@ impl InsertOptions {
     }
 }
 
+/// Maximum key length in bytes. Merk link encoding stores the key length as a
+/// single `u8`, so keys longer than 255 bytes would corrupt the encoding.
+const MAX_KEY_LENGTH: usize = u8::MAX as usize;
+
+fn validate_key_length(key: &[u8]) -> CostResult<(), Error> {
+    if key.len() > MAX_KEY_LENGTH {
+        return Err(Error::InvalidInput("key length must be at most 255 bytes"))
+            .wrap_with_cost(OperationCost::default());
+    }
+    Ok(()).wrap_with_cost(OperationCost::default())
+}
+
 impl GroveDb {
     /// Insert a GroveDB element given a path to the subtree and the key to
     /// insert at
@@ -72,17 +84,13 @@ impl GroveDb {
             grove_version.grovedb_versions.operations.insert.insert
         );
 
-        if key.len() > 255 {
-            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
-                .wrap_with_cost(OperationCost::default());
-        }
+        let mut cost = OperationCost::default();
+        cost_return_on_error!(&mut cost, validate_key_length(key));
 
         let subtree_path: SubtreePath<B> = path.into();
         let batch = StorageBatch::new();
 
         let tx = TxRef::new(&self.db, transaction);
-
-        let mut cost = Default::default();
 
         cost_return_on_error!(
             &mut cost,
@@ -379,12 +387,8 @@ impl GroveDb {
                 .insert_if_not_exists
         );
 
-        if key.len() > 255 {
-            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
-                .wrap_with_cost(OperationCost::default());
-        }
-
         let mut cost = OperationCost::default();
+        cost_return_on_error!(&mut cost, validate_key_length(key));
         let subtree_path: SubtreePath<_> = path.into();
 
         if cost_return_on_error!(
@@ -439,12 +443,8 @@ impl GroveDb {
                 .insert_if_not_exists_return_existing_element
         );
 
-        if key.len() > 255 {
-            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
-                .wrap_with_cost(OperationCost::default());
-        }
-
         let mut cost = OperationCost::default();
+        cost_return_on_error!(&mut cost, validate_key_length(key));
         let subtree_path: SubtreePath<_> = path.into();
 
         let previous_element = cost_return_on_error!(
@@ -484,12 +484,8 @@ impl GroveDb {
                 .insert_if_changed_value
         );
 
-        if key.len() > 255 {
-            return Err(Error::InvalidInput("key length must be at most 255 bytes"))
-                .wrap_with_cost(OperationCost::default());
-        }
-
         let mut cost = OperationCost::default();
+        cost_return_on_error!(&mut cost, validate_key_length(key));
         let subtree_path: SubtreePath<B> = path.into();
 
         let previous_element = cost_return_on_error!(
@@ -2255,5 +2251,74 @@ mod tests {
                 sinsemilla_hash_calls: 0,
             }
         );
+    }
+
+    #[test]
+    fn insert_accepts_255_byte_key() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let key = vec![0xAA; 255];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            &key,
+            Element::new_item(b"val".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("255-byte key should be accepted");
+    }
+
+    #[test]
+    fn insert_rejects_256_byte_key() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let key = vec![0xBB; 256];
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                &key,
+                Element::new_item(b"val".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(..))));
+    }
+
+    #[test]
+    fn insert_if_not_exists_rejects_256_byte_key() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let key = vec![0xBB; 256];
+        let result = db
+            .insert_if_not_exists(
+                [TEST_LEAF].as_ref(),
+                &key,
+                Element::new_item(b"val".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(..))));
+    }
+
+    #[test]
+    fn insert_if_changed_value_rejects_256_byte_key() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let key = vec![0xBB; 256];
+        let result = db
+            .insert_if_changed_value(
+                [TEST_LEAF].as_ref(),
+                &key,
+                Element::new_item(b"val".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(..))));
     }
 }
