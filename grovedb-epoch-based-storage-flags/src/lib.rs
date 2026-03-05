@@ -444,9 +444,10 @@ impl StorageFlags {
     fn maybe_append_to_vec_epoch_map(&self, buffer: &mut Vec<u8>) {
         match self {
             MultiEpoch(_, epoch_map) | MultiEpochOwned(_, epoch_map, _) => {
-                if epoch_map.is_empty() {
-                    panic!("this should not be empty");
-                }
+                debug_assert!(
+                    !epoch_map.is_empty(),
+                    "epoch map should not be empty for MultiEpoch/MultiEpochOwned"
+                );
                 epoch_map.iter().for_each(|(epoch_index, bytes_added)| {
                     buffer.extend(epoch_index.to_be_bytes());
                     buffer.extend(bytes_added.encode_var_vec());
@@ -1778,8 +1779,9 @@ mod storage_flags_additional_tests {
     }
 
     #[test]
-    #[should_panic(expected = "this should not be empty")]
-    fn serialize_panics_for_empty_epoch_map() {
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "epoch map should not be empty")]
+    fn serialize_debug_asserts_for_empty_epoch_map() {
         let flags = StorageFlags::MultiEpoch(1, BTreeMap::new());
         let _ = flags.serialize();
     }
