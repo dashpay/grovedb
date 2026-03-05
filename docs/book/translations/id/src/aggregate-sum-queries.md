@@ -148,7 +148,7 @@ Flag `hard_limit_reached` menunjukkan apakah batas pemindaian keras sistem (defa
 elemen) tercapai sebelum query selesai secara alami. Ketika bernilai `true`, mungkin ada lebih
 banyak hasil di luar yang dikembalikan.
 
-## Dua Sistem Batas
+## Tiga Sistem Batas
 
 Query jumlah agregat memiliki **tiga** kondisi berhenti:
 

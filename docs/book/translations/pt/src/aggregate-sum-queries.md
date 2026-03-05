@@ -148,7 +148,7 @@ O flag `hard_limit_reached` indica se o limite rígido de escaneamento do sistem
 elementos) foi atingido antes da consulta terminar naturalmente. Quando `true`, mais resultados podem
 existir além do que foi retornado.
 
-## Dois Sistemas de Limite
+## Tres Sistemas de Limite
 
 Consultas de soma agregada possuem **três** condições de parada:
 

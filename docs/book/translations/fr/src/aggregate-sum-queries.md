@@ -148,7 +148,7 @@ L'indicateur `hard_limit_reached` signale si la limite stricte de parcours du sy
 elements) a ete atteinte avant que la requete ne se termine naturellement. Lorsqu'il est `true`, davantage
 de resultats peuvent exister au-dela de ce qui a ete retourne.
 
-## Deux systemes de limites
+## Trois systemes de limites
 
 Les requetes de somme agregee ont **trois** conditions d'arret :
 

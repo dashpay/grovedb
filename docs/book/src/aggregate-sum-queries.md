@@ -148,7 +148,7 @@ The `hard_limit_reached` flag indicates whether the system's hard scan limit (de
 elements) was reached before the query completed naturally. When `true`, more results may
 exist beyond what was returned.
 
-## Two Limit Systems
+## Three Limit Systems
 
 Aggregate sum queries have **three** stopping conditions:
 

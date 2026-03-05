@@ -147,7 +147,7 @@ pub struct AggregateSumQueryResult {
 (varsayilan: 1024 eleman) ulasilip ulasilmadigini belirtir. `true` oldugunda, dondurulenin
 otesinde daha fazla sonuc mevcut olabilir.
 
-## Iki Limit Sistemi
+## Uc Limit Sistemi
 
 Toplu toplam sorgularinin **uc** durma kosulu vardir:
 

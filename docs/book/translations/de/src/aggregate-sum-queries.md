@@ -1,27 +1,27 @@
 # Aggregierte Summenabfragen
 
-## Uebersicht
+## Übersicht
 
-Aggregierte Summenabfragen sind ein spezialisierter Abfragetyp, der fuer **SumTrees** in GroveDB entwickelt wurde.
-Waehrend regulaere Abfragen Elemente nach Schluessel oder Bereich abrufen, iterieren aggregierte Summenabfragen
-ueber Elemente und akkumulieren deren Summenwerte, bis ein **Summenlimit** erreicht ist.
+Aggregierte Summenabfragen sind ein spezialisierter Abfragetyp, der für **SumTrees** in GroveDB entwickelt wurde.
+Während reguläre Abfragen Elemente nach Schlüssel oder Bereich abrufen, iterieren aggregierte Summenabfragen
+über Elemente und akkumulieren deren Summenwerte, bis ein **Summenlimit** erreicht ist.
 
-Dies ist nuetzlich fuer Fragen wie:
-- "Gib mir Transaktionen, bis die laufende Summe 1000 ueberschreitet"
+Dies ist nützlich für Fragen wie:
+- "Gib mir Transaktionen, bis die laufende Summe 1000 überschreitet"
 - "Welche Elemente tragen zu den ersten 500 Werteinheiten in diesem Baum bei?"
 - "Sammle Summenelemente bis zu einem Budget von N"
 
 ## Kernkonzepte
 
-### Unterschied zu regulaeren Abfragen
+### Unterschied zu regulären Abfragen
 
 | Merkmal | PathQuery | AggregateSumPathQuery |
 |---------|-----------|----------------------|
 | **Ziel** | Jeder Elementtyp | SumItem / ItemWithSumItem-Elemente |
 | **Abbruchbedingung** | Limit (Anzahl) oder Ende des Bereichs | Summenlimit (laufende Summe) **und/oder** Elementlimit |
-| **Rueckgabe** | Elemente oder Schluessel | Schluessel-Summenwert-Paare |
-| **Unterabfragen** | Ja (Abstieg in Unterbaeume) | Nein (einzelne Baumebene) |
-| **Referenzen** | Aufgeloest durch GroveDB-Schicht | Optional verfolgt oder ignoriert |
+| **Rückgabe** | Elemente oder Schlüssel | Schlüssel-Summenwert-Paare |
+| **Unterabfragen** | Ja (Abstieg in Unterbäume) | Nein (einzelne Baumebene) |
+| **Referenzen** | Aufgelöst durch GroveDB-Schicht | Optional verfolgt oder ignoriert |
 
 ### Die AggregateSumQuery-Struktur
 
@@ -45,8 +45,8 @@ pub struct AggregateSumPathQuery {
 
 ### Summenlimit — Die laufende Summe
 
-Das `sum_limit` ist das zentrale Konzept. Waehrend Elemente gescannt werden, werden deren Summenwerte
-akkumuliert. Sobald die laufende Summe das Summenlimit erreicht oder ueberschreitet, stoppt die Iteration:
+Das `sum_limit` ist das zentrale Konzept. Während Elemente gescannt werden, werden deren Summenwerte
+akkumuliert. Sobald die laufende Summe das Summenlimit erreicht oder überschreitet, stoppt die Iteration:
 
 ```mermaid
 graph LR
@@ -67,7 +67,7 @@ graph LR
 
 > **Ergebnis:** `[(a, 7), (b, 5), (c, 3)]` — die Iteration stoppt, weil 7 + 5 + 3 = 15 >= sum_limit
 
-Negative Summenwerte werden unterstuetzt. Ein negativer Wert erhoeht das verbleibende Budget:
+Negative Summenwerte werden unterstützt. Ein negativer Wert erhöht das verbleibende Budget:
 
 ```text
 sum_limit = 12, elements: a(10), b(-3), c(5)
@@ -94,10 +94,10 @@ pub struct AggregateSumQueryOptions {
 
 ### Umgang mit Nicht-Summen-Elementen
 
-SumTrees koennen eine Mischung verschiedener Elementtypen enthalten: `SumItem`, `Item`, `Reference`, `ItemWithSumItem`
-und andere. Standardmaessig fuehrt das Antreffen eines Nicht-Summen-, Nicht-Referenz-Elements zu einem Fehler.
+SumTrees können eine Mischung verschiedener Elementtypen enthalten: `SumItem`, `Item`, `Reference`, `ItemWithSumItem`
+und andere. Standardmäßig führt das Antreffen eines Nicht-Summen-, Nicht-Referenz-Elements zu einem Fehler.
 
-Wenn `error_if_non_sum_item_found` auf `false` gesetzt ist, werden Nicht-Summen-Elemente **stillschweigend uebersprungen**,
+Wenn `error_if_non_sum_item_found` auf `false` gesetzt ist, werden Nicht-Summen-Elemente **stillschweigend übersprungen**,
 ohne einen Platz im Benutzerlimit zu verbrauchen:
 
 ```text
@@ -111,12 +111,12 @@ Scan: a(7) → returned, limit=1
 Result: [(a, 7), (c, 3)]
 ```
 
-Hinweis: `ItemWithSumItem`-Elemente werden **immer** verarbeitet (nie uebersprungen), da sie einen
+Hinweis: `ItemWithSumItem`-Elemente werden **immer** verarbeitet (nie übersprungen), da sie einen
 Summenwert tragen.
 
 ### Referenzbehandlung
 
-Standardmaessig werden `Reference`-Elemente **verfolgt** — die Abfrage loest die Referenzkette
+Standardmäßig werden `Reference`-Elemente **verfolgt** — die Abfrage löst die Referenzkette
 (bis zu 3 Zwischenschritte) auf, um den Summenwert des Zielelements zu finden:
 
 ```text
@@ -128,14 +128,14 @@ ref_b is followed → resolves to a(SumItem=7)
 Result: [(a, 7), (ref_b, 7)]
 ```
 
-Wenn `ignore_references` auf `true` gesetzt ist, werden Referenzen stillschweigend uebersprungen,
-ohne einen Limitplatz zu verbrauchen, aehnlich wie Nicht-Summen-Elemente uebersprungen werden.
+Wenn `ignore_references` auf `true` gesetzt ist, werden Referenzen stillschweigend übersprungen,
+ohne einen Limitplatz zu verbrauchen, ähnlich wie Nicht-Summen-Elemente übersprungen werden.
 
 Referenzketten mit mehr als 3 Zwischenschritten erzeugen einen `ReferenceLimit`-Fehler.
 
 ## Der Ergebnistyp
 
-Abfragen geben ein `AggregateSumQueryResult` zurueck:
+Abfragen geben ein `AggregateSumQueryResult` zurück:
 
 ```rust
 pub struct AggregateSumQueryResult {
@@ -145,22 +145,22 @@ pub struct AggregateSumQueryResult {
 ```
 
 Das Flag `hard_limit_reached` zeigt an, ob das harte Scan-Limit des Systems (Standard: 1024
-Elemente) erreicht wurde, bevor die Abfrage natuerlich abgeschlossen wurde. Wenn `true`, koennen
-weitere Ergebnisse ueber das Zurueckgegebene hinaus existieren.
+Elemente) erreicht wurde, bevor die Abfrage natürlich abgeschlossen wurde. Wenn `true`, können
+weitere Ergebnisse über das Zurückgegebene hinaus existieren.
 
-## Zwei Limitsysteme
+## Drei Limitsysteme
 
 Aggregierte Summenabfragen haben **drei** Abbruchbedingungen:
 
-| Limit | Quelle | Was gezaehlt wird | Auswirkung bei Erreichen |
+| Limit | Quelle | Was gezählt wird | Auswirkung bei Erreichen |
 |-------|--------|-------------------|--------------------------|
 | **sum_limit** | Benutzer (Abfrage) | Laufende Summe der Summenwerte | Stoppt die Iteration |
-| **limit_of_items_to_check** | Benutzer (Abfrage) | Zurueckgegebene uebereinstimmende Elemente | Stoppt die Iteration |
-| **Hartes Scan-Limit** | System (GroveVersion, Standard 1024) | Alle gescannten Elemente (einschliesslich uebersprungener) | Stoppt die Iteration, setzt `hard_limit_reached` |
+| **limit_of_items_to_check** | Benutzer (Abfrage) | Zurückgegebene übereinstimmende Elemente | Stoppt die Iteration |
+| **Hartes Scan-Limit** | System (GroveVersion, Standard 1024) | Alle gescannten Elemente (einschließlich übersprungener) | Stoppt die Iteration, setzt `hard_limit_reached` |
 
 Das harte Scan-Limit verhindert eine unbegrenzte Iteration, wenn kein Benutzerlimit gesetzt ist.
-Uebersprungene Elemente (Nicht-Summen-Elemente mit `error_if_non_sum_item_found=false` oder Referenzen
-mit `ignore_references=true`) zaehlen gegen das harte Scan-Limit, aber **nicht** gegen das
+Übersprungene Elemente (Nicht-Summen-Elemente mit `error_if_non_sum_item_found=false` oder Referenzen
+mit `ignore_references=true`) zählen gegen das harte Scan-Limit, aber **nicht** gegen das
 `limit_of_items_to_check` des Benutzers.
 
 ## API-Verwendung
@@ -220,9 +220,9 @@ if result.hard_limit_reached {
 }
 ```
 
-### Schluesselbasierte Abfragen
+### Schlüsselbasierte Abfragen
 
-Anstatt einen Bereich zu scannen, koennen Sie bestimmte Schluessel abfragen:
+Anstatt einen Bereich zu scannen, können Sie bestimmte Schlüssel abfragen:
 
 ```rust
 // Check the sum value of specific keys
@@ -235,7 +235,7 @@ let query = AggregateSumQuery::new_with_keys(
 
 ### Absteigende Abfragen
 
-Iterieren vom hoechsten Schluessel zum niedrigsten:
+Iterieren vom höchsten Schlüssel zum niedrigsten:
 
 ```rust
 let query = AggregateSumQuery::new_descending(500, Some(10));
@@ -246,12 +246,12 @@ let query = AggregateSumQuery::new_descending(500, Some(10));
 
 | Konstruktor | Beschreibung |
 |-------------|-------------|
-| `new(sum_limit, limit)` | Vollstaendiger Bereich, aufsteigend |
-| `new_descending(sum_limit, limit)` | Vollstaendiger Bereich, absteigend |
-| `new_single_key(key, sum_limit)` | Einzelschluesselabfrage |
-| `new_with_keys(keys, sum_limit, limit)` | Mehrere bestimmte Schluessel |
-| `new_with_keys_reversed(keys, sum_limit, limit)` | Mehrere Schluessel, absteigend |
-| `new_single_query_item(item, sum_limit, limit)` | Einzelnes QueryItem (Schluessel oder Bereich) |
+| `new(sum_limit, limit)` | Vollständiger Bereich, aufsteigend |
+| `new_descending(sum_limit, limit)` | Vollständiger Bereich, absteigend |
+| `new_single_key(key, sum_limit)` | Einzelschlüsselabfrage |
+| `new_with_keys(keys, sum_limit, limit)` | Mehrere bestimmte Schlüssel |
+| `new_with_keys_reversed(keys, sum_limit, limit)` | Mehrere Schlüssel, absteigend |
+| `new_single_query_item(item, sum_limit, limit)` | Einzelnes QueryItem (Schlüssel oder Bereich) |
 | `new_with_query_items(items, sum_limit, limit)` | Mehrere QueryItems |
 
 ---

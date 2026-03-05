@@ -146,7 +146,7 @@ pub struct AggregateSumQueryResult {
 `hard_limit_reached` 标志表示系统的硬扫描限制（默认：1024 个元素）是否在查询
 自然完成之前就已达到。当为 `true` 时，返回结果之外可能还存在更多数据。
 
-## 两级限制系统
+## 三级限制系统
 
 聚合求和查询有 **三个** 停止条件：
 

@@ -148,7 +148,7 @@ Il flag `hard_limit_reached` indica se il limite rigido di scansione del sistema
 elementi) e stato raggiunto prima che la query si completasse naturalmente. Quando e `true`, potrebbero esistere
 ulteriori risultati oltre a quelli restituiti.
 
-## Due sistemi di limite
+## Tre sistemi di limite
 
 Le query di somma aggregata hanno **tre** condizioni di arresto:
 

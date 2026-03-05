@@ -148,7 +148,7 @@ La bandera `hard_limit_reached` indica si el limite estricto de escaneo del sist
 elementos) se alcanzo antes de que la consulta terminara naturalmente. Cuando es `true`, pueden existir
 mas resultados mas alla de los que se devolvieron.
 
-## Dos Sistemas de Limites
+## Tres Sistemas de Limites
 
 Las consultas de suma agregada tienen **tres** condiciones de parada:
 

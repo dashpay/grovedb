@@ -95,7 +95,7 @@ pub struct AggregateSumQueryOptions {
 ### Zpracovani nesoucetovych elementu
 
 SumTrees mohou obsahovat smes typu elementu: `SumItem`, `Item`, `Reference`, `ItemWithSumItem`
-a dalsi. Ve vychozim nastaveni vyvolava nalezeneni nesoucetoveho, nereferencniho elementu chybu.
+a dalsi. Ve vychozim nastaveni vyvolava nalezení nesoucetoveho, nereferencniho elementu chybu.
 
 Pokud je `error_if_non_sum_item_found` nastaveno na `false`, nesoucetove elementy jsou **ticho
 preskakovany** bez spotreby slotu uzivatelskeho limitu:
@@ -144,11 +144,11 @@ pub struct AggregateSumQueryResult {
 }
 ```
 
-Priznak `hard_limit_reached` ukazuje, zda byl dosazeno systemoveho pevneho limitu skenovani
+Priznak `hard_limit_reached` ukazuje, zda bylo dosaženo systemoveho pevneho limitu skenovani
 (vychozi: 1024 elementu) pred prirozonym dokoncenim dotazu. Pokud je `true`, mohou existovat
 dalsi vysledky za temi, ktere byly vraceny.
 
-## Dva systemy limitu
+## Tri systemy limitu
 
 Agregatni soucetove dotazy maji **tri** podminky zastaveni:
 
@@ -249,7 +249,7 @@ let query = AggregateSumQuery::new_descending(500, Some(10));
 | `new(sum_limit, limit)` | Cely rozsah, vzestupne |
 | `new_descending(sum_limit, limit)` | Cely rozsah, sestupne |
 | `new_single_key(key, sum_limit)` | Vyhledani jednoho klice |
-| `new_with_keys(keys, sum_limit, limit)` | Vice konkretch klicu |
+| `new_with_keys(keys, sum_limit, limit)` | Vice konkrétních klicu |
 | `new_with_keys_reversed(keys, sum_limit, limit)` | Vice klicu, sestupne |
 | `new_single_query_item(item, sum_limit, limit)` | Jediny QueryItem (klic nebo rozsah) |
 | `new_with_query_items(items, sum_limit, limit)` | Vice QueryItems |

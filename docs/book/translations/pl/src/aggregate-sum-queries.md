@@ -1,27 +1,27 @@
-# Zapytania o sumy agregujace
+# Zapytania o sumy agregujące
 
-## Przeglad
+## Przegląd
 
-Zapytania o sumy agregujace to wyspecjalizowany typ zapytan przeznaczony dla **SumTrees** w GroveDB.
-Podczas gdy zwykle zapytania pobieraja elementy wedlug klucza lub zakresu, zapytania o sumy agregujace
-iteruja przez elementy i kumuluja ich wartosci sum, az do osiagniecia **limitu sumy**.
+Zapytania o sumy agregujące to wyspecjalizowany typ zapytań przeznaczony dla **SumTrees** w GroveDB.
+Podczas gdy zwykłe zapytania pobierają elementy według klucza lub zakresu, zapytania o sumy agregujące
+iterują przez elementy i kumulują ich wartości sum, aż do osiągnięcia **limitu sumy**.
 
-Jest to przydatne w przypadku pytan takich jak:
-- "Daj mi transakcje, az laczna suma przekroczy 1000"
-- "Ktore elementy skladaja sie na pierwszych 500 jednostek wartosci w tym drzewie?"
-- "Zbierz elementy sum do budzetu N"
+Jest to przydatne w przypadku pytań takich jak:
+- "Daj mi transakcje, aż łączna suma przekroczy 1000"
+- "Które elementy składają się na pierwszych 500 jednostek wartości w tym drzewie?"
+- "Zbierz elementy sum do budżetu N"
 
 ## Podstawowe koncepcje
 
-### Czym rozni sie od zwyklych zapytan
+### Czym różni się od zwykłych zapytań
 
 | Cecha | PathQuery | AggregateSumPathQuery |
 |-------|-----------|----------------------|
 | **Cel** | Dowolny typ elementu | Elementy SumItem / ItemWithSumItem |
-| **Warunek zatrzymania** | Limit (ilosc) lub koniec zakresu | Limit sumy (biezaca suma) **i/lub** limit elementow |
-| **Zwraca** | Elementy lub klucze | Pary klucz-wartosc sumy |
-| **Podzapytania** | Tak (zstepowanie do poddrzew) | Nie (pojedynczy poziom drzewa) |
-| **Referencje** | Rozwiazywane przez warstwe GroveDB | Opcjonalnie sledzone lub ignorowane |
+| **Warunek zatrzymania** | Limit (ilość) lub koniec zakresu | Limit sumy (bieżąca suma) **i/lub** limit elementów |
+| **Zwraca** | Elementy lub klucze | Pary klucz-wartość sumy |
+| **Podzapytania** | Tak (zstępowanie do poddrzew) | Nie (pojedynczy poziom drzewa) |
+| **Referencje** | Rozwiązywane przez warstwę GroveDB | Opcjonalnie śledzone lub ignorowane |
 
 ### Struktura AggregateSumQuery
 
@@ -34,7 +34,7 @@ pub struct AggregateSumQuery {
 }
 ```
 
-Zapytanie jest opakowane w `AggregateSumPathQuery`, aby okreslic, gdzie w gaju szukac:
+Zapytanie jest opakowane w `AggregateSumPathQuery`, aby określić, gdzie w gaju szukać:
 
 ```rust
 pub struct AggregateSumPathQuery {
@@ -43,10 +43,10 @@ pub struct AggregateSumPathQuery {
 }
 ```
 
-### Limit sumy — biezaca suma
+### Limit sumy — bieżąca suma
 
-`sum_limit` jest centralnym pojeciem. W miare skanowania elementow ich wartosci sum sa
-kumulowane. Gdy biezaca suma osiagnie lub przekroczy limit sumy, iteracja zostaje zatrzymana:
+`sum_limit` jest centralnym pojęciem. W miarę skanowania elementów ich wartości sum są
+kumulowane. Gdy bieżąca suma osiągnie lub przekroczy limit sumy, iteracja zostaje zatrzymana:
 
 ```mermaid
 graph LR
@@ -65,9 +65,9 @@ graph LR
     style remaining fill:#fadbd8,stroke:#e74c3c,stroke-dasharray:5 5
 ```
 
-> **Wynik:** `[(a, 7), (b, 5), (c, 3)]` — iteracja zatrzymuje sie, poniewaz 7 + 5 + 3 = 15 >= sum_limit
+> **Wynik:** `[(a, 7), (b, 5), (c, 3)]` — iteracja zatrzymuje się, ponieważ 7 + 5 + 3 = 15 >= sum_limit
 
-Ujemne wartosci sum sa obslugiwane. Ujemna wartosc zwieksza pozostaly budzet:
+Ujemne wartości sum są obsługiwane. Ujemna wartość zwiększa pozostały budżet:
 
 ```text
 sum_limit = 12, elements: a(10), b(-3), c(5)
@@ -92,13 +92,13 @@ pub struct AggregateSumQueryOptions {
 }
 ```
 
-### Obsluga elementow niebedacych sumami
+### Obsługa elementów niebędących sumami
 
-SumTrees moga zawierac mieszanke typow elementow: `SumItem`, `Item`, `Reference`, `ItemWithSumItem`
-i inne. Domyslnie napotkanie elementu niebedacego suma ani referencja powoduje blad.
+SumTrees mogą zawierać mieszankę typów elementów: `SumItem`, `Item`, `Reference`, `ItemWithSumItem`
+i inne. Domyślnie napotkanie elementu niebędącego sumą ani referencją powoduje błąd.
 
-Gdy `error_if_non_sum_item_found` jest ustawione na `false`, elementy niebedace sumami sa **po cichu pomijane**
-bez zuzycia slotu limitu uzytkownika:
+Gdy `error_if_non_sum_item_found` jest ustawione na `false`, elementy niebędące sumami są **po cichu pomijane**
+bez zużycia slotu limitu użytkownika:
 
 ```text
 Tree contents: a(SumItem=7), b(Item), c(SumItem=3)
@@ -111,13 +111,13 @@ Scan: a(7) → returned, limit=1
 Result: [(a, 7), (c, 3)]
 ```
 
-Uwaga: Elementy `ItemWithSumItem` sa **zawsze** przetwarzane (nigdy pomijane), poniewaz zawieraja
-wartosc sumy.
+Uwaga: Elementy `ItemWithSumItem` są **zawsze** przetwarzane (nigdy pomijane), ponieważ zawierają
+wartość sumy.
 
-### Obsluga referencji
+### Obsługa referencji
 
-Domyslnie elementy `Reference` sa **sledzone** — zapytanie rozwiazuje lancuch referencji
-(do 3 posrednich skokow), aby znalezc wartosc sumy elementu docelowego:
+Domyślnie elementy `Reference` są **śledzone** — zapytanie rozwiązuje łańcuch referencji
+(do 3 pośrednich skoków), aby znaleźć wartość sumy elementu docelowego:
 
 ```text
 Tree contents: a(SumItem=7), ref_b(Reference → a)
@@ -128,14 +128,14 @@ ref_b is followed → resolves to a(SumItem=7)
 Result: [(a, 7), (ref_b, 7)]
 ```
 
-Gdy `ignore_references` jest ustawione na `true`, referencje sa po cichu pomijane bez zuzycia slotu
-limitu, podobnie jak pomijane sa elementy niebedace sumami.
+Gdy `ignore_references` jest ustawione na `true`, referencje są po cichu pomijane bez zużycia slotu
+limitu, podobnie jak pomijane są elementy niebędące sumami.
 
-Lancuchy referencji glebsze niz 3 posrednie skoki powoduja blad `ReferenceLimit`.
+Łańcuchy referencji głębsze niż 3 pośrednie skoki powodują błąd `ReferenceLimit`.
 
 ## Typ wyniku
 
-Zapytania zwracaja `AggregateSumQueryResult`:
+Zapytania zwracają `AggregateSumQueryResult`:
 
 ```rust
 pub struct AggregateSumQueryResult {
@@ -144,26 +144,26 @@ pub struct AggregateSumQueryResult {
 }
 ```
 
-Flaga `hard_limit_reached` wskazuje, czy systemowy twardy limit skanowania (domyslnie: 1024
-elementy) zostal osiagniety przed naturalnym zakonczeniem zapytania. Gdy wynosi `true`, moga
-istniec dodatkowe wyniki poza tymi, ktore zostaly zwrocone.
+Flaga `hard_limit_reached` wskazuje, czy systemowy twardy limit skanowania (domyślnie: 1024
+elementy) został osiągnięty przed naturalnym zakończeniem zapytania. Gdy wynosi `true`, mogą
+istnieć dodatkowe wyniki poza tymi, które zostały zwrócone.
 
-## Dwa systemy limitow
+## Trzy systemy limitów
 
-Zapytania o sumy agregujace maja **trzy** warunki zatrzymania:
+Zapytania o sumy agregujące mają **trzy** warunki zatrzymania:
 
-| Limit | Zrodlo | Co liczy | Efekt po osiagnieciu |
+| Limit | Źródło | Co liczy | Efekt po osiągnięciu |
 |-------|--------|----------|---------------------|
-| **sum_limit** | Uzytkownik (zapytanie) | Biezaca suma wartosci sum | Zatrzymuje iteracje |
-| **limit_of_items_to_check** | Uzytkownik (zapytanie) | Zwrocone pasujace elementy | Zatrzymuje iteracje |
-| **Twardy limit skanowania** | System (GroveVersion, domyslnie 1024) | Wszystkie zeskanowane elementy (lacznie z pomijanymi) | Zatrzymuje iteracje, ustawia `hard_limit_reached` |
+| **sum_limit** | Użytkownik (zapytanie) | Bieżąca suma wartości sum | Zatrzymuje iterację |
+| **limit_of_items_to_check** | Użytkownik (zapytanie) | Zwrócone pasujące elementy | Zatrzymuje iterację |
+| **Twardy limit skanowania** | System (GroveVersion, domyślnie 1024) | Wszystkie zeskanowane elementy (łącznie z pomijanymi) | Zatrzymuje iterację, ustawia `hard_limit_reached` |
 
-Twardy limit skanowania zapobiega nieograniczonej iteracji, gdy nie ustawiono limitu uzytkownika.
-Pominiete elementy (elementy niebedace sumami z `error_if_non_sum_item_found=false` lub referencje z
-`ignore_references=true`) licza sie do twardego limitu skanowania, ale **nie** do limitu
-`limit_of_items_to_check` uzytkownika.
+Twardy limit skanowania zapobiega nieograniczonej iteracji, gdy nie ustawiono limitu użytkownika.
+Pominięte elementy (elementy niebędące sumami z `error_if_non_sum_item_found=false` lub referencje z
+`ignore_references=true`) liczą się do twardego limitu skanowania, ale **nie** do limitu
+`limit_of_items_to_check` użytkownika.
 
-## Uzycie API
+## Użycie API
 
 ### Proste zapytanie
 
@@ -222,7 +222,7 @@ if result.hard_limit_reached {
 
 ### Zapytania oparte na kluczach
 
-Zamiast skanowac zakres, mozna zapytac o konkretne klucze:
+Zamiast skanować zakres, można zapytać o konkretne klucze:
 
 ```rust
 // Check the sum value of specific keys
@@ -233,24 +233,24 @@ let query = AggregateSumQuery::new_with_keys(
 );
 ```
 
-### Zapytania malejace
+### Zapytania malejące
 
-Iteracja od najwyzszego klucza do najnizszego:
+Iteracja od najwyższego klucza do najniższego:
 
 ```rust
 let query = AggregateSumQuery::new_descending(500, Some(10));
 // Or: query.left_to_right = false;
 ```
 
-## Referencja konstruktorow
+## Referencja konstruktorów
 
 | Konstruktor | Opis |
 |-------------|------|
-| `new(sum_limit, limit)` | Pelny zakres, rosnaco |
-| `new_descending(sum_limit, limit)` | Pelny zakres, malejaco |
+| `new(sum_limit, limit)` | Pełny zakres, rosnąco |
+| `new_descending(sum_limit, limit)` | Pełny zakres, malejąco |
 | `new_single_key(key, sum_limit)` | Wyszukiwanie pojedynczego klucza |
 | `new_with_keys(keys, sum_limit, limit)` | Wiele konkretnych kluczy |
-| `new_with_keys_reversed(keys, sum_limit, limit)` | Wiele kluczy, malejaco |
+| `new_with_keys_reversed(keys, sum_limit, limit)` | Wiele kluczy, malejąco |
 | `new_single_query_item(item, sum_limit, limit)` | Pojedynczy QueryItem (klucz lub zakres) |
 | `new_with_query_items(items, sum_limit, limit)` | Wiele QueryItems |
 

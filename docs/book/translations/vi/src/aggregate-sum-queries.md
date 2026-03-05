@@ -148,7 +148,7 @@ Cờ `hard_limit_reached` cho biết liệu giới hạn quét cứng của hệ
 phần tử) có bị đạt đến trước khi truy vấn hoàn thành tự nhiên hay không. Khi là `true`, có thể
 tồn tại nhiều kết quả hơn ngoài những gì đã được trả về.
 
-## Hai hệ thống giới hạn
+## Ba hệ thống giới hạn
 
 Các truy vấn tổng hợp sum có **ba** điều kiện dừng:
 
