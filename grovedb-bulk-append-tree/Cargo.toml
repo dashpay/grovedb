@@ -25,7 +25,7 @@ grovedb-dense-fixed-sized-merkle-tree = { version = "4.0.0", path = "../grovedb-
 grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
 grovedb-costs = { version = "4.0.0", path = "../costs" }
 grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
-blake3 = "1.8.1"
-bincode = { version = "2.0.1", features = ["derive"] }
-hex = "0.4"
-thiserror = "2.0"
+blake3 = { workspace = true }
+bincode = { workspace = true, features = ["derive"] }
+hex = { workspace = true }
+thiserror = { workspace = true }

@@ -9,14 +9,14 @@ documentation = "https://docs.rs/grovedb-query"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
-bincode = { version = "=2.0.1" }
-hex = "0.4.3"
-indexmap = "2.2.6"
-thiserror = "2.0.17"
-serde = { version = "1.0.219", features = ["derive"], optional = true }
-ed = { version = "0.2.2" }
-byteorder = { version = "1.5.0" }
-integer-encoding = { version = "4.1.0" }
+bincode = { workspace = true }
+hex = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+ed = { workspace = true }
+byteorder = { workspace = true }
+integer-encoding = { workspace = true }
 
 # Feature-gated deps for merk integration
 grovedb-costs = { version = "4.0.0", path = "../costs", optional = true }
@@ -25,7 +25,7 @@ grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
 
 
 [dev-dependencies]
-assert_matches = "1.5.0"
+assert_matches = { workspace = true }
 
 [features]
 default = []

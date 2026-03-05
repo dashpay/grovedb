@@ -79,7 +79,7 @@ use grovedb_merk::{
     TreeFeatureType,
 };
 use grovedb_version::version::GroveVersion;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{prelude::*, rngs::SmallRng, SeedableRng};
 
 /// Tracks which terminal key each remaining key should be queried under.
 /// Uses BST path tracing through proof structure, not value-based boundaries.
@@ -133,7 +133,7 @@ impl KeyTerminalTracker {
     fn active_terminal_keys(&self) -> Vec<Vec<u8>> {
         self.terminal_refcount
             .iter()
-            .filter(|(_, &count)| count > 0)
+            .filter(|&(_, &count)| count > 0)
             .map(|(k, _)| k.clone())
             .collect()
     }
@@ -302,14 +302,14 @@ pub fn run_branch_query_benchmark() {
         for _ in 0..batch_size {
             // 32-byte random key
             let mut key = [0u8; 32];
-            rng.fill(&mut key);
+            rng.fill_bytes(&mut key);
 
             // Random value between 1 and 20
-            let value_num: u8 = rng.gen_range(1..=20);
+            let value_num: u8 = rng.random_range(1..=20);
             let item_value = vec![value_num];
 
             // Random balance between 1000 and 1000000 for SumItem
-            let balance: i64 = rng.gen_range(1000..=1_000_000);
+            let balance: i64 = rng.random_range(1000..=1_000_000);
 
             // Create Element::ItemWithSumItem and serialize it
             let element = Element::new_item_with_sum_item(item_value, balance);
@@ -385,7 +385,7 @@ pub fn run_branch_query_benchmark() {
     // Select random existing keys
     let mut existing_keys: BTreeSet<Vec<u8>> = BTreeSet::new();
     while existing_keys.len() < num_existing_keys {
-        let idx = rng.gen_range(0..all_keys.len());
+        let idx = rng.random_range(0..all_keys.len());
         existing_keys.insert(all_keys[idx].clone());
     }
 
@@ -393,7 +393,7 @@ pub fn run_branch_query_benchmark() {
     let mut nonexistent_keys: BTreeSet<Vec<u8>> = BTreeSet::new();
     while nonexistent_keys.len() < num_nonexistent_keys {
         let mut key = [0u8; 32];
-        rng.fill(&mut key);
+        rng.fill_bytes(&mut key);
         // Make sure it's not in the tree (very unlikely but check anyway)
         if !all_keys.contains(&key.to_vec()) {
             nonexistent_keys.insert(key.to_vec());

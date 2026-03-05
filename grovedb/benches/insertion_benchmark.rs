@@ -8,7 +8,7 @@ use grovedb_path::SubtreePath;
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
-use rand::Rng;
+use rand::prelude::*;
 #[cfg(feature = "minimal")]
 use tempfile::TempDir;
 

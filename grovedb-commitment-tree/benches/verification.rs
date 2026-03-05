@@ -21,7 +21,7 @@ use grovedb_commitment_tree::{
     FullViewingKey, Hashable, MerkleHashOrchard, NoteValue, ProvingKey, Scope, SpendingKey,
     VerifyingKey,
 };
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 
 static PROVING_KEY: OnceLock<ProvingKey> = OnceLock::new();
 static VERIFYING_KEY: OnceLock<VerifyingKey> = OnceLock::new();

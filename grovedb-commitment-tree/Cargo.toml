@@ -24,13 +24,14 @@ rusqlite = { version = "0.38", features = ["bundled"], optional = true }
 grovedb-costs = { version = "4.0.0", path = "../costs" }
 grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
 grovedb-bulk-append-tree = { version = "4.0.0", path = "../grovedb-bulk-append-tree", default-features = false }
-blake3 = "1.8.1"
-thiserror = "2.0"
+blake3 = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
-criterion = "0.4"
+tempfile = { workspace = true }
+criterion = { workspace = true }
 rand = { workspace = true }
+rand_core = "0.6"
 
 [[bench]]
 name = "verification"

@@ -58,7 +58,7 @@ use grovedb_merk::{
     CryptoHash, TreeFeatureType,
 };
 use grovedb_version::version::GroveVersion;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{prelude::*, rngs::SmallRng, SeedableRng};
 use rand_distr::{Distribution, LogNormal};
 use tempfile::TempDir;
 use tokio::sync::Mutex as TokioMutex;
@@ -132,7 +132,7 @@ impl KeyLeafTracker {
     fn active_leaves(&self) -> Vec<(Vec<u8>, LeafInfo)> {
         self.leaf_refcount
             .iter()
-            .filter(|(_, &count)| count > 0)
+            .filter(|&(_, &count)| count > 0)
             .filter_map(|(k, _)| self.leaf_info.get(k).map(|info| (k.clone(), *info)))
             .collect()
     }
@@ -233,7 +233,7 @@ fn get_ancestor_from_tree(
     let min_idx = 1;
 
     for idx in (min_idx..leaf_idx).rev() {
-        let (node_tree, ref key, hash) = &path[idx];
+        let (node_tree, key, hash) = &path[idx];
         if let Some(count) = get_node_count(node_tree) {
             if count >= min_privacy_tree_count {
                 let levels_up = (leaf_idx - idx) as u8;

@@ -9,5 +9,5 @@ documentation = "https://docs.rs/grovedb-visualize"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
-hex = "0.4.3"
-itertools = "0.14.0"
+hex = { workspace = true }
+itertools = { workspace = true }
