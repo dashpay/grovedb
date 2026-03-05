@@ -162,15 +162,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn prove_query_many_empty_queries_panics() {
-        // prove_query_many with an empty query list will index out of bounds
-        // in the current implementation (it accesses query[0] when len <= 1).
+    fn prove_query_many_empty_queries_returns_error() {
+        // prove_query_many with an empty query list should return an error.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
-        // This should panic because the code does `query[0]` on an empty vec.
-        let _result = db.prove_query_many(vec![], None, grove_version);
+        let result = db.prove_query_many(vec![], None, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "prove_query_many with empty vector should return InvalidInput error"
+        );
     }
 
     // =========================================================================

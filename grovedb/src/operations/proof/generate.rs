@@ -48,6 +48,12 @@ impl GroveDb {
                 .proof
                 .prove_query_many
         );
+        if query.is_empty() {
+            return Err(Error::InvalidInput(
+                "prove_query_many called with empty query vector",
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
         if query.len() > 1 {
             let query = cost_return_on_error_default!(PathQuery::merge(query, grove_version));
             self.prove_query(&query, prove_options, grove_version)
