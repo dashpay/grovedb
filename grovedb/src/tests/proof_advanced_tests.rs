@@ -167,10 +167,17 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
-        let result = db.prove_query_many(vec![], None, grove_version).unwrap();
+        let err = db
+            .prove_query_many(vec![], None, grove_version)
+            .unwrap()
+            .expect_err("prove_query_many with empty vector should return an error");
         assert!(
-            result.is_err(),
-            "prove_query_many with empty vector should return InvalidInput error"
+            matches!(
+                err,
+                crate::Error::InvalidInput("prove_query_many called with empty query vector")
+            ),
+            "expected InvalidInput with exact message, got: {:?}",
+            err
         );
     }
 
