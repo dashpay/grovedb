@@ -16,6 +16,11 @@ use crate::{
 const MAX_VALUE_LEN: u32 = 64 * 1024 * 1024;
 
 impl Encode for Op {
+    // Note: `key.len() as u8` casts below are safe because GroveDB enforces a
+    // 255-byte maximum key length at insertion time (both direct insert and
+    // batch paths). The `debug_assert!` guards serve as development-time
+    // verification of this invariant. A runtime check here is unnecessary
+    // since keys exceeding 255 bytes can never be stored in the database.
     fn encode_into<W: Write>(&self, dest: &mut W) -> ed::Result<()> {
         match self {
             // Push
