@@ -170,7 +170,12 @@ impl NonMerkTreeMeta {
 /// User-facing variants: `InsertOnly`, `InsertOrReplace`, `Replace`, `Patch`,
 /// `RefreshReference`, `Delete`, `DeleteTree`, `CommitmentTreeInsert`,
 /// `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`.
-/// Other variants are internal and produced by batch propagation.
+///
+/// Internal variants (`ReplaceTreeRootKey`, `InsertTreeWithRootHash`,
+/// `ReplaceNonMerkTreeRoot`, `InsertNonMerkTree`) are marked
+/// `#[non_exhaustive]` so they **cannot be constructed by external crates**.
+/// They are produced solely by batch propagation / preprocessing within
+/// this crate.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum GroveOp {
     /// **Internal only — do not construct directly.**
@@ -178,6 +183,10 @@ pub enum GroveOp {
     ///
     /// Used by propagation to update an existing Merk tree's root hash
     /// and aggregate data. For non-Merk trees, see `ReplaceNonMerkTreeRoot`.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     ReplaceTreeRootKey {
         /// Hash
         hash: [u8; 32],
@@ -214,6 +223,10 @@ pub enum GroveOp {
     /// Created during batch propagation from an `InsertOrReplace`/`InsertOnly`
     /// occupied entry when a child subtree's root hash is propagated upward.
     /// For non-Merk trees, see `InsertNonMerkTree`.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     InsertTreeWithRootHash {
         /// Hash
         hash: [u8; 32],
@@ -227,6 +240,10 @@ pub enum GroveOp {
     /// **Internal only — do not construct directly.**
     /// Replace root hash for a non-Merk tree (CommitmentTree, MmrTree,
     /// BulkAppendTree, DenseTree). Produced by preprocessing functions.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     ReplaceNonMerkTreeRoot {
         /// New root hash (sinsemilla root, MMR root, state root, dense root).
         hash: [u8; 32],
@@ -239,6 +256,10 @@ pub enum GroveOp {
     /// Created when propagation encounters an occupied entry that is a
     /// non-Merk tree element (CommitmentTree, MmrTree, BulkAppendTree,
     /// DenseTree).
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     InsertNonMerkTree {
         /// Hash
         hash: [u8; 32],
