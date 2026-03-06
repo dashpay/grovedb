@@ -168,7 +168,7 @@ impl RocksDbStorage {
             ));
         }
 
-        res.extend(segments_count.to_ne_bytes());
+        res.extend(segments_count.to_be_bytes());
         res.extend(lengths);
         (res, segments_count)
     }
