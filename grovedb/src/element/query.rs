@@ -487,10 +487,10 @@ impl ElementQueryExtensions for Element {
                     };
 
                     if let Some(limit) = limit {
-                        *limit -= 1;
+                        *limit = limit.saturating_sub(1);
                     }
                 } else if let Some(offset) = offset {
-                    *offset -= 1;
+                    *offset = offset.saturating_sub(1);
                 }
             } else if allow_get_raw {
                 cost_return_on_error_no_add!(
@@ -825,10 +825,10 @@ impl ElementQueryExtensions for Element {
                 }
             }
             if let Some(limit) = limit {
-                *limit -= 1;
+                *limit = limit.saturating_sub(1);
             }
         } else if let Some(offset) = offset {
-            *offset -= 1;
+            *offset = offset.saturating_sub(1);
         }
         Ok(())
     }
