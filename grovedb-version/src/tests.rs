@@ -3,6 +3,7 @@ use crate::version::grovedb_versions::*;
 use crate::version::merk_versions::*;
 use crate::version::v1::GROVE_V1;
 use crate::version::v2::GROVE_V2;
+use crate::version::v3::GROVE_V3;
 use crate::version::{GroveVersion, GROVE_VERSIONS};
 use crate::{TryFromVersioned, TryIntoVersioned};
 
@@ -63,14 +64,14 @@ fn grove_version_first_returns_v1() {
 }
 
 #[test]
-fn grove_version_latest_returns_v2() {
+fn grove_version_latest_returns_v3() {
     let latest = GroveVersion::latest();
-    assert_eq!(latest.protocol_version, GROVE_V2.protocol_version);
+    assert_eq!(latest.protocol_version, GROVE_V3.protocol_version);
 }
 
 #[test]
 fn grove_versions_count() {
-    assert_eq!(GROVE_VERSIONS.len(), 2);
+    assert_eq!(GROVE_VERSIONS.len(), 3);
 }
 
 #[test]
