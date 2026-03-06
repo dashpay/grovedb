@@ -69,13 +69,23 @@ where
         let child = if link.tree().is_some() {
             match self.tree.own_return(|t| t.detach(left)) {
                 Some(child) => child,
-                _ => unreachable!("Expected Some"),
+                _ => {
+                    return Err(Error::CorruptedState(
+                        "expected child tree after detach but got None",
+                    ))
+                    .wrap_with_cost(cost);
+                }
             }
         } else {
             let link = self.tree.slot_mut(left).take();
             match link {
                 Some(Link::Reference { .. }) => (),
-                _ => unreachable!("Expected Some(Link::Reference)"),
+                _ => {
+                    return Err(Error::CorruptedState(
+                        "expected Link::Reference but found other variant or None",
+                    ))
+                    .wrap_with_cost(cost);
+                }
             }
             cost_return_on_error!(
                 &mut cost,
