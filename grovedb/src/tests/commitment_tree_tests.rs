@@ -86,7 +86,7 @@ fn test_insert_commitment_tree_at_root() {
     db.insert(
         EMPTY_PATH,
         b"commitments",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -122,7 +122,7 @@ fn test_commitment_tree_under_normal_tree() {
     db.insert(
         [b"parent"].as_ref(),
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -146,7 +146,8 @@ fn test_commitment_tree_with_flags() {
     db.insert(
         EMPTY_PATH,
         b"flagged",
-        Element::empty_commitment_tree_with_flags(TEST_CHUNK_POWER, flags.clone()),
+        Element::empty_commitment_tree_with_flags(TEST_CHUNK_POWER, flags.clone())
+            .expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -169,7 +170,7 @@ fn test_empty_commitment_tree_serialization_roundtrip() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -197,7 +198,7 @@ fn test_commitment_tree_insert_single() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -249,7 +250,7 @@ fn test_commitment_tree_insert_multiple() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -324,7 +325,7 @@ fn test_commitment_tree_insert_with_transaction() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -382,7 +383,7 @@ fn test_commitment_tree_insert_transaction_rollback() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -428,7 +429,7 @@ fn test_commitment_tree_anchor_empty() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -454,7 +455,7 @@ fn test_commitment_tree_anchor_changes_after_insert() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -499,7 +500,7 @@ fn test_commitment_tree_anchor_deterministic() {
         db.insert(
             EMPTY_PATH,
             b"pool",
-            Element::empty_commitment_tree(TEST_CHUNK_POWER),
+            Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -558,7 +559,7 @@ fn test_commitment_tree_insert_propagates_root_hash() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -605,7 +606,7 @@ fn test_commitment_tree_nested_propagation() {
     db.insert(
         [b"parent"].as_ref(),
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -643,7 +644,7 @@ fn test_commitment_tree_count() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -692,7 +693,7 @@ fn test_commitment_tree_get_value() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -747,7 +748,7 @@ fn test_commitment_tree_compaction() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(2),
+        Element::empty_commitment_tree(2).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -812,7 +813,7 @@ fn test_commitment_tree_batch_insert() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -878,7 +879,7 @@ fn test_commitment_tree_batch_with_transaction() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -929,7 +930,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
     db_a.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -956,7 +957,7 @@ fn test_commitment_tree_batch_and_nonbatch_same_result() {
     db_b.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1008,7 +1009,7 @@ fn test_commitment_tree_delete() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1052,7 +1053,7 @@ fn test_commitment_tree_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1085,7 +1086,7 @@ fn test_commitment_tree_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1187,7 +1188,7 @@ fn test_multiple_commitment_trees_independent() {
     db.insert(
         EMPTY_PATH,
         b"pool_a",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1198,7 +1199,7 @@ fn test_multiple_commitment_trees_independent() {
     db.insert(
         EMPTY_PATH,
         b"pool_b",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1268,7 +1269,7 @@ fn test_verify_grovedb_commitment_tree_valid() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1319,7 +1320,7 @@ fn test_commitment_tree_delete_empty() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1346,7 +1347,7 @@ fn test_commitment_tree_delete_non_empty_error() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1400,7 +1401,7 @@ fn test_verify_grovedb_after_commitment_tree_delete() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1485,7 +1486,7 @@ fn test_commitment_tree_prove_query_v1_empty() {
     db.insert(
         &[b"root"],
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1557,7 +1558,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
     db.insert(
         &[b"root"],
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1680,7 +1681,7 @@ fn test_commitment_tree_prove_query_v1_with_chunks() {
     db.insert(
         &[b"root"],
         b"pool",
-        Element::empty_commitment_tree(chunk_power),
+        Element::empty_commitment_tree(chunk_power).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1795,7 +1796,7 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
     db.insert(
         &[b"root"],
         b"pool",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1975,7 +1976,7 @@ fn test_commitment_tree_persistence_across_reopen() {
         db.insert(
             EMPTY_PATH,
             b"pool",
-            Element::empty_commitment_tree(TEST_CHUNK_POWER),
+            Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -2052,7 +2053,7 @@ fn test_verify_grovedb_commitment_tree_empty() {
     db.insert(
         EMPTY_PATH,
         b"ct",
-        Element::empty_commitment_tree(TEST_CHUNK_POWER),
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,

@@ -2960,7 +2960,7 @@ mod tests {
         db.insert(
             [b"root"].as_ref(),
             b"bat",
-            Element::empty_bulk_append_tree(2), // chunk_power = 2 (epoch_size = 4)
+            Element::empty_bulk_append_tree(2).expect("valid chunk_power"), // chunk_power = 2 (epoch_size = 4)
             None,
             None,
             grove_version,
@@ -4245,7 +4245,7 @@ mod tests {
         db.insert(
             EMPTY_PATH,
             b"bat",
-            Element::empty_bulk_append_tree(2),
+            Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -4424,7 +4424,7 @@ mod tests {
         db.insert(
             [b"root"].as_ref(),
             b"bat",
-            Element::empty_bulk_append_tree(2),
+            Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -5148,7 +5148,7 @@ mod tests {
         db.insert(
             [b"root"].as_ref(),
             b"bat",
-            Element::empty_bulk_append_tree(2), // chunk_power = 2 (epoch_size = 4)
+            Element::empty_bulk_append_tree(2).expect("valid chunk_power"), // chunk_power = 2 (epoch_size = 4)
             None,
             None,
             grove_version,
@@ -5577,7 +5577,7 @@ mod tests {
         db.insert(
             [b"root"].as_ref(),
             b"pool",
-            Element::empty_commitment_tree(2),
+            Element::empty_commitment_tree(2).expect("valid chunk_power"),
             None,
             None,
             grove_version,

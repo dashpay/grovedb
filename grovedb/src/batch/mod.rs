@@ -4805,7 +4805,7 @@ mod tests {
         db.insert(
             EMPTY_PATH,
             b"ct",
-            Element::empty_commitment_tree(4),
+            Element::empty_commitment_tree(4).expect("valid chunk_power"),
             None,
             Some(&tx),
             grove_version,
@@ -4851,7 +4851,7 @@ mod tests {
         db.insert(
             EMPTY_PATH,
             b"ct",
-            Element::empty_commitment_tree(4),
+            Element::empty_commitment_tree(4).expect("valid chunk_power"),
             None,
             Some(&tx),
             grove_version,
