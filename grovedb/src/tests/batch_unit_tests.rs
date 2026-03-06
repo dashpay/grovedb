@@ -518,6 +518,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_consistency_insert_only_under_deleted_path() {
+        let ops = vec![
+            QualifiedGroveDbOp::delete_op(vec![b"root".to_vec()], b"subtree".to_vec()),
+            QualifiedGroveDbOp::insert_only_op(
+                vec![b"root".to_vec(), b"subtree".to_vec()],
+                b"key".to_vec(),
+                Element::new_item(b"val".to_vec()),
+            ),
+        ];
+        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        assert!(
+            !results.is_empty(),
+            "InsertOnly under a deleted path should be flagged"
+        );
+    }
+
+    #[test]
+    fn test_consistency_insert_under_delete_tree_path() {
+        let ops = vec![
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![b"root".to_vec()],
+                b"subtree".to_vec(),
+                TreeType::NormalTree,
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"root".to_vec(), b"subtree".to_vec()],
+                b"key".to_vec(),
+                Element::new_item(b"val".to_vec()),
+            ),
+        ];
+        let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+        assert!(
+            !results.is_empty(),
+            "insert under a DeleteTree path should be flagged"
+        );
+    }
+
     // ===================================================================
     // Group 6: apply_operations_without_batching — non-Merk tree ops
     // ===================================================================
