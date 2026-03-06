@@ -152,7 +152,7 @@ where
 
         self.index = index + 1;
 
-        let chunk_height = chunk_height(self.height, index).unwrap();
+        let chunk_height = chunk_height(self.height, index)?;
 
         let tree_type = self.merk.tree_type;
         let chunk = self
@@ -169,7 +169,8 @@ where
                 )))
                 .wrap_with_cost(Default::default()),
             })
-            .unwrap()?;
+            // costs intentionally discarded — chunk producer does not track them
+            .value?;
 
         // now we need to return the next index
         // how do we know if we should return some or none
