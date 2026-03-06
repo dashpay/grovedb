@@ -123,14 +123,18 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                children_sizes,
-                cost_info,
-            );
-        }
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.put(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            children_sizes,
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -140,13 +144,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put_aux(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                cost_info,
-            );
-        }
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.put_aux(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -156,13 +164,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put_root(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                cost_info,
-            );
-        }
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.put_root(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -172,13 +184,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put_meta(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                cost_info,
-            );
-        }
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.put_meta(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -187,10 +203,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.delete(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -199,10 +218,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -211,10 +233,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete_root(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.delete_root(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -223,10 +248,13 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let Some(existing_batch) = self.batch else {
+            return Err(Error::StorageError(
+                "write operation on transaction context without a batch".to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        };
+        existing_batch.delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
