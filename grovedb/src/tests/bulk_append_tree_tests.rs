@@ -29,7 +29,7 @@ fn test_insert_bulk_append_tree_at_root() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -63,7 +63,7 @@ fn test_bulk_append_tree_under_normal_tree() {
     db.insert(
         [b"parent"].as_ref(),
         b"notes",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -87,7 +87,8 @@ fn test_bulk_append_tree_with_flags() {
     db.insert(
         EMPTY_PATH,
         b"flagged",
-        Element::empty_bulk_append_tree_with_flags(TEST_CHUNK_POWER, flags.clone()),
+        Element::empty_bulk_append_tree_with_flags(TEST_CHUNK_POWER, flags.clone())
+            .expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -105,7 +106,7 @@ fn test_bulk_append_tree_with_flags() {
 
 #[test]
 fn test_bulk_append_tree_is_any_tree() {
-    let element = Element::empty_bulk_append_tree(TEST_CHUNK_POWER);
+    let element = Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power");
     assert!(element.is_any_tree());
     assert!(element.is_bulk_append_tree());
     assert!(!element.is_any_item());
@@ -132,7 +133,7 @@ fn test_bulk_append_single_value() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -157,7 +158,7 @@ fn test_bulk_append_multiple_in_buffer() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -197,7 +198,7 @@ fn test_bulk_get_value_from_buffer() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -237,7 +238,7 @@ fn test_bulk_get_buffer() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -267,7 +268,7 @@ fn test_bulk_state_root_changes_each_append() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -300,7 +301,7 @@ fn test_bulk_compaction_at_chunk_boundary() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -345,7 +346,7 @@ fn test_bulk_chunk_blob_retrievable() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -383,7 +384,7 @@ fn test_bulk_values_accessible_after_compaction() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -423,7 +424,7 @@ fn test_bulk_state_root_deterministic() {
         db.insert(
             EMPTY_PATH,
             b"bulk",
-            Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+            Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -469,7 +470,7 @@ fn test_bulk_multi_chunk() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -524,7 +525,7 @@ fn test_bulk_three_full_chunks() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -575,7 +576,7 @@ fn test_bulk_batch_single_append() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -613,7 +614,7 @@ fn test_bulk_batch_multiple_appends() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -652,7 +653,7 @@ fn test_bulk_batch_spanning_compaction() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -709,7 +710,7 @@ fn test_bulk_batch_matches_direct_ops() {
     db1.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -728,7 +729,7 @@ fn test_bulk_batch_matches_direct_ops() {
     db2.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -785,7 +786,7 @@ fn test_bulk_batch_with_mixed_ops() {
     db.insert(
         [b"parent"].as_ref(),
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -851,7 +852,7 @@ fn test_bulk_root_hash_propagation() {
     db.insert(
         [b"parent"].as_ref(),
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -892,7 +893,7 @@ fn test_bulk_transaction_commit() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -937,7 +938,7 @@ fn test_bulk_transaction_rollback() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1001,7 +1002,7 @@ fn test_bulk_get_value_out_of_range() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1021,9 +1022,11 @@ fn test_bulk_get_value_out_of_range() {
 }
 
 #[test]
-#[should_panic(expected = "chunk_power must be <= 31")]
 fn test_bulk_invalid_chunk_power() {
-    let _element = Element::empty_bulk_append_tree(32); // Power too large
+    assert!(
+        Element::empty_bulk_append_tree(32).is_err(),
+        "chunk_power > 31 should return error"
+    );
 }
 
 // ===========================================================================
@@ -1038,7 +1041,7 @@ fn test_bulk_delete_empty() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1064,7 +1067,7 @@ fn test_bulk_delete_non_empty() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1107,7 +1110,7 @@ fn test_bulk_delete_non_empty_with_compaction() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1157,7 +1160,7 @@ fn test_bulk_delete_non_empty_error() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1191,7 +1194,7 @@ fn test_bulk_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1225,7 +1228,7 @@ fn test_bulk_delete_and_recreate() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1258,7 +1261,7 @@ fn test_verify_grovedb_bulk_tree_valid() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1296,7 +1299,7 @@ fn test_bulk_persistence_across_reopen() {
         db.insert(
             EMPTY_PATH,
             b"bulk",
-            Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+            Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -1388,7 +1391,7 @@ fn test_bulk_batch_with_transaction() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1458,7 +1461,7 @@ fn test_bulk_batch_transaction_rollback() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1508,7 +1511,7 @@ fn test_verify_grovedb_bulk_tree_empty() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(TEST_CHUNK_POWER),
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
         None,
         None,
         grove_version,

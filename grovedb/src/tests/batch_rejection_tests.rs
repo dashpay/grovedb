@@ -292,7 +292,7 @@ fn test_batch_all_four_non_merk_tree_types() {
     db.insert(
         [b"parent"].as_ref(),
         b"ct",
-        Element::empty_commitment_tree(10),
+        Element::empty_commitment_tree(10).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -314,7 +314,7 @@ fn test_batch_all_four_non_merk_tree_types() {
     db.insert(
         [b"parent"].as_ref(),
         b"bulk",
-        Element::empty_bulk_append_tree(2),
+        Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
         None,
         None,
         grove_version,

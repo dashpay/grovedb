@@ -3,6 +3,7 @@
 
 use crate::{
     element::{BigSumValue, CountValue, Element, ElementFlags, MaxReferenceHop, SumValue},
+    error::ElementError,
     reference_path::ReferencePathType,
 };
 
@@ -289,16 +290,27 @@ impl Element {
         Element::ProvableCountSumTree(maybe_root_key, count_value, sum_value, flags)
     }
 
-    /// Set element to an empty commitment tree
-    pub fn empty_commitment_tree(chunk_power: u8) -> Self {
-        assert!(chunk_power <= 31, "chunk_power must be <= 31");
-        Element::CommitmentTree(0, chunk_power, None)
+    /// Set element to an empty commitment tree.
+    ///
+    /// Returns `InvalidInput` if `chunk_power > 31`.
+    pub fn empty_commitment_tree(chunk_power: u8) -> Result<Self, ElementError> {
+        if chunk_power > 31 {
+            return Err(ElementError::InvalidInput("chunk_power must be <= 31"));
+        }
+        Ok(Element::CommitmentTree(0, chunk_power, None))
     }
 
-    /// Set element to an empty commitment tree with flags
-    pub fn empty_commitment_tree_with_flags(chunk_power: u8, flags: Option<ElementFlags>) -> Self {
-        assert!(chunk_power <= 31, "chunk_power must be <= 31");
-        Element::CommitmentTree(0, chunk_power, flags)
+    /// Set element to an empty commitment tree with flags.
+    ///
+    /// Returns `InvalidInput` if `chunk_power > 31`.
+    pub fn empty_commitment_tree_with_flags(
+        chunk_power: u8,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        if chunk_power > 31 {
+            return Err(ElementError::InvalidInput("chunk_power must be <= 31"));
+        }
+        Ok(Element::CommitmentTree(0, chunk_power, flags))
     }
 
     /// Set element to a commitment tree with all fields
@@ -325,16 +337,27 @@ impl Element {
         Element::MmrTree(mmr_size, flags)
     }
 
-    /// Set element to an empty bulk append tree without flags
-    pub fn empty_bulk_append_tree(chunk_power: u8) -> Self {
-        assert!(chunk_power <= 31, "chunk_power must be <= 31");
-        Element::BulkAppendTree(0, chunk_power, None)
+    /// Set element to an empty bulk append tree without flags.
+    ///
+    /// Returns `InvalidInput` if `chunk_power > 31`.
+    pub fn empty_bulk_append_tree(chunk_power: u8) -> Result<Self, ElementError> {
+        if chunk_power > 31 {
+            return Err(ElementError::InvalidInput("chunk_power must be <= 31"));
+        }
+        Ok(Element::BulkAppendTree(0, chunk_power, None))
     }
 
-    /// Set element to an empty bulk append tree with flags
-    pub fn empty_bulk_append_tree_with_flags(chunk_power: u8, flags: Option<ElementFlags>) -> Self {
-        assert!(chunk_power <= 31, "chunk_power must be <= 31");
-        Element::BulkAppendTree(0, chunk_power, flags)
+    /// Set element to an empty bulk append tree with flags.
+    ///
+    /// Returns `InvalidInput` if `chunk_power > 31`.
+    pub fn empty_bulk_append_tree_with_flags(
+        chunk_power: u8,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        if chunk_power > 31 {
+            return Err(ElementError::InvalidInput("chunk_power must be <= 31"));
+        }
+        Ok(Element::BulkAppendTree(0, chunk_power, flags))
     }
 
     /// Set element to a bulk append tree with all fields

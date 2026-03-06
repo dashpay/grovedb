@@ -276,7 +276,7 @@ fn test_bulk_append_tree_v1_proof_buffer_range() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(2),
+        Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -362,7 +362,7 @@ fn test_bulk_append_tree_v1_proof_chunk_and_buffer() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(2),
+        Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -755,7 +755,7 @@ fn test_bulk_append_tree_v1_proof_disjoint_query_succinctness() {
     db.insert(
         EMPTY_PATH,
         b"bulk",
-        Element::empty_bulk_append_tree(2),
+        Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
         None,
         None,
         grove_version,
@@ -1155,7 +1155,7 @@ fn test_v0_proof_rejects_bulk_append_tree_subquery() {
     db.insert(
         [b"parent"].as_ref(),
         b"bulk",
-        Element::empty_bulk_append_tree(2),
+        Element::empty_bulk_append_tree(2).expect("valid chunk_power"),
         None,
         None,
         grove_version,

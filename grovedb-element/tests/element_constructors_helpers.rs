@@ -221,11 +221,11 @@ fn constructors_create_expected_provable_tree_variants() {
 fn constructors_create_expected_commitment_mmr_bulk_dense_variants() {
     // Commitment tree constructors
     assert_eq!(
-        Element::empty_commitment_tree(4),
+        Element::empty_commitment_tree(4).expect("valid chunk_power"),
         Element::CommitmentTree(0, 4, None)
     );
     assert_eq!(
-        Element::empty_commitment_tree_with_flags(4, sample_flags()),
+        Element::empty_commitment_tree_with_flags(4, sample_flags()).expect("valid chunk_power"),
         Element::CommitmentTree(0, 4, sample_flags())
     );
     assert_eq!(
@@ -246,11 +246,11 @@ fn constructors_create_expected_commitment_mmr_bulk_dense_variants() {
 
     // Bulk append tree constructors
     assert_eq!(
-        Element::empty_bulk_append_tree(6),
+        Element::empty_bulk_append_tree(6).expect("valid chunk_power"),
         Element::BulkAppendTree(0, 6, None)
     );
     assert_eq!(
-        Element::empty_bulk_append_tree_with_flags(6, sample_flags()),
+        Element::empty_bulk_append_tree_with_flags(6, sample_flags()).expect("valid chunk_power"),
         Element::BulkAppendTree(0, 6, sample_flags())
     );
     assert_eq!(
@@ -384,14 +384,22 @@ fn value_helpers_and_conversion_errors_work() {
     assert!(Element::empty_count_sum_tree().is_any_tree());
     assert!(Element::empty_provable_count_tree().is_any_tree());
     assert!(Element::empty_provable_count_sum_tree().is_any_tree());
-    assert!(Element::empty_commitment_tree(1).is_any_tree());
+    assert!(Element::empty_commitment_tree(1)
+        .expect("valid chunk_power")
+        .is_any_tree());
     assert!(Element::empty_mmr_tree().is_any_tree());
-    assert!(Element::empty_bulk_append_tree(1).is_any_tree());
+    assert!(Element::empty_bulk_append_tree(1)
+        .expect("valid chunk_power")
+        .is_any_tree());
     assert!(Element::empty_dense_tree(2).is_any_tree());
 
-    assert!(Element::empty_commitment_tree(2).is_commitment_tree());
+    assert!(Element::empty_commitment_tree(2)
+        .expect("valid chunk_power")
+        .is_commitment_tree());
     assert!(Element::empty_mmr_tree().is_mmr_tree());
-    assert!(Element::empty_bulk_append_tree(2).is_bulk_append_tree());
+    assert!(Element::empty_bulk_append_tree(2)
+        .expect("valid chunk_power")
+        .is_bulk_append_tree());
     assert!(Element::empty_dense_tree(3).is_dense_tree());
 
     assert!(reference.is_reference());
@@ -405,9 +413,13 @@ fn value_helpers_and_conversion_errors_work() {
     assert!(item_with_sum.is_sum_item());
     assert!(item_with_sum.is_item_with_sum_item());
 
-    assert!(Element::empty_commitment_tree(2).uses_non_merk_data_storage());
+    assert!(Element::empty_commitment_tree(2)
+        .expect("valid chunk_power")
+        .uses_non_merk_data_storage());
     assert!(Element::empty_mmr_tree().uses_non_merk_data_storage());
-    assert!(Element::empty_bulk_append_tree(2).uses_non_merk_data_storage());
+    assert!(Element::empty_bulk_append_tree(2)
+        .expect("valid chunk_power")
+        .uses_non_merk_data_storage());
     assert!(Element::empty_dense_tree(2).uses_non_merk_data_storage());
     assert!(!Element::empty_tree().uses_non_merk_data_storage());
     assert!(!item.uses_non_merk_data_storage());

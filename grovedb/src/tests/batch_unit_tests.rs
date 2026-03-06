@@ -530,7 +530,7 @@ mod tests {
         db.insert(
             EMPTY_PATH,
             b"ct",
-            Element::empty_commitment_tree(10),
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -592,7 +592,7 @@ mod tests {
         db.insert(
             EMPTY_PATH,
             b"bulk",
-            Element::empty_bulk_append_tree(10),
+            Element::empty_bulk_append_tree(10).expect("valid chunk_power"),
             None,
             None,
             grove_version,
@@ -668,7 +668,7 @@ mod tests {
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"parent".to_vec()],
                 b"ct".to_vec(),
-                Element::empty_commitment_tree(10),
+                Element::empty_commitment_tree(10).expect("valid chunk_power"),
             ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"parent".to_vec(), b"ct".to_vec()],
@@ -736,7 +736,7 @@ mod tests {
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"parent".to_vec()],
                 b"bulk".to_vec(),
-                Element::empty_bulk_append_tree(10),
+                Element::empty_bulk_append_tree(10).expect("valid chunk_power"),
             ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"parent".to_vec(), b"bulk".to_vec()],
@@ -1136,7 +1136,7 @@ mod tests {
         let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"parent".to_vec()],
             b"ct_elem".to_vec(),
-            Element::empty_commitment_tree(10),
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
         )];
 
         db.apply_batch(ops, None, None, grove_version)
