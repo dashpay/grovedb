@@ -133,11 +133,11 @@ where
             // Validate key length: Merk link encoding stores key length as a
             // single u8, so keys longer than 255 bytes would corrupt the
             // encoding.
-            if let KeyInfo::KnownKey(ref key_bytes) = key {
-                if key_bytes.len() > u8::MAX as usize {
-                    return Err(Error::InvalidInput("key length must be at most 255 bytes"))
-                        .wrap_with_cost(cost);
-                }
+            if let KeyInfo::KnownKey(ref key_bytes) = key
+                && key_bytes.len() > u8::MAX as usize
+            {
+                return Err(Error::InvalidInput("key length must be at most 255 bytes"))
+                    .wrap_with_cost(cost);
             }
 
             // Build qualified path (path + key) for reference lookups
