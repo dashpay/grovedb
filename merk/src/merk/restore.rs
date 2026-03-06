@@ -335,11 +335,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             },
         )?;
 
-        // write the batch
+        // write the batch (costs intentionally discarded — restorer does not track them)
         self.merk
             .storage
             .commit_batch(batch)
-            .unwrap()
+            .value
             .map_err(StorageError)?;
 
         Ok(new_chunk_ids)
@@ -475,10 +475,11 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
 
         self.merk.tree.set(Some(tree));
 
+        // costs intentionally discarded — restorer does not track them
         self.merk
             .storage
             .commit_batch(batch)
-            .unwrap()
+            .value
             .map_err(StorageError)
     }
 
