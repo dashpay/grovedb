@@ -7,7 +7,7 @@
 //! Completeness: a proof must not omit lower layers for non-empty trees that
 //! the query traverses into. Both verify methods must reject such proofs.
 
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v1::GROVE_V1, GroveVersion};
 
 use crate::{
     operations::proof::GroveDBProof,
@@ -162,5 +162,103 @@ fn test_missing_lower_layer_for_non_empty_tree_is_rejected() {
     assert!(
         result.is_err(),
         "verify_subset_query must reject proof missing a non-empty subtree's lower layer"
+    );
+}
+
+/// Same as test_succinctness_rejects_extra_proof_data but forces V0 proofs
+/// (using GROVE_V1 which generates MerkOnlyLayerProof).
+#[test]
+fn test_succinctness_rejects_extra_proof_data_v0() {
+    let grove_version = &GROVE_V1;
+    let db = make_deep_tree(grove_version);
+
+    let mut broad_inner = Query::new();
+    broad_inner.insert_all();
+    let mut broad_outer = Query::new();
+    broad_outer.insert_all();
+    broad_outer.set_subquery(broad_inner);
+    let broad_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], broad_outer);
+
+    let proof_bytes = db
+        .prove_query(&broad_query, None, grove_version)
+        .unwrap()
+        .expect("should generate broad proof");
+
+    let mut narrow_inner = Query::new();
+    narrow_inner.insert_all();
+    let mut narrow_outer = Query::new();
+    narrow_outer.insert_key(b"innertree".to_vec());
+    narrow_outer.set_subquery(narrow_inner);
+    let narrow_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], narrow_outer);
+
+    let subset_result = GroveDb::verify_subset_query(&proof_bytes, &narrow_query, grove_version);
+    assert!(
+        subset_result.is_ok(),
+        "V0: verify_subset_query should accept broad proof with narrow query"
+    );
+
+    let strict_result = GroveDb::verify_query(&proof_bytes, &narrow_query, grove_version);
+    assert!(
+        strict_result.is_err(),
+        "V0: verify_query should reject broad proof with narrow query (extra data)"
+    );
+}
+
+/// Same as test_missing_lower_layer but forces V0 proofs.
+#[test]
+fn test_missing_lower_layer_for_non_empty_tree_is_rejected_v0() {
+    let grove_version = &GROVE_V1;
+    let db = make_deep_tree(grove_version);
+
+    let mut inner_query = Query::new();
+    inner_query.insert_all();
+    let mut outer_query = Query::new();
+    outer_query.insert_all();
+    outer_query.set_subquery(inner_query);
+    let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], outer_query);
+
+    let proof_bytes = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("should generate proof");
+
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+    let mut grovedb_proof: GroveDBProof = bincode::decode_from_slice(&proof_bytes, config)
+        .expect("should decode proof")
+        .0;
+
+    let test_leaf_key = TEST_LEAF.to_vec();
+    let innertree4_key = b"innertree4".to_vec();
+    let had_layer = match &mut grovedb_proof {
+        GroveDBProof::V0(v0) => v0
+            .root_layer
+            .lower_layers
+            .get_mut(&test_leaf_key)
+            .and_then(|tl| tl.lower_layers.remove(&innertree4_key))
+            .is_some(),
+        GroveDBProof::V1(v1) => v1
+            .root_layer
+            .lower_layers
+            .get_mut(&test_leaf_key)
+            .and_then(|tl| tl.lower_layers.remove(&innertree4_key))
+            .is_some(),
+    };
+    assert!(had_layer, "innertree4 should have had a lower layer proof");
+
+    let tampered_bytes =
+        bincode::encode_to_vec(&grovedb_proof, config).expect("should re-encode tampered proof");
+
+    let result = GroveDb::verify_query(&tampered_bytes, &path_query, grove_version);
+    assert!(
+        result.is_err(),
+        "V0: verify_query must reject proof missing a non-empty subtree's lower layer"
+    );
+
+    let result = GroveDb::verify_subset_query(&tampered_bytes, &path_query, grove_version);
+    assert!(
+        result.is_err(),
+        "V0: verify_subset_query must reject proof missing a non-empty subtree's lower layer"
     );
 }
