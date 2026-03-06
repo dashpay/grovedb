@@ -168,7 +168,12 @@ impl RocksDbStorage {
             ));
         }
 
-        res.extend(segments_count.to_be_bytes());
+        // Note: this uses native-endian encoding. Changing to big-endian would
+        // be a breaking change since the output is hashed with Blake3 to produce
+        // subtree prefixes stored in RocksDB — existing databases would become
+        // unreadable. In practice GroveDB only targets little-endian platforms
+        // (x86_64, aarch64), so this is not a portability concern.
+        res.extend(segments_count.to_ne_bytes());
         res.extend(lengths);
         (res, segments_count)
     }
