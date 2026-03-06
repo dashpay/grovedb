@@ -43,9 +43,16 @@ impl GroveDb {
     }
 
     /// Commits a completed state synchronization session.
-    pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) -> Result<(), Error> {
+    ///
+    /// Verifies the final GroveDB root hash matches the expected `app_hash`
+    /// before committing. Returns an error if the hashes don't match.
+    pub fn commit_session(
+        &self,
+        session: Pin<Box<MultiStateSyncSession>>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
         session
-            .commit()
+            .commit(grove_version)
             .inspect_err(|e| eprintln!("Failed to commit session: {:?}", e))
     }
 

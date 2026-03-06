@@ -223,10 +223,33 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     /// Commits the sync session by finalizing the underlying transaction.
-    pub fn commit(self: Pin<Box<Self>>) -> Result<(), Error> {
+    ///
+    /// Before committing, verifies that the GroveDB root hash matches the
+    /// expected `app_hash` to ensure the overall composition of all restored
+    /// subtrees is correct.
+    pub fn commit(self: Pin<Box<Self>>, grove_version: &GroveVersion) -> Result<(), Error> {
         // SAFETY: the struct isn't used anymore and no storage contexts would access
         // transaction
         let session = unsafe { Pin::into_inner_unchecked(self) };
+
+        // Verify the final root hash matches the expected app_hash before committing.
+        // Individual subtree chunks are hash-verified during restore, but we must also
+        // verify the overall GroveDB root to ensure the composition is correct.
+        let actual_root_hash = session
+            .db
+            .root_hash(Some(&session.transaction), grove_version)
+            .unwrap()
+            .map_err(|e| {
+                Error::InternalError(format!("failed to compute root hash before commit: {e}"))
+            })?;
+        if actual_root_hash != session.app_hash {
+            return Err(Error::InternalError(format!(
+                "state sync root hash mismatch: expected {}, got {}",
+                hex::encode(session.app_hash),
+                hex::encode(actual_root_hash),
+            )));
+        }
+
         session
             .db
             .commit_transaction(session.transaction)

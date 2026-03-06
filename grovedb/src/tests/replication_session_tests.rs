@@ -72,7 +72,7 @@ mod tests {
             "sync should be completed after all chunks are applied"
         );
 
-        dest.commit_session(session)
+        dest.commit_session(session, grove_version)
             .expect("should commit sync session");
 
         dest
