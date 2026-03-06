@@ -162,7 +162,10 @@ impl RocksDbStorage {
         for s in segments_iter {
             segments_count += 1;
             res.extend_from_slice(s);
-            lengths.push(s.len() as u8); // if the key len is under 255 bytes
+            lengths.push(u8::try_from(s.len()).expect(
+                "path segment length must not exceed 255 bytes; \
+                 this is enforced at insert time via validate_key_length",
+            ));
         }
 
         res.extend(segments_count.to_ne_bytes());
@@ -632,6 +635,16 @@ mod tests {
             RocksDbStorage::build_prefix(path_a.as_ref().into()),
             RocksDbStorage::build_prefix(path_a.as_ref().into()),
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "path segment length must not exceed 255 bytes")]
+    fn test_build_prefix_rejects_oversized_segment() {
+        let oversized_key = vec![0xABu8; 256];
+        let path: &[&[u8]] = &[&oversized_key];
+        // Previously this would silently truncate the length to 0 (256 as u8 == 0),
+        // causing different paths to hash to the same prefix (collision).
+        let _ = RocksDbStorage::build_prefix(path.as_ref().into());
     }
 
     #[test]
