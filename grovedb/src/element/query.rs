@@ -712,19 +712,26 @@ impl ElementQueryExtensions for Element {
                 .iter_is_valid_for_type(&iter, *limit, None, sized_query.query.left_to_right)
                 .unwrap_add_cost(&mut cost)
             {
+                let value_bytes =
+                    iter.value()
+                        .unwrap_add_cost(&mut cost)
+                        .ok_or(Error::CorruptedData(
+                            "expected iterator value but got None".to_string(),
+                        ));
                 let element = cost_return_on_error_into_no_add!(
                     cost,
                     Element::raw_decode(
-                        iter.value()
-                            .unwrap_add_cost(&mut cost)
-                            .expect("if key exists then value should too"),
+                        cost_return_on_error_no_add!(cost, value_bytes),
                         grove_version
                     )
                 );
                 let key = iter
                     .key()
                     .unwrap_add_cost(&mut cost)
-                    .expect("key should exist");
+                    .ok_or(Error::CorruptedData(
+                        "expected iterator key but got None".to_string(),
+                    ));
+                let key = cost_return_on_error_no_add!(cost, key);
                 let (subquery_path, subquery) =
                     Self::subquery_paths_and_value_for_sized_query(sized_query, key);
                 let result_with_cost = add_element_function(
