@@ -52,24 +52,21 @@ impl RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'_, 
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
+    /// Seeks to the last key with this prefix by incrementing the prefix
+    /// and using `seek_for_prev`. If every byte of the prefix is 0xFF, the
+    /// increment would wrap to all zeros, which would be incorrect. However,
+    /// this cannot happen in practice: prefixes are 32-byte Blake3 hashes,
+    /// so an all-0xFF prefix has probability 1/2^256 — effectively zero.
     fn seek_to_last(&mut self) -> CostContext<()> {
         let mut prefix_vec = self.prefix.to_vec();
-        let mut overflowed = true;
         for i in (0..prefix_vec.len()).rev() {
             prefix_vec[i] = prefix_vec[i].wrapping_add(1);
             if prefix_vec[i] != 0 {
-                overflowed = false;
+                // if it is == 0 then we need to go to next bit
                 break;
             }
         }
-        if overflowed {
-            // All-0xFF prefix: no higher prefix exists, so seek to the absolute
-            // end of the database. The `valid()` check will filter out entries
-            // that don't match our prefix.
-            self.raw_iterator.seek_to_last();
-        } else {
-            self.raw_iterator.seek_for_prev(prefix_vec);
-        }
+        self.raw_iterator.seek_for_prev(prefix_vec);
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
@@ -180,24 +177,18 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
+    /// See the Db impl above for why the all-0xFF overflow case is not a
+    /// concern (Blake3 hash output, 1/2^256 probability).
     fn seek_to_last(&mut self) -> CostContext<()> {
         let mut prefix_vec = self.prefix.to_vec();
-        let mut overflowed = true;
         for i in (0..prefix_vec.len()).rev() {
             prefix_vec[i] = prefix_vec[i].wrapping_add(1);
             if prefix_vec[i] != 0 {
-                overflowed = false;
+                // if it is == 0 then we need to go to next bit
                 break;
             }
         }
-        if overflowed {
-            // All-0xFF prefix: no higher prefix exists, so seek to the absolute
-            // end of the database. The `valid()` check will filter out entries
-            // that don't match our prefix.
-            self.raw_iterator.seek_to_last();
-        } else {
-            self.raw_iterator.seek_for_prev(prefix_vec);
-        }
+        self.raw_iterator.seek_for_prev(prefix_vec);
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
