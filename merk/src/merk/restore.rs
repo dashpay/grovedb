@@ -467,8 +467,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
 
         let mut batch = self.merk.storage.new_batch();
-        // TODO: deal with unwrap
-        let mut tree = self.merk.tree.take().unwrap();
+        let mut tree =
+            self.merk
+                .tree
+                .take()
+                .ok_or(Error::ChunkRestoringError(ChunkError::InternalError(
+                    "tree is None in rewrite_heights",
+                )))?;
         let walker = RefWalker::new(&mut tree, self.merk.source());
 
         rewrite_child_heights(walker, &mut batch, grove_version)?;
