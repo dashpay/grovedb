@@ -740,9 +740,16 @@ impl TreeNode {
     /// subtree is 2 levels taller than the left subtree.
     #[inline]
     pub const fn balance_factor(&self) -> i8 {
-        let left_height = self.child_height(true) as i8;
-        let right_height = self.child_height(false) as i8;
-        right_height - left_height
+        let left_height = self.child_height(true) as i16;
+        let right_height = self.child_height(false) as i16;
+        let diff = right_height - left_height;
+        if diff > i8::MAX as i16 {
+            i8::MAX
+        } else if diff < i8::MIN as i16 {
+            i8::MIN
+        } else {
+            diff as i8
+        }
     }
 
     /// Attaches the child (if any) to the root node on the given side. Creates
