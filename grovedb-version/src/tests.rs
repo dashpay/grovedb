@@ -83,13 +83,13 @@ fn grove_versions_ordered_by_protocol_version() {
 // ── Version constant field differences (V1 vs V2) ────────────────────
 
 #[test]
-fn v1_protocol_version_is_zero() {
-    assert_eq!(GROVE_V1.protocol_version, 0);
+fn v1_protocol_version_is_one() {
+    assert_eq!(GROVE_V1.protocol_version, 1);
 }
 
 #[test]
-fn v2_protocol_version_is_one() {
-    assert_eq!(GROVE_V2.protocol_version, 1);
+fn v2_protocol_version_is_two() {
+    assert_eq!(GROVE_V2.protocol_version, 2);
 }
 
 #[test]
