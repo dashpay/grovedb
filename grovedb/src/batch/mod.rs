@@ -1721,6 +1721,41 @@ where
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
                     | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                        if batch_apply_options.validate_insertion_does_not_override_tree {
+                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                            let maybe_existing = cost_return_on_error_into!(
+                                &mut cost,
+                                merk.get(
+                                    key_info.get_key_clone().as_slice(),
+                                    true,
+                                    Some(&Element::value_defined_cost_for_serialized_value,),
+                                    grove_version,
+                                )
+                                .map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to check for existing tree: {e}"
+                                    ))
+                                })
+                            );
+                            if let Some(existing_bytes) = maybe_existing {
+                                let existing_element = cost_return_on_error_no_add!(
+                                    cost,
+                                    Element::deserialize(existing_bytes.as_slice(), grove_version)
+                                        .map_err(|_| {
+                                            Error::CorruptedData(
+                                                "unable to deserialize existing element"
+                                                    .to_string(),
+                                            )
+                                        })
+                                );
+                                if existing_element.is_any_tree() {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to overwrite a tree",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            }
+                        }
                         let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
@@ -1740,6 +1775,41 @@ where
                         );
                     }
                     Element::CommitmentTree(..) => {
+                        if batch_apply_options.validate_insertion_does_not_override_tree {
+                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                            let maybe_existing = cost_return_on_error_into!(
+                                &mut cost,
+                                merk.get(
+                                    key_info.get_key_clone().as_slice(),
+                                    true,
+                                    Some(&Element::value_defined_cost_for_serialized_value,),
+                                    grove_version,
+                                )
+                                .map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to check for existing tree: {e}"
+                                    ))
+                                })
+                            );
+                            if let Some(existing_bytes) = maybe_existing {
+                                let existing_element = cost_return_on_error_no_add!(
+                                    cost,
+                                    Element::deserialize(existing_bytes.as_slice(), grove_version)
+                                        .map_err(|_| {
+                                            Error::CorruptedData(
+                                                "unable to deserialize existing element"
+                                                    .to_string(),
+                                            )
+                                        })
+                                );
+                                if existing_element.is_any_tree() {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to overwrite a tree",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            }
+                        }
                         let merk_feature_type = cost_return_on_error_into!(
                             &mut cost,
                             element
@@ -1780,10 +1850,53 @@ where
                             );
                             if !inserted {
                                 return Err(Error::InvalidBatchOperation(
-                                    "attempting to overwrite a tree",
+                                    "attempting to overwrite an element",
                                 ))
                                 .wrap_with_cost(cost);
                             }
+                        } else if batch_apply_options.validate_insertion_does_not_override_tree {
+                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                            let maybe_existing = cost_return_on_error_into!(
+                                &mut cost,
+                                merk.get(
+                                    key_info.get_key_clone().as_slice(),
+                                    true,
+                                    Some(&Element::value_defined_cost_for_serialized_value,),
+                                    grove_version,
+                                )
+                                .map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to check for existing tree: {e}"
+                                    ))
+                                })
+                            );
+                            if let Some(existing_bytes) = maybe_existing {
+                                let existing_element = cost_return_on_error_no_add!(
+                                    cost,
+                                    Element::deserialize(existing_bytes.as_slice(), grove_version)
+                                        .map_err(|_| {
+                                            Error::CorruptedData(
+                                                "unable to deserialize existing element"
+                                                    .to_string(),
+                                            )
+                                        })
+                                );
+                                if existing_element.is_any_tree() {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to overwrite a tree",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            }
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_into_batch_operations(
+                                    key_info.get_key(),
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
                         } else {
                             cost_return_on_error_into!(
                                 &mut cost,
