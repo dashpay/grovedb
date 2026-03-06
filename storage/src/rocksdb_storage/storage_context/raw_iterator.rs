@@ -54,14 +54,22 @@ impl RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<'_, 
 
     fn seek_to_last(&mut self) -> CostContext<()> {
         let mut prefix_vec = self.prefix.to_vec();
+        let mut overflowed = true;
         for i in (0..prefix_vec.len()).rev() {
             prefix_vec[i] = prefix_vec[i].wrapping_add(1);
             if prefix_vec[i] != 0 {
-                // if it is == 0 then we need to go to next bit
+                overflowed = false;
                 break;
             }
         }
-        self.raw_iterator.seek_for_prev(prefix_vec);
+        if overflowed {
+            // All-0xFF prefix: no higher prefix exists, so seek to the absolute
+            // end of the database. The `valid()` check will filter out entries
+            // that don't match our prefix.
+            self.raw_iterator.seek_to_last();
+        } else {
+            self.raw_iterator.seek_for_prev(prefix_vec);
+        }
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
@@ -174,14 +182,22 @@ impl<'a> RawIterator for PrefixedRocksDbRawIterator<DBRawIteratorWithThreadMode<
 
     fn seek_to_last(&mut self) -> CostContext<()> {
         let mut prefix_vec = self.prefix.to_vec();
+        let mut overflowed = true;
         for i in (0..prefix_vec.len()).rev() {
             prefix_vec[i] = prefix_vec[i].wrapping_add(1);
             if prefix_vec[i] != 0 {
-                // if it is == 0 then we need to go to next bit
+                overflowed = false;
                 break;
             }
         }
-        self.raw_iterator.seek_for_prev(prefix_vec);
+        if overflowed {
+            // All-0xFF prefix: no higher prefix exists, so seek to the absolute
+            // end of the database. The `valid()` check will filter out entries
+            // that don't match our prefix.
+            self.raw_iterator.seek_to_last();
+        } else {
+            self.raw_iterator.seek_for_prev(prefix_vec);
+        }
         ().wrap_with_cost(OperationCost::with_seek_count(1))
     }
 
