@@ -1214,8 +1214,12 @@ impl TreeNode {
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
-        // TODO: return Err instead of panic?
-        let link = self.link(left).expect("Expected link");
+        let Some(link) = self.link(left) else {
+            return Err(Error::CorruptedState(
+                "Expected link but found None in TreeNode::load",
+            ))
+            .wrap_with_cost(Default::default());
+        };
         let (child_heights, hash, aggregate_data) = match link {
             Link::Reference {
                 child_heights,
@@ -1223,7 +1227,12 @@ impl TreeNode {
                 aggregate_data,
                 ..
             } => (child_heights, hash, aggregate_data),
-            _ => panic!("Expected Some(Link::Reference)"),
+            _ => {
+                return Err(Error::CorruptedState(
+                    "Expected Link::Reference in TreeNode::load",
+                ))
+                .wrap_with_cost(Default::default());
+            }
         };
 
         let mut cost = OperationCost::default();
