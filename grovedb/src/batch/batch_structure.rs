@@ -111,7 +111,8 @@ where
         let mut cost = OperationCost::default();
 
         let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
-        let mut current_last_level: u32 = 0;
+        let mut current_last_level: u32 =
+            ops_by_level_paths.iter().map(|(k, _)| k).max().unwrap_or(0);
 
         // qualified paths meaning path + key
         let mut ops_by_qualified_paths: BTreeMap<Vec<Vec<u8>>, GroveOp> = BTreeMap::new();
