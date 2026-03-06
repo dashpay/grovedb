@@ -878,11 +878,17 @@ impl Op {
     }
 }
 
-/// Encode a sequence of Ops into a byte vector
+/// Encode a sequence of Ops into a byte vector.
+///
+/// # Panics
+/// Panics if encoding fails — this is unreachable when writing to a `Vec<u8>`
+/// since `Vec<u8>: Write` never returns IO errors. The only theoretical error
+/// source is `ed::Error::UnexpectedByte`, which would indicate a bug in the
+/// encoding logic itself.
 pub fn encode_into<'a, T: Iterator<Item = &'a Op>>(ops: T, output: &mut Vec<u8>) {
     for op in ops {
         op.encode_into_with_error(output)
-            .expect("encoding should not fail");
+            .expect("encoding into Vec<u8> is infallible");
     }
 }
 
