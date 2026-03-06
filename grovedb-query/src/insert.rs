@@ -159,9 +159,7 @@ impl Query {
 
         // since we need items to be sorted we do
         match self.items.binary_search(&item) {
-            Ok(_) => {
-                unreachable!("this shouldn't be possible")
-            }
+            Ok(pos) => self.items[pos] = item,
             Err(pos) => self.items.insert(pos, item),
         }
     }
