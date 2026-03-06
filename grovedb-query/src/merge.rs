@@ -444,8 +444,13 @@ impl Query {
                 mut items,
                 default_subquery_branch,
                 conditional_subquery_branches,
-                ..
+                left_to_right: _,
+                add_parent_tree_on_subquery,
             } = query;
+            // Preserve add_parent_tree_on_subquery if any query requests it
+            if add_parent_tree_on_subquery {
+                merged_query.add_parent_tree_on_subquery = true;
+            }
             // the searched for items are the union of all items
             merged_query.insert_items(items.clone());
 
@@ -505,8 +510,13 @@ impl Query {
             mut items,
             default_subquery_branch,
             conditional_subquery_branches,
-            ..
+            left_to_right: _,
+            add_parent_tree_on_subquery,
         } = other;
+        // Preserve add_parent_tree_on_subquery if either query requests it
+        if add_parent_tree_on_subquery {
+            self.add_parent_tree_on_subquery = true;
+        }
         self.insert_items(items.clone());
 
         // let intersection_result = QueryItem::intersect_many_ordered(&mut self.items,
