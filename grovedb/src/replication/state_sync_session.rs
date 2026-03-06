@@ -116,17 +116,17 @@ impl SubtreeStateSyncInfo<'_> {
                                 res.push(next_chunk_id);
                             }
                         }
-                        _ => {
-                            return Err(Error::InternalError(
-                                "Unable to process incoming chunk".to_string(),
-                            ));
+                        Err(e) => {
+                            return Err(Error::InternalError(format!(
+                                "Unable to process incoming chunk: {e}"
+                            )));
                         }
                     };
                 }
-                Err(_) => {
-                    return Err(Error::CorruptedData(
-                        "Unable to decode incoming chunk".to_string(),
-                    ));
+                Err(e) => {
+                    return Err(Error::CorruptedData(format!(
+                        "Unable to decode incoming chunk: {e}"
+                    )));
                 }
             }
         }
@@ -528,15 +528,14 @@ impl<'db> MultiStateSyncSession<'db> {
                                 .extend(new_subtrees_metadata.data);
                         }
                     }
-                } else if let Ok(res) =
-                    self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
-                {
+                } else {
+                    let res = self
+                        .prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
+                        .map_err(|e| {
+                            Error::InternalError(format!("Unable to discover Subtrees: {e}"))
+                        })?;
                     next_chunk_ids.extend(res);
                     next_global_chunk_ids.extend(next_chunk_ids);
-                } else {
-                    return Err(Error::InternalError(
-                        "Unable to discover Subtrees".to_string(),
-                    ));
                 }
             }
         }
@@ -561,16 +560,11 @@ impl<'db> MultiStateSyncSession<'db> {
 
             let mut next_chunk_ids = vec![];
 
-            if let Ok(discovered_chunk_ids) =
-                self.prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
-            {
-                next_chunk_ids.extend(discovered_chunk_ids);
-                next_global_chunk_ids.extend(next_chunk_ids);
-            } else {
-                return Err(Error::InternalError(
-                    "Unable to discover Subtrees".to_string(),
-                ));
-            }
+            let discovered_chunk_ids = self
+                .prepare_sync_state_sessions(new_subtrees_metadata, grove_version)
+                .map_err(|e| Error::InternalError(format!("Unable to discover Subtrees: {e}")))?;
+            next_chunk_ids.extend(discovered_chunk_ids);
+            next_global_chunk_ids.extend(next_chunk_ids);
         }
 
         let mut res: Vec<Vec<u8>> = vec![];
@@ -642,7 +636,7 @@ impl<'db> MultiStateSyncSession<'db> {
 
         let mut subtrees_metadata = SubtreesMetadata::new();
         for subtree_key in &subtree_keys {
-            if let Ok(Some((elem_value, elem_value_hash))) = merk
+            let (elem_value, elem_value_hash) = merk
                 .get_value_and_value_hash(
                     subtree_key.as_slice(),
                     true,
@@ -650,20 +644,29 @@ impl<'db> MultiStateSyncSession<'db> {
                     grove_version,
                 )
                 .value
-            {
-                let actual_value_hash = value_hash(&elem_value).unwrap();
-                let mut new_path = path_vec.to_vec();
-                new_path.push(subtree_key.to_vec());
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "failed to get value and hash for subtree key during discovery: {e}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    Error::CorruptedData(
+                        "subtree key found in iterator but missing from merk".to_string(),
+                    )
+                })?;
 
-                let subtree_path: Vec<&[u8]> = new_path.iter().map(|vec| vec.as_slice()).collect();
-                let path: &[&[u8]] = &subtree_path;
-                let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+            let actual_value_hash = value_hash(&elem_value).unwrap();
+            let mut new_path = path_vec.to_vec();
+            new_path.push(subtree_key.to_vec());
 
-                subtrees_metadata.data.insert(
-                    prefix,
-                    (new_path.to_vec(), actual_value_hash, elem_value_hash),
-                );
-            }
+            let subtree_path: Vec<&[u8]> = new_path.iter().map(|vec| vec.as_slice()).collect();
+            let path: &[&[u8]] = &subtree_path;
+            let prefix = RocksDbStorage::build_prefix(path.as_ref().into()).unwrap();
+
+            subtrees_metadata.data.insert(
+                prefix,
+                (new_path.to_vec(), actual_value_hash, elem_value_hash),
+            );
         }
 
         Ok(subtrees_metadata)
