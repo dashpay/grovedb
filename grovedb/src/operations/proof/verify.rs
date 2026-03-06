@@ -1322,7 +1322,6 @@ impl GroveDb {
             )
             .unwrap()
             .map_err(|e| {
-                eprintln!("{e}");
                 Error::InvalidProof(
                     query.clone(),
                     format!("Invalid proof verification parameters: {}", e),
