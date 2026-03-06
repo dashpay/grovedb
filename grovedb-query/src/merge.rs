@@ -380,6 +380,9 @@ impl Query {
 
                 let mut our_subquery_path = our_subquery_path.clone();
 
+                // Save our subquery before overwriting with theirs
+                let our_subquery = self.default_subquery_branch.subquery.clone();
+
                 self.default_subquery_branch.subquery_path = None;
                 self.default_subquery_branch.subquery =
                     other_default_subquery_branch.subquery.clone();
@@ -398,7 +401,7 @@ impl Query {
                     QueryItem::Key(our_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_our_subquery_path,
-                        subquery: other_default_subquery_branch.subquery.clone(),
+                        subquery: our_subquery,
                     },
                 );
             }
