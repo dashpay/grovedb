@@ -205,7 +205,17 @@ impl Link {
             Link::Uncommitted { child_heights, .. } => *child_heights,
             Link::Loaded { child_heights, .. } => *child_heights,
         };
-        right_height as i8 - left_height as i8
+        // Subtract in i16 to avoid wrapping when u8 heights exceed 127,
+        // then clamp to i8 range. For a valid AVL tree the result is in
+        // [-2, 2], but corrupted data could produce larger differences.
+        let diff = right_height as i16 - left_height as i16;
+        if diff > i8::MAX as i16 {
+            i8::MAX
+        } else if diff < i8::MIN as i16 {
+            i8::MIN
+        } else {
+            diff as i8
+        }
     }
 
     /// Consumes the link and converts to variant `Link::Reference`. Panics if

@@ -775,9 +775,10 @@ impl StorageFlags {
             while bytes_left > 0 {
                 if let Some((epoch_index, bytes_in_epoch)) = rev_iter.next() {
                     if *bytes_in_epoch <= bytes_left + MINIMUM_NON_BASE_FLAGS_SIZE {
-                        sectioned_storage_removal
-                            .insert(*epoch_index, *bytes_in_epoch - MINIMUM_NON_BASE_FLAGS_SIZE);
-                        bytes_left -= *bytes_in_epoch - MINIMUM_NON_BASE_FLAGS_SIZE;
+                        let epoch_removable =
+                            bytes_in_epoch.saturating_sub(MINIMUM_NON_BASE_FLAGS_SIZE);
+                        sectioned_storage_removal.insert(*epoch_index, epoch_removable);
+                        bytes_left = bytes_left.saturating_sub(epoch_removable);
                     } else {
                         // Correctly take only the required bytes_left from this epoch
                         sectioned_storage_removal.insert(*epoch_index, bytes_left);

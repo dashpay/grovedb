@@ -159,7 +159,7 @@ impl GroveDb {
             transaction,
             grove_version,
         )
-        .map_ok(|_| ops_len as u16)
+        .map_ok(|_| u16::try_from(ops_len).unwrap_or(u16::MAX))
     }
 
     /// Returns a vector of GroveDb ops

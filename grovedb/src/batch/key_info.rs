@@ -110,7 +110,11 @@ impl Hash for KeyInfo {
 impl WorstKeyLength for KeyInfo {
     fn max_length(&self) -> u8 {
         match self {
-            Self::KnownKey(key) => key.len() as u8,
+            Self::KnownKey(key) => {
+                // Keys are validated to be <= 255 bytes at insert time,
+                // but saturate to avoid silent truncation on unexpected data.
+                u8::try_from(key.len()).unwrap_or(u8::MAX)
+            }
             Self::MaxKeySize { max_size, .. } => *max_size,
         }
     }
