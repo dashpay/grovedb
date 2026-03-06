@@ -3,12 +3,14 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::{Decoder, Node, Op};
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
 
     use crate::{
-        batch::QualifiedGroveDbOp, operations::proof::util::ProvedPathKeyValue,
-        query_result_type::QueryResultType, tests::make_test_grovedb, Element, GroveDb, PathQuery,
-        Query, SizedQuery,
+        batch::QualifiedGroveDbOp,
+        operations::proof::{util::ProvedPathKeyValue, ProofBytes},
+        query_result_type::QueryResultType,
+        tests::make_test_grovedb,
+        Element, GroveDb, PathQuery, Query, SizedQuery,
     };
 
     #[test]
@@ -84,8 +86,8 @@ mod tests {
     }
 
     #[test]
-    fn test_provable_count_tree_proof_contains_count_nodes() {
-        let grove_version = GroveVersion::latest();
+    fn test_provable_count_tree_proof_contains_count_nodes_for_version_2() {
+        let grove_version = &GROVE_V2;
         let db = make_test_grovedb(grove_version);
 
         // Create a single ProvableCountTree
@@ -712,5 +714,122 @@ mod tests {
             .expect("should verify proof");
 
         assert_eq!(proved_values.len(), 2, "Should have exactly 2 items");
+    }
+
+    #[test]
+    fn test_provable_count_tree_proof_contains_count_nodes() {
+        // V1 version: same test as test_provable_count_tree_proof_contains_count_nodes
+        // but using GroveVersion::latest() which produces V1 proofs.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        for i in 0..3 {
+            let key = format!("item{}", i).into_bytes();
+            let value = format!("value{}", i).into_bytes();
+            db.insert(
+                &[b"counts"],
+                &key,
+                Element::new_item(value),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert item");
+        }
+
+        let query = Query::new();
+        let path_query = PathQuery::new_unsized(vec![b"counts".to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let grovedb_proof: crate::operations::proof::GroveDBProof =
+            bincode::decode_from_slice(&proof, config)
+                .expect("should deserialize proof")
+                .0;
+
+        let has_lower_layers = match &grovedb_proof {
+            crate::operations::proof::GroveDBProof::V1(proof_v1) => {
+                !proof_v1.root_layer.lower_layers.is_empty()
+            }
+            _ => panic!("expected V1 proof"),
+        };
+
+        assert!(
+            has_lower_layers,
+            "Proof should have lower layers for ProvableCountTree"
+        );
+
+        let merk_proof = match &grovedb_proof {
+            crate::operations::proof::GroveDBProof::V1(proof_v1) => {
+                let layer = proof_v1
+                    .root_layer
+                    .lower_layers
+                    .get(b"counts".as_slice())
+                    .expect("should have counts layer");
+                match &layer.merk_proof {
+                    ProofBytes::Merk(bytes) => bytes.clone(),
+                    other => panic!(
+                        "expected Merk proof bytes, got {:?}",
+                        std::mem::discriminant(other)
+                    ),
+                }
+            }
+            _ => panic!("expected V1 proof"),
+        };
+
+        let decoder = Decoder::new(&merk_proof);
+        let mut found_count_node = false;
+
+        for res in decoder {
+            match res {
+                Err(e) => panic!("failed to decode proof op: {e}"),
+                Ok(op) => {
+                    if let Op::Push(node) | Op::PushInverted(node) = op {
+                        match node {
+                            Node::KVCount(k, _, c) => {
+                                eprintln!(
+                                    "Found KVCount node: key={}, count={}",
+                                    hex::encode(k),
+                                    c
+                                );
+                                found_count_node = true;
+                                break;
+                            }
+                            Node::KVHashCount(_, c) => {
+                                eprintln!("Found KVHashCount node: count={}", c);
+                                found_count_node = true;
+                                break;
+                            }
+                            n => {
+                                eprintln!("Found node: {:?}", n);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            found_count_node,
+            "V1 proof should contain at least one count node"
+        );
     }
 }

@@ -2,9 +2,11 @@ pub mod grovedb_versions;
 pub mod merk_versions;
 pub mod v1;
 pub mod v2;
+pub mod v3;
 
 pub use versioned_feature_core::*;
 
+use crate::version::v3::GROVE_V3;
 use crate::version::{
     grovedb_versions::GroveDBVersions, merk_versions::MerkVersions, v1::GROVE_V1, v2::GROVE_V2,
 };
@@ -30,4 +32,4 @@ impl GroveVersion {
     }
 }
 
-pub const GROVE_VERSIONS: &[GroveVersion] = &[GROVE_V1, GROVE_V2];
+pub const GROVE_VERSIONS: &[GroveVersion] = &[GROVE_V1, GROVE_V2, GROVE_V3];

@@ -1622,7 +1622,7 @@ fn test_mmr_tree_v1_proof_empty() {
 
     // Proving an empty MmrTree should succeed with an empty result set.
     let proof = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("prove_query_v1 should succeed for empty MmrTree");
 

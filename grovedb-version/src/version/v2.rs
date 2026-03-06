@@ -14,7 +14,7 @@ use crate::version::{
 };
 
 pub const GROVE_V2: GroveVersion = GroveVersion {
-    protocol_version: 1,
+    protocol_version: 2,
     grovedb_versions: GroveDBVersions {
         apply_batch: GroveDBApplyBatchVersions {
             apply_batch_structure: 0,
@@ -143,6 +143,11 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
                 prove_query_many: 0,
+                prove_query_non_serialized: 0,
+                prove_trunk_chunk: 0,
+                prove_trunk_chunk_non_serialized: 0,
+                prove_branch_chunk: 0,
+                prove_branch_chunk_non_serialized: 0,
                 verify_query_with_options: 0,
                 verify_query_raw: 0,
                 verify_layer_proof: 0,

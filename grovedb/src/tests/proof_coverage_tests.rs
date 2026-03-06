@@ -14,7 +14,7 @@ mod tests {
         query::{QueryItem, SubqueryBranch, VerifyOptions},
         Query,
     };
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
     use indexmap::IndexMap;
 
     use crate::{
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     fn grovedb_proof_display_v0() {
         // Exercise Display for GroveDBProofV0 and GroveDBProof
-        let grove_version = GroveVersion::latest();
+        let grove_version = &GROVE_V2;
         let db = make_test_grovedb(grove_version);
 
         db.insert(
@@ -644,7 +644,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"tree1".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1");
 
@@ -1101,7 +1101,7 @@ mod tests {
 
         // Generate V1 proof
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should generate V1 proof");
 
@@ -1181,7 +1181,7 @@ mod tests {
 
         // V1 proof
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should generate V1 proof with add_parent_tree_on_subquery");
 
@@ -1245,7 +1245,7 @@ mod tests {
         );
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1");
 
@@ -1317,7 +1317,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"t".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1");
 
@@ -1384,7 +1384,7 @@ mod tests {
             SizedQuery::new(query, Some(0), None),
         );
 
-        let result = db.prove_query_v1(&path_query, None, grove_version).unwrap();
+        let result = db.prove_query(&path_query, None, grove_version).unwrap();
         assert!(result.is_err(), "prove_query_v1 with limit 0 should error");
     }
 
@@ -1400,7 +1400,7 @@ mod tests {
             SizedQuery::new(query, None, Some(3)),
         );
 
-        let result = db.prove_query_v1(&path_query, None, grove_version).unwrap();
+        let result = db.prove_query(&path_query, None, grove_version).unwrap();
         assert!(
             result.is_err(),
             "prove_query_v1 with non-zero offset should error"
@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     fn prove_v0_on_mmr_tree_errors() {
         // V0 proofs should error when encountering MmrTree with subquery
-        let grove_version = GroveVersion::latest();
+        let grove_version = &GROVE_V2;
         let db = make_empty_grovedb();
 
         db.insert(
@@ -1729,7 +1729,7 @@ mod tests {
             PathQuery::new_unsized(vec![b"deep_leaf".to_vec(), b"deep_node_2".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 multi-subtree");
 
@@ -1855,7 +1855,7 @@ mod tests {
         );
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 rtl");
 
@@ -1917,7 +1917,7 @@ mod tests {
 
     #[test]
     fn prove_v1_non_serialized() {
-        // Exercise prove_query_v1_non_serialized directly
+        // Exercise prove_query_non_serialized_v1 directly
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -1948,7 +1948,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"t".to_vec()], query);
 
         let grovedb_proof = db
-            .prove_query_v1_non_serialized(&path_query, None, grove_version)
+            .prove_query_non_serialized_v1(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 non-serialized");
 
@@ -2064,7 +2064,7 @@ mod tests {
         };
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, Some(options), grove_version)
+            .prove_query(&path_query, Some(options), grove_version)
             .unwrap()
             .expect("should prove v1 with decrease_limit=false");
 
@@ -2118,7 +2118,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 for sum tree leaf");
 
@@ -2201,7 +2201,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 mixed types");
 
@@ -2330,7 +2330,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 with reference");
 
@@ -2434,7 +2434,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 sum tree with subquery");
 
@@ -2514,7 +2514,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 count tree with subquery");
 
@@ -2594,7 +2594,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 count sum tree with subquery");
 
@@ -2667,7 +2667,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 big sum tree with subquery");
 
@@ -2755,7 +2755,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 with add_parent_tree on count tree");
 
@@ -2835,7 +2835,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 with add_parent_tree on big sum tree");
 
@@ -2918,7 +2918,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 mmr tree with subquery");
 
@@ -2999,7 +2999,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 bulk append tree with subquery");
 
@@ -3079,7 +3079,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 dense tree with subquery");
 
@@ -3320,7 +3320,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 conditional subqueries");
 
@@ -3414,7 +3414,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 with subquery_path");
 
@@ -3491,7 +3491,7 @@ mod tests {
         );
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 with limit across subtrees");
 
@@ -3578,7 +3578,7 @@ mod tests {
         );
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 rtl with subquery");
 
@@ -3655,7 +3655,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec(), b"sums".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 for parent tree info");
 
@@ -3731,7 +3731,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec(), b"counts".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove");
 
@@ -4022,7 +4022,7 @@ mod tests {
         );
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 range with limit");
 
@@ -4110,7 +4110,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 empty tree no subquery");
 
@@ -4207,7 +4207,7 @@ mod tests {
         );
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 absence with subquery");
 
@@ -4239,7 +4239,7 @@ mod tests {
     #[test]
     fn prove_v0_on_bulk_append_tree_errors() {
         // V0 proofs should error when encountering BulkAppendTree with subquery
-        let grove_version = GroveVersion::latest();
+        let grove_version = &GROVE_V2;
         let db = make_empty_grovedb();
 
         db.insert(
@@ -4288,7 +4288,7 @@ mod tests {
     #[test]
     fn prove_v0_on_dense_tree_errors() {
         // V0 proofs should error when encountering DenseTree with subquery
-        let grove_version = GroveVersion::latest();
+        let grove_version = &GROVE_V2;
         let db = make_empty_grovedb();
 
         db.insert(
@@ -4379,7 +4379,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 mmr tree no subquery");
 
@@ -4447,7 +4447,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 bat no subquery");
 
@@ -4540,7 +4540,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 mixed subtrees");
 
@@ -4710,7 +4710,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 ref in subtree");
 
@@ -4902,7 +4902,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], outer);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1 with item_with_sum_item");
 
@@ -4999,7 +4999,7 @@ mod tests {
         let path_query = PathQuery::new_unsized(vec![b"tree".to_vec()], query);
 
         let proof_bytes = db
-            .prove_query_v1(&path_query, None, grove_version)
+            .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("should prove v1");
 
@@ -5056,7 +5056,7 @@ mod tests {
         let full_pq = PathQuery::new_unsized(vec![b"tree".to_vec()], full_query);
 
         let proof_bytes = db
-            .prove_query_v1(&full_pq, None, grove_version)
+            .prove_query(&full_pq, None, grove_version)
             .unwrap()
             .expect("should prove v1 full");
 
@@ -5194,7 +5194,7 @@ mod tests {
         grove_version: &GroveVersion,
     ) -> usize {
         let proof_bytes = db
-            .prove_query_v1(path_query, None, grove_version)
+            .prove_query(path_query, None, grove_version)
             .unwrap()
             .expect("should prove");
 
@@ -5373,7 +5373,7 @@ mod tests {
         grove_version: &GroveVersion,
     ) -> usize {
         let proof_bytes = db
-            .prove_query_v1(path_query, None, grove_version)
+            .prove_query(path_query, None, grove_version)
             .unwrap()
             .expect("should generate v1 proof");
 
@@ -5764,6 +5764,155 @@ mod tests {
             results.len(),
             2,
             "right-to-left with limit=3: d_ref + c_item (b_tree empty consumes limit)"
+        );
+    }
+
+    #[test]
+    fn verify_no_underflow_when_limit_zero_and_empty_subtree() {
+        // Regression test for H4: u16 limit underflow in proof verification.
+        //
+        // When `decrease_limit_on_empty_sub_query_result` is true and the
+        // limit reaches 0 after processing one empty subtree, encountering
+        // another empty subtree must NOT wrap `0u16 - 1` to 65535.
+        //
+        // Setup: create multiple empty subtrees under TEST_LEAF so that
+        // with limit=1, the first empty subtree decrements limit to 0
+        // and the second one would have caused underflow before the fix.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert three empty subtrees under TEST_LEAF.
+        // With limit=1 and decrease_limit_on_empty=true, the first empty
+        // subtree consumes the limit (1->0). Before the fix, the second
+        // empty subtree would attempt 0u16 - 1, causing underflow.
+        for key in [b"empty_1".as_slice(), b"empty_2", b"empty_3"] {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                key,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert empty subtree");
+        }
+
+        let mut inner = Query::new();
+        inner.insert_all();
+        let mut outer = Query::new();
+        outer.insert_all();
+        outer.set_subquery(inner);
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            SizedQuery::new(outer, Some(1), None),
+        );
+
+        let options = ProveOptions {
+            decrease_limit_on_empty_sub_query_result: true,
+        };
+
+        // Generate proof with the same limit and options
+        let proof_bytes = db
+            .prove_query(&path_query, Some(options), grove_version)
+            .unwrap()
+            .expect("should prove with limit=1 and empty subtrees");
+
+        // Before the fix, this verification would panic in debug mode
+        // (attempt to subtract with overflow) or silently wrap limit_left
+        // from 0 to 65535 in release mode, accepting oversized result sets.
+        let verify_result = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        );
+
+        assert!(
+            verify_result.is_ok(),
+            "verification should not panic or error on limit underflow: {:?}",
+            verify_result.err()
+        );
+
+        let (root_hash, results) = verify_result.unwrap();
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        // With limit=1 and decrease_limit_on_empty=true, only one empty
+        // subtree should consume the limit, yielding 0 actual results
+        // (since empty subtrees produce no result items).
+        assert!(
+            results.len() <= 1,
+            "with limit=1, should have at most 1 result, got {}",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn verify_v1_no_underflow_when_limit_zero_and_empty_subtree() {
+        // Same regression test as above but for V1 proof path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        for key in [b"empty_v1_1".as_slice(), b"empty_v1_2", b"empty_v1_3"] {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                key,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert empty subtree");
+        }
+
+        let mut inner = Query::new();
+        inner.insert_all();
+        let mut outer = Query::new();
+        outer.insert_all();
+        outer.set_subquery(inner);
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            SizedQuery::new(outer, Some(1), None),
+        );
+
+        let options = ProveOptions {
+            decrease_limit_on_empty_sub_query_result: true,
+        };
+
+        let proof_bytes = db
+            .prove_query(&path_query, Some(options), grove_version)
+            .unwrap()
+            .expect("should prove v1 with limit=1 and empty subtrees");
+
+        let verify_result = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        );
+
+        assert!(
+            verify_result.is_ok(),
+            "v1 verification should not panic or error on limit underflow: {:?}",
+            verify_result.err()
+        );
+
+        let (root_hash, results) = verify_result.unwrap();
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert!(
+            results.len() <= 1,
+            "v1: with limit=1, should have at most 1 result, got {}",
+            results.len()
         );
     }
 }

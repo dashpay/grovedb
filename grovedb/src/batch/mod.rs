@@ -170,7 +170,12 @@ impl NonMerkTreeMeta {
 /// User-facing variants: `InsertOnly`, `InsertOrReplace`, `Replace`, `Patch`,
 /// `RefreshReference`, `Delete`, `DeleteTree`, `CommitmentTreeInsert`,
 /// `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`.
-/// Other variants are internal and produced by batch propagation.
+///
+/// Internal variants (`ReplaceTreeRootKey`, `InsertTreeWithRootHash`,
+/// `ReplaceNonMerkTreeRoot`, `InsertNonMerkTree`) are marked
+/// `#[non_exhaustive]` so they **cannot be constructed by external crates**.
+/// They are produced solely by batch propagation / preprocessing within
+/// this crate.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum GroveOp {
     /// **Internal only — do not construct directly.**
@@ -178,6 +183,10 @@ pub enum GroveOp {
     ///
     /// Used by propagation to update an existing Merk tree's root hash
     /// and aggregate data. For non-Merk trees, see `ReplaceNonMerkTreeRoot`.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     ReplaceTreeRootKey {
         /// Hash
         hash: [u8; 32],
@@ -214,6 +223,10 @@ pub enum GroveOp {
     /// Created during batch propagation from an `InsertOrReplace`/`InsertOnly`
     /// occupied entry when a child subtree's root hash is propagated upward.
     /// For non-Merk trees, see `InsertNonMerkTree`.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     InsertTreeWithRootHash {
         /// Hash
         hash: [u8; 32],
@@ -227,6 +240,10 @@ pub enum GroveOp {
     /// **Internal only — do not construct directly.**
     /// Replace root hash for a non-Merk tree (CommitmentTree, MmrTree,
     /// BulkAppendTree, DenseTree). Produced by preprocessing functions.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     ReplaceNonMerkTreeRoot {
         /// New root hash (sinsemilla root, MMR root, state root, dense root).
         hash: [u8; 32],
@@ -239,6 +256,10 @@ pub enum GroveOp {
     /// Created when propagation encounters an occupied entry that is a
     /// non-Merk tree element (CommitmentTree, MmrTree, BulkAppendTree,
     /// DenseTree).
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
     InsertNonMerkTree {
         /// Hash
         hash: [u8; 32],
@@ -5014,5 +5035,47 @@ mod tests {
             }
             _ => panic!("expected DenseAppendOnlyFixedSizeTree element"),
         }
+    }
+
+    #[test]
+    fn test_batch_rejects_key_longer_than_255_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        // Create a key that is 256 bytes long (one byte over the limit)
+        let oversized_key = vec![b'x'; 256];
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            oversized_key,
+            Element::new_item(b"value".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, Some(&tx), grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "batch with oversized key should be rejected"
+        );
+        match result {
+            Err(Error::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("255"),
+                    "error should mention the 255 byte limit, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected InvalidInput error, got: {:?}", other),
+            Ok(_) => unreachable!(),
+        }
+
+        // Verify that a key of exactly 255 bytes is accepted
+        let max_key = vec![b'y'; 255];
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            max_key,
+            Element::new_item(b"value".to_vec()),
+        )];
+        db.apply_batch(ops, None, Some(&tx), grove_version)
+            .unwrap()
+            .expect("batch with 255-byte key should succeed");
     }
 }

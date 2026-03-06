@@ -1516,7 +1516,7 @@ fn test_commitment_tree_prove_query_v1_empty() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof for empty commitment tree");
 
@@ -1615,7 +1615,7 @@ fn test_commitment_tree_prove_query_v1_buffer_only() {
 
     // Generate V1 proof
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof for commitment tree");
 
@@ -1737,7 +1737,7 @@ fn test_commitment_tree_prove_query_v1_with_chunks() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof with chunks");
 
@@ -1852,7 +1852,7 @@ fn test_commitment_tree_prove_query_v1_partial_range() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof for partial range");
 

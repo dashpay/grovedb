@@ -91,6 +91,11 @@ pub struct GroveDBOperationsGetVersions {
 pub struct GroveDBOperationsProofVersions {
     pub prove_query: FeatureVersion,
     pub prove_query_many: FeatureVersion,
+    pub prove_query_non_serialized: FeatureVersion,
+    pub prove_trunk_chunk: FeatureVersion,
+    pub prove_trunk_chunk_non_serialized: FeatureVersion,
+    pub prove_branch_chunk: FeatureVersion,
+    pub prove_branch_chunk_non_serialized: FeatureVersion,
     pub verify_query_with_options: FeatureVersion,
     pub verify_query_raw: FeatureVersion,
     pub verify_layer_proof: FeatureVersion,

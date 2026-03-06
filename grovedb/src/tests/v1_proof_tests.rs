@@ -7,7 +7,7 @@ use grovedb_merk::proofs::{
     query::{QueryItem, SubqueryBranch},
     Query,
 };
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
 
 use crate::{
     operations::proof::GroveDBProof,
@@ -71,7 +71,7 @@ fn test_mmr_tree_v1_proof_single_leaf() {
 
     // Generate V1 proof
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -158,7 +158,7 @@ fn test_mmr_tree_v1_proof_multiple_leaves() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -245,7 +245,7 @@ fn test_mmr_tree_v1_proof_wrong_root_detection() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -320,7 +320,7 @@ fn test_bulk_append_tree_v1_proof_buffer_range() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -405,7 +405,7 @@ fn test_bulk_append_tree_v1_proof_chunk_and_buffer() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -501,7 +501,7 @@ fn test_v1_proof_nested_path_with_mmr() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -581,7 +581,7 @@ fn test_v1_proof_serialization_roundtrip() {
 
     // Generate and serialize V1 proof
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -669,7 +669,7 @@ fn test_dense_tree_v1_proof_serialization_roundtrip() {
 
     // 4. Generate V1 proof
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof for dense tree");
 
@@ -800,7 +800,7 @@ fn test_bulk_append_tree_v1_proof_disjoint_query_succinctness() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -902,7 +902,7 @@ fn test_dense_tree_v1_proof_disjoint_query_succinctness() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -1003,7 +1003,7 @@ fn test_mmr_tree_v1_proof_disjoint_query_succinctness() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -1058,7 +1058,7 @@ fn test_mmr_tree_v1_proof_disjoint_query_succinctness() {
 /// PathQuery whose subquery targets an MmrTree element.
 #[test]
 fn test_v0_proof_rejects_mmr_tree_subquery() {
-    let grove_version = GroveVersion::latest();
+    let grove_version = &GROVE_V2;
     let db = make_empty_grovedb();
 
     // Create parent tree containing an MmrTree child
@@ -1138,7 +1138,7 @@ fn test_v0_proof_rejects_mmr_tree_subquery() {
 /// V0 proofs cannot descend into BulkAppendTree subtrees.
 #[test]
 fn test_v0_proof_rejects_bulk_append_tree_subquery() {
-    let grove_version = GroveVersion::latest();
+    let grove_version = &GROVE_V2;
     let db = make_empty_grovedb();
 
     db.insert(
@@ -1216,7 +1216,7 @@ fn test_v0_proof_rejects_bulk_append_tree_subquery() {
 /// V0 proofs cannot descend into DenseAppendOnlyFixedSizeTree subtrees.
 #[test]
 fn test_v0_proof_rejects_dense_tree_subquery() {
-    let grove_version = GroveVersion::latest();
+    let grove_version = &GROVE_V2;
     let db = make_empty_grovedb();
 
     db.insert(

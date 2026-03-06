@@ -1158,7 +1158,7 @@ fn test_dense_tree_v1_proof_range_query() {
 
     // Generate V1 proof
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof for dense tree range");
 
@@ -1265,7 +1265,7 @@ fn test_dense_tree_v1_proof_single_position() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -1353,7 +1353,7 @@ fn test_dense_tree_v1_proof_multiple_disjoint_positions() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof");
 
@@ -1463,7 +1463,7 @@ fn test_dense_tree_v1_proof_nested_in_tree() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof for nested dense tree");
 
@@ -1551,7 +1551,7 @@ fn test_dense_tree_v1_proof_with_limit() {
     };
 
     let proof_bytes = db
-        .prove_query_v1(&path_query, None, grove_version)
+        .prove_query(&path_query, None, grove_version)
         .unwrap()
         .expect("generate V1 proof with limit");
 

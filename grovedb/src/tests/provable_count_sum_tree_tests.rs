@@ -16,11 +16,11 @@ mod tests {
         TreeFeatureType,
     };
     use grovedb_storage::StorageBatch;
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
 
     use crate::{
         batch::QualifiedGroveDbOp,
-        operations::proof::GroveDBProof,
+        operations::proof::{GroveDBProof, ProofBytes},
         query::SizedQuery,
         tests::{make_test_grovedb, TEST_LEAF},
         Element, GroveDb, PathQuery,
@@ -1429,11 +1429,11 @@ mod tests {
     }
 
     #[test]
-    fn test_provable_count_sum_tree_avl_rotations() {
+    fn test_provable_count_sum_tree_avl_rotations_for_version_2() {
         // This test inserts items in a specific order to trigger AVL rotations
         // and verifies that aggregate data (count and sum) remains correct after
         // rebalancing. It also verifies each proof node has the correct count.
-        let grove_version = GroveVersion::latest();
+        let grove_version = &GROVE_V2;
         let db = make_test_grovedb(grove_version);
 
         db.insert(
@@ -1600,10 +1600,10 @@ mod tests {
     }
 
     #[test]
-    fn test_provable_count_sum_tree_many_items_rotation_stress() {
+    fn test_provable_count_sum_tree_many_items_rotation_stress_for_version_2() {
         // Stress test: insert many items to trigger multiple rotations
         // Also verifies proof node counts are correct
-        let grove_version = GroveVersion::latest();
+        let grove_version = &GROVE_V2;
         let db = make_test_grovedb(grove_version);
 
         db.insert(
@@ -2131,11 +2131,11 @@ mod tests {
     }
 
     #[test]
-    fn test_provable_count_sum_tree_absence_proof_uses_kvdigest_count() {
+    fn test_provable_count_sum_tree_absence_proof_uses_kvdigest_count_for_version_2() {
         // This test verifies that absence proofs in ProvableCountSumTree use
         // KVDigestCount nodes (not just KVDigest) so that the count information
         // is available for hash verification.
-        let grove_version = GroveVersion::latest();
+        let grove_version = &GROVE_V2;
         let db = make_test_grovedb(grove_version);
 
         // Create a ProvableCountSumTree with multiple items
@@ -2272,6 +2272,415 @@ mod tests {
                 // !found_plain_kvdigest here
             }
             _ => panic!("expected V0 proof"),
+        }
+    }
+
+    #[test]
+    fn test_provable_count_sum_tree_avl_rotations() {
+        // V1 version: same test as test_provable_count_sum_tree_avl_rotations_for_version_2
+        // but using GroveVersion::latest() which produces V1 proofs.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"rotation_tree",
+            Element::new_provable_count_sum_tree(None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        let items = [
+            (b"a".to_vec(), 10i64),
+            (b"b".to_vec(), 20),
+            (b"c".to_vec(), 30),
+            (b"d".to_vec(), 40),
+            (b"e".to_vec(), 50),
+            (b"f".to_vec(), 60),
+            (b"g".to_vec(), 70),
+        ];
+
+        let mut expected_count = 0u64;
+        let mut expected_sum = 0i64;
+
+        for (key, sum_value) in &items {
+            db.insert(
+                [TEST_LEAF, b"rotation_tree"].as_ref(),
+                key,
+                Element::new_sum_item(*sum_value),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert item");
+
+            expected_count += 1;
+            expected_sum += sum_value;
+
+            let batch = StorageBatch::new();
+            let transaction = db.start_transaction();
+
+            let merk = db
+                .open_transactional_merk_at_path(
+                    [TEST_LEAF, b"rotation_tree"].as_ref().into(),
+                    &transaction,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("should open tree");
+
+            let aggregate = merk.aggregate_data().expect("should get aggregate");
+            assert_eq!(
+                aggregate,
+                AggregateData::ProvableCountAndSum(expected_count, expected_sum),
+                "Aggregate mismatch after inserting {:?}",
+                String::from_utf8_lossy(key)
+            );
+        }
+
+        assert_eq!(expected_count, 7);
+        assert_eq!(expected_sum, 280);
+
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"rotation_tree".to_vec()], query);
+
+        let grovedb_proof = db
+            .prove_query_non_serialized(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        let GroveDBProof::V1(proof_v1) = &grovedb_proof else {
+            panic!("expected V1 proof");
+        };
+        let root_layer = &proof_v1.root_layer;
+
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get(TEST_LEAF)
+            .expect("should have TEST_LEAF layer");
+
+        let rotation_tree_layer = test_leaf_layer
+            .lower_layers
+            .get(b"rotation_tree".as_slice())
+            .expect("should have rotation_tree layer");
+
+        let merk_proof_bytes = match &rotation_tree_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.as_slice(),
+            other => panic!(
+                "expected Merk proof bytes, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        };
+
+        let proof_tree = execute_merk_proof(merk_proof_bytes).expect("should execute proof");
+
+        let tree_nodes = collect_tree_node_counts(&proof_tree);
+
+        assert_eq!(
+            tree_nodes.len(),
+            7,
+            "Should have 7 nodes with counts in proof tree"
+        );
+
+        let root_count = get_node_count(&proof_tree.node).expect("Root should have count data");
+        assert_eq!(
+            root_count, 7,
+            "Root node should have count=7, got count={}",
+            root_count
+        );
+
+        for (key, count) in &tree_nodes {
+            assert!(
+                *count >= 1,
+                "Node {:?} should have count >= 1, got count={}",
+                String::from_utf8_lossy(key),
+                count
+            );
+        }
+
+        fn verify_tree_counts(tree: &grovedb_merk::proofs::tree::Tree) -> u64 {
+            let node_count = get_node_count(&tree.node).unwrap_or(0);
+            let left_count = tree
+                .left
+                .as_ref()
+                .map(|c| verify_tree_counts(&c.tree))
+                .unwrap_or(0);
+            let right_count = tree
+                .right
+                .as_ref()
+                .map(|c| verify_tree_counts(&c.tree))
+                .unwrap_or(0);
+
+            let expected_count = 1 + left_count + right_count;
+            assert_eq!(
+                node_count, expected_count,
+                "Node count {} should equal 1 + {} + {} = {}",
+                node_count, left_count, right_count, expected_count
+            );
+
+            node_count
+        }
+
+        let total_verified = verify_tree_counts(&proof_tree);
+        assert_eq!(total_verified, 7, "Total tree count should be 7");
+    }
+
+    #[test]
+    fn test_provable_count_sum_tree_many_items_rotation_stress() {
+        // V1 version: same stress test but using GroveVersion::latest()
+        // which produces V1 proofs.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"stress_tree",
+            Element::new_provable_count_sum_tree(None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        let item_count = 50u64;
+        let mut expected_sum = 0i64;
+
+        for i in 0..item_count {
+            let key = format!("key_{:03}", i);
+            let sum_value = (i as i64) * 10 - 250;
+
+            db.insert(
+                [TEST_LEAF, b"stress_tree"].as_ref(),
+                key.as_bytes(),
+                Element::new_sum_item(sum_value),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert item");
+
+            expected_sum += sum_value;
+        }
+
+        let batch = StorageBatch::new();
+        let transaction = db.start_transaction();
+
+        let merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"stress_tree"].as_ref().into(),
+                &transaction,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("should open tree");
+
+        let aggregate = merk.aggregate_data().expect("should get aggregate");
+        assert_eq!(
+            aggregate,
+            AggregateData::ProvableCountAndSum(item_count, expected_sum)
+        );
+        drop(merk);
+        drop(transaction);
+
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"stress_tree".to_vec()], query);
+
+        let grovedb_proof = db
+            .prove_query_non_serialized(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        let GroveDBProof::V1(proof_v1) = &grovedb_proof else {
+            panic!("expected V1 proof");
+        };
+        let root_layer = &proof_v1.root_layer;
+
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get(TEST_LEAF)
+            .expect("should have TEST_LEAF layer");
+
+        let stress_tree_layer = test_leaf_layer
+            .lower_layers
+            .get(b"stress_tree".as_slice())
+            .expect("should have stress_tree layer");
+
+        let merk_proof_bytes = match &stress_tree_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.as_slice(),
+            other => panic!(
+                "expected Merk proof bytes, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        };
+
+        let proof_tree = execute_merk_proof(merk_proof_bytes).expect("should execute proof");
+
+        let tree_nodes = collect_tree_node_counts(&proof_tree);
+
+        assert_eq!(
+            tree_nodes.len(),
+            item_count as usize,
+            "Should have {} nodes with counts in proof tree",
+            item_count
+        );
+
+        let root_count = get_node_count(&proof_tree.node).expect("Root should have count data");
+        assert_eq!(
+            root_count, item_count,
+            "Root node should have count={}, got count={}",
+            item_count, root_count
+        );
+
+        fn verify_tree_counts(tree: &grovedb_merk::proofs::tree::Tree) -> u64 {
+            let node_count = get_node_count(&tree.node).unwrap_or(0);
+            let left_count = tree
+                .left
+                .as_ref()
+                .map(|c| verify_tree_counts(&c.tree))
+                .unwrap_or(0);
+            let right_count = tree
+                .right
+                .as_ref()
+                .map(|c| verify_tree_counts(&c.tree))
+                .unwrap_or(0);
+
+            let expected_count = 1 + left_count + right_count;
+            assert_eq!(
+                node_count, expected_count,
+                "Node count {} should equal 1 + {} + {} = {}",
+                node_count, left_count, right_count, expected_count
+            );
+
+            node_count
+        }
+
+        let total_verified = verify_tree_counts(&proof_tree);
+        assert_eq!(
+            total_verified, item_count,
+            "Total tree count should be {}",
+            item_count
+        );
+    }
+
+    #[test]
+    fn test_provable_count_sum_tree_absence_proof_uses_kvdigest_count() {
+        // V1 version: same absence proof test but using GroveVersion::latest()
+        // which produces V1 proofs.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"counted_tree",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree");
+
+        for (key, value) in [
+            (b"aaa".as_slice(), 10i64),
+            (b"ccc".as_slice(), 20i64),
+            (b"eee".as_slice(), 30i64),
+        ] {
+            db.insert(
+                [TEST_LEAF, b"counted_tree"].as_ref(),
+                key,
+                Element::new_sum_item(value),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert item");
+        }
+
+        let mut query = Query::new();
+        query.insert_key(b"bbb".to_vec());
+        let path_query =
+            PathQuery::new_unsized(vec![TEST_LEAF.to_vec(), b"counted_tree".to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate absence proof");
+
+        let (root_hash, proved_values) =
+            GroveDb::verify_query_raw(&proof, &path_query, grove_version)
+                .expect("should verify absence proof");
+
+        let actual_root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get root hash");
+
+        assert_eq!(root_hash, actual_root_hash, "Root hash should match");
+        assert_eq!(
+            proved_values.len(),
+            0,
+            "Should have no proved values for absence"
+        );
+
+        let grove_proof: GroveDBProof =
+            bincode::decode_from_slice(&proof, bincode::config::standard())
+                .expect("should decode proof")
+                .0;
+
+        fn has_kvdigest_count(ops: &[Op]) -> bool {
+            ops.iter().any(|op| {
+                matches!(
+                    op,
+                    Op::Push(Node::KVDigestCount(..)) | Op::PushInverted(Node::KVDigestCount(..))
+                )
+            })
+        }
+
+        match grove_proof {
+            GroveDBProof::V1(proof_v1) => {
+                let mut found_kvdigest_count = false;
+
+                fn check_v1_layer_proof(
+                    layer: &crate::operations::proof::LayerProof,
+                    found_kvdigest_count: &mut bool,
+                ) {
+                    let merk_bytes = match &layer.merk_proof {
+                        ProofBytes::Merk(bytes) => bytes.as_slice(),
+                        _ => return,
+                    };
+                    let decoder = Decoder::new(merk_bytes);
+                    let ops: Vec<Op> = decoder.collect::<Result<Vec<_>, _>>().unwrap_or_default();
+
+                    if has_kvdigest_count(&ops) {
+                        *found_kvdigest_count = true;
+                    }
+
+                    for lower_layer in layer.lower_layers.values() {
+                        check_v1_layer_proof(lower_layer, found_kvdigest_count);
+                    }
+                }
+
+                check_v1_layer_proof(&proof_v1.root_layer, &mut found_kvdigest_count);
+
+                assert!(
+                    found_kvdigest_count,
+                    "V1 absence proof should contain KVDigestCount nodes for ProvableCountSumTree"
+                );
+            }
+            _ => panic!("expected V1 proof"),
         }
     }
 }

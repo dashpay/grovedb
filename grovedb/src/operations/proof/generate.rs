@@ -62,10 +62,12 @@ impl GroveDb {
         }
     }
 
-    /// Generate a minimalistic proof for a given path query
-    /// doesn't allow for subset verification
+    /// Generate a minimalistic proof for a given path query.
+    /// Doesn't allow for subset verification.
     /// Proofs generated with this can only be verified by the path query used
     /// to generate them.
+    ///
+    /// Version dispatch happens in `prove_query_non_serialized`.
     pub fn prove_query(
         &self,
         path_query: &PathQuery,
@@ -96,32 +98,36 @@ impl GroveDb {
         Ok(encoded_proof).wrap_with_cost(cost)
     }
 
-    /// Generates a V1 proof (supports MmrTree/BulkAppendTree subqueries) and
-    /// returns serialized bytes.
-    pub fn prove_query_v1(
+    /// Generates a proof and does not serialize the result.
+    ///
+    /// Dispatches to v0 or v1 based on the version.
+    pub fn prove_query_non_serialized(
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Vec<u8>, Error> {
-        let mut cost = OperationCost::default();
-        let proof = cost_return_on_error!(
-            &mut cost,
-            self.prove_query_v1_non_serialized(path_query, prove_options, grove_version)
-        );
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_no_limit();
-        let encoded_proof = cost_return_on_error_no_add!(
-            cost,
-            bincode::encode_to_vec(proof, config)
-                .map_err(|e| Error::CorruptedData(format!("unable to encode V1 proof {}", e)))
-        );
-        Ok(encoded_proof).wrap_with_cost(cost)
+    ) -> CostResult<GroveDBProof, Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .prove_query_non_serialized
+        {
+            0 => self.prove_query_non_serialized_v0(path_query, prove_options, grove_version),
+            1 => self.prove_query_non_serialized_v1(path_query, prove_options, grove_version),
+            version => Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "prove_query_non_serialized".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
     }
 
-    /// Generates a proof and does not serialize the result
-    pub fn prove_query_non_serialized(
+    /// V0: Generates a Merk-only proof without serialization.
+    pub(crate) fn prove_query_non_serialized_v0(
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
@@ -585,6 +591,14 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_trunk_chunk",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_trunk_chunk
+        );
         let mut cost = OperationCost::default();
 
         let proof = cost_return_on_error!(
@@ -614,6 +628,14 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_trunk_chunk_non_serialized",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_trunk_chunk_non_serialized
+        );
         let mut cost = OperationCost::default();
 
         let tx = self.start_transaction();
@@ -706,6 +728,14 @@ impl GroveDb {
         query: &crate::query::PathBranchChunkQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_branch_chunk",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_branch_chunk
+        );
         let mut cost = OperationCost::default();
 
         let branch_result = cost_return_on_error!(
@@ -730,6 +760,14 @@ impl GroveDb {
         query: &crate::query::PathBranchChunkQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<grovedb_merk::BranchQueryResult, Error> {
+        check_grovedb_v0_with_cost!(
+            "prove_branch_chunk_non_serialized",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .prove_branch_chunk_non_serialized
+        );
         let mut cost = OperationCost::default();
 
         let tx = self.start_transaction();
@@ -760,9 +798,8 @@ impl GroveDb {
 
     // ── V1 Proof Generation (MmrTree / BulkAppendTree support) ──────────
 
-    /// Generate a V1 proof for a query that may touch MmrTree or
-    /// BulkAppendTree elements.
-    pub fn prove_query_v1_non_serialized(
+    /// V1: Generates a proof that supports MmrTree / BulkAppendTree elements.
+    pub(crate) fn prove_query_non_serialized_v1(
         &self,
         path_query: &PathQuery,
         prove_options: Option<ProveOptions>,
