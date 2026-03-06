@@ -212,6 +212,29 @@ impl Element {
         }
     }
 
+    /// Check if the element is a non-empty tree that should have child data.
+    ///
+    /// For merk-backed trees this means the root key is `Some(_)` (at least one
+    /// node). Non-merk tree types (MmrTree, BulkAppendTree, CommitmentTree,
+    /// DenseAppendOnlyFixedSizeTree) always carry their own data and are
+    /// considered non-empty regardless of their count field.
+    pub fn is_non_empty_tree(&self) -> bool {
+        matches!(
+            self,
+            Element::Tree(Some(_), _)
+                | Element::SumTree(Some(_), ..)
+                | Element::BigSumTree(Some(_), ..)
+                | Element::CountTree(Some(_), ..)
+                | Element::CountSumTree(Some(_), ..)
+                | Element::ProvableCountTree(Some(_), ..)
+                | Element::ProvableCountSumTree(Some(_), ..)
+                | Element::CommitmentTree(..)
+                | Element::MmrTree(..)
+                | Element::BulkAppendTree(..)
+                | Element::DenseAppendOnlyFixedSizeTree(..)
+        )
+    }
+
     /// Check if the element is a reference
     pub fn is_reference(&self) -> bool {
         matches!(self, Element::Reference(..))
