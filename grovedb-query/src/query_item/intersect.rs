@@ -537,7 +537,7 @@ impl Ord for RangeSetItem {
                 }
             }
 
-            (ExclusiveStart(v1), ExclusiveEnd(v2)) | (ExclusiveEnd(v2), ExclusiveStart(v1)) => {
+            (ExclusiveStart(v1), ExclusiveEnd(v2)) => {
                 // start goes up, end goes down
                 // if they are equal, exclusive end is smaller cause it stops just before the
                 // number
@@ -546,6 +546,10 @@ impl Ord for RangeSetItem {
                     _ => Ordering::Less,
                 }
             }
+            (ExclusiveEnd(v1), ExclusiveStart(v2)) => match v1.cmp(v2) {
+                Ordering::Equal | Ordering::Less => Ordering::Less,
+                _ => Ordering::Greater,
+            },
         }
     }
 }
@@ -912,6 +916,20 @@ mod test {
         assert_eq!(
             RangeSetItem::ExclusiveStart(vec![1]).cmp(&RangeSetItem::ExclusiveEnd(vec![2])),
             Ordering::Less
+        );
+
+        // test anti-symmetry: ExclusiveEnd vs ExclusiveStart (reverse direction)
+        assert_eq!(
+            RangeSetItem::ExclusiveEnd(vec![1]).cmp(&RangeSetItem::ExclusiveStart(vec![1])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveEnd(vec![1]).cmp(&RangeSetItem::ExclusiveStart(vec![2])),
+            Ordering::Less
+        );
+        assert_eq!(
+            RangeSetItem::ExclusiveEnd(vec![2]).cmp(&RangeSetItem::ExclusiveStart(vec![1])),
+            Ordering::Greater
         );
     }
 }
