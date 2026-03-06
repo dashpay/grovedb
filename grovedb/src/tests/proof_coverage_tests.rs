@@ -220,6 +220,8 @@ mod tests {
             key: b"key".to_vec(),
             value: vec![10, 20],
             proof: [5u8; 32],
+            value_hash_is_computed: true,
+            is_reference_result: false,
         };
         let path = vec![b"root".to_vec()];
         let result = ProvedPathKeyValue::from_proved_key_value(path.clone(), pkv);
@@ -236,11 +238,15 @@ mod tests {
                 key: b"a".to_vec(),
                 value: vec![1],
                 proof: [0u8; 32],
+                value_hash_is_computed: true,
+                is_reference_result: false,
             },
             ProvedKeyValue {
                 key: b"b".to_vec(),
                 value: vec![2],
                 proof: [1u8; 32],
+                value_hash_is_computed: true,
+                is_reference_result: false,
             },
         ];
         let path = vec![b"p".to_vec()];

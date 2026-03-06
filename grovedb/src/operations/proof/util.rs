@@ -255,6 +255,8 @@ mod tests {
             key: b"a".to_vec(),
             value: Some(vec![5, 6]),
             proof: [0; 32],
+            value_hash_is_computed: true,
+            is_reference_result: false,
         };
         let proved_path_key_value =
             ProvedPathKeyOptionalValue::from_proved_key_value(path.clone(), proved_key_value);
@@ -276,21 +278,29 @@ mod tests {
             key: b"a".to_vec(),
             value: Some(vec![5, 6]),
             proof: [0; 32],
+            value_hash_is_computed: true,
+            is_reference_result: false,
         };
         let proved_key_value_b = ProvedKeyOptionalValue {
             key: b"b".to_vec(),
             value: Some(vec![5, 7]),
             proof: [1; 32],
+            value_hash_is_computed: true,
+            is_reference_result: false,
         };
         let proved_key_value_c = ProvedKeyOptionalValue {
             key: b"c".to_vec(),
             value: Some(vec![6, 7]),
             proof: [2; 32],
+            value_hash_is_computed: true,
+            is_reference_result: false,
         };
         let proved_key_value_d = ProvedKeyOptionalValue {
             key: b"d".to_vec(),
             value: None,
             proof: [2; 32],
+            value_hash_is_computed: true,
+            is_reference_result: false,
         };
         let proved_key_values = vec![
             proved_key_value_a,
