@@ -902,7 +902,7 @@ impl QualifiedGroveDbOp {
         // Build a map of deleted_qualified_path -> indices of delete ops
         let mut deleted_path_to_op_indices: HashMap<KeyInfoPath, Vec<usize>> = HashMap::new();
         for (idx, op) in ops.iter().enumerate() {
-            if let GroveOp::Delete = op.op {
+            if matches!(op.op, GroveOp::Delete | GroveOp::DeleteTree(..)) {
                 let Some(ref key) = op.key else {
                     continue;
                 };
@@ -919,7 +919,10 @@ impl QualifiedGroveDbOp {
         let mut conflicts: HashMap<KeyInfoPath, Vec<usize>> = HashMap::new();
         for (idx, op) in ops.iter().enumerate() {
             match op.op {
-                GroveOp::InsertOrReplace { .. } | GroveOp::Replace { .. } => {}
+                GroveOp::InsertOnly { .. }
+                | GroveOp::InsertOrReplace { .. }
+                | GroveOp::Replace { .. }
+                | GroveOp::Patch { .. } => {}
                 _ => continue,
             }
             for prefix_len in 1..=op.path.len() as usize {
