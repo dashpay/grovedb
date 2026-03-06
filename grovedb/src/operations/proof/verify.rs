@@ -628,7 +628,33 @@ impl GroveDb {
                         if limit_left == &Some(0) {
                             break;
                         }
+                    } else if element.is_non_empty_tree()
+                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
+                    {
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            format!(
+                                "V1 proof is missing lower layer for non-empty tree at key {}",
+                                hex::encode(key),
+                            ),
+                        ));
                     }
+                }
+            }
+        }
+
+        // Succinctness check: reject proof if it contains lower layers
+        // for keys that the query did not require
+        if options.verify_proof_succinctness {
+            for key in layer_proof.lower_layers.keys() {
+                if !verified_keys.contains(key) {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "V1 proof contains extra lower layer for key {} not required by query",
+                            hex::encode(key),
+                        ),
+                    ));
                 }
             }
         }
@@ -1510,17 +1536,33 @@ impl GroveDb {
                         if limit_left == &Some(0) {
                             break;
                         }
-                    } else {
-                        #[cfg(feature = "proof_debug")]
-                        {
-                            println!(
-                                "we have subquery on key {} with value {}: {}",
-                                hex_to_ascii(key),
-                                element,
-                                level_query
-                            )
-                        }
+                    } else if element.is_non_empty_tree()
+                        && internal_query.has_subquery_or_matching_in_path_on_key(key)
+                    {
+                        return Err(Error::InvalidProof(
+                            query.clone(),
+                            format!(
+                                "Proof is missing lower layer for non-empty tree at key {}",
+                                hex::encode(key),
+                            ),
+                        ));
                     }
+                }
+            }
+        }
+
+        // Succinctness check: reject proof if it contains lower layers
+        // for keys that the query did not require
+        if options.verify_proof_succinctness {
+            for key in layer_proof.lower_layers.keys() {
+                if !verified_keys.contains(key) {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "Proof contains extra lower layer for key {} not required by query",
+                            hex::encode(key),
+                        ),
+                    ));
                 }
             }
         }

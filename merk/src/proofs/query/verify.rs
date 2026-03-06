@@ -40,8 +40,10 @@ pub struct VerifyOptions {
     /// When set to true, this will give back absence proofs for any query items
     /// that are keys. This means QueryItem::Key(), and not the ranges.
     pub absence_proofs_for_non_existing_searched_keys: bool,
-    /// Verifies that we have all the data. Todo: verify that this works
-    /// properly
+    /// When true, reject proofs that contain extra lower-layer data beyond
+    /// what the query requires (e.g. proof covers subtrees A and B but query
+    /// only asks for A). When false, extra data is tolerated (subset
+    /// verification).
     pub verify_proof_succinctness: bool,
     /// Should return empty trees in the result?
     pub include_empty_trees_in_result: bool,

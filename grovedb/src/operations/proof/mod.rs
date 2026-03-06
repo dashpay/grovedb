@@ -139,7 +139,8 @@ impl GroveDBProof {
     }
 
     /// Verifies a query using the proof and returns the root hash and the query
-    /// result.
+    /// result. Rejects proofs containing extra data beyond what the query
+    /// requires (succinctness check enabled).
     pub fn verify(
         &self,
         query: &PathQuery,
@@ -159,7 +160,8 @@ impl GroveDBProof {
     }
 
     /// Verifies a query with an absence proof and returns the root hash and the
-    /// query result.
+    /// query result. Rejects proofs containing extra data beyond what the
+    /// query requires (succinctness check enabled).
     pub fn verify_with_absence_proof(
         &self,
         query: &PathQuery,

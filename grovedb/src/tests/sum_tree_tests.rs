@@ -1863,7 +1863,7 @@ mod tests {
         );
 
         let (_root_hash, parent, result_set) =
-            GroveDb::verify_query_get_parent_tree_info(&proof, &path_query, grove_version)
+            GroveDb::verify_subset_query_get_parent_tree_info(&proof, &path_query, grove_version)
                 .expect("should verify proof");
 
         assert_eq!(parent, SummedMerkNode(1));
