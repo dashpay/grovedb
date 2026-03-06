@@ -1781,4 +1781,22 @@ mod test {
         let result = merk.branch_query(&[1, 2, 3], 2, grove_version).unwrap();
         assert!(result.is_err(), "branch_query should fail on empty tree");
     }
+
+    #[test]
+    fn test_verify_empty_tree_returns_empty_maps() {
+        let grove_version = GroveVersion::latest();
+        let merk = TempMerk::new(grove_version);
+
+        // verify() on an empty Merk (no tree loaded) should return empty maps
+        // instead of panicking, covering the early-return path added in PR #497
+        let (bad_link_map, parent_keys) = merk.verify(false, grove_version);
+        assert!(
+            bad_link_map.is_empty(),
+            "bad_link_map should be empty for empty tree"
+        );
+        assert!(
+            parent_keys.is_empty(),
+            "parent_keys should be empty for empty tree"
+        );
+    }
 }
