@@ -129,18 +129,26 @@ where
 
             let mut new_element_cloned = original_new_element.clone();
 
+            let new_flags = cost_return_on_error_no_add!(
+                cost,
+                new_element_cloned
+                    .get_flags_mut()
+                    .as_mut()
+                    .ok_or(Error::CorruptedCodeExecution(
+                        "element has no flags for just-in-time update",
+                    ))
+            );
             let changed = cost_return_on_error_no_add!(
                 cost,
-                (flags_update)(
-                    &storage_costs,
-                    maybe_old_flags.clone(),
-                    new_element_cloned.get_flags_mut().as_mut().unwrap()
-                )
-                .map_err(|e| match e {
-                    Error::JustInTimeElementFlagsClientError(_) => {
-                        MerkError::ClientCorruptionError(e.to_string()).into()
+                (flags_update)(&storage_costs, maybe_old_flags.clone(), new_flags).map_err(|e| {
+                    match e {
+                        Error::JustInTimeElementFlagsClientError(_) => {
+                            MerkError::ClientCorruptionError(e.to_string()).into()
+                        }
+                        _ => {
+                            MerkError::ClientCorruptionError("non client error".to_string()).into()
+                        }
                     }
-                    _ => MerkError::ClientCorruptionError("non client error".to_string(),).into(),
                 })
             );
             if !changed {
