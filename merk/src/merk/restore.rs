@@ -83,6 +83,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         }
     }
 
+    /// Consumes the `Restorer` and returns the underlying `Merk` without
+    /// finalizing. Useful for inspecting the merk state (e.g., checking its
+    /// root hash) when no chunks have been processed.
+    pub fn into_merk(self) -> Merk<S> {
+        self.merk
+    }
+
     /// Processes a chunk at some chunk id, returns the chunks id's of chunks
     /// that can be requested
     pub fn process_chunk(
