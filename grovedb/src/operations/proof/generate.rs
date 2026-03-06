@@ -508,8 +508,12 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
-                            // Deserialization errors: skip silently
-                            Err(_) => continue,
+                            Err(e) => {
+                                return Err(Error::CorruptedData(format!(
+                                    "failed to deserialize element during proof generation: {e}"
+                                )))
+                                .wrap_with_cost(cost);
+                            }
                         }
                     }
                     _ => continue,
@@ -1174,8 +1178,12 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
-                            // Deserialization errors: skip silently
-                            Err(_) => continue,
+                            Err(e) => {
+                                return Err(Error::CorruptedData(format!(
+                                    "failed to deserialize element during proof generation: {e}"
+                                )))
+                                .wrap_with_cost(cost);
+                            }
                         }
                     }
                     _ => continue,
