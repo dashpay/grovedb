@@ -212,21 +212,21 @@ impl OperationCost {
             let mut paid_value_len = value_len;
             // We need to remove the child sizes if they exist
             if let Some((in_sum_tree, left_child, right_child)) = children_sizes {
-                paid_value_len -= 2; // for the child options
+                paid_value_len = paid_value_len.saturating_sub(2); // for the child options
 
                 // We need to remove the costs of the children
                 if let Some((left_child_len, left_child_sum_len)) = left_child {
-                    paid_value_len -= left_child_len;
-                    paid_value_len -= left_child_sum_len;
+                    paid_value_len = paid_value_len.saturating_sub(left_child_len);
+                    paid_value_len = paid_value_len.saturating_sub(left_child_sum_len);
                 }
                 if let Some((right_child_len, right_child_sum_len)) = right_child {
-                    paid_value_len -= right_child_len;
-                    paid_value_len -= right_child_sum_len;
+                    paid_value_len = paid_value_len.saturating_sub(right_child_len);
+                    paid_value_len = paid_value_len.saturating_sub(right_child_sum_len);
                 }
 
                 let sum_tree_node_size = if let Some((tree_cost_type, sum_tree_len)) = in_sum_tree {
                     let cost_size = tree_cost_type.cost_size();
-                    paid_value_len -= sum_tree_len;
+                    paid_value_len = paid_value_len.saturating_sub(sum_tree_len);
                     paid_value_len += cost_size;
                     cost_size
                 } else {
@@ -292,22 +292,30 @@ impl Add for OperationCost {
 
     fn add(self, rhs: Self) -> Self::Output {
         OperationCost {
-            seek_count: self.seek_count + rhs.seek_count,
+            seek_count: self.seek_count.saturating_add(rhs.seek_count),
             storage_cost: self.storage_cost + rhs.storage_cost,
-            storage_loaded_bytes: self.storage_loaded_bytes + rhs.storage_loaded_bytes,
-            hash_node_calls: self.hash_node_calls + rhs.hash_node_calls,
-            sinsemilla_hash_calls: self.sinsemilla_hash_calls + rhs.sinsemilla_hash_calls,
+            storage_loaded_bytes: self
+                .storage_loaded_bytes
+                .saturating_add(rhs.storage_loaded_bytes),
+            hash_node_calls: self.hash_node_calls.saturating_add(rhs.hash_node_calls),
+            sinsemilla_hash_calls: self
+                .sinsemilla_hash_calls
+                .saturating_add(rhs.sinsemilla_hash_calls),
         }
     }
 }
 
 impl AddAssign for OperationCost {
     fn add_assign(&mut self, rhs: Self) {
-        self.seek_count += rhs.seek_count;
+        self.seek_count = self.seek_count.saturating_add(rhs.seek_count);
         self.storage_cost += rhs.storage_cost;
-        self.storage_loaded_bytes += rhs.storage_loaded_bytes;
-        self.hash_node_calls += rhs.hash_node_calls;
-        self.sinsemilla_hash_calls += rhs.sinsemilla_hash_calls;
+        self.storage_loaded_bytes = self
+            .storage_loaded_bytes
+            .saturating_add(rhs.storage_loaded_bytes);
+        self.hash_node_calls = self.hash_node_calls.saturating_add(rhs.hash_node_calls);
+        self.sinsemilla_hash_calls = self
+            .sinsemilla_hash_calls
+            .saturating_add(rhs.sinsemilla_hash_calls);
     }
 }
 

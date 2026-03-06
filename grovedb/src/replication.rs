@@ -577,16 +577,30 @@ pub(crate) mod utils {
             }
 
             // Read length as u32 (big-endian)
-            let byte_length = u32::from_be_bytes([
+            let byte_length_u32 = u32::from_be_bytes([
                 packed_data[index],
                 packed_data[index + 1],
                 packed_data[index + 2],
                 packed_data[index + 3],
-            ]) as usize;
+            ]);
+            let byte_length: usize = byte_length_u32 as usize;
+            // Guard against truncation on 32-bit platforms where usize is 32 bits
+            if byte_length as u32 != byte_length_u32 {
+                return Err(Error::CorruptedData(format!(
+                    "Nested array {} length {} exceeds platform address space",
+                    i, byte_length_u32
+                )));
+            }
             index += 4; // Move past the length bytes
 
-            // Ensure there's enough data for the byte sequence
-            if index + byte_length > packed_data.len() {
+            // Use checked addition to prevent overflow on the bounds check
+            let end = index.checked_add(byte_length).ok_or_else(|| {
+                Error::CorruptedData(format!(
+                    "Nested array {} length overflow (index: {}, length: {})",
+                    i, index, byte_length
+                ))
+            })?;
+            if end > packed_data.len() {
                 return Err(Error::CorruptedData(format!(
                     "Unexpected end of data while reading nested array {} (expected length: {})",
                     i, byte_length
@@ -594,8 +608,8 @@ pub(crate) mod utils {
             }
 
             // Extract the byte sequence
-            let byte_sequence = packed_data[index..index + byte_length].to_vec();
-            index += byte_length;
+            let byte_sequence = packed_data[index..end].to_vec();
+            index = end;
 
             // Push into the result
             nested_bytes.push(byte_sequence);

@@ -119,7 +119,7 @@ impl BTreeMapLevelResult {
 
 impl BTreeMapLevelResult {
     /// Returns the number of values at the given path within this result tree.
-    pub fn len_of_values_at_path(&self, path: &[&[u8]]) -> u16 {
+    pub fn len_of_values_at_path(&self, path: &[&[u8]]) -> usize {
         let mut current = self;
 
         // Traverse the path
@@ -139,7 +139,7 @@ impl BTreeMapLevelResult {
             }
         }
 
-        current.key_values.len() as u16
+        current.key_values.len()
     }
 }
 
