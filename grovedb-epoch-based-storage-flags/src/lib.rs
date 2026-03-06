@@ -209,7 +209,12 @@ impl StorageFlags {
         match original_value {
             None => other_epoch_bytes.insert(*epoch_with_adding_bytes, added_bytes),
             Some(original_bytes) => {
-                other_epoch_bytes.insert(*epoch_with_adding_bytes, original_bytes + added_bytes)
+                let combined = original_bytes.checked_add(added_bytes).ok_or(
+                    StorageFlagsError::StorageFlagsOverflow(
+                        "u32 overflow when combining epoch byte counts".to_string(),
+                    ),
+                )?;
+                other_epoch_bytes.insert(*epoch_with_adding_bytes, combined)
             }
         };
         // println!(
@@ -1926,5 +1931,21 @@ mod storage_flags_additional_tests {
         let flags = StorageFlags::MultiEpoch(1, BTreeMap::from([(2, 300)]));
         // 1 type byte + 2 base epoch bytes + (2 epoch bytes + varint bytes)
         assert_eq!(flags.serialized_size(), 3 + 2 + bytes.len() as u32);
+    }
+
+    #[test]
+    fn combine_with_higher_base_epoch_u32_overflow_returns_error() {
+        // Set up a MultiEpoch with an existing entry at epoch 2 near u32::MAX.
+        let ours = StorageFlags::MultiEpoch(1, BTreeMap::from([(2, u32::MAX - 5)]));
+        // rhs has base epoch 2 (higher), so combine_added_bytes will call
+        // combine_with_higher_base_epoch and attempt to add to the existing
+        // epoch-2 entry.
+        let theirs = StorageFlags::SingleEpoch(2);
+
+        // Adding 6 bytes would push the total past u32::MAX.
+        let err = ours
+            .combine_added_bytes(theirs, 6, MergingOwnersStrategy::UseOurs)
+            .expect_err("expected u32 overflow error");
+        assert!(matches!(err, StorageFlagsError::StorageFlagsOverflow(_)));
     }
 }
