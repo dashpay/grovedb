@@ -338,7 +338,7 @@ mod tests {
         // This should result in truncation
         let max_depth: u8 = 7;
         let tree_depth = calculate_max_tree_depth_from_count(100);
-        let expected_chunk_depths = calculate_chunk_depths(tree_depth, max_depth);
+        let expected_chunk_depths = calculate_chunk_depths(tree_depth, max_depth).unwrap();
 
         let query = PathTrunkChunkQuery::new(vec![b"count_sum_tree".to_vec()], max_depth);
 

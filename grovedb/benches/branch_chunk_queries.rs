@@ -732,7 +732,7 @@ pub fn run_branch_chunk_query_benchmark() {
             } else {
                 // Large enough, query leaf directly
                 let chunk_depths =
-                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth);
+                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth).unwrap();
                 println!(
                     "Chunks are {:?} for tree_depth={}, max={}, min={}",
                     chunk_depths, tree_depth, max_depth, min_depth
@@ -1434,7 +1434,7 @@ pub fn run_branch_chunk_query_benchmark_with_key_increase() {
             } else {
                 // Large enough, query leaf directly
                 let chunk_depths =
-                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth);
+                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth).unwrap();
                 println!(
                     "Chunks are {:?} for tree_depth={}, max={}, min={}",
                     chunk_depths, tree_depth, max_depth, min_depth
@@ -2213,7 +2213,7 @@ async fn run_async_latency_benchmark_inner() {
                 }
             } else {
                 let chunk_depths =
-                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth);
+                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth).unwrap();
                 let depth = if chunk_depths.len() == 1 {
                     max_depth
                 } else {
