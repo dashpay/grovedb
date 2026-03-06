@@ -4788,13 +4788,14 @@ mod tests {
         .expect("insert commitment tree");
 
         // Write actual data to populate data storage (frontier + bulk data).
-        // Payload must be ciphertext_payload_size::<DashMemo>() = 32+104+80 = 216 bytes.
+        // Payload must match ciphertext_payload_size::<DashMemo>() = 32+104+80.
+        const DASH_MEMO_PAYLOAD_SIZE: usize = 216;
         db.commitment_tree_insert_raw(
             EMPTY_PATH,
             b"ct",
             [1u8; 32],
             [2u8; 32],
-            vec![0u8; 216],
+            vec![0u8; DASH_MEMO_PAYLOAD_SIZE],
             Some(&tx),
             grove_version,
         )
@@ -4838,7 +4839,7 @@ mod tests {
             b"ct",
             [3u8; 32],
             [4u8; 32],
-            vec![0u8; 216],
+            vec![0u8; DASH_MEMO_PAYLOAD_SIZE],
             Some(&tx),
             grove_version,
         )

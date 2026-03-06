@@ -887,6 +887,8 @@ mod tests {
         .cost_as_result()
         .expect("expected worst case costs for delete");
         assert!(cost.seek_count > 0);
+        // Delete involves tree rebalancing which requires hash calls
+        assert!(cost.hash_node_calls > 0);
     }
 
     #[test]
@@ -916,6 +918,8 @@ mod tests {
         .cost_as_result()
         .expect("expected worst case costs for delete tree");
         assert!(cost.seek_count > 0);
+        // DeleteTree involves tree rebalancing which requires hash calls
+        assert!(cost.hash_node_calls > 0);
     }
 
     // Approach 2: Direct worst_case_cost() tests (keyless/internal ops)
@@ -1056,8 +1060,10 @@ mod tests {
             )
             .cost_as_result()
             .expect("expected worst case cost for replace non-merk tree root");
-        // With propagation the merk replace tree operation produces seeks
-        assert!(cost.seek_count > 0 || cost.hash_node_calls > 0);
+        // With propagation the merk replace tree operation produces seeks and
+        // hash calls for tree rebalancing
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
     }
 
     #[test]
@@ -1079,6 +1085,8 @@ mod tests {
             .cost_as_result()
             .expect("expected worst case cost for replace non-merk mmr tree root");
         assert!(cost.seek_count > 0);
+        // With propagation, hash calls are produced for tree rebalancing
+        assert!(cost.hash_node_calls > 0);
     }
 
     #[test]

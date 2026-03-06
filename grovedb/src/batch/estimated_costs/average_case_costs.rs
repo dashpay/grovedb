@@ -1322,6 +1322,8 @@ mod tests {
             "expected hash_node_calls > 0, got {}",
             cost.hash_node_calls
         );
+        // MMR uses blake3, not sinsemilla
+        assert_eq!(cost.sinsemilla_hash_calls, 0);
         // Leaf node + internal node writes
         assert!(
             cost.storage_cost.added_bytes > 0,
@@ -1364,6 +1366,8 @@ mod tests {
             "expected hash_node_calls > 0, got {}",
             cost.hash_node_calls
         );
+        // BulkAppend uses blake3, not sinsemilla
+        assert_eq!(cost.sinsemilla_hash_calls, 0);
         // Buffer entry write adds bytes equal to value length
         assert!(
             cost.storage_cost.added_bytes > 0,
@@ -1400,6 +1404,8 @@ mod tests {
             "expected hash_node_calls > 0, got {}",
             cost.hash_node_calls
         );
+        // DenseTree uses blake3, not sinsemilla
+        assert_eq!(cost.sinsemilla_hash_calls, 0);
         assert!(
             cost.storage_cost.added_bytes > 0,
             "expected added_bytes > 0, got {}",
