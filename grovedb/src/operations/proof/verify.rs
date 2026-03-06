@@ -448,7 +448,9 @@ impl GroveDb {
 
         if merk_result.result_set.is_empty() {
             if prove_options.decrease_limit_on_empty_sub_query_result {
-                limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                limit_left
+                    .iter_mut()
+                    .for_each(|limit| *limit = limit.saturating_sub(1));
             }
         } else {
             for proved_key_value in merk_result.result_set {
@@ -488,7 +490,9 @@ impl GroveDb {
                                         path_key_optional_value
                                             .try_into_versioned(grove_version)?,
                                     );
-                                    limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                                    limit_left
+                                        .iter_mut()
+                                        .for_each(|limit| *limit = limit.saturating_sub(1));
                                     if limit_left == &Some(0) {
                                         break;
                                     }
@@ -618,7 +622,9 @@ impl GroveDb {
                                 proved_key_value,
                             );
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
-                        limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                        limit_left
+                            .iter_mut()
+                            .for_each(|limit| *limit = limit.saturating_sub(1));
                         if limit_left == &Some(0) {
                             break;
                         }
@@ -1321,7 +1327,9 @@ impl GroveDb {
 
         if merk_result.result_set.is_empty() {
             if prove_options.decrease_limit_on_empty_sub_query_result {
-                limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                limit_left
+                    .iter_mut()
+                    .for_each(|limit| *limit = limit.saturating_sub(1));
             }
         } else {
             for proved_key_value in merk_result.result_set {
@@ -1367,7 +1375,9 @@ impl GroveDb {
                                             .try_into_versioned(grove_version)?,
                                     );
 
-                                    limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                                    limit_left
+                                        .iter_mut()
+                                        .for_each(|limit| *limit = limit.saturating_sub(1));
                                     if limit_left == &Some(0) {
                                         break;
                                     }
@@ -1494,7 +1504,9 @@ impl GroveDb {
                         }
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
 
-                        limit_left.iter_mut().for_each(|limit| *limit -= 1);
+                        limit_left
+                            .iter_mut()
+                            .for_each(|limit| *limit = limit.saturating_sub(1));
                         if limit_left == &Some(0) {
                             break;
                         }
