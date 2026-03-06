@@ -67,15 +67,18 @@ impl<T> Owner<T> {
     /// The function must return a result of the same type (the same value, or a
     /// new value to take its place).
     ///
-    /// Like `own`, but uses a tuple return type which allows specifying a value
-    /// to return from the call to `own_result` for convenience.
+    /// # Warning
+    ///
+    /// If `f` returns `Err`, the contained value has been consumed and the
+    /// `Owner` is left in a poisoned state (`inner = None`). Any subsequent
+    /// access (deref, `own`, `own_return`, etc.) will panic. Callers **must**
+    /// not use the `Owner` after `own_result` returns an error.
     pub fn own_result<F, E>(&mut self, f: F) -> Result<(), E>
     where
         F: FnOnce(T) -> Result<T, E>,
     {
         let old_value = unwrap(self.inner.take());
-        let new_value_result = f(old_value);
-        match new_value_result {
+        match f(old_value) {
             Ok(new_value) => {
                 self.inner = Some(new_value);
                 Ok(())
@@ -107,8 +110,32 @@ impl<T> DerefMut for Owner<T> {
 fn unwrap<T>(option: Option<T>) -> T {
     match option {
         Some(value) => value,
-        None => unreachable!("value should be Some"),
+        None => panic!(
+            "Owner is in a poisoned state (inner value is None). \
+             This can happen if `own_result` was called and the closure returned Err, \
+             consuming the value. The Owner must not be used after such an error."
+        ),
     }
 }
 
-// TODO: unit tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_own_result_success_preserves_value() {
+        let mut owner = Owner::new(42);
+        let result = owner.own_result(|v| Ok::<_, ()>(v + 1));
+        assert!(result.is_ok());
+        assert_eq!(*owner, 43);
+    }
+
+    #[test]
+    #[should_panic(expected = "Owner is in a poisoned state")]
+    fn test_own_result_error_poisons_owner() {
+        let mut owner = Owner::new(42);
+        let _ = owner.own_result(|_v| Err::<i32, &str>("fail"));
+        // Accessing the poisoned Owner should panic with a clear message
+        let _ = *owner;
+    }
+}
