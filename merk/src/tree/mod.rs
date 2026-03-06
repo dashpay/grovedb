@@ -740,16 +740,13 @@ impl TreeNode {
     /// subtree is 2 levels taller than the left subtree.
     #[inline]
     pub const fn balance_factor(&self) -> i8 {
-        let left_height = self.child_height(true) as i16;
-        let right_height = self.child_height(false) as i16;
-        let diff = right_height - left_height;
-        if diff > i8::MAX as i16 {
-            i8::MAX
-        } else if diff < i8::MIN as i16 {
-            i8::MIN
-        } else {
-            diff as i8
-        }
+        // Cast to i8 is safe: child_height() returns at most the tree height,
+        // which is O(log n). Even with 2^127 elements the height would be ~127,
+        // well within i8 range. An AVL tree that could overflow u8 child heights
+        // (>255) is physically impossible.
+        let left_height = self.child_height(true) as i8;
+        let right_height = self.child_height(false) as i8;
+        right_height - left_height
     }
 
     /// Attaches the child (if any) to the root node on the given side. Creates
