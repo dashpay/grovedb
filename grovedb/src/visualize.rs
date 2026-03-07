@@ -39,7 +39,7 @@ impl GroveDb {
         while let Some((key, element)) = iter
             .next_element(grove_version)
             .unwrap() // unwraps CostContext (discards cost)
-            .map_err(|e| std::io::Error::other(e.to_string()))?
+            .map_err(|e| std::io::Error::other(format!("cannot get next element: {e}")))?
         {
             drawer.write(b"\n[key: ")?;
             drawer = key.visualize(drawer)?;
