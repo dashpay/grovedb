@@ -94,6 +94,22 @@ fn terminal_keys_error_paths_are_reported() {
 }
 
 #[test]
+fn terminal_keys_rejects_excessive_nesting_depth() {
+    // Build a chain of 65 nested subqueries (limit is 64)
+    let mut inner = Query::new_single_key(k(1));
+    for _ in 0..65 {
+        let mut outer = Query::new_single_key(k(1));
+        outer.set_subquery(inner);
+        inner = outer;
+    }
+    let mut out = vec![];
+    let err = inner
+        .terminal_keys(vec![], 1000, &mut out)
+        .expect_err("must fail on excessive depth");
+    assert!(matches!(err, Error::NotSupported(_)));
+}
+
+#[test]
 fn merge_apis_cover_default_and_conditional_paths() {
     let mut base = Query::new();
     base.insert_key(k(1));
