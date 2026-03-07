@@ -1895,13 +1895,13 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(tree_type) => {
+                GroveOp::DeleteTree(_tree_type) => {
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             true,
-                            tree_type,
+                            in_tree_type, /* use parent tree type, not the deleted subtree's type */
                             &mut batch_operations,
                             grove_version
                         )
