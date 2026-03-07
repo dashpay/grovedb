@@ -495,17 +495,15 @@ impl<'db> MultiStateSyncSession<'db> {
                 let is_subtree_empty = subtree_state_sync.num_processed_chunks == 0;
                 if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
                     if is_subtree_empty {
-                        // For empty subtrees, verify the restorer's underlying
-                        // merk has a NULL root hash. A malicious peer that sends
-                        // empty data for a non-empty subtree will be caught here
-                        // (and also at commit time via H3 root hash
-                        // verification).
-                        let merk_root = prefix_data.restorer.into_merk().root_hash().unwrap();
+                        // For empty subtrees, verify the restorer's underlying merk has a
+                        // NULL root hash. A malicious peer that sends empty data for a
+                        // non-empty subtree will be caught here (and also at commit time
+                        // via H3 root hash verification).
+                        let merk = prefix_data.restorer.into_merk();
+                        let merk_root = merk.root_hash().unwrap();
                         if merk_root != grovedb_merk::tree::hash::NULL_HASH {
                             return Err(Error::InternalError(
-                                "Received no chunk data but merk is non-empty — possible \
-                                 replication attack"
-                                    .to_string(),
+                                "empty subtree has non-null root hash".to_string(),
                             ));
                         }
                     } else if let Err(err) = prefix_data.restorer.finalize(grove_version) {
