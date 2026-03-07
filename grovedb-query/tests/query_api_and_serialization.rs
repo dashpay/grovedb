@@ -82,6 +82,14 @@ fn query_decode_rejects_unsupported_version() {
 }
 
 #[test]
+fn query_borrow_decode_rejects_unsupported_version() {
+    let err = borrow_decode_from_slice::<Query, _>(&[2_u8], standard()).expect_err("must fail");
+    assert!(err
+        .to_string()
+        .contains("unsupported Query encoding version"));
+}
+
+#[test]
 fn query_decode_rejects_too_many_conditional_branches() {
     let mut bytes = Vec::new();
     let cfg = standard();

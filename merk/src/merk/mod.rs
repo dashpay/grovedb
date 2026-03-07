@@ -769,7 +769,7 @@ where
         }
 
         let node = node.unwrap();
-        if node.hash().unwrap() != hash {
+        if node.hash_for_link(self.tree_type).unwrap() != hash {
             bad_link_map.insert(instruction_id.to_vec(), hash);
             parent_keys.insert(instruction_id.to_vec(), parent_key.to_vec());
             return;

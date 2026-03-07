@@ -195,7 +195,11 @@ impl RocksDbStorage {
     }
 
     fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
-        path.len() + path.iter().map(|a| a.max_length() as usize).sum::<usize>()
+        // body = segment_bytes + segments_count.to_ne_bytes() + lengths
+        // segments_count.to_ne_bytes() contributes size_of::<usize>() bytes
+        path.iter().map(|a| a.max_length() as usize).sum::<usize>()
+            + std::mem::size_of::<usize>()
+            + path.len()
     }
 
     /// Returns the write batch, with costs and pending costs
