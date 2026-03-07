@@ -1520,6 +1520,49 @@ mod tests {
     }
 
     // ===================================================================
+    // 30b. InsertOnly enforces no-overwrite even without batch option
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_only_rejects_overwrite_without_explicit_validation_option() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert existing item");
+
+        // InsertOnly should reject overwrite even with default batch options
+        // (validate_insertion_does_not_override = false)
+        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+            vec![TEST_LEAF.to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"should_fail".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "InsertOnly should reject overwrite regardless of batch options"
+        );
+
+        // Verify original value is preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"existing", None, grove_version)
+            .unwrap()
+            .expect("should get element");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    // ===================================================================
     // 31. Batch: RefreshReference with trust_refresh_reference = false
     // ===================================================================
 
