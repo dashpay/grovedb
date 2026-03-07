@@ -385,10 +385,12 @@ impl Tree {
 
     #[cfg(feature = "minimal")]
     pub(crate) fn aggregate_data(&self) -> Result<AggregateData, Error> {
-        match self.node {
-            Node::KVValueHashFeatureType(.., feature_type) => Ok(feature_type.into()),
+        match &self.node {
+            Node::KVValueHashFeatureType(.., feature_type) => Ok((*feature_type).into()),
+            Node::KVCount(_, _, count) => Ok(AggregateData::ProvableCount(*count)),
+            Node::KV(..) | Node::KVValueHash(..) => Ok(AggregateData::NoAggregateData),
             _ => Err(Error::InvalidProofError(
-                "Expected node to be type KVValueHashFeatureType for aggregate data".to_string(),
+                "Cannot extract aggregate data from this node type".to_string(),
             )),
         }
     }
@@ -947,20 +949,34 @@ mod test {
     /// any non-KVValueHashFeatureType variant). Before the fix this would
     /// panic; now it returns a proper error.
     #[test]
-    fn attack_aggregate_data_returns_error_on_crafted_chunk_proof() {
-        // Simulate a malicious chunk: a valid proof that produces a tree
-        // with a Node::KV root instead of Node::KVValueHashFeatureType.
-        let malicious_ops = vec![Ok(Op::Push(Node::KV(vec![1], vec![1])))];
+    fn attack_aggregate_data_returns_error_on_unsupported_node_type() {
+        // Simulate a malicious chunk: a proof that produces a tree with
+        // a Hash node root. KV, KVValueHash, KVCount, and
+        // KVValueHashFeatureType all return valid aggregate data now.
+        // Only node types like Hash/KVHash/KVDigest should still error.
+        let malicious_ops = vec![Ok(Op::Push(Node::Hash([0u8; 32])))];
 
         let tree = execute(malicious_ops.into_iter(), false, |_| Ok(()))
             .unwrap()
             .unwrap();
 
-        // This is exactly what restore.rs:383 does — now returns Err instead of panic.
         let result = tree.aggregate_data();
         assert!(
             result.is_err(),
-            "aggregate_data on non-KVValueHashFeatureType node should return error"
+            "aggregate_data on Hash node should return error"
+        );
+    }
+
+    #[test]
+    fn aggregate_data_returns_ok_for_kv_node() {
+        // KV nodes should return NoAggregateData (not error)
+        let ops = vec![Ok(Op::Push(Node::KV(vec![1], vec![1])))];
+        let tree = execute(ops.into_iter(), false, |_| Ok(()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tree.aggregate_data().unwrap(),
+            AggregateData::NoAggregateData
         );
     }
 
