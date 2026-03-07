@@ -44,9 +44,7 @@ impl GroveDb {
 
     /// Commits a completed state synchronization session.
     pub fn commit_session(&self, session: Pin<Box<MultiStateSyncSession>>) -> Result<(), Error> {
-        session
-            .commit()
-            .inspect_err(|e| eprintln!("Failed to commit session: {:?}", e))
+        session.commit()
     }
 
     /// Fetches a chunk of data from the database based on the given global
