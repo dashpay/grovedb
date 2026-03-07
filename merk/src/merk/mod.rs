@@ -871,12 +871,15 @@ where
         );
         let chunk_depths = if let Some(min) = min_depth {
             if is_provable_count_tree {
-                calculate_chunk_depths_with_minimum(tree_depth, max_depth, min)
+                cost_return_on_error_no_add!(
+                    cost,
+                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min)
+                )
             } else {
-                calculate_chunk_depths(tree_depth, max_depth)
+                cost_return_on_error_no_add!(cost, calculate_chunk_depths(tree_depth, max_depth))
             }
         } else {
-            calculate_chunk_depths(tree_depth, max_depth)
+            cost_return_on_error_no_add!(cost, calculate_chunk_depths(tree_depth, max_depth))
         };
 
         // Generate proof using create_chunk

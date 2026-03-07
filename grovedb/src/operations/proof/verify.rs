@@ -1980,7 +1980,8 @@ impl GroveDb {
         }
 
         let tree_depth = calculate_max_tree_depth_from_count(count);
-        let chunk_depths = calculate_chunk_depths(tree_depth, query.max_depth);
+        let chunk_depths = calculate_chunk_depths(tree_depth, query.max_depth)
+            .map_err(|e| Error::CorruptedData(format!("invalid chunk depth parameters: {}", e)))?;
 
         // Now we're at the target layer - decode and execute the trunk proof
         let decoder = Decoder::new(&current_layer.merk_proof);

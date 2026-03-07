@@ -59,7 +59,7 @@ mod tests {
         // tree_depth=9 for 100 elements, so chunk_depths=[5, 4]
         let max_depth: u8 = 5;
         let tree_depth = calculate_max_tree_depth_from_count(100);
-        let chunk_depths = calculate_chunk_depths(tree_depth, max_depth);
+        let chunk_depths = calculate_chunk_depths(tree_depth, max_depth).unwrap();
 
         assert_eq!(chunk_depths, vec![5, 4], "chunk depths should be [5, 4]");
 
@@ -223,7 +223,7 @@ mod tests {
         // tree_depth=9 for 100 elements, so chunk_depths=[5, 4]
         let max_depth: u8 = 5;
         let tree_depth = calculate_max_tree_depth_from_count(100);
-        let chunk_depths = calculate_chunk_depths(tree_depth, max_depth);
+        let chunk_depths = calculate_chunk_depths(tree_depth, max_depth).unwrap();
 
         assert_eq!(chunk_depths, vec![5, 4], "chunk depths should be [5, 4]");
 

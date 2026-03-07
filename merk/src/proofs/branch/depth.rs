@@ -3,6 +3,8 @@
 //! This module provides functions for calculating tree depth from element count
 //! and for calculating optimal chunk depth splitting.
 
+use crate::Error;
+
 /// Calculate the maximum possible height of an AVL tree from its element count.
 ///
 /// AVL trees have a worst-case height based on Fibonacci numbers. The minimum
@@ -93,39 +95,42 @@ pub fn calculate_max_tree_depth_from_count(count: u64) -> u8 {
 /// use grovedb_merk::proofs::branch::depth::calculate_chunk_depths_with_minimum;
 ///
 /// // depth=10, max=8, min=6: first chunk bumped to min
-/// assert_eq!(calculate_chunk_depths_with_minimum(10, 8, 6), vec![6, 4]);
+/// assert_eq!(calculate_chunk_depths_with_minimum(10, 8, 6).unwrap(), vec![6, 4]);
 ///
 /// // depth=11, max=8, min=6: even split, front gets extra
-/// assert_eq!(calculate_chunk_depths_with_minimum(11, 8, 6), vec![6, 5]);
+/// assert_eq!(calculate_chunk_depths_with_minimum(11, 8, 6).unwrap(), vec![6, 5]);
 ///
 /// // depth=13, max=8, min=6: front chunk gets the extra
-/// assert_eq!(calculate_chunk_depths_with_minimum(13, 8, 6), vec![7, 6]);
+/// assert_eq!(calculate_chunk_depths_with_minimum(13, 8, 6).unwrap(), vec![7, 6]);
 ///
 /// // depth=14, max=8, min=6: even split
-/// assert_eq!(calculate_chunk_depths_with_minimum(14, 8, 6), vec![7, 7]);
+/// assert_eq!(calculate_chunk_depths_with_minimum(14, 8, 6).unwrap(), vec![7, 7]);
 ///
 /// // depth=4, max=10, min=6: fits in single chunk, return as-is
-/// assert_eq!(calculate_chunk_depths_with_minimum(4, 10, 6), vec![4]);
+/// assert_eq!(calculate_chunk_depths_with_minimum(4, 10, 6).unwrap(), vec![4]);
+///
+/// // max_depth=0 returns error
+/// assert!(calculate_chunk_depths_with_minimum(10, 0, 0).is_err());
 /// ```
 pub fn calculate_chunk_depths_with_minimum(
     tree_depth: u8,
     max_depth: u8,
     min_depth: u8,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, Error> {
     if max_depth == 0 {
-        panic!("max_depth must be > 0");
+        return Err(Error::InvalidInputError("max_depth must be > 0"));
     }
     if min_depth == 0 {
-        panic!("min_depth must be > 0");
+        return Err(Error::InvalidInputError("min_depth must be > 0"));
     }
     if min_depth > max_depth {
-        panic!("min_depth must be <= max_depth");
+        return Err(Error::InvalidInputError("min_depth must be <= max_depth"));
     }
 
     // Single chunk if it fits within max (no splitting needed, min_depth doesn't
     // apply)
     if tree_depth <= max_depth {
-        return vec![tree_depth];
+        return Ok(vec![tree_depth]);
     }
 
     // Calculate minimum number of chunks needed
@@ -152,7 +157,7 @@ pub fn calculate_chunk_depths_with_minimum(
         remaining -= chunk;
     }
 
-    chunks
+    Ok(chunks)
 }
 
 /// Calculate optimal chunk depths for even splitting of a tree.
@@ -172,22 +177,25 @@ pub fn calculate_chunk_depths_with_minimum(
 /// ```
 /// use grovedb_merk::proofs::branch::depth::calculate_chunk_depths;
 ///
-/// assert_eq!(calculate_chunk_depths(20, 8), vec![7, 7, 6]);
-/// assert_eq!(calculate_chunk_depths(15, 5), vec![5, 5, 5]);
-/// assert_eq!(calculate_chunk_depths(10, 4), vec![4, 3, 3]);
-/// assert_eq!(calculate_chunk_depths(5, 10), vec![5]);
+/// assert_eq!(calculate_chunk_depths(20, 8).unwrap(), vec![7, 7, 6]);
+/// assert_eq!(calculate_chunk_depths(15, 5).unwrap(), vec![5, 5, 5]);
+/// assert_eq!(calculate_chunk_depths(10, 4).unwrap(), vec![4, 3, 3]);
+/// assert_eq!(calculate_chunk_depths(5, 10).unwrap(), vec![5]);
+///
+/// // max_depth=0 returns error
+/// assert!(calculate_chunk_depths(10, 0).is_err());
 /// ```
-pub fn calculate_chunk_depths(tree_depth: u8, max_depth: u8) -> Vec<u8> {
+pub fn calculate_chunk_depths(tree_depth: u8, max_depth: u8) -> Result<Vec<u8>, Error> {
     if max_depth == 0 {
-        panic!("max_depth must be > 0");
+        return Err(Error::InvalidInputError("max_depth must be > 0"));
     }
 
     if tree_depth == 0 {
-        return vec![0];
+        return Ok(vec![0]);
     }
 
     if tree_depth <= max_depth {
-        return vec![tree_depth];
+        return Ok(vec![tree_depth]);
     }
 
     // Calculate number of chunks needed: ceil(tree_depth / max_depth)
@@ -199,7 +207,7 @@ pub fn calculate_chunk_depths(tree_depth: u8, max_depth: u8) -> Vec<u8> {
 
     // Distribute remainder across chunks for even distribution
     // Higher depth chunks come first (they represent higher tree levels)
-    (0..num_chunks)
+    Ok((0..num_chunks)
         .map(|i| {
             if i < remainder {
                 (base_depth + 1) as u8
@@ -207,7 +215,7 @@ pub fn calculate_chunk_depths(tree_depth: u8, max_depth: u8) -> Vec<u8> {
                 base_depth as u8
             }
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -391,50 +399,49 @@ mod tests {
 
     #[test]
     fn test_calculate_chunk_depths_no_splitting_needed() {
-        assert_eq!(calculate_chunk_depths(5, 10), vec![5]);
-        assert_eq!(calculate_chunk_depths(8, 8), vec![8]);
-        assert_eq!(calculate_chunk_depths(3, 5), vec![3]);
+        assert_eq!(calculate_chunk_depths(5, 10).unwrap(), vec![5]);
+        assert_eq!(calculate_chunk_depths(8, 8).unwrap(), vec![8]);
+        assert_eq!(calculate_chunk_depths(3, 5).unwrap(), vec![3]);
     }
 
     #[test]
     fn test_calculate_chunk_depths_even_split() {
-        assert_eq!(calculate_chunk_depths(15, 5), vec![5, 5, 5]);
-        assert_eq!(calculate_chunk_depths(20, 10), vec![10, 10]);
-        assert_eq!(calculate_chunk_depths(12, 4), vec![4, 4, 4]);
+        assert_eq!(calculate_chunk_depths(15, 5).unwrap(), vec![5, 5, 5]);
+        assert_eq!(calculate_chunk_depths(20, 10).unwrap(), vec![10, 10]);
+        assert_eq!(calculate_chunk_depths(12, 4).unwrap(), vec![4, 4, 4]);
     }
 
     #[test]
     fn test_calculate_chunk_depths_uneven_split() {
         // 20 / 8 = 2.5, so 3 chunks needed
         // 20 / 3 = 6 remainder 2, so [7, 7, 6]
-        assert_eq!(calculate_chunk_depths(20, 8), vec![7, 7, 6]);
+        assert_eq!(calculate_chunk_depths(20, 8).unwrap(), vec![7, 7, 6]);
 
         // 10 / 4 = 2.5, so 3 chunks needed
         // 10 / 3 = 3 remainder 1, so [4, 3, 3]
-        assert_eq!(calculate_chunk_depths(10, 4), vec![4, 3, 3]);
+        assert_eq!(calculate_chunk_depths(10, 4).unwrap(), vec![4, 3, 3]);
 
         // 17 / 5 = 3.4, so 4 chunks needed
         // 17 / 4 = 4 remainder 1, so [5, 4, 4, 4]
-        assert_eq!(calculate_chunk_depths(17, 5), vec![5, 4, 4, 4]);
+        assert_eq!(calculate_chunk_depths(17, 5).unwrap(), vec![5, 4, 4, 4]);
     }
 
     #[test]
     fn test_calculate_chunk_depths_edge_cases() {
-        assert_eq!(calculate_chunk_depths(0, 8), vec![0]);
-        assert_eq!(calculate_chunk_depths(1, 1), vec![1]);
+        assert_eq!(calculate_chunk_depths(0, 8).unwrap(), vec![0]);
+        assert_eq!(calculate_chunk_depths(1, 1).unwrap(), vec![1]);
     }
 
     #[test]
-    #[should_panic(expected = "max_depth must be > 0")]
-    fn test_calculate_chunk_depths_zero_max_depth_panics() {
-        calculate_chunk_depths(5, 0);
+    fn test_calculate_chunk_depths_zero_max_depth_returns_error() {
+        assert!(calculate_chunk_depths(5, 0).is_err());
     }
 
     #[test]
     fn test_chunk_depths_sum_to_tree_depth() {
         for tree_depth in 1..50u8 {
             for max_depth in 1..20u8 {
-                let chunks = calculate_chunk_depths(tree_depth, max_depth);
+                let chunks = calculate_chunk_depths(tree_depth, max_depth).unwrap();
                 let sum: u8 = chunks.iter().sum();
                 assert_eq!(
                     sum, tree_depth,
@@ -449,7 +456,7 @@ mod tests {
     fn test_chunk_depths_all_within_max() {
         for tree_depth in 1..50u8 {
             for max_depth in 1..20u8 {
-                let chunks = calculate_chunk_depths(tree_depth, max_depth);
+                let chunks = calculate_chunk_depths(tree_depth, max_depth).unwrap();
                 for chunk in &chunks {
                     assert!(
                         *chunk <= max_depth,
@@ -467,40 +474,56 @@ mod tests {
 
     #[test]
     fn test_chunk_depths_with_minimum_basic_cases() {
-        // tree_depth=10, max=8, min=6: first chunk bumped to min, remainder to second
-        assert_eq!(calculate_chunk_depths_with_minimum(10, 8, 6), vec![6, 4]);
-
-        // tree_depth=11, max=8, min=6: even split with front getting extra
-        assert_eq!(calculate_chunk_depths_with_minimum(11, 8, 6), vec![6, 5]);
-
-        // tree_depth=13, max=8, min=6: front chunk gets the extra
-        assert_eq!(calculate_chunk_depths_with_minimum(13, 8, 6), vec![7, 6]);
-
-        // tree_depth=14, max=8, min=6: even split
-        assert_eq!(calculate_chunk_depths_with_minimum(14, 8, 6), vec![7, 7]);
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(10, 8, 6).unwrap(),
+            vec![6, 4]
+        );
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(11, 8, 6).unwrap(),
+            vec![6, 5]
+        );
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(13, 8, 6).unwrap(),
+            vec![7, 6]
+        );
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(14, 8, 6).unwrap(),
+            vec![7, 7]
+        );
     }
 
     #[test]
     fn test_chunk_depths_with_minimum_single_chunk() {
-        // If tree fits in max_depth, single chunk
-        assert_eq!(calculate_chunk_depths_with_minimum(5, 8, 3), vec![5]);
-        assert_eq!(calculate_chunk_depths_with_minimum(8, 8, 6), vec![8]);
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(5, 8, 3).unwrap(),
+            vec![5]
+        );
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(8, 8, 6).unwrap(),
+            vec![8]
+        );
     }
 
     #[test]
     fn test_chunk_depths_with_minimum_small_tree() {
-        // If tree_depth fits in max_depth, return as single chunk (no splitting)
-        // min_depth only applies when splitting is needed
-        assert_eq!(calculate_chunk_depths_with_minimum(4, 10, 6), vec![4]);
-        assert_eq!(calculate_chunk_depths_with_minimum(3, 8, 5), vec![3]);
-        assert_eq!(calculate_chunk_depths_with_minimum(6, 10, 6), vec![6]);
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(4, 10, 6).unwrap(),
+            vec![4]
+        );
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(3, 8, 5).unwrap(),
+            vec![3]
+        );
+        assert_eq!(
+            calculate_chunk_depths_with_minimum(6, 10, 6).unwrap(),
+            vec![6]
+        );
     }
 
     #[test]
     fn test_chunk_depths_with_minimum_front_always_biggest() {
-        // Front chunk should always be >= later chunks
         for tree_depth in 10..30u8 {
-            let chunks = calculate_chunk_depths_with_minimum(tree_depth, 8, 6);
+            let chunks = calculate_chunk_depths_with_minimum(tree_depth, 8, 6).unwrap();
             for i in 1..chunks.len() {
                 assert!(
                     chunks[0] >= chunks[i],
@@ -516,11 +539,8 @@ mod tests {
 
     #[test]
     fn test_chunk_depths_with_minimum_first_chunk_at_least_min_when_splitting() {
-        // First chunk should be >= min_depth when splitting is needed (tree_depth >
-        // max_depth)
         for tree_depth in 9..30u8 {
-            // tree_depth > 8 means splitting is needed
-            let chunks = calculate_chunk_depths_with_minimum(tree_depth, 8, 6);
+            let chunks = calculate_chunk_depths_with_minimum(tree_depth, 8, 6).unwrap();
             if chunks.len() > 1 {
                 assert!(
                     chunks[0] >= 6,
@@ -534,11 +554,11 @@ mod tests {
 
     #[test]
     fn test_chunk_depths_with_minimum_sum_equals_tree_depth() {
-        // Chunks should sum to tree_depth
         for tree_depth in 1..30u8 {
             let min_depth = 6u8;
             let max_depth = 8u8;
-            let chunks = calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth);
+            let chunks =
+                calculate_chunk_depths_with_minimum(tree_depth, max_depth, min_depth).unwrap();
             let sum: u8 = chunks.iter().sum();
             assert_eq!(
                 sum, tree_depth,
@@ -550,9 +570,8 @@ mod tests {
 
     #[test]
     fn test_chunk_depths_with_minimum_all_within_max() {
-        // All chunks should be <= max_depth
         for tree_depth in 10..50u8 {
-            let chunks = calculate_chunk_depths_with_minimum(tree_depth, 8, 6);
+            let chunks = calculate_chunk_depths_with_minimum(tree_depth, 8, 6).unwrap();
             for chunk in &chunks {
                 assert!(
                     *chunk <= 8,
@@ -565,8 +584,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "min_depth must be <= max_depth")]
-    fn test_chunk_depths_with_minimum_min_greater_than_max_panics() {
-        calculate_chunk_depths_with_minimum(10, 5, 8);
+    fn test_chunk_depths_with_minimum_invalid_inputs_return_error() {
+        assert!(calculate_chunk_depths_with_minimum(10, 0, 0).is_err());
+        assert!(calculate_chunk_depths_with_minimum(10, 5, 0).is_err());
+        assert!(calculate_chunk_depths_with_minimum(10, 5, 8).is_err());
     }
 }
