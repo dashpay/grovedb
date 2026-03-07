@@ -703,3 +703,61 @@ impl Query {
         merged_items
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Query;
+
+    /// Demonstrates that merging a query with a subquery_path into one without
+    /// must preserve the original (self) subquery in the conditional branch,
+    /// not duplicate the other's subquery.
+    #[test]
+    fn merge_default_subquery_branch_preserves_self_subquery() {
+        // "self" query: has subquery_path ["a"] and its own subquery selecting key "self_key"
+        let mut self_query = Query::new();
+        let mut self_subquery = Query::new();
+        self_subquery.insert_key(b"self_key".to_vec());
+
+        self_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: Some(vec![b"a".to_vec()]),
+            subquery: Some(Box::new(self_subquery.clone())),
+        };
+
+        // "other" branch: no subquery_path, has its own subquery selecting key "other_key"
+        let mut other_subquery = Query::new();
+        other_subquery.insert_key(b"other_key".to_vec());
+
+        let other_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(other_subquery.clone())),
+        };
+
+        self_query.merge_default_subquery_branch(other_branch);
+
+        // After merge:
+        // - default subquery should be other's (no path, so it applies broadly)
+        assert_eq!(self_query.default_subquery_branch.subquery_path, None);
+        assert_eq!(
+            self_query.default_subquery_branch.subquery,
+            Some(Box::new(other_subquery.clone())),
+            "default subquery should be other's subquery"
+        );
+
+        // - conditional branch at key "a" should have self's ORIGINAL subquery
+        let conditionals = self_query
+            .conditional_subquery_branches
+            .expect("should have conditional branches");
+        let branch_a = conditionals
+            .get(&QueryItem::Key(b"a".to_vec()))
+            .expect("should have conditional branch for key 'a'");
+
+        // This is the critical assertion: the conditional branch must contain
+        // self's original subquery (selecting "self_key"), NOT other's subquery.
+        assert_eq!(
+            branch_a.subquery,
+            Some(Box::new(self_subquery)),
+            "conditional branch should preserve self's original subquery, not other's"
+        );
+    }
+}
