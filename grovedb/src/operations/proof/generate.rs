@@ -1291,7 +1291,7 @@ impl GroveDb {
 
         // Update limit
         if let Some(limit) = overall_limit.as_mut() {
-            let count = mmr_proof.leaves().len() as u16;
+            let count = mmr_proof.leaves().len().min(u16::MAX as usize) as u16;
             *limit = limit.saturating_sub(count);
         }
 
@@ -1378,7 +1378,7 @@ impl GroveDb {
 
         // Update limit: count individual values in the queried range
         if let Some(limit) = overall_limit.as_mut() {
-            let count = (end.min(total_count) - start) as u16;
+            let count = (end.min(total_count) - start).min(u16::MAX as u64) as u16;
             *limit = limit.saturating_sub(count);
         }
 
@@ -1535,7 +1535,7 @@ impl GroveDb {
 
         // Update limit
         if let Some(limit) = overall_limit.as_mut() {
-            let count = dense_proof.entries.len() as u16;
+            let count = dense_proof.entries.len().min(u16::MAX as usize) as u16;
             *limit = limit.saturating_sub(count);
         }
 
