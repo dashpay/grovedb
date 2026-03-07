@@ -415,6 +415,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decode_vec_ops_rejects_trailing_bytes() {
+        let ops = vec![Op::Push(Node::Hash([0x42u8; 32])), Op::Parent, Op::Child];
+        let mut encoded = encode_vec_ops(ops).expect("should encode ops");
+        // Append trailing garbage
+        encoded.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let result = decode_vec_ops(&encoded);
+        assert!(
+            result.is_err(),
+            "chunk with trailing bytes should be rejected"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // fetch_chunk
     // -----------------------------------------------------------------------

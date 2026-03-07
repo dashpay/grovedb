@@ -4233,3 +4233,52 @@ fn test_kvvaluehash_still_used_for_tree_discriminants() {
         panic!("Unexpected: root hash changed for KVValueHash node");
     }
 }
+
+/// Verify that `execute_proof` rejects proofs with trailing bytes appended
+/// after valid operations.
+#[test]
+fn test_execute_proof_rejects_trailing_bytes() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_3_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    let keys = vec![vec![3], vec![5], vec![7]];
+    let (proof, ..) = walker
+        .create_proof(
+            keys.iter()
+                .cloned()
+                .map(QueryItem::Key)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            None,
+            true,
+            grove_version,
+        )
+        .unwrap()
+        .expect("failed to create proof");
+
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    // Sanity: valid proof verifies fine
+    let mut query = Query::new();
+    for key in &keys {
+        query.insert_key(key.clone());
+    }
+    let expected_hash = tree.hash().unwrap();
+    query
+        .verify_proof(bytes.as_slice(), None, true, expected_hash)
+        .unwrap()
+        .expect("valid proof should verify");
+
+    // Append trailing garbage bytes
+    bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+    let result = query.execute_proof(bytes.as_slice(), None, true).unwrap();
+
+    assert!(
+        result.is_err(),
+        "proof with trailing bytes should be rejected, got: {:?}",
+        result.as_ref().unwrap()
+    );
+}

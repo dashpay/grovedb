@@ -442,4 +442,84 @@ mod tests {
         );
         assert_eq!(result.max_tree_depth, 0, "empty tree should have depth 0");
     }
+
+    /// Verify that trunk proof verification rejects proofs whose target layer
+    /// merk_proof has trailing bytes appended.
+    #[test]
+    fn test_trunk_proof_rejects_trailing_bytes_in_target_layer() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(99999);
+
+        // Insert a CountSumTree with enough items to generate a trunk proof
+        db.insert(
+            EMPTY_PATH,
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count_sum_tree");
+
+        for i in 0u32..50 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                &[b"cst"],
+                &key,
+                Element::new_sum_item(rng.random_range(0..=5)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item");
+        }
+
+        let query = PathTrunkChunkQuery::new(vec![b"cst".to_vec()], 3);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove trunk chunk");
+
+        // Sanity: valid proof verifies
+        GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("valid proof should verify");
+
+        // Decode the proof, tamper the target layer's merk_proof, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (decoded_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode proof");
+
+        let GroveDBProof::V0(mut proof_v0) = decoded_proof else {
+            panic!("expected V0 proof");
+        };
+
+        // The target layer is the lower_layers entry for key "cst"
+        let target_layer = proof_v0
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .expect("should have cst layer");
+        target_layer
+            .merk_proof
+            .extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        // Re-encode the tampered proof
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V0(proof_v0), config).expect("re-encode");
+
+        // Verification should fail due to trailing bytes
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "trunk proof with trailing bytes in target layer should be rejected"
+        );
+    }
 }

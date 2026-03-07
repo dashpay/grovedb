@@ -909,7 +909,7 @@ impl<'a> Decoder<'a> {
 
     /// Returns the number of bytes not yet consumed by the decoder.
     pub const fn remaining_bytes(&self) -> usize {
-        self.bytes.len() - self.offset
+        self.bytes.len().saturating_sub(self.offset)
     }
 }
 
