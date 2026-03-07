@@ -245,10 +245,10 @@ impl<'db> MultiStateSyncSession<'db> {
             .root_hash(Some(&session.transaction), grove_version)
             .unwrap()
             .map_err(|e| {
-                Error::InternalError(format!("failed to compute root hash before commit: {e}"))
+                Error::CorruptedData(format!("failed to compute root hash before commit: {e}"))
             })?;
         if actual_root_hash != session.app_hash {
-            return Err(Error::InternalError(format!(
+            return Err(Error::CorruptedData(format!(
                 "state sync root hash mismatch: expected {}, got {}",
                 hex::encode(session.app_hash),
                 hex::encode(actual_root_hash),
