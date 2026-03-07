@@ -28,7 +28,7 @@ mod single_sum_item_insert_cost_tests;
 use core::fmt;
 use std::{
     cmp::Ordering,
-    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
+    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
     ops::{Add, AddAssign},
     slice::Iter,
@@ -430,10 +430,10 @@ impl Visualize for KeyInfoPath {
         let mut path_out = Vec::new();
         let mut path_drawer = Drawer::new(&mut path_out);
         for k in &self.0 {
-            path_drawer = k.visualize(path_drawer).unwrap();
-            path_drawer.write(b" ").unwrap();
+            path_drawer = k.visualize(path_drawer)?;
+            path_drawer.write(b" ")?;
         }
-        drawer.write(path_out.as_slice()).unwrap();
+        drawer.write(path_out.as_slice())?;
         Ok(drawer)
     }
 }
@@ -1073,6 +1073,7 @@ where
         intermediate_reference_info: Option<&'a ReferencePathType>,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1142,6 +1143,7 @@ where
                 recursions_allowed - 1,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         } else {
@@ -1157,6 +1159,7 @@ where
                 recursions_allowed,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         }
@@ -1294,6 +1297,7 @@ where
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1341,6 +1345,7 @@ where
                     recursions_allowed - 1,
                     flags_update,
                     split_removal_bytes,
+                    visited,
                     grove_version,
                 )
             }
@@ -1378,6 +1383,7 @@ where
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1391,6 +1397,10 @@ where
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
+        }
+        let path_vec = qualified_path.to_vec();
+        if !visited.insert(path_vec) {
+            return Err(Error::CyclicReference).wrap_with_cost(cost);
         }
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
@@ -1478,6 +1488,7 @@ where
                                 recursions_allowed - 1,
                                 flags_update,
                                 split_removal_bytes,
+                                visited,
                                 grove_version,
                             )
                         }
@@ -1519,6 +1530,7 @@ where
                             recursions_allowed - 1,
                             flags_update,
                             split_removal_bytes,
+                            visited,
                             grove_version,
                         )
                     }
@@ -1557,6 +1569,7 @@ where
                         reference_info,
                         flags_update,
                         split_removal_bytes,
+                        visited,
                         grove_version,
                     )
                 }
@@ -1573,6 +1586,7 @@ where
                 None,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         }
@@ -1696,6 +1710,7 @@ where
                                 element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
                                 flags_update,
                                 split_removal_bytes,
+                                &mut HashSet::new(),
                                 grove_version,
                             )
                         );
@@ -1867,6 +1882,7 @@ where
                             max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
                             flags_update,
                             split_removal_bytes,
+                            &mut HashSet::new(),
                             grove_version
                         )
                     );
@@ -1895,13 +1911,13 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(tree_type) => {
+                GroveOp::DeleteTree(_tree_type) => {
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             true,
-                            tree_type,
+                            in_tree_type, /* use parent tree type, not the deleted subtree's type */
                             &mut batch_operations,
                             grove_version
                         )
@@ -2720,7 +2736,33 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::Delete => {
+                GroveOp::InsertOnly { element } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key.as_ref().ok_or(Error::InvalidBatchOperation(
+                            "insert_only op is missing a key",
+                        ))
+                    );
+                    let mut insert_options = options
+                        .clone()
+                        .map(|o| o.as_insert_options())
+                        .unwrap_or_default();
+                    insert_options.validate_insertion_does_not_override = true;
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.insert(
+                            path_slices.as_slice(),
+                            key.as_slice(),
+                            element.to_owned(),
+                            Some(insert_options),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
@@ -2822,9 +2864,19 @@ impl GroveDb {
                         )
                     );
                 }
-                _ => {
+                GroveOp::Patch { .. } | GroveOp::RefreshReference { .. } => {
                     return Err(Error::NotSupported(
-                        "operation not supported in apply_operations_without_batching".to_string(),
+                        "Patch and RefreshReference are batch-only operations".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                | GroveOp::InsertNonMerkTree { .. } => {
+                    return Err(Error::NotSupported(
+                        "internal tree ops not supported in apply_operations_without_batching"
+                            .to_string(),
                     ))
                     .wrap_with_cost(cost);
                 }

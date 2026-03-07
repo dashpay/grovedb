@@ -118,7 +118,10 @@ impl<'de, Context> BorrowDecode<'de, Context> for Query {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        let _version = u8::borrow_decode(decoder)?;
+        let version = u8::borrow_decode(decoder)?;
+        if version != 1 {
+            return Err(DecodeError::Other("unsupported Query encoding version"));
+        }
         // Borrow-decode the items vector
         let items = Vec::<QueryItem>::borrow_decode(decoder)?;
 
@@ -279,6 +282,11 @@ impl Query {
         false
     }
 
+    /// Maximum subquery nesting depth for `terminal_keys`. GroveDB paths
+    /// rarely exceed a handful of levels; 64 is generous and prevents stack
+    /// overflow from adversarial queries.
+    const MAX_TERMINAL_KEYS_DEPTH: usize = 64;
+
     /// Pushes terminal key paths and keys to `result`, no more than
     /// `max_results`. Returns the number of terminal keys added.
     ///
@@ -291,6 +299,21 @@ impl Query {
         max_results: usize,
         result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
     ) -> Result<usize, Error> {
+        self.terminal_keys_inner(current_path, max_results, result, 0)
+    }
+
+    fn terminal_keys_inner(
+        &self,
+        current_path: Vec<Vec<u8>>,
+        max_results: usize,
+        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+        depth: usize,
+    ) -> Result<usize, Error> {
+        if depth >= Self::MAX_TERMINAL_KEYS_DEPTH {
+            return Err(Error::NotSupported(
+                "terminal_keys subquery nesting depth exceeded".to_string(),
+            ));
+        }
         let mut current_len = result.len();
         let mut added = 0;
         let mut already_added_keys = HashSet::new();
@@ -321,7 +344,12 @@ impl Query {
                             // push the subquery path to the path
                             path.extend(subquery_path.iter().cloned());
                             // recurse onto the lower level
-                            let added_here = subquery.terminal_keys(path, max_results, result)?;
+                            let added_here = subquery.terminal_keys_inner(
+                                path,
+                                max_results,
+                                result,
+                                depth + 1,
+                            )?;
                             added += added_here;
                             current_len += added_here;
                         } else {
@@ -354,7 +382,8 @@ impl Query {
                         // push the key to the path
                         path.push(key);
                         // recurse onto the lower level
-                        let added_here = subquery.terminal_keys(path, max_results, result)?;
+                        let added_here =
+                            subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
                         added += added_here;
                         current_len += added_here;
                     }
@@ -388,7 +417,8 @@ impl Query {
                         // push the subquery path to the path
                         path.extend(subquery_path.iter().cloned());
                         // recurse onto the lower level
-                        let added_here = subquery.terminal_keys(path, max_results, result)?;
+                        let added_here =
+                            subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
                         added += added_here;
                         current_len += added_here;
                     } else {
@@ -419,7 +449,8 @@ impl Query {
                     // push the key to the path
                     path.push(key);
                     // recurse onto the lower level
-                    let added_here = subquery.terminal_keys(path, max_results, result)?;
+                    let added_here =
+                        subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
                     added += added_here;
                     current_len += added_here;
                 } else {

@@ -68,7 +68,8 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
         }
     }
 
-    /// Clears all the data in the tree at the storage level
+    /// Clears all data in the default (data) column family for this prefix.
+    /// Auxiliary, roots, and meta column families are **not** affected.
     pub fn clear(&mut self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
