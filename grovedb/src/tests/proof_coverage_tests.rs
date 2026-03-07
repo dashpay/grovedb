@@ -6036,8 +6036,8 @@ mod tests {
         );
         let err_msg = format!("{:?}", tampered_result.unwrap_err());
         assert!(
-            err_msg.contains("non-tree element has uncomputed value hash"),
-            "error should mention non-tree element with uncomputed value hash, got: {}",
+            err_msg.contains("item value hash mismatch"),
+            "error should mention item value hash mismatch, got: {}",
             err_msg
         );
     }

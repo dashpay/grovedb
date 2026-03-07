@@ -616,20 +616,18 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
-                        // Security: KVValueHash proof nodes (where value_hash
-                        // is not computed by the verifier) are only valid for
-                        // tree elements. Reject non-tree elements to prevent
-                        // KV→KVValueHash substitution attacks.
-                        if !proved_key_value.value_hash_is_computed
+                        // Security: if the value_hash was not computed by the
+                        // verifier (KVValueHash node), only tree elements may
+                        // skip validation. For items, recompute and verify the
+                        // value_hash to prevent KV→KVValueHash substitution.
+                        if element.is_any_item()
+                            && !proved_key_value.value_hash_is_computed
                             && !proved_key_value.is_reference_result
-                            && !element.is_any_tree()
+                            && value_hash(value_bytes).value() != hash
                         {
                             return Err(Error::InvalidProof(
                                 query.clone(),
-                                format!(
-                                    "non-tree element has uncomputed value hash at key {}",
-                                    hex::encode(key)
-                                ),
+                                format!("item value hash mismatch at key {}", hex::encode(key)),
                             ));
                         }
                         let path_key_optional_value =
@@ -1531,20 +1529,18 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
-                        // Security: KVValueHash proof nodes (where value_hash
-                        // is not computed by the verifier) are only valid for
-                        // tree elements. Reject non-tree elements to prevent
-                        // KV→KVValueHash substitution attacks.
-                        if !proved_key_value.value_hash_is_computed
+                        // Security: if the value_hash was not computed by the
+                        // verifier (KVValueHash node), only tree elements may
+                        // skip validation. For items, recompute and verify the
+                        // value_hash to prevent KV→KVValueHash substitution.
+                        if element.is_any_item()
+                            && !proved_key_value.value_hash_is_computed
                             && !proved_key_value.is_reference_result
-                            && !element.is_any_tree()
+                            && value_hash(value_bytes).value() != hash
                         {
                             return Err(Error::InvalidProof(
                                 query.clone(),
-                                format!(
-                                    "non-tree element has uncomputed value hash at key {}",
-                                    hex::encode(key)
-                                ),
+                                format!("item value hash mismatch at key {}", hex::encode(key)),
                             ));
                         }
                         let path_key_optional_value =
