@@ -335,4 +335,95 @@ mod tests {
             overlap
         );
     }
+
+    /// Verify that branch proof verification rejects proofs with trailing bytes.
+    #[test]
+    fn test_branch_proof_rejects_trailing_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(77777);
+
+        db.insert(
+            EMPTY_PATH,
+            b"count_sum_tree",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count_sum_tree");
+
+        for i in 0u32..50 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                &[b"count_sum_tree"],
+                &key,
+                Element::new_sum_item(rng.random_range(0..=5)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item");
+        }
+
+        // Get a branch proof via trunk
+        let trunk_query = PathTrunkChunkQuery::new(vec![b"count_sum_tree".to_vec()], 3);
+        let trunk_proof = db
+            .prove_trunk_chunk(&trunk_query, grove_version)
+            .unwrap()
+            .expect("prove trunk");
+
+        let (_root_hash, trunk_result) =
+            GroveDb::verify_trunk_chunk_proof(&trunk_proof, &trunk_query, grove_version)
+                .expect("verify trunk");
+
+        // Pick the first leaf key to generate a branch proof
+        let (first_leaf_key, first_leaf_info) = trunk_result
+            .leaf_keys
+            .iter()
+            .next()
+            .expect("should have at least one leaf key");
+
+        use crate::query::PathBranchChunkQuery;
+
+        let branch_query = PathBranchChunkQuery::new(
+            vec![b"count_sum_tree".to_vec()],
+            first_leaf_key.clone(),
+            trunk_result.chunk_depths[1],
+        );
+
+        let mut branch_proof = db
+            .prove_branch_chunk(&branch_query, grove_version)
+            .unwrap()
+            .expect("prove branch");
+
+        // Sanity: valid proof verifies
+        GroveDb::verify_branch_chunk_proof(
+            &branch_proof,
+            &branch_query,
+            first_leaf_info.hash,
+            grove_version,
+        )
+        .expect("valid branch proof should verify");
+
+        // Append trailing garbage
+        branch_proof.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let result = GroveDb::verify_branch_chunk_proof(
+            &branch_proof,
+            &branch_query,
+            first_leaf_info.hash,
+            grove_version,
+        );
+
+        assert!(
+            result.is_err(),
+            "branch proof with trailing bytes should be rejected"
+        );
+    }
 }
