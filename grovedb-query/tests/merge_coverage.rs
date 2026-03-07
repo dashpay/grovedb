@@ -762,6 +762,36 @@ fn merge_conditional_branches_incoming_spans_multiple_existing() {
 // ───────────────────────────────────────────────────────────────────────
 
 #[test]
+fn merge_multiple_preserves_add_parent_tree_on_subquery() {
+    let mut q1 = Query::new_single_key(k(1));
+    q1.add_parent_tree_on_subquery = false;
+
+    let mut q2 = Query::new_single_key(k(2));
+    q2.add_parent_tree_on_subquery = true;
+
+    let merged = Query::merge_multiple(vec![q1, q2]);
+    assert!(
+        merged.add_parent_tree_on_subquery,
+        "merge_multiple should preserve add_parent_tree_on_subquery when any query sets it"
+    );
+}
+
+#[test]
+fn merge_with_preserves_add_parent_tree_on_subquery() {
+    let mut q1 = Query::new_single_key(k(1));
+    q1.add_parent_tree_on_subquery = false;
+
+    let mut q2 = Query::new_single_key(k(2));
+    q2.add_parent_tree_on_subquery = true;
+
+    q1.merge_with(q2);
+    assert!(
+        q1.add_parent_tree_on_subquery,
+        "merge_with should preserve add_parent_tree_on_subquery when other query sets it"
+    );
+}
+
+#[test]
 fn merge_with_both_have_conditional_branches() {
     let mut q1 = Query::new();
     q1.insert_key(k(1));
