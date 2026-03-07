@@ -28,6 +28,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             apply_batch_with_element_flags_update: 0,
             apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
+            execute_ops_on_path: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

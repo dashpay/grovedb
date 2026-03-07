@@ -2875,4 +2875,125 @@ mod tests {
             "deleted element should not exist"
         );
     }
+
+    // ===================================================================
+    // InsertOnly version-gated behavior
+    // ===================================================================
+
+    /// In v0 (current), InsertOnly silently overwrites when
+    /// validate_insertion_does_not_override is not set.
+    #[test]
+    fn test_batch_insert_only_allows_overwrite_in_v0() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert initial item
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::new_item(b"value1".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert initial");
+
+        // InsertOnly with no batch options (validate = false) should succeed in v0
+        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::new_item(b"value2".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version);
+        assert!(
+            result.unwrap().is_ok(),
+            "v0: InsertOnly should allow overwrite when validate is not set"
+        );
+
+        // Verify the value was overwritten
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert_eq!(elem, Element::new_item(b"value2".to_vec()));
+    }
+
+    /// In v1 (future), InsertOnly rejects overwrites regardless of
+    /// validate_insertion_does_not_override.
+    #[test]
+    fn test_batch_insert_only_rejects_overwrite_in_v1() {
+        let mut grove_version_v1 = GroveVersion::latest().clone();
+        grove_version_v1
+            .grovedb_versions
+            .apply_batch
+            .execute_ops_on_path = 1;
+        let grove_version = &grove_version_v1;
+
+        let db = make_test_grovedb(grove_version);
+
+        // Insert initial item
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"key1",
+            Element::new_item(b"value1".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert initial");
+
+        // InsertOnly with no batch options should be rejected in v1
+        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+            vec![TEST_LEAF.to_vec()],
+            b"key1".to_vec(),
+            Element::new_item(b"value2".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "v1: InsertOnly should reject overwrite even without explicit validate option"
+        );
+
+        // Verify original value is preserved
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert_eq!(elem, Element::new_item(b"value1".to_vec()));
+    }
+
+    /// InsertOnly into a new key should succeed in both v0 and v1.
+    #[test]
+    fn test_batch_insert_only_new_key_succeeds_in_v1() {
+        let mut grove_version_v1 = GroveVersion::latest().clone();
+        grove_version_v1
+            .grovedb_versions
+            .apply_batch
+            .execute_ops_on_path = 1;
+        let grove_version = &grove_version_v1;
+
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+            vec![TEST_LEAF.to_vec()],
+            b"new_key".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(
+            result.is_ok(),
+            "v1: InsertOnly into non-existing key should succeed"
+        );
+
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"new_key", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert_eq!(elem, Element::new_item(b"new_value".to_vec()));
+    }
 }
