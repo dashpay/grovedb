@@ -469,9 +469,9 @@ pub(crate) mod utils {
     /// - `Ok(Vec<Op>)`: A vector of decoded `Op` operations.
     /// - `Err(Error)`: An error if the decoding process fails.
     pub fn decode_vec_ops(chunk: &[u8]) -> Result<Vec<Op>, Error> {
-        let decoder = Decoder::new(chunk);
+        let mut decoder = Decoder::new(chunk);
         let mut res = vec![];
-        for op in decoder {
+        for op in decoder.by_ref() {
             match op {
                 Ok(op) => res.push(op),
                 Err(e) => {
@@ -481,6 +481,12 @@ pub(crate) mod utils {
                     )));
                 }
             }
+        }
+        if decoder.remaining_bytes() > 0 {
+            return Err(Error::CorruptedData(format!(
+                "chunk has {} unconsumed trailing bytes",
+                decoder.remaining_bytes()
+            )));
         }
         Ok(res)
     }

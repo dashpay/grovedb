@@ -906,6 +906,11 @@ impl<'a> Decoder<'a> {
             bytes: proof_bytes,
         }
     }
+
+    /// Returns the number of bytes not yet consumed by the decoder.
+    pub const fn remaining_bytes(&self) -> usize {
+        self.bytes.len() - self.offset
+    }
 }
 
 impl Iterator for Decoder<'_> {
@@ -1677,5 +1682,42 @@ mod test {
         let decoder = Decoder::new(&encoded);
         let decoded_ops: Result<Vec<Op>, _> = decoder.collect();
         assert_eq!(decoded_ops.expect("decode failed"), ops);
+    }
+
+    #[test]
+    fn decoder_remaining_bytes_zero_after_full_consumption() {
+        let ops = vec![
+            Op::Push(Node::Hash([1; HASH_LENGTH])),
+            Op::Push(Node::KV(vec![2, 3], vec![4, 5])),
+            Op::Parent,
+        ];
+
+        let mut encoded = vec![];
+        for op in &ops {
+            op.encode_into(&mut encoded).unwrap();
+        }
+
+        let mut decoder = Decoder::new(&encoded);
+        let decoded: Vec<Op> = decoder.by_ref().collect::<Result<_, _>>().unwrap();
+        assert_eq!(decoded, ops);
+        assert_eq!(decoder.remaining_bytes(), 0);
+    }
+
+    #[test]
+    fn decoder_remaining_bytes_detects_trailing_data() {
+        let op = Op::Push(Node::Hash([1; HASH_LENGTH]));
+
+        let mut encoded = vec![];
+        op.encode_into(&mut encoded).unwrap();
+        // Append trailing garbage bytes
+        encoded.extend_from_slice(&[0xFF, 0xFE, 0xFD]);
+
+        let mut decoder = Decoder::new(&encoded);
+        // First op decodes fine
+        let first = decoder.next().unwrap().unwrap();
+        assert_eq!(first, op);
+        // Remaining bytes include the trailing garbage (and possibly the next
+        // attempted decode will fail, but remaining_bytes is nonzero either way)
+        assert!(decoder.remaining_bytes() > 0);
     }
 }

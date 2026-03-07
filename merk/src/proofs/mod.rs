@@ -39,6 +39,11 @@ impl<'a> Decoder<'a> {
             inner: grovedb_query::proofs::Decoder::new(proof_bytes),
         }
     }
+
+    /// Returns the number of bytes not yet consumed by the decoder.
+    pub const fn remaining_bytes(&self) -> usize {
+        self.inner.remaining_bytes()
+    }
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]

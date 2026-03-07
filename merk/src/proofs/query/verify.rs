@@ -16,10 +16,18 @@ use crate::{
 #[deprecated]
 #[allow(unused)]
 pub fn verify(bytes: &[u8], expected_hash: MerkHash) -> CostResult<Map, Error> {
-    let ops = Decoder::new(bytes);
+    let mut decoder = Decoder::new(bytes);
     let mut map_builder = MapBuilder::new();
 
-    execute(ops, true, |node| map_builder.insert(node)).flat_map_ok(|root| {
+    execute(decoder.by_ref(), true, |node| map_builder.insert(node)).flat_map_ok(|root| {
+        if decoder.remaining_bytes() > 0 {
+            return Err(Error::InvalidProofError(format!(
+                "Proof has {} unconsumed trailing bytes",
+                decoder.remaining_bytes()
+            )))
+            .wrap_with_cost(Default::default());
+        }
+
         root.hash().map(|hash| {
             if hash != expected_hash {
                 Err(Error::InvalidProofError(format!(
@@ -123,9 +131,9 @@ impl QueryProofVerify for Query {
         let original_limit = limit;
         let mut current_limit = limit;
 
-        let ops = Decoder::new(bytes);
+        let mut decoder = Decoder::new(bytes);
 
-        let root_wrapped = execute(ops, true, |node| {
+        let root_wrapped = execute(decoder.by_ref(), true, |node| {
             let mut execute_node = |key: &Vec<u8>,
                                     value: Option<&Vec<u8>>,
                                     value_hash: CryptoHash|
@@ -393,6 +401,14 @@ impl QueryProofVerify for Query {
         });
 
         let root = cost_return_on_error!(&mut cost, root_wrapped);
+
+        if decoder.remaining_bytes() > 0 {
+            return Err(Error::InvalidProofError(format!(
+                "Proof has {} unconsumed trailing bytes",
+                decoder.remaining_bytes()
+            )))
+            .wrap_with_cost(cost);
+        }
 
         // we have remaining query items, check absence proof against right edge of
         // tree

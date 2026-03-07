@@ -1984,10 +1984,17 @@ impl GroveDb {
             .map_err(|e| Error::CorruptedData(format!("invalid chunk depth parameters: {}", e)))?;
 
         // Now we're at the target layer - decode and execute the trunk proof
-        let decoder = Decoder::new(&current_layer.merk_proof);
+        let mut decoder = Decoder::new(&current_layer.merk_proof);
         let ops: Vec<Op> = decoder
+            .by_ref()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| Error::CorruptedData(format!("Failed to decode trunk proof: {}", e)))?;
+        if decoder.remaining_bytes() > 0 {
+            return Err(Error::CorruptedData(format!(
+                "Trunk proof has {} unconsumed trailing bytes",
+                decoder.remaining_bytes()
+            )));
+        }
 
         // Execute the proof to build the tree structure and get its root hash
         // Use collapse=false to preserve the full tree structure for element extraction
@@ -2235,10 +2242,17 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> Result<crate::query::GroveBranchQueryResult, Error> {
         // Decode the proof ops
-        let decoder = Decoder::new(proof);
+        let mut decoder = Decoder::new(proof);
         let ops: Vec<Op> = decoder
+            .by_ref()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| Error::CorruptedData(format!("Failed to decode branch proof: {}", e)))?;
+        if decoder.remaining_bytes() > 0 {
+            return Err(Error::CorruptedData(format!(
+                "Branch proof has {} unconsumed trailing bytes",
+                decoder.remaining_bytes()
+            )));
+        }
 
         // Execute the proof to build the tree structure and get its root hash
         // Use collapse=false to preserve the full tree structure for element extraction
