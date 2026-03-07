@@ -172,8 +172,8 @@ impl ElementFetchFromStorageExtensions for Element {
             cost,
             value_opt
                 .map(|value| {
-                    Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to deserialize element"))
+                    Self::deserialize(value.as_slice(), grove_version).map_err(|e| {
+                        Error::CorruptedData(format!("unable to deserialize element: {e}"))
                     })
                 })
                 .transpose()
@@ -364,7 +364,7 @@ impl ElementFetchFromStorageExtensions for Element {
         };
 
         Self::deserialize(value.as_slice(), grove_version)
-            .map_err(|_| Error::CorruptedData(String::from("unable to deserialize element")))
+            .map_err(|e| Error::CorruptedData(format!("unable to deserialize element: {e}")))
             .map(|e| (e, value_hash))
             .wrap_with_cost(cost)
     }
@@ -402,8 +402,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             value
                 .as_ref()
                 .map(|value| {
-                    Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
-                        Error::CorruptedData(String::from("unable to deserialize element"))
+                    Self::deserialize(value.as_slice(), grove_version).map_err(|e| {
+                        Error::CorruptedData(format!("unable to deserialize element: {e}"))
                     })
                 })
                 .transpose()
@@ -502,8 +502,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
         let node_type = tree_feature_type.node_type();
         let element = cost_return_on_error_no_add!(
             cost,
-            Self::deserialize(value.as_slice(), grove_version).map_err(|_| {
-                Error::CorruptedData(String::from("unable to deserialize element"))
+            Self::deserialize(value.as_slice(), grove_version).map_err(|e| {
+                Error::CorruptedData(format!("unable to deserialize element: {e}"))
             })
         );
         match &element {
