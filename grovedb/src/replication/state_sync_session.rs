@@ -208,7 +208,12 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     /// Returns true if all subtrees have been fully synchronized.
+    /// Returns false if sync has never started (no prefixes processed).
     pub fn is_sync_completed(&self) -> bool {
+        if self.current_prefixes.is_empty() && self.processed_prefixes.is_empty() {
+            return false;
+        }
+
         for (_, subtree_state_info) in self.current_prefixes.iter() {
             if !subtree_state_info.pending_chunks.is_empty() {
                 return false;
