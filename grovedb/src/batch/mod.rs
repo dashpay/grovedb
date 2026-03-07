@@ -2736,7 +2736,33 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::Delete => {
+                GroveOp::InsertOnly { element } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key.as_ref().ok_or(Error::InvalidBatchOperation(
+                            "insert_only op is missing a key",
+                        ))
+                    );
+                    let mut insert_options = options
+                        .clone()
+                        .map(|o| o.as_insert_options())
+                        .unwrap_or_default();
+                    insert_options.validate_insertion_does_not_override = true;
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.insert(
+                            path_slices.as_slice(),
+                            key.as_slice(),
+                            element.to_owned(),
+                            Some(insert_options),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
@@ -2838,9 +2864,19 @@ impl GroveDb {
                         )
                     );
                 }
-                _ => {
+                GroveOp::Patch { .. } | GroveOp::RefreshReference { .. } => {
                     return Err(Error::NotSupported(
-                        "operation not supported in apply_operations_without_batching".to_string(),
+                        "Patch and RefreshReference are batch-only operations".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                | GroveOp::InsertNonMerkTree { .. } => {
+                    return Err(Error::NotSupported(
+                        "internal tree ops not supported in apply_operations_without_batching"
+                            .to_string(),
                     ))
                     .wrap_with_cost(cost);
                 }
