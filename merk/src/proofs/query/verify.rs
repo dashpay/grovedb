@@ -128,7 +128,9 @@ impl QueryProofVerify for Query {
         let root_wrapped = execute(ops, true, |node| {
             let mut execute_node = |key: &Vec<u8>,
                                     value: Option<&Vec<u8>>,
-                                    value_hash: CryptoHash|
+                                    value_hash: CryptoHash,
+                                    value_hash_is_computed: bool,
+                                    is_reference_result: bool|
              -> Result<_, Error> {
                 while let Some(item) = query.peek() {
                     // get next item in query
@@ -282,6 +284,8 @@ impl QueryProofVerify for Query {
                                         key: key.clone(),
                                         value: Some(val.clone()),
                                         proof: value_hash,
+                                        value_hash_is_computed,
+                                        is_reference_result,
                                     }
                                 );
                             }
@@ -290,6 +294,8 @@ impl QueryProofVerify for Query {
                                 key: key.clone(),
                                 value: Some(val.clone()),
                                 proof: value_hash,
+                                value_hash_is_computed,
+                                is_reference_result,
                             });
 
                             // continue to next push
@@ -312,69 +318,68 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KV node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap())?;
+                    // value_hash computed by verifier — tamper-proof
+                    execute_node(key, Some(value), value_hash(value).unwrap(), true, false)?;
                 }
                 Node::KVValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVValueHash node");
                     }
-                    // Note: We cannot verify hash(value) == value_hash here because for
-                    // subtrees, value_hash is a combined hash of hash(value) and the
-                    // child subtree's root hash. The security comes from the merkle root
-                    // verification - if the value_hash is wrong, the computed root won't
-                    // match the expected root.
-                    execute_node(key, Some(value), *value_hash)?;
+                    // value_hash provided by proof — NOT independently verified.
+                    // Required for subtrees where value_hash = combine_hash(H(value), subtree_root).
+                    // GroveDB layer verifies the combine_hash for subtrees.
+                    execute_node(key, Some(value), *value_hash, false, false)?;
                 }
                 Node::KVDigest(key, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigest node");
                     }
-                    execute_node(key, None, *value_hash)?;
+                    // No value returned — absence proof
+                    execute_node(key, None, *value_hash, false, false)?;
                 }
                 Node::KVDigestCount(key, value_hash, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigestCount node");
                     }
-                    // Similar to KVDigest but in a ProvableCountTree context.
-                    // The count is used for hash verification (handled in tree.rs),
-                    // but we don't return a value since this is for absence proofs.
-                    execute_node(key, None, *value_hash)?;
+                    // No value returned — absence proof in ProvableCountTree
+                    execute_node(key, None, *value_hash, false, false)?;
                 }
                 Node::KVRefValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHash node");
                     }
-                    execute_node(key, Some(value), *value_hash)?;
+                    // Reference: value_hash is the reference node's hash, not the
+                    // referenced value's hash. Secure via combine_hash in tree.rs.
+                    execute_node(key, Some(value), *value_hash, false, true)?;
                 }
                 Node::KVCount(key, value, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVCount node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap())?;
+                    // value_hash computed by verifier — tamper-proof
+                    execute_node(key, Some(value), value_hash(value).unwrap(), true, false)?;
                 }
                 Node::KVValueHashFeatureType(key, value, value_hash, _feature_type) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVValueHashFeatureType node");
                     }
-                    // Note: Same as KVValueHash - we cannot verify hash(value) == value_hash
-                    // because value_hash may be a combined hash for subtrees. Security comes
-                    // from merkle root verification.
-                    execute_node(key, Some(value), *value_hash)?;
+                    // value_hash provided by proof — same as KVValueHash but in
+                    // ProvableCountTree context.
+                    execute_node(key, Some(value), *value_hash, false, false)?;
                 }
                 Node::KVRefValueHashCount(key, value, value_hash, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashCount node");
                     }
-                    // Similar to KVRefValueHash but in a ProvableCountTree context.
-                    // Security comes from merkle root verification with count.
-                    execute_node(key, Some(value), *value_hash)?;
+                    // Reference in ProvableCountTree context.
+                    execute_node(key, Some(value), *value_hash, false, true)?;
                 }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
                     if in_range {
@@ -464,16 +469,38 @@ pub struct ProvedKeyOptionalValue {
     pub value: Option<Vec<u8>>,
     /// Proof
     pub proof: CryptoHash,
+    /// Whether the value_hash was independently computed by the verifier from
+    /// the value bytes (true for KV, KVCount nodes) or was provided by the
+    /// proof and trusted (false for KVValueHash, KVRefValueHash, etc.).
+    ///
+    /// When `true`, the proof field is guaranteed to equal `value_hash(value)`.
+    /// When `false`, the proof field may be a combined hash (e.g., for subtrees
+    /// or references) and does NOT necessarily equal `value_hash(value)`.
+    pub value_hash_is_computed: bool,
+    /// Whether this result came from a reference node (KVRefValueHash or
+    /// KVRefValueHashCount). For reference results, the value is the
+    /// dereferenced target value, and the proof hash is the reference node's
+    /// value_hash — NOT `value_hash(dereferenced_value)`. The security of the
+    /// dereferenced value comes from the `combine_hash` in tree.rs.
+    pub is_reference_result: bool,
 }
 
 impl From<ProvedKeyValue> for ProvedKeyOptionalValue {
     fn from(value: ProvedKeyValue) -> Self {
-        let ProvedKeyValue { key, value, proof } = value;
+        let ProvedKeyValue {
+            key,
+            value,
+            proof,
+            value_hash_is_computed,
+            is_reference_result,
+        } = value;
 
         ProvedKeyOptionalValue {
             key,
             value: Some(value),
             proof,
+            value_hash_is_computed,
+            is_reference_result,
         }
     }
 }
@@ -482,12 +509,24 @@ impl TryFrom<ProvedKeyOptionalValue> for ProvedKeyValue {
     type Error = Error;
 
     fn try_from(value: ProvedKeyOptionalValue) -> Result<Self, Self::Error> {
-        let ProvedKeyOptionalValue { key, value, proof } = value;
+        let ProvedKeyOptionalValue {
+            key,
+            value,
+            proof,
+            value_hash_is_computed,
+            is_reference_result,
+        } = value;
         let value = value.ok_or(Error::InvalidProofError(format!(
             "expected {}",
             hex_to_ascii(&key)
         )))?;
-        Ok(ProvedKeyValue { key, value, proof })
+        Ok(ProvedKeyValue {
+            key,
+            value,
+            proof,
+            value_hash_is_computed,
+            is_reference_result,
+        })
     }
 }
 
@@ -521,6 +560,12 @@ pub struct ProvedKeyValue {
     pub value: Vec<u8>,
     /// Proof
     pub proof: CryptoHash,
+    /// Whether the value_hash was independently computed by the verifier.
+    /// See [`ProvedKeyOptionalValue::value_hash_is_computed`] for details.
+    pub value_hash_is_computed: bool,
+    /// Whether this result came from a reference node.
+    /// See [`ProvedKeyOptionalValue::is_reference_result`] for details.
+    pub is_reference_result: bool,
 }
 
 impl fmt::Display for ProvedKeyValue {
