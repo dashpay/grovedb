@@ -1952,6 +1952,11 @@ where
                     );
                 }
                 GroveOp::DeleteTree(_tree_type) => {
+                    // NOTE: This only deletes the tree element from its parent.
+                    // Unlike the non-batch delete path, it does NOT recursively
+                    // clean up nested subtrees' storage. Callers must include
+                    // explicit DeleteTree ops for all nested subtrees in the
+                    // same batch to avoid orphaned data on disk.
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
