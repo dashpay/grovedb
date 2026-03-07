@@ -419,11 +419,10 @@ pub(crate) mod utils {
         res.extend(subtree_prefix);
 
         if let Some(root_key) = root_key_opt {
-            let key_len: u16 = root_key.len().try_into().map_err(|_| {
-                Error::InternalError(
-                    "encode_global_chunk_id: root_key length exceeds u16".to_string(),
-                )
-            })?;
+            let key_len: u16 = root_key
+                .len()
+                .try_into()
+                .map_err(|_| Error::InternalError("root_key length exceeds u16".to_string()))?;
             res.extend_from_slice(&key_len.to_be_bytes());
             res.extend(root_key);
         } else {
@@ -502,16 +501,18 @@ pub(crate) mod utils {
         let mut packed_data = Vec::new();
 
         // Store the number of elements (4 bytes)
-        let count: u32 = nested_bytes.len().try_into().map_err(|_| {
-            Error::InternalError("pack_nested_bytes: element count exceeds u32".to_string())
-        })?;
+        let count: u32 = nested_bytes
+            .len()
+            .try_into()
+            .map_err(|_| Error::InternalError("element count exceeds u32".to_string()))?;
         packed_data.extend_from_slice(&count.to_be_bytes());
 
         for bytes in nested_bytes {
             // Store length as 4 bytes (big-endian)
-            let len: u32 = bytes.len().try_into().map_err(|_| {
-                Error::InternalError("pack_nested_bytes: element length exceeds u32".to_string())
-            })?;
+            let len: u32 = bytes
+                .len()
+                .try_into()
+                .map_err(|_| Error::InternalError("element length exceeds u32".to_string()))?;
             packed_data.extend_from_slice(&len.to_be_bytes());
 
             // Append the actual byte sequence
