@@ -157,10 +157,19 @@ impl Query {
             })
             .collect();
 
-        // since we need items to be sorted we do
-        match self.items.binary_search(&item) {
-            Ok(pos) => self.items[pos] = item,
-            Err(pos) => self.items.insert(pos, item),
+        // Insert item at the correct sorted position.
+        // binary_search Ok (Ord-equal item survived the collision filter) is
+        // unreachable in practice since Ord-equal items always collide and
+        // get filtered above. We handle it gracefully by overwriting.
+        let pos = self.items.binary_search(&item).unwrap_or_else(|e| e);
+        if self
+            .items
+            .get(pos)
+            .is_some_and(|i| i.cmp(&item) == std::cmp::Ordering::Equal)
+        {
+            self.items[pos] = item;
+        } else {
+            self.items.insert(pos, item);
         }
     }
 
