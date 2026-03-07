@@ -10,6 +10,7 @@ ignore:
   - "**/debugger.rs"
   - "**/visualize.rs"
   - "**/debug.rs"
+  - "tutorials/**"
 
 coverage:
   status:

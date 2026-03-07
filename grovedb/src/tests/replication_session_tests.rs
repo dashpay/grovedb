@@ -72,7 +72,7 @@ mod tests {
             "sync should be completed after all chunks are applied"
         );
 
-        dest.commit_session(session)
+        dest.commit_session(session, grove_version)
             .expect("should commit sync session");
 
         dest
@@ -666,5 +666,27 @@ mod tests {
             "error message should mention unsupported version, got: {}",
             err_msg
         );
+    }
+
+    #[test]
+    fn commit_session_rejects_incomplete_session() {
+        let grove_version = GroveVersion::latest();
+        let dest = make_empty_grovedb();
+
+        // Create a session that has never synced any chunks
+        let session = crate::replication::MultiStateSyncSession::new(&dest, [0xAB; 32], 64);
+
+        // commit() should reject because the session is incomplete
+        let err = dest
+            .commit_session(session, grove_version)
+            .expect_err("commit should fail for incomplete session");
+        match err {
+            crate::Error::CorruptedData(message) => assert!(
+                message.contains("incomplete"),
+                "error should mention incomplete, got: {}",
+                message
+            ),
+            other => panic!("expected CorruptedData, got: {:?}", other),
+        }
     }
 }

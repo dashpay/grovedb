@@ -282,7 +282,7 @@ fn sync_db_demo(
 
     if session.is_sync_completed() {
         println!("state_sync completed");
-        target_db.commit_session(session)?;
+        target_db.commit_session(session, grove_version)?;
     }
     let elapsed = start_time.elapsed();
     println!("state_synced in {:.2?}", elapsed);

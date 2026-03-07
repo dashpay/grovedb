@@ -228,10 +228,46 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     /// Commits the sync session by finalizing the underlying transaction.
-    pub fn commit(self: Pin<Box<Self>>) -> Result<(), Error> {
+    ///
+    /// Before committing, verifies that the GroveDB root hash matches the
+    /// expected `app_hash` to ensure the overall composition of all restored
+    /// subtrees is correct.
+    pub fn commit(self: Pin<Box<Self>>, grove_version: &GroveVersion) -> Result<(), Error> {
+        if !self.is_sync_completed() {
+            return Err(Error::CorruptedData(
+                "cannot commit an incomplete state sync session".to_string(),
+            ));
+        }
+
         // SAFETY: the struct isn't used anymore and no storage contexts would access
-        // transaction
+        // transaction — is_sync_completed() guarantees all restorers are finished
+        // and current_prefixes has no active storage contexts.
         let session = unsafe { Pin::into_inner_unchecked(self) };
+
+        // Verify the final root hash matches the expected app_hash before committing.
+        // Individual subtree chunks are hash-verified during restore, but we must also
+        // verify the overall GroveDB root to ensure the composition is correct.
+        //
+        // TODO: This check is not fully atomic. apply_chunk() flushes completed
+        // subtree batches via set_new_transaction()/commit_transaction(), so on
+        // mismatch only the last transaction is rolled back while earlier subtrees
+        // remain on disk. A full fix requires staging all subtree commits and only
+        // persisting them after root hash verification passes.
+        let actual_root_hash = session
+            .db
+            .root_hash(Some(&session.transaction), grove_version)
+            .unwrap()
+            .map_err(|e| {
+                Error::CorruptedData(format!("failed to compute root hash before commit: {e}"))
+            })?;
+        if actual_root_hash != session.app_hash {
+            return Err(Error::CorruptedData(format!(
+                "state sync root hash mismatch: expected {}, got {}",
+                hex::encode(session.app_hash),
+                hex::encode(actual_root_hash),
+            )));
+        }
+
         session
             .db
             .commit_transaction(session.transaction)
