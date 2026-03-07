@@ -430,10 +430,10 @@ impl Visualize for KeyInfoPath {
         let mut path_out = Vec::new();
         let mut path_drawer = Drawer::new(&mut path_out);
         for k in &self.0 {
-            path_drawer = k.visualize(path_drawer).unwrap();
-            path_drawer.write(b" ").unwrap();
+            path_drawer = k.visualize(path_drawer)?;
+            path_drawer.write(b" ")?;
         }
-        drawer.write(path_out.as_slice()).unwrap();
+        drawer.write(path_out.as_slice())?;
         Ok(drawer)
     }
 }
