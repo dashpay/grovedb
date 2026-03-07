@@ -72,7 +72,7 @@ impl Add for StorageRemovedBytes {
             },
             BasicStorageRemoval(s) => match rhs {
                 NoStorageRemoval => BasicStorageRemoval(s),
-                BasicStorageRemoval(r) => BasicStorageRemoval(s + r),
+                BasicStorageRemoval(r) => BasicStorageRemoval(s.saturating_add(r)),
                 SectionedStorageRemoval(mut map) => {
                     let default = Identifier::default();
                     if let std::collections::btree_map::Entry::Vacant(e) = map.entry(default) {
@@ -82,7 +82,7 @@ impl Add for StorageRemovedBytes {
                     } else {
                         let mut old_section_map = map.remove(&default).unwrap_or_default();
                         if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
-                            old_section_map.insert(UNKNOWN_EPOCH, old_value + s);
+                            old_section_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(s));
                         } else {
                             old_section_map.insert(UNKNOWN_EPOCH, s);
                         }
@@ -101,7 +101,7 @@ impl Add for StorageRemovedBytes {
                     } else {
                         let mut old_section_map = smap.remove(&default).unwrap_or_default();
                         if let Some(old_value) = old_section_map.remove(UNKNOWN_EPOCH) {
-                            old_section_map.insert(UNKNOWN_EPOCH, old_value + r);
+                            old_section_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(r));
                         } else {
                             old_section_map.insert(UNKNOWN_EPOCH, r);
                         }
@@ -116,7 +116,7 @@ impl Add for StorageRemovedBytes {
                                 .into_iter()
                                 .map(|(k, v)| {
                                     let combined = if let Some(value_b) = int_map_b.remove(k) {
-                                        v + value_b
+                                        v.saturating_add(value_b)
                                     } else {
                                         v
                                     };
@@ -142,13 +142,13 @@ impl AddAssign for StorageRemovedBytes {
             NoStorageRemoval => *self = rhs,
             BasicStorageRemoval(s) => match rhs {
                 NoStorageRemoval => {}
-                BasicStorageRemoval(r) => *s += r,
+                BasicStorageRemoval(r) => *s = s.saturating_add(r),
                 SectionedStorageRemoval(mut map) => {
                     let default = Identifier::default();
                     if let Some(mut old_int_map) = map.remove(&default) {
                         if old_int_map.contains_key(UNKNOWN_EPOCH) {
                             let old_value = old_int_map.remove(UNKNOWN_EPOCH).unwrap_or_default();
-                            old_int_map.insert(UNKNOWN_EPOCH, old_value + *s);
+                            old_int_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(*s));
                         } else {
                             old_int_map.insert(UNKNOWN_EPOCH, *s);
                         }
@@ -167,7 +167,7 @@ impl AddAssign for StorageRemovedBytes {
                     let map_to_insert = if let Some(mut old_int_map) = smap.remove(&default) {
                         if old_int_map.contains_key(UNKNOWN_EPOCH) {
                             let old_value = old_int_map.remove(UNKNOWN_EPOCH).unwrap_or_default();
-                            old_int_map.insert(UNKNOWN_EPOCH, old_value + r);
+                            old_int_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(r));
                         } else {
                             old_int_map.insert(UNKNOWN_EPOCH, r);
                         }
@@ -187,7 +187,7 @@ impl AddAssign for StorageRemovedBytes {
                                 .into_iter()
                                 .map(|(k, v)| {
                                     let combined = if let Some(value_b) = int_map_b.remove(k) {
-                                        v + value_b
+                                        v.saturating_add(value_b)
                                     } else {
                                         v
                                     };
