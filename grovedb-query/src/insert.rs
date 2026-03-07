@@ -157,13 +157,12 @@ impl Query {
             })
             .collect();
 
-        // since we need items to be sorted we do
-        match self.items.binary_search(&item) {
-            Ok(_) => {
-                unreachable!("this shouldn't be possible")
-            }
-            Err(pos) => self.items.insert(pos, item),
-        }
+        // Insert item at the correct sorted position.
+        // Ord-equal items are always removed by the collision filter above,
+        // so binary_search always returns Err. We use unwrap_or_else to
+        // extract the insertion index from either variant without panicking.
+        let pos = self.items.binary_search(&item).unwrap_or_else(|e| e);
+        self.items.insert(pos, item);
     }
 
     /// Performs an insert_item on each item in the vector.
