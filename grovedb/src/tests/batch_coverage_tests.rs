@@ -364,6 +364,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_apply_operations_without_batching_insert_only() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // InsertOnly should succeed when key does not exist
+        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+            vec![TEST_LEAF.to_vec()],
+            b"insert_only_key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        )];
+
+        db.apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_only should succeed for new key");
+
+        let result = db
+            .get(
+                [TEST_LEAF].as_ref(),
+                b"insert_only_key",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("element should exist");
+        assert_eq!(result, Element::new_item(b"val".to_vec()));
+
+        // InsertOnly should fail when key already exists
+        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+            vec![TEST_LEAF.to_vec()],
+            b"insert_only_key".to_vec(),
+            Element::new_item(b"val2".to_vec()),
+        )];
+
+        let result = db
+            .apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "insert_only should fail when key already exists"
+        );
+    }
+
+    #[test]
+    fn test_apply_operations_without_batching_delete_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Create a subtree
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"subtree_to_delete",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert subtree");
+
+        // DeleteTree via unbatched ops
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"subtree_to_delete".to_vec(),
+            TreeType::NormalTree,
+        )];
+
+        db.apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap()
+            .expect("delete_tree should succeed");
+
+        let result = db
+            .get(
+                [TEST_LEAF].as_ref(),
+                b"subtree_to_delete",
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(result.is_err(), "subtree should be gone after delete_tree");
+    }
+
     // ===================================================================
     // 7. batch_structure.rs validation (from_ops)
     // ===================================================================

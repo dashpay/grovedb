@@ -208,7 +208,12 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     /// Returns true if all subtrees have been fully synchronized.
+    /// Returns false if sync has never started (no prefixes processed).
     pub fn is_sync_completed(&self) -> bool {
+        if self.current_prefixes.is_empty() && self.processed_prefixes.is_empty() {
+            return false;
+        }
+
         for (_, subtree_state_info) in self.current_prefixes.iter() {
             if !subtree_state_info.pending_chunks.is_empty() {
                 return false;
@@ -314,12 +319,7 @@ impl<'db> MultiStateSyncSession<'db> {
             self.as_mut()
                 .current_prefixes()
                 .insert(chunk_prefix, sync_info);
-            Ok(encode_global_chunk_id(
-                chunk_prefix,
-                root_key,
-                tree_type,
-                vec![],
-            ))
+            encode_global_chunk_id(chunk_prefix, root_key, tree_type, vec![])
         } else {
             Err(Error::InternalError(
                 "Unable to open merk for replication".to_string(),
@@ -485,7 +485,7 @@ impl<'db> MultiStateSyncSession<'db> {
                         subtree_state_sync.root_key.clone(),
                         subtree_state_sync.tree_type,
                         grouped_ids.to_vec(),
-                    ));
+                    )?);
                 }
                 next_global_chunk_ids.extend(next_chunk_ids);
             } else if subtree_state_sync.pending_chunks.is_empty() {
@@ -570,7 +570,7 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut res: Vec<Vec<u8>> = vec![];
         for grouped_next_global_chunk_ids in next_global_chunk_ids.chunks(CONST_GROUP_PACKING_SIZE)
         {
-            res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
+            res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec())?);
         }
 
         Ok(res)

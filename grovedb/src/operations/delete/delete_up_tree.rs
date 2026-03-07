@@ -216,7 +216,7 @@ impl GroveDb {
         let mut cost = OperationCost::default();
 
         if let Some(stop_path_height) = options.stop_path_height
-            && stop_path_height == path.to_vec().len() as u16
+            && u16::try_from(path.to_vec().len()).unwrap_or(u16::MAX) == stop_path_height
         {
             // TODO investigate how necessary it is to have path length
             return Ok(None).wrap_with_cost(cost);
