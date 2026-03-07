@@ -173,9 +173,9 @@ impl GroveDb {
                     local_chunk_bytes.push(op_bytes);
                 }
             }
-            global_chunk_bytes.push(pack_nested_bytes(local_chunk_bytes));
+            global_chunk_bytes.push(pack_nested_bytes(local_chunk_bytes)?);
         }
-        Ok(pack_nested_bytes(global_chunk_bytes))
+        pack_nested_bytes(global_chunk_bytes)
     }
 
     /// Starts a state synchronization process for a snapshot with the given
@@ -411,13 +411,17 @@ pub(crate) mod utils {
         root_key_opt: Option<Vec<u8>>,
         tree_type: TreeType,
         chunk_ids: Vec<Vec<u8>>,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, Error> {
         let mut res = vec![];
 
         res.extend(subtree_prefix);
 
         if let Some(root_key) = root_key_opt {
-            res.extend_from_slice(&(root_key.len() as u16).to_be_bytes());
+            let key_len: u16 = root_key
+                .len()
+                .try_into()
+                .map_err(|_| Error::InternalError("root_key length exceeds u16".to_string()))?;
+            res.extend_from_slice(&key_len.to_be_bytes());
             res.extend(root_key);
         } else {
             res.extend_from_slice(&0u16.to_be_bytes());
@@ -425,9 +429,9 @@ pub(crate) mod utils {
 
         res.push(tree_type.discriminant());
 
-        res.extend(pack_nested_bytes(chunk_ids));
+        res.extend(pack_nested_bytes(chunk_ids)?);
 
-        res
+        Ok(res)
     }
 
     /// Encodes a vector of operations (`Vec<Op>`) into a byte vector.
@@ -491,21 +495,29 @@ pub(crate) mod utils {
     ///
     /// A `Vec<u8>` containing the encoded representation of the nested byte
     /// vectors.
-    pub fn pack_nested_bytes(nested_bytes: Vec<Vec<u8>>) -> Vec<u8> {
+    pub fn pack_nested_bytes(nested_bytes: Vec<Vec<u8>>) -> Result<Vec<u8>, Error> {
         let mut packed_data = Vec::new();
 
         // Store the number of elements (4 bytes)
-        packed_data.extend_from_slice(&(nested_bytes.len() as u32).to_be_bytes());
+        let count: u32 = nested_bytes
+            .len()
+            .try_into()
+            .map_err(|_| Error::InternalError("element count exceeds u32".to_string()))?;
+        packed_data.extend_from_slice(&count.to_be_bytes());
 
         for bytes in nested_bytes {
             // Store length as 4 bytes (big-endian)
-            packed_data.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            let len: u32 = bytes
+                .len()
+                .try_into()
+                .map_err(|_| Error::InternalError("element length exceeds u32".to_string()))?;
+            packed_data.extend_from_slice(&len.to_be_bytes());
 
             // Append the actual byte sequence
             packed_data.extend(bytes);
         }
 
-        packed_data
+        Ok(packed_data)
     }
 
     /// Unpacks a byte vector into a vector of byte vectors (`Vec<Vec<u8>>`).
