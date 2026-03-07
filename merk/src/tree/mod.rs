@@ -1195,11 +1195,17 @@ impl TreeNode {
         // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 
         let (prune_left, prune_right) = c.prune(self);
-        if prune_left {
-            self.inner.left = self.inner.left.take().map(|link| link.into_reference());
+        if prune_left && let Some(link) = self.inner.left.take() {
+            match link.into_reference() {
+                Ok(r) => self.inner.left = Some(r),
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            }
         }
-        if prune_right {
-            self.inner.right = self.inner.right.take().map(|link| link.into_reference());
+        if prune_right && let Some(link) = self.inner.right.take() {
+            match link.into_reference() {
+                Ok(r) => self.inner.right = Some(r),
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            }
         }
 
         Ok(()).wrap_with_cost(cost)

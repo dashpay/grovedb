@@ -218,25 +218,29 @@ impl Link {
         }
     }
 
-    /// Consumes the link and converts to variant `Link::Reference`. Panics if
-    /// the link is of variant `Link::Modified` or `Link::Uncommitted`.
+    /// Consumes the link and converts to variant `Link::Reference`. Returns an
+    /// error if the link is of variant `Link::Modified` or `Link::Uncommitted`.
     #[inline]
-    pub fn into_reference(self) -> Self {
+    pub fn into_reference(self) -> std::result::Result<Self, crate::Error> {
         match self {
-            Link::Reference { .. } => self,
-            Link::Modified { .. } => panic!("Cannot prune Modified tree"),
-            Link::Uncommitted { .. } => panic!("Cannot prune Uncommitted tree"),
+            Link::Reference { .. } => Ok(self),
+            Link::Modified { .. } => {
+                Err(crate::Error::CorruptedState("Cannot prune Modified tree"))
+            }
+            Link::Uncommitted { .. } => Err(crate::Error::CorruptedState(
+                "Cannot prune Uncommitted tree",
+            )),
             Link::Loaded {
                 hash,
                 aggregate_data,
                 child_heights,
                 tree,
-            } => Self::Reference {
+            } => Ok(Self::Reference {
                 hash,
                 aggregate_data,
                 child_heights,
                 key: tree.take_key(),
-            },
+            }),
         }
     }
 
@@ -691,7 +695,7 @@ mod test {
         assert!(reference.tree().is_none());
         assert_eq!(reference.hash(), &[0; 32]);
         assert_eq!(reference.height(), 1);
-        assert!(reference.into_reference().is_reference());
+        assert!(reference.into_reference().unwrap().is_reference());
 
         assert!(!modified.is_reference());
         assert!(modified.is_modified());
@@ -715,7 +719,7 @@ mod test {
         assert!(loaded.tree().is_some());
         assert_eq!(loaded.hash(), &[0; 32]);
         assert_eq!(loaded.height(), 1);
-        assert!(loaded.into_reference().is_reference());
+        assert!(loaded.into_reference().unwrap().is_reference());
     }
 
     #[test]
@@ -730,26 +734,26 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
     fn modified_into_reference() {
-        Link::Modified {
+        let result = Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
             tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
         }
         .into_reference();
+        assert!(result.is_err());
     }
 
     #[test]
-    #[should_panic]
     fn uncommitted_into_reference() {
-        Link::Uncommitted {
+        let result = Link::Uncommitted {
             hash: [1; 32],
             aggregate_data: AggregateData::NoAggregateData,
             child_heights: (1, 1),
             tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
         }
         .into_reference();
+        assert!(result.is_err());
     }
 
     #[test]
