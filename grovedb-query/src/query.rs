@@ -118,7 +118,10 @@ impl<'de, Context> BorrowDecode<'de, Context> for Query {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        let _version = u8::borrow_decode(decoder)?;
+        let version = u8::borrow_decode(decoder)?;
+        if version != 1 {
+            return Err(DecodeError::Other("unsupported Query encoding version"));
+        }
         // Borrow-decode the items vector
         let items = Vec::<QueryItem>::borrow_decode(decoder)?;
 
