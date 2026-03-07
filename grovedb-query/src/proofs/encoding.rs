@@ -908,6 +908,11 @@ impl<'a> Decoder<'a> {
     }
 }
 
+// NOTE: The Decoder does not verify that all input bytes are consumed after
+// yielding the last Op. Trailing bytes after valid operations are silently
+// ignored. This does not affect proof security (the execute function validates
+// the proof structure via stack depth and key ordering), but means proofs
+// could contain dead bytes that waste space.
 impl Iterator for Decoder<'_> {
     type Item = Result<Op, Error>;
 
