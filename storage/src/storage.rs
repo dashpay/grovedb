@@ -407,7 +407,12 @@ impl StorageBatch {
         );
     }
 
-    /// Add deferred `delete` operation
+    /// Add deferred `delete` operation.
+    ///
+    /// If a `put` for the same key already exists in this batch, the delete is
+    /// silently dropped — the put always wins within a single batch. This is
+    /// intentional: during tree rebalancing, a node may be deleted from one
+    /// position and re-inserted at another within the same commit.
     pub(crate) fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().data;
         if operations.get(&key).is_none() {
@@ -418,7 +423,9 @@ impl StorageBatch {
         }
     }
 
-    /// Add deferred `delete` operation for aux storage_cost
+    /// Add deferred `delete` operation for aux storage.
+    ///
+    /// Same put-wins semantics as [`Self::delete`].
     pub(crate) fn delete_aux(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().aux;
         if operations.get(&key).is_none() {
@@ -429,7 +436,9 @@ impl StorageBatch {
         }
     }
 
-    /// Add deferred `delete` operation for subtree roots storage_cost
+    /// Add deferred `delete` operation for subtree roots storage.
+    ///
+    /// Same put-wins semantics as [`Self::delete`].
     pub(crate) fn delete_root(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().roots;
         if operations.get(&key).is_none() {
