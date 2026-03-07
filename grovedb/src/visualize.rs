@@ -33,13 +33,13 @@ impl GroveDb {
         let storage = self
             .db
             .get_transactional_storage_context((&path).into(), None, tx.as_ref())
-            .unwrap();
+            .unwrap(); // unwraps CostContext (infallible — discards cost)
 
-        let mut iter = Element::iterator(storage.raw_iter()).unwrap();
+        let mut iter = Element::iterator(storage.raw_iter()).unwrap(); // CostContext unwrap
         while let Some((key, element)) = iter
             .next_element(grove_version)
-            .unwrap()
-            .expect("cannot get next element")
+            .unwrap() // unwraps CostContext (discards cost)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
         {
             drawer.write(b"\n[key: ")?;
             drawer = key.visualize(drawer)?;
