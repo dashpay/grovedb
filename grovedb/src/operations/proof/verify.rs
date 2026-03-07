@@ -616,27 +616,16 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
-                        // Security: for item elements whose value_hash was NOT
-                        // independently computed by the merk verifier, verify it
-                        // now. This prevents a KV→KVValueHash substitution attack
-                        // where a malicious prover swaps the proof node type to
-                        // provide a fake value with the real value's hash.
+                        // Security: detect KV→KVValueHash substitution attacks.
                         if element.is_any_item()
                             && !proved_key_value.value_hash_is_computed
                             && !proved_key_value.is_reference_result
+                            && value_hash(value_bytes).value() != hash
                         {
-                            let computed_value_hash = value_hash(value_bytes);
-                            if computed_value_hash.value() != hash {
-                                return Err(Error::InvalidProof(
-                                    query.clone(),
-                                    format!(
-                                        "V1 item value hash mismatch at key {}: proof \
-                                         contains value_hash that does not match the \
-                                         provided value — possible proof tampering",
-                                        hex::encode(key),
-                                    ),
-                                ));
-                            }
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!("item value hash mismatch at key {}", hex::encode(key)),
+                            ));
                         }
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
@@ -1537,25 +1526,16 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
-                        // Security: for item elements whose value_hash was NOT
-                        // independently computed by the merk verifier, verify it
-                        // now. This prevents a KV→KVValueHash substitution attack.
+                        // Security: detect KV→KVValueHash substitution attacks.
                         if element.is_any_item()
                             && !proved_key_value.value_hash_is_computed
                             && !proved_key_value.is_reference_result
+                            && value_hash(value_bytes).value() != hash
                         {
-                            let computed_value_hash = value_hash(value_bytes);
-                            if computed_value_hash.value() != hash {
-                                return Err(Error::InvalidProof(
-                                    query.clone(),
-                                    format!(
-                                        "Item value hash mismatch at key {}: proof \
-                                         contains value_hash that does not match the \
-                                         provided value — possible proof tampering",
-                                        hex::encode(key),
-                                    ),
-                                ));
-                            }
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!("item value hash mismatch at key {}", hex::encode(key)),
+                            ));
                         }
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
