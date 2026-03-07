@@ -1192,24 +1192,20 @@ impl TreeNode {
 
         let (prune_left, prune_right) = c.prune(self);
         if prune_left {
-            self.inner.left = cost_return_on_error_no_add!(
-                cost,
-                self.inner
-                    .left
-                    .take()
-                    .map(|link| link.into_reference())
-                    .transpose()
-            );
+            if let Some(link) = self.inner.left.take() {
+                match link.into_reference() {
+                    Ok(r) => self.inner.left = Some(r),
+                    Err(e) => return Err(e).wrap_with_cost(cost),
+                }
+            }
         }
         if prune_right {
-            self.inner.right = cost_return_on_error_no_add!(
-                cost,
-                self.inner
-                    .right
-                    .take()
-                    .map(|link| link.into_reference())
-                    .transpose()
-            );
+            if let Some(link) = self.inner.right.take() {
+                match link.into_reference() {
+                    Ok(r) => self.inner.right = Some(r),
+                    Err(e) => return Err(e).wrap_with_cost(cost),
+                }
+            }
         }
 
         Ok(()).wrap_with_cost(cost)
