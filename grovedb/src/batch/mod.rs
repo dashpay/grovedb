@@ -1591,61 +1591,11 @@ where
             )
         }
     }
-}
 
-impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
-where
-    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
-    SR: FnMut(
-        &mut ElementFlags,
-        u32,
-        u32,
-    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
-    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    S: StorageContext<'db>,
-{
-    fn insert(
-        &mut self,
-        path: &KeyInfoPath,
-        key: &KeyInfo,
-        tree_type: TreeType,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-
-        let mut inserted_path = path.to_path();
-        inserted_path.push(key.get_key_clone());
-        if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
-            let mut merk =
-                cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
-            merk.tree_type = tree_type;
-            e.insert(merk);
-        }
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    fn update_base_merk_root_key(
-        &mut self,
-        root_key: Option<Vec<u8>>,
-        _grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        let base_path = vec![];
-
-        let merk = match self.merks.entry(base_path.clone()) {
-            HashMapEntry::Occupied(o) => o.into_mut(),
-            HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
-                &mut cost,
-                (self.get_merk_fn)(&base_path, false)
-            )),
-        };
-
-        merk.set_base_root_key(root_key)
-            .add_cost(cost)
-            .map_err(|e| Error::InternalError(format!("unable to set base root key: {e}")))
-    }
-
-    fn execute_ops_on_path(
+    /// V0: execute_ops_on_path without InsertOnly enforcement.
+    /// InsertOnly behaves the same as InsertOrReplace unless
+    /// `validate_insertion_does_not_override` is explicitly set.
+    fn execute_ops_on_path_v0<G, SR>(
         &mut self,
         path: &KeyInfoPath,
         ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
@@ -1654,7 +1604,15 @@ where
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
         grove_version: &GroveVersion,
-    ) -> CostResult<RootHashKeyAndAggregateData, Error> {
+    ) -> CostResult<RootHashKeyAndAggregateData, Error>
+    where
+        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        SR: FnMut(
+            &mut ElementFlags,
+            u32,
+            u32,
+        ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+    {
         let mut cost = OperationCost::default();
         // todo: fix this
         let p = path.to_path();
@@ -2258,6 +2216,732 @@ where
         merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
             .map_err(Error::MerkError)
+    }
+
+    /// V1: execute_ops_on_path with InsertOnly enforcement.
+    /// InsertOnly operations always check for existing elements and
+    /// reject overwrites, regardless of `validate_insertion_does_not_override`.
+    fn execute_ops_on_path_v1<G, SR>(
+        &mut self,
+        path: &KeyInfoPath,
+        ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
+        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
+        batch_apply_options: &BatchApplyOptions,
+        flags_update: &mut G,
+        split_removal_bytes: &mut SR,
+        grove_version: &GroveVersion,
+    ) -> CostResult<RootHashKeyAndAggregateData, Error>
+    where
+        G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+        SR: FnMut(
+            &mut ElementFlags,
+            u32,
+            u32,
+        ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+    {
+        let mut cost = OperationCost::default();
+        // todo: fix this
+        let p = path.to_path();
+        let path = &p;
+
+        // This also populates Merk trees cache
+        let in_tree_type = {
+            let merk = match self.merks.entry(path.to_vec()) {
+                HashMapEntry::Occupied(o) => o.into_mut(),
+                HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                    &mut cost,
+                    (self.get_merk_fn)(path, false)
+                )),
+            };
+            merk.tree_type
+        };
+
+        let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
+        for (key_info, op) in ops_at_path_by_key.into_iter() {
+            let is_insert_only = matches!(&op, GroveOp::InsertOnly { .. });
+            match op {
+                GroveOp::InsertOnly { element }
+                | GroveOp::InsertOrReplace { element }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. } => {
+                    // Check tree-override protection for all non-reference elements.
+                    if batch_apply_options.validate_insertion_does_not_override_tree
+                        && !matches!(&element, Element::Reference(..))
+                    {
+                        let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                        let maybe_existing = cost_return_on_error_into!(
+                            &mut cost,
+                            merk.get(
+                                key_info.get_key_clone().as_slice(),
+                                true,
+                                Some(&Element::value_defined_cost_for_serialized_value,),
+                                grove_version,
+                            )
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to check for existing tree: {e}"
+                                ))
+                            })
+                        );
+                        if let Some(existing_bytes) = maybe_existing {
+                            let existing_element = cost_return_on_error_no_add!(
+                                cost,
+                                Element::deserialize(existing_bytes.as_slice(), grove_version)
+                                    .map_err(|_| {
+                                        Error::CorruptedData(
+                                            "unable to deserialize existing element".to_string(),
+                                        )
+                                    })
+                            );
+                            if existing_element.is_any_tree() {
+                                return Err(Error::InvalidBatchOperation(
+                                    "attempting to overwrite a tree",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                        }
+                    }
+
+                    match &element {
+                        Element::Reference(path_reference, element_max_reference_hop, _) => {
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            let path_reference = cost_return_on_error_into!(
+                                &mut cost,
+                                path_from_reference_path_type(
+                                    path_reference.clone(),
+                                    path,
+                                    Some(key_info.as_slice())
+                                )
+                                .wrap_with_cost(OperationCost::default())
+                            );
+                            if path_reference.is_empty() {
+                                return Err(Error::InvalidBatchOperation(
+                                    "attempting to insert an empty reference",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+
+                            let referenced_element_value_hash = cost_return_on_error!(
+                                &mut cost,
+                                self.follow_reference_get_value_hash(
+                                    path_reference.as_slice(),
+                                    ops_by_qualified_paths,
+                                    element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
+                                    flags_update,
+                                    split_removal_bytes,
+                                    &mut HashSet::new(),
+                                    grove_version,
+                                )
+                            );
+
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_reference_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    referenced_element_value_hash,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        Element::Tree(..)
+                        | Element::SumTree(..)
+                        | Element::BigSumTree(..)
+                        | Element::CountTree(..)
+                        | Element::CountSumTree(..)
+                        | Element::ProvableCountTree(..)
+                        | Element::ProvableCountSumTree(..)
+                        | Element::MmrTree(..)
+                        | Element::BulkAppendTree(..)
+                        | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        Element::CommitmentTree(..) => {
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            if batch_apply_options.validate_insertion_does_not_override
+                                || is_insert_only
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+
+                                let inserted = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.insert_if_not_exists_into_batch_operations(
+                                        merk,
+                                        key_info.get_key(),
+                                        &mut batch_operations,
+                                        merk_feature_type,
+                                        grove_version,
+                                    )
+                                );
+                                if !inserted {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to overwrite an element",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            } else {
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.insert_into_batch_operations(
+                                        key_info.get_key(),
+                                        &mut batch_operations,
+                                        merk_feature_type,
+                                        grove_version,
+                                    )
+                                );
+                            }
+                        }
+                    }
+                }
+                GroveOp::RefreshReference {
+                    reference_path_type,
+                    max_reference_hop,
+                    flags,
+                    trust_refresh_reference,
+                } => {
+                    // We have a refresh reference Op, this means we need to get the actual
+                    // reference element on disk first
+
+                    let element = if trust_refresh_reference {
+                        Element::Reference(reference_path_type, max_reference_hop, flags)
+                    } else {
+                        let merk = self.merks.get(path).expect("the Merk is cached");
+                        let value = cost_return_on_error!(
+                            &mut cost,
+                            merk.get(
+                                key_info.as_slice(),
+                                true,
+                                Some(Element::value_defined_cost_for_serialized_value),
+                                grove_version
+                            )
+                            .map(
+                                |result_value| result_value.map_err(Error::MerkError).and_then(
+                                    |maybe_value| maybe_value.ok_or(Error::InvalidInput(
+                                        "trying to refresh a non existing reference",
+                                    ))
+                                )
+                            )
+                        );
+                        cost_return_on_error_no_add!(
+                            cost,
+                            Element::deserialize(value.as_slice(), grove_version).map_err(|e| {
+                                Error::CorruptedData(format!("unable to deserialize element: {e}"))
+                            })
+                        )
+                    };
+
+                    let Element::Reference(path_reference, max_reference_hop, _) = &element else {
+                        return Err(Error::InvalidInput(
+                            "trying to refresh a an element that is not a reference",
+                        ))
+                        .wrap_with_cost(cost);
+                    };
+
+                    let merk_feature_type = in_tree_type.empty_tree_feature_type();
+
+                    let path_reference = cost_return_on_error_into!(
+                        &mut cost,
+                        path_from_reference_path_type(
+                            path_reference.clone(),
+                            path,
+                            Some(key_info.as_slice())
+                        )
+                        .wrap_with_cost(OperationCost::default())
+                    );
+                    if path_reference.is_empty() {
+                        return Err(Error::CorruptedReferencePathNotFound(
+                            "attempting to refresh an empty reference".to_string(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+
+                    let referenced_element_value_hash = cost_return_on_error!(
+                        &mut cost,
+                        self.follow_reference_get_value_hash(
+                            path_reference.as_slice(),
+                            ops_by_qualified_paths,
+                            max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
+                            flags_update,
+                            split_removal_bytes,
+                            &mut HashSet::new(),
+                            grove_version
+                        )
+                    );
+
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element.insert_reference_into_batch_operations(
+                            key_info.get_key_clone(),
+                            referenced_element_value_hash,
+                            &mut batch_operations,
+                            merk_feature_type,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::Delete => {
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        Element::delete_into_batch_operations(
+                            key_info.get_key(),
+                            false,
+                            in_tree_type, /* we are in a sum tree, this might or might not be a
+                                           * sum item */
+                            &mut batch_operations,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::DeleteTree(_tree_type) => {
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        Element::delete_into_batch_operations(
+                            key_info.get_key(),
+                            true,
+                            in_tree_type, /* use parent tree type, not the deleted subtree's type */
+                            &mut batch_operations,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::ReplaceTreeRootKey {
+                    hash,
+                    root_key,
+                    aggregate_data,
+                } => {
+                    let merk = self.merks.get(path).expect("the Merk is cached");
+                    cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::update_tree_item_preserve_flag_into_batch_operations(
+                            merk,
+                            key_info.get_key(),
+                            root_key,
+                            hash,
+                            aggregate_data,
+                            &mut batch_operations,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::ReplaceNonMerkTreeRoot { hash, meta } => {
+                    // Read existing element to preserve flags
+                    let merk = self.merks.get(path).expect("the Merk is cached");
+                    let existing_flags = cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::get_element_from_subtree(merk, key_info.as_slice(), grove_version)
+                    )
+                    .get_flags_owned();
+
+                    let element = meta.to_element(existing_flags);
+                    let merk_feature_type = cost_return_on_error_into_no_add!(
+                        cost,
+                        element.get_feature_type(in_tree_type)
+                    );
+
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element.insert_subtree_into_batch_operations(
+                            key_info.get_key_clone(),
+                            hash,
+                            true,
+                            &mut batch_operations,
+                            merk_feature_type,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::InsertTreeWithRootHash {
+                    hash,
+                    root_key,
+                    flags,
+                    aggregate_data,
+                } => {
+                    // Standard Merk trees — infer element from aggregate_data
+                    let element = match aggregate_data {
+                        AggregateData::NoAggregateData => {
+                            Element::new_tree_with_flags(root_key, flags)
+                        }
+                        AggregateData::Sum(sum_value) => {
+                            Element::new_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
+                        AggregateData::BigSum(sum_value) => {
+                            Element::new_big_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
+                        AggregateData::Count(count_value) => {
+                            Element::new_count_tree_with_flags_and_count_value(
+                                root_key,
+                                count_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::CountAndSum(count_value, sum_value) => {
+                            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::ProvableCount(count_value) => {
+                            Element::new_provable_count_tree_with_flags_and_count_value(
+                                root_key,
+                                count_value,
+                                flags,
+                            )
+                        }
+                        AggregateData::ProvableCountAndSum(count_value, sum_value) => {
+                            Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
+                        }
+                    };
+                    let merk_feature_type = cost_return_on_error_into_no_add!(
+                        cost,
+                        element.get_feature_type(in_tree_type)
+                    );
+
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element.insert_subtree_into_batch_operations(
+                            key_info.get_key_clone(),
+                            hash,
+                            false,
+                            &mut batch_operations,
+                            merk_feature_type,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::InsertNonMerkTree {
+                    hash, flags, meta, ..
+                } => {
+                    let element = meta.to_element(flags);
+                    let merk_feature_type = cost_return_on_error_into_no_add!(
+                        cost,
+                        element.get_feature_type(in_tree_type)
+                    );
+
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element.insert_subtree_into_batch_operations(
+                            key_info.get_key_clone(),
+                            hash,
+                            false,
+                            &mut batch_operations,
+                            merk_feature_type,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::CommitmentTreeInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "CommitmentTreeInsert should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::MmrTreeAppend { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "MmrTreeAppend should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::BulkAppend { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "BulkAppend should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::DenseTreeInsert { .. } => {
+                    return Err(Error::InvalidBatchOperation(
+                        "DenseTreeInsert should have been preprocessed before batch execution",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+        }
+
+        let merk = self.merks.get_mut(path).expect("the Merk is cached");
+
+        cost_return_on_error!(
+            &mut cost,
+            merk.apply_unchecked::<_, Vec<u8>, _, _, _, _, _>(
+                &batch_operations,
+                &[],
+                Some(batch_apply_options.as_merk_options()),
+                &|key, value| {
+                    Element::specialized_costs_for_key_value(
+                        key,
+                        value,
+                        in_tree_type.inner_node_type(),
+                        grove_version,
+                    )
+                    .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                },
+                Some(&Element::value_defined_cost_for_serialized_value),
+                &|old_value, new_value| {
+                    let old_element = Element::deserialize(old_value.as_slice(), grove_version)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                    let maybe_old_flags = old_element.get_flags_owned();
+                    if maybe_old_flags.is_some() {
+                        let mut new_element =
+                            Element::deserialize(new_value.as_slice(), grove_version)
+                                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                        new_element.set_flags(maybe_old_flags);
+                        new_element
+                            .serialize(grove_version)
+                            .map(Some)
+                            .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                    } else {
+                        Ok(None)
+                    }
+                },
+                &mut |storage_costs, old_value, new_value| {
+                    // todo: change the flags without full deserialization
+                    let old_element = Element::deserialize(old_value.as_slice(), grove_version)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                    let maybe_old_flags = old_element.get_flags_owned();
+
+                    let mut new_element = Element::deserialize(new_value.as_slice(), grove_version)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                    let maybe_new_flags = new_element.get_flags_mut();
+                    match maybe_new_flags {
+                        None => Ok((false, None)),
+                        Some(new_flags) => {
+                            let changed = (flags_update)(storage_costs, maybe_old_flags, new_flags)
+                                .map_err(|e| match e {
+                                    Error::JustInTimeElementFlagsClientError(_) => {
+                                        MerkError::ClientCorruptionError(e.to_string())
+                                    }
+                                    _ => MerkError::ClientCorruptionError(
+                                        "non client error".to_string(),
+                                    ),
+                                })?;
+                            if changed {
+                                let flags_len = new_flags.len() as u32;
+                                new_value.clone_from(
+                                    &new_element.serialize(grove_version).map_err(|e| {
+                                        MerkError::ClientCorruptionError(e.to_string())
+                                    })?,
+                                );
+                                // we need to give back the value defined cost in the case that the
+                                // new element is a tree
+                                match new_element {
+                                    Element::Tree(..)
+                                    | Element::SumTree(..)
+                                    | Element::BigSumTree(..)
+                                    | Element::CountTree(..)
+                                    | Element::CountSumTree(..)
+                                    | Element::ProvableCountTree(..)
+                                    | Element::ProvableCountSumTree(..)
+                                    | Element::CommitmentTree(..)
+                                    | Element::MmrTree(..)
+                                    | Element::BulkAppendTree(..)
+                                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                                        let tree_type = new_element
+                                            .tree_type()
+                                            .expect("tree_type guaranteed by match arm");
+                                        let tree_cost_size = tree_type.cost_size();
+                                        let tree_value_cost = tree_cost_size
+                                            + flags_len
+                                            + flags_len.required_space() as u32;
+                                        Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
+                                    }
+                                    Element::SumItem(..) => {
+                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
+                                            + flags_len
+                                            + flags_len.required_space() as u32;
+                                        Ok((
+                                            true,
+                                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
+                                        ))
+                                    }
+                                    Element::ItemWithSumItem(item_value, ..) => {
+                                        let item_len = item_value.len() as u32;
+                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
+                                            + flags_len
+                                            + flags_len.required_space() as u32
+                                            + item_len
+                                            + item_len.required_space() as u32;
+                                        Ok((
+                                            true,
+                                            Some(SpecializedValueDefinedCost(sum_item_value_cost)),
+                                        ))
+                                    }
+                                    _ => Ok((true, None)),
+                                }
+                            } else {
+                                Ok((false, None))
+                            }
+                        }
+                    }
+                },
+                &mut |value, removed_key_bytes, removed_value_bytes| {
+                    let mut element = Element::deserialize(value.as_slice(), grove_version)
+                        .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))?;
+                    let maybe_flags = element.get_flags_mut();
+                    match maybe_flags {
+                        None => Ok((
+                            BasicStorageRemoval(removed_key_bytes),
+                            BasicStorageRemoval(removed_value_bytes),
+                        )),
+                        Some(flags) => {
+                            (split_removal_bytes)(flags, removed_key_bytes, removed_value_bytes)
+                                .map_err(|e| MerkError::ClientCorruptionError(e.to_string()))
+                        }
+                    }
+                },
+                grove_version,
+            )
+            .map_err(|e| Error::CorruptedData(e.to_string()))
+        );
+        merk.root_hash_key_and_aggregate_data()
+            .add_cost(cost)
+            .map_err(Error::MerkError)
+    }
+}
+
+impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
+where
+    G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
+    SR: FnMut(
+        &mut ElementFlags,
+        u32,
+        u32,
+    ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+    F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    S: StorageContext<'db>,
+{
+    fn insert(
+        &mut self,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        tree_type: TreeType,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        let mut inserted_path = path.to_path();
+        inserted_path.push(key.get_key_clone());
+        if let HashMapEntry::Vacant(e) = self.merks.entry(inserted_path.clone()) {
+            let mut merk =
+                cost_return_on_error!(&mut cost, (self.get_merk_fn)(&inserted_path, true));
+            merk.tree_type = tree_type;
+            e.insert(merk);
+        }
+
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    fn update_base_merk_root_key(
+        &mut self,
+        root_key: Option<Vec<u8>>,
+        _grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        let base_path = vec![];
+
+        let merk = match self.merks.entry(base_path.clone()) {
+            HashMapEntry::Occupied(o) => o.into_mut(),
+            HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                &mut cost,
+                (self.get_merk_fn)(&base_path, false)
+            )),
+        };
+
+        merk.set_base_root_key(root_key)
+            .add_cost(cost)
+            .map_err(|e| Error::InternalError(format!("unable to set base root key: {e}")))
+    }
+
+    fn execute_ops_on_path(
+        &mut self,
+        path: &KeyInfoPath,
+        ops_at_path_by_key: BTreeMap<KeyInfo, GroveOp>,
+        ops_by_qualified_paths: &BTreeMap<Vec<Vec<u8>>, GroveOp>,
+        batch_apply_options: &BatchApplyOptions,
+        flags_update: &mut G,
+        split_removal_bytes: &mut SR,
+        grove_version: &GroveVersion,
+    ) -> CostResult<RootHashKeyAndAggregateData, Error> {
+        match grove_version
+            .grovedb_versions
+            .apply_batch
+            .execute_ops_on_path
+        {
+            0 => self.execute_ops_on_path_v0(
+                path,
+                ops_at_path_by_key,
+                ops_by_qualified_paths,
+                batch_apply_options,
+                flags_update,
+                split_removal_bytes,
+                grove_version,
+            ),
+            1 => self.execute_ops_on_path_v1(
+                path,
+                ops_at_path_by_key,
+                ops_by_qualified_paths,
+                batch_apply_options,
+                flags_update,
+                split_removal_bytes,
+                grove_version,
+            ),
+            version => Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "execute_ops_on_path".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
     }
 
     fn get_batch_run_mode(&self) -> BatchRunMode {
