@@ -1674,6 +1674,7 @@ where
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
+            let is_insert_only = matches!(&op, GroveOp::InsertOnly { .. });
             match op {
                 GroveOp::InsertOnly { element }
                 | GroveOp::InsertOrReplace { element }
@@ -1819,7 +1820,9 @@ where
                                     .get_feature_type(in_tree_type)
                                     .wrap_with_cost(OperationCost::default())
                             );
-                            if batch_apply_options.validate_insertion_does_not_override {
+                            if is_insert_only
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
                                 let merk = self.merks.get_mut(path).expect("the Merk is cached");
 
                                 let inserted = cost_return_on_error_into!(
