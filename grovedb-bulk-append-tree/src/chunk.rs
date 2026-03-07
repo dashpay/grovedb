@@ -71,16 +71,10 @@ pub fn deserialize_chunk_blob(blob: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendErr
 
 fn serialize_fixed(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendError> {
     let count: u32 = entries.len().try_into().map_err(|_| {
-        BulkAppendError::InvalidInput(format!(
-            "chunk entry count {} exceeds u32::MAX",
-            entries.len()
-        ))
+        BulkAppendError::InvalidInput("chunk entry count exceeds u32::MAX".to_string())
     })?;
     let entry_size: u32 = entries[0].len().try_into().map_err(|_| {
-        BulkAppendError::InvalidInput(format!(
-            "chunk entry size {} exceeds u32::MAX",
-            entries[0].len()
-        ))
+        BulkAppendError::InvalidInput("chunk entry size exceeds u32::MAX".to_string())
     })?;
     // 1 (flag) + 4 (count) + 4 (entry_size) + N * entry_size
     let total = 1 + 4 + 4 + entries.len() * entries[0].len();
@@ -155,10 +149,7 @@ fn serialize_variable(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendError> {
     blob.push(FORMAT_VARIABLE);
     for entry in entries {
         let len: u32 = entry.len().try_into().map_err(|_| {
-            BulkAppendError::InvalidInput(format!(
-                "chunk entry length {} exceeds u32::MAX",
-                entry.len()
-            ))
+            BulkAppendError::InvalidInput("chunk entry length exceeds u32::MAX".to_string())
         })?;
         blob.extend_from_slice(&len.to_be_bytes());
         blob.extend_from_slice(entry);
