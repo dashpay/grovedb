@@ -233,8 +233,15 @@ impl<'db> MultiStateSyncSession<'db> {
     /// expected `app_hash` to ensure the overall composition of all restored
     /// subtrees is correct.
     pub fn commit(self: Pin<Box<Self>>, grove_version: &GroveVersion) -> Result<(), Error> {
+        if !self.is_sync_completed() {
+            return Err(Error::CorruptedData(
+                "cannot commit an incomplete state sync session".to_string(),
+            ));
+        }
+
         // SAFETY: the struct isn't used anymore and no storage contexts would access
-        // transaction
+        // transaction — is_sync_completed() guarantees all restorers are finished
+        // and current_prefixes has no active storage contexts.
         let session = unsafe { Pin::into_inner_unchecked(self) };
 
         // Verify the final root hash matches the expected app_hash before committing.
