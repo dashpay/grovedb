@@ -2608,8 +2608,8 @@ mod tests {
 
         // Try to insert a non-tree element at the same key with
         // validate_insertion_does_not_override_tree = true.
-        // This should succeed because we're replacing with an item, not
-        // overriding a tree with a tree.
+        // This should fail because an existing tree cannot be overwritten
+        // when this validation is enabled (matching the non-batch insert path).
         let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec()],
             b"subtree".to_vec(),
@@ -2621,11 +2621,27 @@ mod tests {
             ..Default::default()
         });
 
-        // The validation only prevents overriding a tree with another tree,
-        // so replacing a tree with an item should succeed.
+        let result = db.apply_batch(ops, options, None, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "overwriting a tree should fail when validate_insertion_does_not_override_tree is set"
+        );
+
+        // Without the validation, it should succeed
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"subtree".to_vec(),
+            Element::new_item(b"new_item".to_vec()),
+        )];
+
+        let options = Some(BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        });
+
         db.apply_batch(ops, options, None, grove_version)
             .unwrap()
-            .expect("replacing a tree with an item should succeed even with validation enabled");
+            .expect("replacing a tree should succeed without validation");
 
         let result = db
             .get([TEST_LEAF].as_ref(), b"subtree", None, grove_version)
