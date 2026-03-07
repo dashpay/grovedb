@@ -384,7 +384,7 @@ pub(crate) mod utils {
 
         let subtree_prefix: crate::SubtreePrefix = chunk_prefix_key
             .try_into()
-            .map_err(|_| Error::CorruptedData("unable to construct subtree".to_string()))?;
+            .map_err(|e| Error::CorruptedData(format!("unable to construct subtree: {e}")))?;
 
         if !root_key.is_empty() {
             Ok((
@@ -429,7 +429,7 @@ pub(crate) mod utils {
             let key_len: u16 = root_key
                 .len()
                 .try_into()
-                .map_err(|_| Error::InternalError("root_key length exceeds u16".to_string()))?;
+                .map_err(|e| Error::InternalError(format!("root_key length exceeds u16: {e}")))?;
             res.extend_from_slice(&key_len.to_be_bytes());
             res.extend(root_key);
         } else {
