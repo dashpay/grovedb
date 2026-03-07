@@ -281,10 +281,11 @@ impl<'db> MultiStateSyncSession<'db> {
     unsafe fn set_new_transaction(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
     ) -> Result<(), Error> {
-        debug_assert!(
-            self.current_prefixes.is_empty(),
-            "current_prefixes must be empty before replacing transaction"
-        );
+        if !self.current_prefixes.is_empty() {
+            return Err(Error::InternalError(
+                "current_prefixes must be empty before replacing transaction".to_string(),
+            ));
+        }
         let this = unsafe { Pin::as_mut(self).get_unchecked_mut() };
         let old_tx = mem::replace(&mut this.transaction, this.db.start_transaction());
         self.db.commit_transaction(old_tx).value.map_err(|e| {
