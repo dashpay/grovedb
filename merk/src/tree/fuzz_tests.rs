@@ -1,6 +1,10 @@
 //! Fuzz tests
 
-#![cfg(tests)] // NB: intentionally `tests` (not `test`) to disable these broken fuzz tests
+// NB: `cfg(tests)` (plural, not `test`) intentionally prevents compilation.
+// These fuzz tests are broken: `fuzz_case` signature mismatches (2 params vs 1
+// arg at call sites), missing `grove_version` binding, and outdated APIs.
+// They need a full rewrite to be re-enabled.
+#![cfg(tests)]
 
 #[cfg(feature = "minimal")]
 use std::{cell::RefCell, collections::BTreeMap};
