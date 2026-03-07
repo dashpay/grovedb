@@ -240,6 +240,12 @@ impl<'db> MultiStateSyncSession<'db> {
         // Verify the final root hash matches the expected app_hash before committing.
         // Individual subtree chunks are hash-verified during restore, but we must also
         // verify the overall GroveDB root to ensure the composition is correct.
+        //
+        // TODO: This check is not fully atomic. apply_chunk() flushes completed
+        // subtree batches via set_new_transaction()/commit_transaction(), so on
+        // mismatch only the last transaction is rolled back while earlier subtrees
+        // remain on disk. A full fix requires staging all subtree commits and only
+        // persisting them after root hash verification passes.
         let actual_root_hash = session
             .db
             .root_hash(Some(&session.transaction), grove_version)
