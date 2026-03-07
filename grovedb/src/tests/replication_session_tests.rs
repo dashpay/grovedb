@@ -583,6 +583,51 @@ mod tests {
     }
 
     #[test]
+    fn sync_with_empty_subtree_succeeds() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        // Insert a subtree with no items — it will be genuinely empty
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"empty_child",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert empty subtree");
+
+        // Also insert a non-empty sibling so the tree is non-trivial
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"item",
+                Element::new_item(b"val".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert item");
+
+        // Full sync should succeed (exercises the is_subtree_empty path)
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+        let dest_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get dest hash");
+        assert_eq!(source_hash, dest_hash);
+    }
+
+    #[test]
     fn fetch_chunk_unsupported_version_error() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);
