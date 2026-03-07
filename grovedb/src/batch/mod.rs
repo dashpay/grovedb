@@ -28,7 +28,7 @@ mod single_sum_item_insert_cost_tests;
 use core::fmt;
 use std::{
     cmp::Ordering,
-    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
+    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
     ops::{Add, AddAssign},
     slice::Iter,
@@ -1073,6 +1073,7 @@ where
         intermediate_reference_info: Option<&'a ReferencePathType>,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1142,6 +1143,7 @@ where
                 recursions_allowed - 1,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         } else {
@@ -1157,6 +1159,7 @@ where
                 recursions_allowed,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         }
@@ -1294,6 +1297,7 @@ where
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1341,6 +1345,7 @@ where
                     recursions_allowed - 1,
                     flags_update,
                     split_removal_bytes,
+                    visited,
                     grove_version,
                 )
             }
@@ -1378,6 +1383,7 @@ where
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1391,6 +1397,10 @@ where
         let mut cost = OperationCost::default();
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
+        }
+        let path_vec = qualified_path.to_vec();
+        if !visited.insert(path_vec) {
+            return Err(Error::CyclicReference).wrap_with_cost(cost);
         }
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
@@ -1478,6 +1488,7 @@ where
                                 recursions_allowed - 1,
                                 flags_update,
                                 split_removal_bytes,
+                                visited,
                                 grove_version,
                             )
                         }
@@ -1519,6 +1530,7 @@ where
                             recursions_allowed - 1,
                             flags_update,
                             split_removal_bytes,
+                            visited,
                             grove_version,
                         )
                     }
@@ -1557,6 +1569,7 @@ where
                         reference_info,
                         flags_update,
                         split_removal_bytes,
+                        visited,
                         grove_version,
                     )
                 }
@@ -1573,6 +1586,7 @@ where
                 None,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         }
@@ -1696,6 +1710,7 @@ where
                                 element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
                                 flags_update,
                                 split_removal_bytes,
+                                &mut HashSet::new(),
                                 grove_version,
                             )
                         );
@@ -1867,6 +1882,7 @@ where
                             max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
                             flags_update,
                             split_removal_bytes,
+                            &mut HashSet::new(),
                             grove_version
                         )
                     );
