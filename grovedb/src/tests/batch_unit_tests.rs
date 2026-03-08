@@ -1149,7 +1149,7 @@ mod tests {
         assert!(result.is_err(), "refreshing a non-reference should fail");
     }
 
-    /// Batch-insert a CommitmentTree element via execute_ops_on_path.
+    /// Batch-insert a CommitmentTree element via insert_item_element.
     /// This exercises the CommitmentTree branch (L1710-1735) that computes
     /// the empty state root for a new CommitmentTree element.
     #[test]
@@ -1170,7 +1170,7 @@ mod tests {
         .expect("insert parent");
 
         // Batch-insert a CommitmentTree directly (no items under it, so
-        // execute_ops_on_path handles it and computes the empty state root).
+        // insert_item_element handles it and computes the empty state root).
         let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"parent".to_vec()],
             b"ct_elem".to_vec(),
@@ -1279,7 +1279,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Group 12: execute_ops_on_path — empty reference error (L1653-1656)
+    // Group 12: insert_item_element — empty reference error (L1653-1656)
     // ===================================================================
 
     #[test]

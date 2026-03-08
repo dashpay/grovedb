@@ -2074,7 +2074,7 @@ mod tests {
     }
 
     // ===================================================================
-    // 43. Batch: delete item in batch (Delete path in execute_ops_on_path)
+    // 43. Batch: delete item in batch (Delete path in insert_item_element)
     // ===================================================================
 
     #[test]

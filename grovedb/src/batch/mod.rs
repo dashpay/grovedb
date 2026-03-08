@@ -11,7 +11,7 @@ mod mode;
 #[cfg(test)]
 mod multi_insert_cost_tests;
 
-mod execute_ops_on_path;
+mod insert_item_element;
 #[cfg(test)]
 mod just_in_time_cost_tests;
 /// Just-in-time reference update handling for batch operations.
@@ -56,7 +56,6 @@ use grovedb_merk::{
         get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
         tree_type::ElementTreeTypeExtensions,
     },
-    tree::TreeFeatureType,
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
         value_hash, AggregateData, NULL_HASH,
@@ -156,7 +155,7 @@ impl NonMerkTreeMeta {
         }
     }
 
-    /// Extracts the count field used in `execute_ops_on_path`.
+    /// Extracts the count field used in `insert_item_element`.
     pub fn count(&self) -> u64 {
         match self {
             NonMerkTreeMeta::CommitmentTree { total_count, .. } => *total_count,
@@ -1593,102 +1592,6 @@ where
             )
         }
     }
-
-    /// V0: Insert item element without InsertOnly enforcement.
-    /// Only checks for existing elements when
-    /// `validate_insertion_does_not_override` is explicitly set.
-    fn insert_item_element_v0(
-        merks: &mut HashMap<Vec<Vec<u8>>, Merk<S>>,
-        path: &[Vec<u8>],
-        element: Element,
-        key_info: KeyInfo,
-        batch_operations: &mut Vec<(Vec<u8>, Op)>,
-        batch_apply_options: &BatchApplyOptions,
-        merk_feature_type: TreeFeatureType,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        if batch_apply_options.validate_insertion_does_not_override {
-            let merk = merks.get_mut(path).expect("the Merk is cached");
-
-            let inserted = cost_return_on_error_into!(
-                &mut cost,
-                element.insert_if_not_exists_into_batch_operations(
-                    merk,
-                    key_info.get_key(),
-                    batch_operations,
-                    merk_feature_type,
-                    grove_version,
-                )
-            );
-            if !inserted {
-                return Err(Error::InvalidBatchOperation(
-                    "attempting to overwrite an element",
-                ))
-                .wrap_with_cost(cost);
-            }
-        } else {
-            cost_return_on_error_into!(
-                &mut cost,
-                element.insert_into_batch_operations(
-                    key_info.get_key(),
-                    batch_operations,
-                    merk_feature_type,
-                    grove_version,
-                )
-            );
-        }
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    /// V1: Insert item element with InsertOnly enforcement.
-    /// InsertOnly operations always check for existing elements and
-    /// reject overwrites, in addition to the
-    /// `validate_insertion_does_not_override` check.
-    fn insert_item_element_v1(
-        merks: &mut HashMap<Vec<Vec<u8>>, Merk<S>>,
-        path: &[Vec<u8>],
-        element: Element,
-        key_info: KeyInfo,
-        is_insert_only: bool,
-        batch_operations: &mut Vec<(Vec<u8>, Op)>,
-        batch_apply_options: &BatchApplyOptions,
-        merk_feature_type: TreeFeatureType,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        if batch_apply_options.validate_insertion_does_not_override || is_insert_only {
-            let merk = merks.get_mut(path).expect("the Merk is cached");
-
-            let inserted = cost_return_on_error_into!(
-                &mut cost,
-                element.insert_if_not_exists_into_batch_operations(
-                    merk,
-                    key_info.get_key(),
-                    batch_operations,
-                    merk_feature_type,
-                    grove_version,
-                )
-            );
-            if !inserted {
-                return Err(Error::InvalidBatchOperation(
-                    "attempting to overwrite an element",
-                ))
-                .wrap_with_cost(cost);
-            }
-        } else {
-            cost_return_on_error_into!(
-                &mut cost,
-                element.insert_into_batch_operations(
-                    key_info.get_key(),
-                    batch_operations,
-                    merk_feature_type,
-                    grove_version,
-                )
-            );
-        }
-        Ok(()).wrap_with_cost(cost)
-    }
 }
 
 impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
@@ -1918,54 +1821,20 @@ where
                                     .get_feature_type(in_tree_type)
                                     .wrap_with_cost(OperationCost::default())
                             );
-                            match grove_version
-                                .grovedb_versions
-                                .apply_batch
-                                .execute_ops_on_path
-                            {
-                                0 => {
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Self::insert_item_element_v0(
-                                            &mut self.merks,
-                                            path,
-                                            element,
-                                            key_info,
-                                            &mut batch_operations,
-                                            batch_apply_options,
-                                            merk_feature_type,
-                                            grove_version,
-                                        )
-                                    );
-                                }
-                                1 => {
-                                    cost_return_on_error!(
-                                        &mut cost,
-                                        Self::insert_item_element_v1(
-                                            &mut self.merks,
-                                            path,
-                                            element,
-                                            key_info,
-                                            is_insert_only,
-                                            &mut batch_operations,
-                                            batch_apply_options,
-                                            merk_feature_type,
-                                            grove_version,
-                                        )
-                                    );
-                                }
-                                version => {
-                                    return Err(Error::VersionError(
-                                        grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
-                                            method: "execute_ops_on_path (insert item element)"
-                                                .to_string(),
-                                            known_versions: vec![0, 1],
-                                            received: version,
-                                        },
-                                    ))
-                                    .wrap_with_cost(cost);
-                                }
-                            }
+                            cost_return_on_error!(
+                                &mut cost,
+                                Self::insert_item_element(
+                                    &mut self.merks,
+                                    path,
+                                    element,
+                                    key_info,
+                                    is_insert_only,
+                                    &mut batch_operations,
+                                    batch_apply_options,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
                         }
                     }
                 }

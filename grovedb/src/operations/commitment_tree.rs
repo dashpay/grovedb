@@ -508,7 +508,7 @@ impl GroveDb {
             drop(ct);
 
             // Create a ReplaceNonMerkTreeRoot
-            // Key is restored for downstream (from_ops, execute_ops_on_path)
+            // Key is restored for downstream (from_ops, insert_item_element)
             let replacement = QualifiedGroveDbOp {
                 path: crate::batch::KeyInfoPath::from_known_owned_path(path_vec),
                 key: Some(crate::batch::key_info::KeyInfo::KnownKey(key_bytes)),

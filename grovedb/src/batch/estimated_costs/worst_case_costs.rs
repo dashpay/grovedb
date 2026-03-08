@@ -17,6 +17,8 @@ use grovedb_merk::estimated_costs::worst_case_costs::{
 use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[cfg(feature = "minimal")]
+use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
@@ -70,14 +72,34 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
-            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
-                GroveDb::worst_case_merk_insert_element(
+            GroveOp::InsertOrReplace { element } => GroveDb::worst_case_merk_insert_element(
+                key,
+                element,
+                in_parent_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
+            GroveOp::InsertOnly { element } => {
+                // In V1+, InsertOnly performs an existence check (seek)
+                // before inserting. In V0, InsertOnly is treated the same
+                // as InsertOrReplace (no existence check).
+                let mut result = GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
                     in_parent_tree_type,
                     propagate_if_input(),
                     grove_version,
-                )
+                );
+                if grove_version
+                    .grovedb_versions
+                    .apply_batch
+                    .execute_ops_on_path
+                    >= 1
+                {
+                    result.cost.seek_count += 1;
+                    result.cost.storage_loaded_bytes += key.max_length() as u64;
+                }
+                result
             }
             GroveOp::RefreshReference {
                 reference_path_type,
