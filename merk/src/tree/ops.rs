@@ -929,14 +929,15 @@ where
         );
 
         // attach grandchild to self
-        tree.attach(left, maybe_grandchild)
+        let tree = cost_return_on_error_no_add!(cost, tree.attach(left, maybe_grandchild));
+        let tree = cost_return_on_error!(
+            &mut cost,
+            tree.maybe_balance(value_defined_cost_fn, grove_version)
+        );
+        // attach self to child, return child
+        let child = cost_return_on_error_no_add!(cost, child.attach(!left, Some(tree)));
+        child
             .maybe_balance(value_defined_cost_fn, grove_version)
-            .flat_map_ok(|tree| {
-                // attach self to child, return child
-                child
-                    .attach(!left, Some(tree))
-                    .maybe_balance(value_defined_cost_fn, grove_version)
-            })
             .add_cost(cost)
     }
 
@@ -1003,12 +1004,15 @@ where
     where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
-        self.remove_edge(left, value_defined_cost_fn, grove_version)
-            .flat_map_ok(|(edge, maybe_child)| {
-                edge.attach(!left, maybe_child)
-                    .attach(left, Some(attach))
-                    .maybe_balance(value_defined_cost_fn, grove_version)
-            })
+        let mut cost = OperationCost::default();
+        let (edge, maybe_child) = cost_return_on_error!(
+            &mut cost,
+            self.remove_edge(left, value_defined_cost_fn, grove_version)
+        );
+        let edge = cost_return_on_error_no_add!(cost, edge.attach(!left, maybe_child));
+        let edge = cost_return_on_error_no_add!(cost, edge.attach(left, Some(attach)));
+        edge.maybe_balance(value_defined_cost_fn, grove_version)
+            .add_cost(cost)
     }
 
     /// Traverses to the tree's edge on the given side and detaches it
@@ -1035,8 +1039,8 @@ where
                 &mut cost,
                 child.remove_edge(left, value_defined_cost_fn, grove_version)
             );
-            tree.attach(left, maybe_child)
-                .maybe_balance(value_defined_cost_fn, grove_version)
+            let tree = cost_return_on_error_no_add!(cost, tree.attach(left, maybe_child));
+            tree.maybe_balance(value_defined_cost_fn, grove_version)
                 .map_ok(|tree| (edge, Some(tree)))
                 .add_cost(cost)
         } else {

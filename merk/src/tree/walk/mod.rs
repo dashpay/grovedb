@@ -91,6 +91,9 @@ where
     /// Similar to `Tree#detach_expect`, but yields a `Walker` which fetches
     /// from the same source as `self`. Returned tuple is `(updated_self,
     /// child_walker)`.
+    ///
+    /// Returns an error if there is no child on the given side, indicating
+    /// a corrupted tree state.
     pub fn detach_expect<V>(
         self,
         left: bool,
@@ -101,14 +104,16 @@ where
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
     {
         self.detach(left, value_defined_cost_fn, grove_version)
-            .map_ok(|(walker, maybe_child)| {
+            .flat_map_ok(|(walker, maybe_child)| {
                 if let Some(child) = maybe_child {
-                    (walker, child)
+                    Ok((walker, child)).wrap_with_cost(Default::default())
                 } else {
-                    panic!(
-                        "Expected {} child, got None",
-                        if left { "left" } else { "right" }
-                    );
+                    Err(Error::CorruptedState(if left {
+                        "Expected left child, got None"
+                    } else {
+                        "Expected right child, got None"
+                    }))
+                    .wrap_with_cost(Default::default())
                 }
             })
     }
@@ -137,7 +142,7 @@ where
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
-        walker.tree.own(|t| t.attach(left, new_child));
+        cost_return_on_error_no_add!(cost, walker.tree.own_result(|t| t.attach(left, new_child)));
         Ok(walker).wrap_with_cost(cost)
     }
 
@@ -165,7 +170,7 @@ where
             Ok(x) => x.map(|t| t.into()),
             Err(e) => return Err(e).wrap_with_cost(cost),
         };
-        walker.tree.own(|t| t.attach(left, new_child));
+        cost_return_on_error_no_add!(cost, walker.tree.own_result(|t| t.attach(left, new_child)));
         Ok(walker).wrap_with_cost(cost)
     }
 
@@ -192,13 +197,16 @@ where
 
     /// Similar to `Tree#attach`, but can also take a `Walker` since it
     /// implements `Into<Tree>`.
-    pub fn attach<T>(mut self, left: bool, maybe_child: Option<T>) -> Self
+    ///
+    /// Returns an error if the slot is already occupied, indicating a
+    /// corrupted tree state.
+    pub fn attach<T>(mut self, left: bool, maybe_child: Option<T>) -> Result<Self, Error>
     where
         T: Into<TreeNode>,
     {
         self.tree
-            .own(|t| t.attach(left, maybe_child.map(|t| t.into())));
-        self
+            .own_result(|t| t.attach(left, maybe_child.map(|t| t.into())))?;
+        Ok(self)
     }
 
     /// Similar to `Tree#put_value`.
@@ -429,7 +437,8 @@ mod test {
             .attach(
                 true,
                 Some(TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
 
         let source = MockSource {};
         let walker = Walker::new(tree, source);
@@ -457,7 +466,8 @@ mod test {
             .attach(
                 true,
                 Some(TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");

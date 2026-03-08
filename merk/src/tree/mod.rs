@@ -746,34 +746,28 @@ impl TreeNode {
     /// Attaches the child (if any) to the root node on the given side. Creates
     /// a `Link` of variant `Link::Modified` which contains the child.
     ///
-    /// Panics if there is already a child on the given side.
+    /// Returns an error if there is already a child on the given side,
+    /// indicating a corrupted tree state.
     #[inline]
-    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Self {
+    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Result<Self, Error> {
         debug_assert_ne!(
             Some(self.key()),
             maybe_child.as_ref().map(|c| c.key()),
             "Tried to attach tree with same key"
         );
 
-        // let parent = std::str::from_utf8(self.key());
-        // if maybe_child.is_some(){
-        //     let child = std::str::from_utf8(maybe_child.as_ref().unwrap().key());
-        //     println!("attaching {} to {}", child.unwrap(), parent.unwrap());
-        // } else {
-        //     println!("attaching nothing to {}", parent.unwrap());
-        // }
-
         let slot = self.slot_mut(left);
 
         if slot.is_some() {
-            panic!(
-                "Tried to attach to {} tree slot, but it is already Some",
-                side_to_str(left)
-            );
+            return Err(Error::CorruptedState(if left {
+                "Tried to attach to left tree slot, but it is already Some"
+            } else {
+                "Tried to attach to right tree slot, but it is already Some"
+            }));
         }
         *slot = Link::maybe_from_modified_tree(maybe_child);
 
-        self
+        Ok(self)
     }
 
     /// Detaches the child on the given side (if any) from the root node, and
@@ -799,21 +793,23 @@ impl TreeNode {
     /// Detaches the child on the given side from the root node, and
     /// returns `(root_node, child)`.
     ///
-    /// Panics if there is no child on the given side.
+    /// Returns an error if there is no child on the given side, indicating
+    /// a corrupted tree state.
     ///
     /// One will usually want to reattach (see `attach`) a child on the same
     /// side after applying some operation to the detached child.
     #[inline]
-    pub fn detach_expect(self, left: bool) -> (Self, Self) {
+    pub fn detach_expect(self, left: bool) -> Result<(Self, Self), Error> {
         let (parent, maybe_child) = self.detach(left);
 
         if let Some(child) = maybe_child {
-            (parent, child)
+            Ok((parent, child))
         } else {
-            panic!(
-                "Expected tree to have {} child, but got None",
-                side_to_str(left)
-            );
+            Err(Error::CorruptedState(if left {
+                "Expected tree to have left child, but got None"
+            } else {
+                "Expected tree to have right child, but got None"
+            }))
         }
     }
 
@@ -826,7 +822,7 @@ impl TreeNode {
     /// less error prone that detaching with `detach` and reattaching with
     /// `attach`.
     #[inline]
-    pub fn walk<F>(self, left: bool, f: F) -> Self
+    pub fn walk<F>(self, left: bool, f: F) -> Result<Self, Error>
     where
         F: FnOnce(Option<Self>) -> Option<Self>,
     {
@@ -834,13 +830,14 @@ impl TreeNode {
         tree.attach(left, f(maybe_child))
     }
 
-    /// Like `walk`, but panics if there is no child on the given side.
+    /// Like `walk`, but returns an error if there is no child on the given
+    /// side, indicating a corrupted tree state.
     #[inline]
-    pub fn walk_expect<F>(self, left: bool, f: F) -> Self
+    pub fn walk_expect<F>(self, left: bool, f: F) -> Result<Self, Error>
     where
         F: FnOnce(Self) -> Option<Self>,
     {
-        let (tree, child) = self.detach_expect(left);
+        let (tree, child) = self.detach_expect(left)?;
         tree.attach(left, f(child))
     }
 
@@ -1273,39 +1270,43 @@ mod test {
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
-        let tree = tree.attach(true, None);
+        let tree = tree.attach(true, None).unwrap();
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
-        let tree = tree.attach(
-            true,
-            Some(TreeNode::new(vec![2], vec![102], None, BasicMerkNode).unwrap()),
-        );
+        let tree = tree
+            .attach(
+                true,
+                Some(TreeNode::new(vec![2], vec![102], None, BasicMerkNode).unwrap()),
+            )
+            .unwrap();
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
         assert!(tree.child(false).is_none());
 
         let tree = TreeNode::new(vec![3], vec![103], None, BasicMerkNode)
             .unwrap()
-            .attach(false, Some(tree));
+            .attach(false, Some(tree))
+            .unwrap();
         assert_eq!(tree.key(), &[3]);
         assert_eq!(tree.child(false).unwrap().key(), &[1]);
         assert!(tree.child(true).is_none());
     }
 
-    #[should_panic]
     #[test]
     fn attach_existing() {
-        TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
+        let result = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
+            .unwrap()
             .attach(
                 true,
                 Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
             );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1316,28 +1317,36 @@ mod test {
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
+            .unwrap()
             .attach(
                 false,
                 Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
 
-        let tree = tree.walk(true, |left_opt| {
-            assert_eq!(left_opt.as_ref().unwrap().key(), &[2]);
-            None
-        });
+        let tree = tree
+            .walk(true, |left_opt| {
+                assert_eq!(left_opt.as_ref().unwrap().key(), &[2]);
+                None
+            })
+            .unwrap();
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_some());
 
-        let tree = tree.walk(true, |left_opt| {
-            assert!(left_opt.is_none());
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap())
-        });
+        let tree = tree
+            .walk(true, |left_opt| {
+                assert!(left_opt.is_none());
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap())
+            })
+            .unwrap();
         assert_eq!(tree.link(true).unwrap().key(), &[2]);
 
-        let tree = tree.walk_expect(false, |right| {
-            assert_eq!(right.key(), &[4]);
-            None
-        });
+        let tree = tree
+            .walk_expect(false, |right| {
+                assert_eq!(right.key(), &[4]);
+                None
+            })
+            .unwrap();
         assert!(tree.child(true).is_some());
         assert!(tree.child(false).is_none());
     }
@@ -1349,7 +1358,8 @@ mod test {
             .attach(
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
         assert!(tree.link(true).expect("expected link").is_modified());
         assert!(tree.child(true).is_some());
         assert!(tree.link(false).is_none());
@@ -1365,7 +1375,7 @@ mod test {
         // assert!(tree.link(true).expect("expected link").is_pruned());
         // assert!(tree.child(true).is_none());
 
-        let tree = tree.walk(true, |_| None);
+        let tree = tree.walk(true, |_| None).unwrap();
         assert!(tree.link(true).is_none());
         assert!(tree.child(true).is_none());
     }
@@ -1377,7 +1387,8 @@ mod test {
             .attach(
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
@@ -1409,10 +1420,12 @@ mod test {
         assert_eq!(tree.child_pending_writes(true), 0);
         assert_eq!(tree.child_pending_writes(false), 0);
 
-        let tree = tree.attach(
-            true,
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-        );
+        let tree = tree
+            .attach(
+                true,
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
+            )
+            .unwrap();
         assert_eq!(tree.child_pending_writes(true), 1);
         assert_eq!(tree.child_pending_writes(false), 0);
     }
@@ -1425,17 +1438,19 @@ mod test {
         assert_eq!(tree.child_height(false), 0);
         assert_eq!(tree.balance_factor(), 0);
 
-        let tree = tree.attach(
-            true,
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-        );
+        let tree = tree
+            .attach(
+                true,
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
+            )
+            .unwrap();
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 1);
         assert_eq!(tree.child_height(false), 0);
         assert_eq!(tree.balance_factor(), -1);
 
         let (tree, maybe_child) = tree.detach(true);
-        let tree = tree.attach(false, maybe_child);
+        let tree = tree.attach(false, maybe_child).unwrap();
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 0);
         assert_eq!(tree.child_height(false), 1);
@@ -1449,7 +1464,8 @@ mod test {
             .attach(
                 false,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
@@ -1464,7 +1480,8 @@ mod test {
             .attach(
                 false,
                 Some(TreeNode::new(vec![2], vec![3], None, SummedMerkNode(5)).unwrap()),
-            );
+            )
+            .unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
