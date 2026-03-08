@@ -19,7 +19,7 @@ pub struct BatchApplyOptions {
     /// Deleting non empty trees returns error
     pub deleting_non_empty_trees_returns_error: bool,
     /// Disable the full operation consistency check performed by
-    /// [`QualifiedGroveDbOp::verify_consistency_of_operations`].
+    /// [`super::QualifiedGroveDbOp::verify_consistency_of_operations`].
     ///
     /// This check detects several conflict types including:
     /// - Duplicate operations targeting the same `(path, key)` pair
@@ -27,7 +27,7 @@ pub struct BatchApplyOptions {
     /// - Append/delete conflicts on the same tree
     ///
     /// When this is `false` (the default), the batch system calls
-    /// [`QualifiedGroveDbOp::verify_consistency_of_operations`] before
+    /// [`super::QualifiedGroveDbOp::verify_consistency_of_operations`] before
     /// applying and rejects the batch if any conflicts are found.
     ///
     /// # Warning -- silent last-op-wins behavior
