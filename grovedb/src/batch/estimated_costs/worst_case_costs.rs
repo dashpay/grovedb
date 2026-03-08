@@ -12,7 +12,7 @@ use grovedb_costs::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
-    worst_case_merk_propagate, WorstCaseLayerInformation,
+    add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
 };
 use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
@@ -85,6 +85,21 @@ impl GroveOp {
             GroveOp::InsertIfNotExists { element } => {
                 // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
                 // additional seek to check whether the key already exists.
+                let max_element_size = match element.serialized_size(grove_version) {
+                    Ok(size) => size as u32,
+                    Err(e) => {
+                        return Err(Error::InternalError(format!(
+                            "unable to estimate element size: {e}"
+                        )))
+                        .wrap_with_cost(OperationCost::default())
+                    }
+                };
+                let mut has_cost = OperationCost::default();
+                add_worst_case_merk_has_value(
+                    &mut has_cost,
+                    key.max_length() as u32,
+                    max_element_size,
+                );
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
@@ -92,11 +107,7 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 )
-                .add_cost(OperationCost {
-                    seek_count: 1,
-                    storage_loaded_bytes: key.max_length() as u64,
-                    ..Default::default()
-                })
+                .add_cost(has_cost)
             }
             GroveOp::RefreshReference {
                 reference_path_type,
