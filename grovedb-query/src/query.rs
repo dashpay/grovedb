@@ -22,7 +22,24 @@ pub struct Query {
     pub conditional_subquery_branches: Option<IndexMap<QueryItem, SubqueryBranch>>,
     /// Left to right?
     pub left_to_right: bool,
-    /// Add self to results if we subquery
+    /// When `true`, the parent tree element (e.g. a `CountTree` or `SumTree`)
+    /// is included in query results alongside its subquery children.
+    ///
+    /// # Known limitation
+    ///
+    /// Parent tree results added by this flag do **not** currently count
+    /// against `SizedQuery::limit`. A query with `limit = 10` may return
+    /// more than 10 results when this flag is active, because the limit
+    /// only governs child-level results. This will be resolved in a future
+    /// redesign that introduces per-level limits.
+    ///
+    /// # Absence-proof verification
+    ///
+    /// When verifying with `verify_query_with_absence_proof` or
+    /// `verify_subset_query_with_absence_proof`, results are reconstructed
+    /// from `terminal_keys()` which does not emit parent-tree entries.
+    /// Parent tree elements will therefore not appear in the verified
+    /// result set in those modes.
     pub add_parent_tree_on_subquery: bool,
 }
 

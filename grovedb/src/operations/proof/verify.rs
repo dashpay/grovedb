@@ -508,6 +508,10 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
+                                    // Known limitation: this parent tree result
+                                    // is pushed without decrementing limit_left.
+                                    // Will be addressed by per-level limits
+                                    // redesign.
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
@@ -1426,6 +1430,10 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
+                                    // Known limitation: this parent tree result
+                                    // is pushed without decrementing limit_left.
+                                    // Will be addressed by per-level limits
+                                    // redesign.
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
