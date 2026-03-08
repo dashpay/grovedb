@@ -500,21 +500,20 @@ impl GroveDb {
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
-                                    )? {
-                                        if limit_left.is_none_or(|l| l > 0) {
-                                            let path_key_optional_value =
-                                                ProvedPathKeyOptionalValue::from_proved_key_value(
-                                                    path.iter().map(|p| p.to_vec()).collect(),
-                                                    proved_key_value.clone(),
-                                                );
-                                            result.push(
-                                                path_key_optional_value
-                                                    .try_into_versioned(grove_version)?,
+                                    )? && limit_left.is_none_or(|l| l > 0)
+                                    {
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                path.iter().map(|p| p.to_vec()).collect(),
+                                                proved_key_value.clone(),
                                             );
-                                            limit_left
-                                                .iter_mut()
-                                                .for_each(|limit| *limit = limit.saturating_sub(1));
-                                        }
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                        limit_left
+                                            .iter_mut()
+                                            .for_each(|limit| *limit = limit.saturating_sub(1));
                                     }
 
                                     // Dispatch based on lower layer proof type
@@ -1420,22 +1419,21 @@ impl GroveDb {
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
-                                    )? {
-                                        if limit_left.is_none_or(|l| l > 0) {
-                                            let path_key_optional_value =
-                                                ProvedPathKeyOptionalValue::from_proved_key_value(
-                                                    path.iter().map(|p| p.to_vec()).collect(),
-                                                    proved_key_value.clone(),
-                                                );
-
-                                            result.push(
-                                                path_key_optional_value
-                                                    .try_into_versioned(grove_version)?,
+                                    )? && limit_left.is_none_or(|l| l > 0)
+                                    {
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                path.iter().map(|p| p.to_vec()).collect(),
+                                                proved_key_value.clone(),
                                             );
-                                            limit_left
-                                                .iter_mut()
-                                                .for_each(|limit| *limit = limit.saturating_sub(1));
-                                        }
+
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                        limit_left
+                                            .iter_mut()
+                                            .for_each(|limit| *limit = limit.saturating_sub(1));
                                     }
                                     // NOTE: We must ALWAYS verify the child layer
                                     // proof even when the limit is exhausted from the
