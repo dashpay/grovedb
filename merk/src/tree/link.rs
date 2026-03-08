@@ -148,26 +148,50 @@ impl Link {
         }
     }
 
-    /// Returns the hash of the tree referenced by the link. Panics if link is
-    /// of variant `Link::Modified` since we have not yet recomputed the tree's
-    /// hash.
+    /// Returns the hash of the tree referenced by the link.
+    ///
+    /// For `Link::Modified`, the hash has not yet been recomputed so the
+    /// returned value is the child tree's stale kv-hash. A `debug_assert`
+    /// fires in debug builds to catch unintended use; in release builds this
+    /// avoids a process-crashing panic.
     #[inline]
-    pub const fn hash(&self) -> &CryptoHash {
+    pub fn hash(&self) -> &CryptoHash {
         match self {
-            Link::Modified { .. } => panic!("Cannot get hash from modified link"),
+            Link::Modified { tree, .. } => {
+                debug_assert!(
+                    false,
+                    "Called hash() on a Link::Modified; the returned hash is stale"
+                );
+                // Return the child tree's kv-hash. It may be stale (not yet
+                // committed), but returning it is preferable to panicking in a
+                // library consumed by production nodes.
+                tree.inner.kv.hash()
+            }
             Link::Reference { hash, .. } => hash,
             Link::Uncommitted { hash, .. } => hash,
             Link::Loaded { hash, .. } => hash,
         }
     }
 
-    /// Returns the sum of the tree referenced by the link. Panics if link is
-    /// of variant `Link::Modified` since we have not yet recomputed the tree's
-    /// hash.
+    /// Returns the aggregate data of the tree referenced by the link.
+    ///
+    /// For `Link::Modified`, aggregate data has not yet been recomputed so
+    /// `AggregateData::NoAggregateData` is returned as a safe default. A
+    /// `debug_assert` fires in debug builds to catch unintended use; in
+    /// release builds this avoids a process-crashing panic.
     #[inline]
     pub const fn aggregate_data(&self) -> AggregateData {
         match self {
-            Link::Modified { .. } => panic!("Cannot get hash from modified link"),
+            Link::Modified { .. } => {
+                debug_assert!(
+                    false,
+                    "Called aggregate_data() on a Link::Modified; \
+                     returning NoAggregateData as a safe default"
+                );
+                // Modified links do not store pre-computed aggregate data.
+                // Return a neutral default rather than panicking.
+                AggregateData::NoAggregateData
+            }
             Link::Reference { aggregate_data, .. } => *aggregate_data,
             Link::Uncommitted { aggregate_data, .. } => *aggregate_data,
             Link::Loaded { aggregate_data, .. } => *aggregate_data,
@@ -722,15 +746,53 @@ mod test {
         assert!(loaded.into_reference().unwrap().is_reference());
     }
 
+    // In debug builds, calling hash() on Link::Modified fires a debug_assert
+    // (which panics). In release builds it returns the child tree's stale
+    // kv-hash without crashing.
     #[test]
-    #[should_panic]
-    fn modified_hash() {
+    #[should_panic(expected = "Called hash() on a Link::Modified")]
+    fn modified_hash_debug_assert() {
         Link::Modified {
             pending_writes: 1,
             child_heights: (1, 1),
             tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
         }
         .hash();
+    }
+
+    // In debug builds, calling aggregate_data() on Link::Modified fires a
+    // debug_assert (which panics). In release builds it returns
+    // NoAggregateData without crashing.
+    #[test]
+    #[should_panic(expected = "Called aggregate_data() on a Link::Modified")]
+    fn modified_aggregate_data_debug_assert() {
+        Link::Modified {
+            pending_writes: 1,
+            child_heights: (1, 1),
+            tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
+        }
+        .aggregate_data();
+    }
+
+    // Verify that encoding methods return errors instead of panicking when
+    // called on Link::Modified.
+    #[test]
+    fn modified_encoding_returns_error() {
+        let link = Link::Modified {
+            pending_writes: 1,
+            child_heights: (1, 1),
+            tree: TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap(),
+        };
+
+        // encoding_cost should return Err, not panic
+        assert!(link.encoding_cost().is_err());
+
+        // encoding_length should return Err, not panic
+        assert!(link.encoding_length().is_err());
+
+        // encode_into should return Err, not panic
+        let mut buf = vec![];
+        assert!(link.encode_into(&mut buf).is_err());
     }
 
     #[test]

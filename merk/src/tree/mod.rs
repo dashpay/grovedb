@@ -501,7 +501,7 @@ impl TreeNode {
     /// Returns the hash of the root node's child on the given side, if any. If
     /// there is no child, returns the null hash (zero-filled).
     #[inline]
-    pub const fn child_hash(&self, left: bool) -> &CryptoHash {
+    pub fn child_hash(&self, left: bool) -> &CryptoHash {
         match self.link(left) {
             Some(link) => link.hash(),
             _ => &NULL_HASH,
