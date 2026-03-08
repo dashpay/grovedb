@@ -17,6 +17,8 @@ use grovedb_merk::estimated_costs::worst_case_costs::{
 use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[cfg(feature = "minimal")]
+use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
@@ -83,7 +85,6 @@ impl GroveOp {
             GroveOp::InsertIfNotExists { element } => {
                 // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
                 // additional seek to check whether the key already exists.
-                use grovedb_storage::worst_case_costs::WorstKeyLength;
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
