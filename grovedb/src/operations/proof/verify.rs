@@ -212,6 +212,7 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
 
@@ -307,6 +308,7 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
         Ok((root_hash, last_tree_feature_type, result))
@@ -337,6 +339,7 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
 
@@ -382,12 +385,13 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
         Ok((root_hash, last_tree_feature_type, result))
     }
 
-    fn verify_layer_proof_v1<T>(
+    pub(crate) fn verify_layer_proof_v1<T>(
         layer_proof: &LayerProof,
         prove_options: &ProveOptions,
         query: &PathQuery,
@@ -396,12 +400,19 @@ impl GroveDb {
         result: &mut Vec<T>,
         last_parent_tree_type: &mut Option<TreeFeatureType>,
         options: &VerifyOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "proof verification exceeded maximum depth limit".to_string(),
+            ));
+        }
         // The merk proof at this layer must be Merk type
         let merk_proof_bytes = match &layer_proof.merk_proof {
             ProofBytes::Merk(bytes) => bytes,
@@ -525,6 +536,7 @@ impl GroveDb {
                                                 result,
                                                 last_parent_tree_type,
                                                 options,
+                                                current_depth + 1,
                                                 grove_version,
                                             )?
                                         }
@@ -1273,7 +1285,7 @@ impl GroveDb {
         Ok(positions)
     }
 
-    fn verify_layer_proof<T>(
+    pub(crate) fn verify_layer_proof<T>(
         layer_proof: &MerkOnlyLayerProof,
         prove_options: &ProveOptions,
         query: &PathQuery,
@@ -1282,12 +1294,19 @@ impl GroveDb {
         result: &mut Vec<T>,
         last_parent_tree_type: &mut Option<TreeFeatureType>,
         options: &VerifyOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "proof verification exceeded maximum depth limit".to_string(),
+            ));
+        }
         check_grovedb_v0!(
             "verify_layer_proof",
             grove_version
@@ -1431,6 +1450,7 @@ impl GroveDb {
                                         result,
                                         last_parent_tree_type,
                                         options,
+                                        current_depth + 1,
                                         grove_version,
                                     )?;
 

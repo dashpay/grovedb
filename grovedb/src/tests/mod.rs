@@ -29,6 +29,7 @@ mod mmr_tree_tests;
 mod operations_coverage_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
+mod proof_depth_limit_tests;
 mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;
