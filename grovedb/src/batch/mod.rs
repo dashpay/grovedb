@@ -5601,6 +5601,335 @@ mod tests {
         }
     }
 
+    // ===================================================================
+    // InsertIfNotExists and InsertWithKnownToNotAlreadyExist tests
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_if_not_exists_succeeds_for_new_key() {
+        // InsertIfNotExists should succeed when the key does not exist.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"new_key".to_vec(),
+            Element::new_item(b"value".to_vec()),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists should succeed for new key");
+
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"new_key", None, grove_version)
+            .unwrap()
+            .expect("get inserted item");
+        assert_eq!(result, Element::new_item(b"value".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_errors_when_key_exists() {
+        // InsertIfNotExists (with error_if_exists=true) should fail when key exists.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Try to insert at the same key with insert_if_not_exists
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+
+        assert!(
+            result.is_err(),
+            "insert_if_not_exists should fail when key exists, got: {:?}",
+            result,
+        );
+
+        // Original value should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"existing", None, grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_or_skip_silently_skips() {
+        // InsertIfNotExists with error_if_exists=false should silently skip
+        // when the key already exists.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Use insert_if_not_exists_or_skip (error_if_exists=false)
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists_or_skip should succeed (skip)");
+
+        // Original value should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"existing", None, grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_only_known_to_not_already_exist() {
+        // InsertWithKnownToNotAlreadyExist should succeed for a new key.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![TEST_LEAF.to_vec()],
+                b"brand_new".to_vec(),
+                Element::new_item(b"data".to_vec()),
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_only_known_to_not_already_exist should succeed");
+
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"brand_new", None, grove_version)
+            .unwrap()
+            .expect("get inserted item");
+        assert_eq!(result, Element::new_item(b"data".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_with_flags_update() {
+        // Test InsertIfNotExists through the apply_batch_with_element_flags_update
+        // code path (with element flags function).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"flagged",
+            Element::new_item(b"original".to_vec()),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Try insert_if_not_exists with element flags (uses the flags update path)
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"flagged".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        let batch_options = Some(BatchApplyOptions {
+            validate_insertion_does_not_override: false,
+            ..Default::default()
+        });
+
+        let result = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                batch_options,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap();
+
+        assert!(
+            result.is_err(),
+            "insert_if_not_exists via flags update should fail when key exists: {:?}",
+            result,
+        );
+
+        // Original should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"flagged", Some(&tx), grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_or_skip_with_flags_update() {
+        // Test InsertIfNotExists (skip mode) through the flags update path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"flagged2",
+            Element::new_item(b"original".to_vec()),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Use insert_if_not_exists_or_skip with element flags
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"flagged2".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        let batch_options = Some(BatchApplyOptions {
+            validate_insertion_does_not_override: false,
+            ..Default::default()
+        });
+
+        db.apply_batch_with_element_flags_update(
+            ops,
+            batch_options,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert_if_not_exists_or_skip via flags update should succeed (skip)");
+
+        // Original should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"flagged2", Some(&tx), grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_new_key_with_flags_update() {
+        // Test InsertIfNotExists for a new key through the flags update path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"new_flagged".to_vec(),
+            Element::new_item(b"fresh".to_vec()),
+        )];
+
+        let batch_options = Some(BatchApplyOptions {
+            validate_insertion_does_not_override: false,
+            ..Default::default()
+        });
+
+        db.apply_batch_with_element_flags_update(
+            ops,
+            batch_options,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert_if_not_exists should succeed for new key via flags update");
+
+        let val = db
+            .get(
+                [TEST_LEAF].as_ref(),
+                b"new_flagged",
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("get new item");
+        assert_eq!(val, Element::new_item(b"fresh".to_vec()));
+    }
+
+    // ===================================================================
+    // Debug formatting tests for new op variants
+    // ===================================================================
+
+    #[test]
+    fn test_debug_format_insert_if_not_exists_ops() {
+        // Verify Debug formatting covers the new InsertIfNotExists variants
+        let op_error = QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op_error);
+        assert!(
+            debug_str.contains("Insert If Not Exists (error on existing)"),
+            "unexpected debug format: {}",
+            debug_str,
+        );
+
+        let op_skip = QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op_skip);
+        assert!(
+            debug_str.contains("Insert If Not Exists (skip on existing)"),
+            "unexpected debug format: {}",
+            debug_str,
+        );
+
+        let op_known = QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op_known);
+        assert!(
+            debug_str.contains("Insert With Known To Not Already Exist"),
+            "unexpected debug format: {}",
+            debug_str,
+        );
+    }
+
     #[test]
     fn test_batch_rejects_key_longer_than_255_bytes() {
         let grove_version = GroveVersion::latest();
