@@ -1,4 +1,16 @@
 //! Delete operations and costs
+//!
+//! # Dangling References
+//!
+//! GroveDB does **not** track backward (incoming) references. When an element
+//! is deleted, any existing [`Reference`](crate::Element::Reference) elements
+//! that point to it become *dangling*. Attempting to follow a dangling
+//! reference will return
+//! [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound)
+//! rather than incorrect data, so the failure mode is safe.
+//!
+//! Callers are responsible for ensuring that all references to an element are
+//! removed before (or atomically with) the deletion of that element.
 
 #[cfg(feature = "estimated_costs")]
 mod average_case;
@@ -103,6 +115,16 @@ impl DeleteOptions {
 #[cfg(feature = "minimal")]
 impl GroveDb {
     /// Delete an element at a specified subtree path and key.
+    ///
+    /// # Dangling references
+    ///
+    /// This operation does **not** check for incoming references. If other
+    /// elements hold [`Reference`](crate::Element::Reference) paths that point
+    /// to the deleted element, those references become dangling. Following a
+    /// dangling reference will return
+    /// [`Error::CorruptedReferencePathKeyNotFound`](crate::Error::CorruptedReferencePathKeyNotFound),
+    /// not incorrect data. Callers must manage reference lifecycle and remove
+    /// or update any references to this element before deleting it.
     pub fn delete<'b, B, P>(
         &self,
         path: P,
@@ -156,8 +178,15 @@ impl GroveDb {
         tx.commit_local().wrap_with_cost(cost)
     }
 
-    /// Delete all elements in a specified subtree
-    /// Returns if we successfully cleared the subtree
+    /// Delete all elements in a specified subtree.
+    /// Returns if we successfully cleared the subtree.
+    ///
+    /// # Dangling references
+    ///
+    /// This operation does **not** check for incoming references. Any
+    /// [`Reference`](crate::Element::Reference) elements elsewhere in the
+    /// database that point to elements within the cleared subtree will become
+    /// dangling. See the [module-level documentation](self) for details.
     pub fn clear_subtree<'b, B, P>(
         &self,
         path: P,
@@ -318,7 +347,14 @@ impl GroveDb {
         tx.commit_local().map(|_| true).wrap_with_cost(cost)
     }
 
-    /// Delete element with sectional storage function
+    /// Delete element with sectional storage function.
+    ///
+    /// # Dangling references
+    ///
+    /// This operation does **not** check for incoming references. Any
+    /// [`Reference`](crate::Element::Reference) elements that point to the
+    /// deleted element will become dangling. See the
+    /// [module-level documentation](self) for details.
     pub fn delete_with_sectional_storage_function<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
@@ -390,7 +426,14 @@ impl GroveDb {
         tx.commit_local().wrap_with_cost(cost)
     }
 
-    /// Delete if an empty tree
+    /// Delete if an empty tree.
+    ///
+    /// # Dangling references
+    ///
+    /// This operation does **not** check for incoming references. Any
+    /// [`Reference`](crate::Element::Reference) elements that point to the
+    /// deleted tree will become dangling. See the
+    /// [module-level documentation](self) for details.
     pub fn delete_if_empty_tree<'b, B, P>(
         &self,
         path: P,
@@ -500,7 +543,14 @@ impl GroveDb {
         )
     }
 
-    /// Delete operation for delete internal
+    /// Delete operation for delete internal.
+    ///
+    /// # Dangling references
+    ///
+    /// This operation does **not** check for incoming references. Any
+    /// [`Reference`](crate::Element::Reference) elements that point to the
+    /// deleted element will become dangling. See the
+    /// [module-level documentation](self) for details.
     pub fn delete_operation_for_delete_internal<B: AsRef<[u8]>>(
         &self,
         path: SubtreePath<B>,
@@ -907,6 +957,7 @@ mod tests {
 
     use crate::{
         operations::delete::{delete_up_tree::DeleteUpTreeOptions, ClearOptions, DeleteOptions},
+        reference_path::ReferencePathType,
         tests::{
             common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF,
         },
@@ -1872,5 +1923,88 @@ mod tests {
 
         let root_hash_after_clear = db.root_hash(None, grove_version).unwrap().unwrap();
         assert_ne!(root_hash_before_clear, root_hash_after_clear);
+    }
+
+    /// Documents known behavior: deleting a referenced element leaves a
+    /// dangling reference.  Following the dangling reference must return
+    /// `CorruptedReferencePathKeyNotFound` (safe failure), never wrong data.
+    #[test]
+    fn test_delete_referenced_element_leaves_dangling_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Step 1: Insert an item that will be referenced.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target_item",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful target item insert");
+
+        // Step 2: Insert a reference pointing to the item.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"ref_to_target",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"target_item".to_vec(),
+            ])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful reference insert");
+
+        // Sanity check: following the reference resolves to the target item.
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"ref_to_target", None, grove_version)
+            .unwrap()
+            .expect("expected successful get through reference");
+        assert_eq!(result, Element::new_item(b"hello".to_vec()));
+
+        // Step 3: Delete the target item without removing the reference first.
+        // GroveDB does not track backward references, so this succeeds.
+        db.delete(
+            [TEST_LEAF].as_ref(),
+            b"target_item",
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("successful delete of referenced item");
+
+        // Step 4: The reference still exists in the database.
+        let raw_ref = db
+            .get_raw(
+                [TEST_LEAF].as_ref().into(),
+                b"ref_to_target",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("reference element should still exist");
+        assert!(
+            matches!(raw_ref, Element::Reference(..)),
+            "expected a Reference element, got {:?}",
+            raw_ref
+        );
+
+        // Step 5: Following the now-dangling reference must return
+        // CorruptedReferencePathKeyNotFound, NOT wrong data.
+        let err = db
+            .get([TEST_LEAF].as_ref(), b"ref_to_target", None, grove_version)
+            .unwrap()
+            .expect_err("expected error when following dangling reference");
+        assert!(
+            matches!(err, Error::CorruptedReferencePathKeyNotFound(_)),
+            "expected CorruptedReferencePathKeyNotFound, got {:?}",
+            err
+        );
     }
 }
