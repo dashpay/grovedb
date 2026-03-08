@@ -1470,6 +1470,9 @@ where
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
+        // Cap recursion depth to MAX_REFERENCE_HOPS to prevent excessive stack
+        // depth even if the user-provided element_max_reference_hop is larger.
+        let recursions_allowed = recursions_allowed.min(MAX_REFERENCE_HOPS as u8);
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
         }
@@ -5309,5 +5312,104 @@ mod tests {
         db.apply_batch(ops, None, Some(&tx), grove_version)
             .unwrap()
             .expect("batch with 255-byte key should succeed");
+    }
+
+    #[test]
+    fn test_batch_reference_hop_count_capped_to_max() {
+        // Audit L2: Verify that even if a reference specifies
+        // max_reference_hop = Some(255), the effective recursion depth is
+        // capped to MAX_REFERENCE_HOPS (10).
+        //
+        // We build a chain of MAX_REFERENCE_HOPS + 1 references (11 hops)
+        // ending at an item.  With the cap enforced, this should fail with
+        // ReferenceLimit because 10 < 11.  Without the cap, 255 >= 11 would
+        // allow all hops to succeed.
+        use crate::operations::get::MAX_REFERENCE_HOPS;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let chain_len = MAX_REFERENCE_HOPS + 1; // 11 references before the item
+        let mut batch = Vec::new();
+
+        // Insert the base item that the chain ultimately points to.
+        batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"item".to_vec(),
+            Element::new_item(b"value".to_vec()),
+        ));
+
+        // Build chain: ref_0 -> ref_1 -> ... -> ref_{chain_len-1} -> item
+        // ref_{chain_len-1} points to "item".
+        // ref_i points to ref_{i+1} for i < chain_len-1.
+        for i in (0..chain_len).rev() {
+            let key = format!("ref_{}", i).into_bytes();
+            let target_key = if i == chain_len - 1 {
+                b"item".to_vec()
+            } else {
+                format!("ref_{}", i + 1).into_bytes()
+            };
+
+            // Only the first reference in the chain (ref_0) carries the
+            // user-specified hop limit of 255.  The others use None
+            // (which defaults to MAX_REFERENCE_HOPS inside the batch
+            // resolution code).
+            let max_hops = if i == 0 { Some(255u8) } else { None };
+
+            batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                key,
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), target_key]),
+                    max_hops,
+                ),
+            ));
+        }
+
+        // With the cap in place, the batch should fail because 11 hops
+        // exceed the capped limit of MAX_REFERENCE_HOPS (10).
+        let result = db.apply_batch(batch, None, None, grove_version).unwrap();
+        assert!(
+            matches!(result, Err(Error::ReferenceLimit)),
+            "expected ReferenceLimit error due to hop cap, got: {:?}",
+            result,
+        );
+
+        // Verify that a chain of exactly MAX_REFERENCE_HOPS still succeeds
+        // with max_reference_hop = Some(255), proving the cap allows up to
+        // MAX_REFERENCE_HOPS hops.
+        let db = make_test_grovedb(grove_version);
+        let ok_chain_len = MAX_REFERENCE_HOPS; // 10 references before the item
+        let mut batch = Vec::new();
+
+        batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"ok_item".to_vec(),
+            Element::new_item(b"ok_value".to_vec()),
+        ));
+
+        for i in (0..ok_chain_len).rev() {
+            let key = format!("ok_ref_{}", i).into_bytes();
+            let target_key = if i == ok_chain_len - 1 {
+                b"ok_item".to_vec()
+            } else {
+                format!("ok_ref_{}", i + 1).into_bytes()
+            };
+
+            let max_hops = if i == 0 { Some(255u8) } else { None };
+
+            batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                key,
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), target_key]),
+                    max_hops,
+                ),
+            ));
+        }
+
+        db.apply_batch(batch, None, None, grove_version)
+            .unwrap()
+            .expect("chain of exactly MAX_REFERENCE_HOPS with hop cap should succeed");
     }
 }
