@@ -270,74 +270,15 @@ impl Link {
         not_prefixed_key_len + HASH_LENGTH_U32 + 4 + sum_tree_cost
     }
 
-    /// The encoding cost is always 8 bytes for the sum instead of a varint
+    /// Returns the actual encoded size of this link in bytes.
+    ///
+    /// This delegates to `encoding_length()` to ensure consistency with
+    /// `encode_into()`. Aggregate data values (Sum, Count, ProvableCount, etc.)
+    /// are varint-encoded, so their size depends on the actual value, not a
+    /// fixed byte width.
     #[inline]
     pub fn encoding_cost(&self) -> Result<usize> {
-        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
-
-        Ok(match self {
-            Link::Reference {
-                key,
-                aggregate_data,
-                ..
-            } => match aggregate_data {
-                AggregateData::NoAggregateData => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
-                AggregateData::Count(_)
-                | AggregateData::Sum(_)
-                | AggregateData::ProvableCount(_) => {
-                    // 1 for key len
-                    // key_len for keys
-                    // 32 for hash
-                    // 2 for child heights
-                    // 1 to represent presence of sum value
-                    //    if above is 1, then
-                    //    1 for sum len
-                    //    sum_len for sum vale
-                    key.len() + 44 // 1 + 32 + 2 + 1 + 8
-                }
-                AggregateData::BigSum(_)
-                | AggregateData::CountAndSum(..)
-                | AggregateData::ProvableCountAndSum(..) => {
-                    // 1 for key len
-                    // key_len for keys
-                    // 32 for hash
-                    // 2 for child heights
-                    // 1 to represent presence of sum value
-                    //    if above is 1, then
-                    //    1 for sum len
-                    //    sum_len for sum vale
-                    key.len() + 52 // 1 + 32 + 2 + 1 + 16
-                }
-            },
-            Link::Modified { .. } => {
-                return Err(ed::Error::IOError(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "no encoding for Link::Modified",
-                )))
-            }
-            Link::Uncommitted {
-                tree,
-                aggregate_data,
-                ..
-            }
-            | Link::Loaded {
-                tree,
-                aggregate_data,
-                ..
-            } => match aggregate_data {
-                AggregateData::NoAggregateData => tree.key().len() + 36, // 1 + 32 + 2 + 1,
-                AggregateData::Count(_)
-                | AggregateData::Sum(_)
-                | AggregateData::ProvableCount(_) => {
-                    tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
-                }
-                AggregateData::BigSum(_)
-                | AggregateData::CountAndSum(..)
-                | AggregateData::ProvableCountAndSum(..) => {
-                    tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
-                }
-            },
-        })
+        self.encoding_length()
     }
 }
 
@@ -868,5 +809,78 @@ mod test {
         ];
         let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
         assert_eq!(link.aggregate_data(), AggregateData::NoAggregateData);
+    }
+
+    #[test]
+    fn encoding_cost_matches_encoding_length_for_all_aggregate_types() {
+        // This test verifies that encoding_cost() matches encoding_length() and
+        // the actual encoded byte length for all aggregate data variants.
+        // Previously, encoding_cost() used fixed 8-byte sizes for varint-encoded
+        // aggregate data, causing mismatches with the actual encoding.
+
+        let key = vec![1, 2, 3];
+        let hash = [55; 32];
+        let child_heights = (5, 6);
+
+        let test_cases: Vec<(&str, AggregateData)> = vec![
+            ("NoAggregateData", AggregateData::NoAggregateData),
+            ("Sum(small)", AggregateData::Sum(50)),
+            ("Sum(large)", AggregateData::Sum(i64::MAX)),
+            ("Sum(negative)", AggregateData::Sum(-1)),
+            ("BigSum(small)", AggregateData::BigSum(50)),
+            ("BigSum(large)", AggregateData::BigSum(i128::MAX)),
+            ("Count(small)", AggregateData::Count(50)),
+            ("Count(large)", AggregateData::Count(u64::MAX)),
+            ("CountAndSum(small)", AggregateData::CountAndSum(1, 1)),
+            (
+                "CountAndSum(large)",
+                AggregateData::CountAndSum(u64::MAX, i64::MIN),
+            ),
+            ("ProvableCount(small)", AggregateData::ProvableCount(50)),
+            (
+                "ProvableCount(large)",
+                AggregateData::ProvableCount(u64::MAX),
+            ),
+            (
+                "ProvableCountAndSum(small)",
+                AggregateData::ProvableCountAndSum(1, 1),
+            ),
+            (
+                "ProvableCountAndSum(large)",
+                AggregateData::ProvableCountAndSum(u64::MAX, i64::MIN),
+            ),
+        ];
+
+        for (label, aggregate_data) in test_cases {
+            let link = Link::Reference {
+                key: key.clone(),
+                aggregate_data,
+                child_heights,
+                hash,
+            };
+
+            let encoding_cost = link
+                .encoding_cost()
+                .unwrap_or_else(|_| panic!("encoding_cost failed for {}", label));
+            let encoding_length = link
+                .encoding_length()
+                .unwrap_or_else(|_| panic!("encoding_length failed for {}", label));
+
+            let mut bytes = vec![];
+            link.encode_into(&mut bytes)
+                .unwrap_or_else(|_| panic!("encode_into failed for {}", label));
+            let actual_len = bytes.len();
+
+            assert_eq!(
+                encoding_cost, encoding_length,
+                "encoding_cost != encoding_length for {}",
+                label
+            );
+            assert_eq!(
+                encoding_cost, actual_len,
+                "encoding_cost != actual encoded length for {}",
+                label
+            );
+        }
     }
 }
