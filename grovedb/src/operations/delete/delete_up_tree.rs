@@ -59,6 +59,13 @@ impl DeleteUpTreeOptions {
 impl GroveDb {
     /// Delete up tree while empty will delete nodes while they are empty up a
     /// tree.
+    ///
+    /// # Dangling references
+    ///
+    /// This operation does **not** check for incoming references. Any
+    /// [`Reference`](crate::Element::Reference) elements that point to
+    /// deleted elements will become dangling. See the
+    /// [module-level documentation](super) for details.
     pub fn delete_up_tree_while_empty<'b, B, P>(
         &self,
         path: P,
