@@ -73,7 +73,7 @@ impl GroveOp {
                 grove_version,
             ),
             GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertOnlyKnownToNotExist { element } => {
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 GroveDb::average_case_merk_insert_element(
                     key,
                     element,
@@ -83,7 +83,7 @@ impl GroveOp {
                 )
             }
             GroveOp::InsertIfNotExists { element } => {
-                // Same insert cost as InsertOnlyKnownToNotExist, plus an
+                // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
                 // additional seek to check whether the key already exists.
                 use grovedb_storage::worst_case_costs::WorstKeyLength;
                 GroveDb::average_case_merk_insert_element(

@@ -148,7 +148,7 @@ where
 
             let op_cost = OperationCost::default();
             let op_result = match &grove_op {
-                GroveOp::InsertOnlyKnownToNotExist { element }
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element }
                 | GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }

@@ -118,7 +118,7 @@ mod tests {
                 // 8
                 element: dummy_element.clone(),
             },
-            GroveOp::InsertOnlyKnownToNotExist {
+            GroveOp::InsertWithKnownToNotAlreadyExist {
                 // 9
                 element: dummy_element.clone(),
             },
@@ -531,7 +531,7 @@ mod tests {
         let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
         assert!(
             !results.is_empty(),
-            "InsertOnlyKnownToNotExist under a deleted path should be flagged"
+            "InsertWithKnownToNotAlreadyExist under a deleted path should be flagged"
         );
     }
 
@@ -829,8 +829,8 @@ mod tests {
     // code paths that are not reached by existing tests.
     // ===================================================================
 
-    /// Reference to an item being InsertOnlyKnownToNotExist'd in the same batch.
-    /// Exercises the InsertOnlyKnownToNotExist { Item } branch (L1469-1476).
+    /// Reference to an item being InsertWithKnownToNotAlreadyExist'd in the same batch.
+    /// Exercises the InsertWithKnownToNotAlreadyExist { Item } branch (L1469-1476).
     #[test]
     fn test_batch_ref_to_insert_only_item() {
         let grove_version = GroveVersion::latest();
@@ -854,7 +854,7 @@ mod tests {
 
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
-            .expect("batch ref to InsertOnlyKnownToNotExist item");
+            .expect("batch ref to InsertWithKnownToNotAlreadyExist item");
 
         // Verify the reference resolves
         let result = db
@@ -864,9 +864,9 @@ mod tests {
         assert_eq!(result, Element::new_item(b"hello".to_vec()));
     }
 
-    /// Reference chain through an InsertOnlyKnownToNotExist reference in the same batch.
-    /// ref_a → ref_b (InsertOnlyKnownToNotExist) → existing item on disk.
-    /// Exercises the InsertOnlyKnownToNotExist { Reference } branch (L1478-1490).
+    /// Reference chain through an InsertWithKnownToNotAlreadyExist reference in the same batch.
+    /// ref_a → ref_b (InsertWithKnownToNotAlreadyExist) → existing item on disk.
+    /// Exercises the InsertWithKnownToNotAlreadyExist { Reference } branch (L1478-1490).
     #[test]
     fn test_batch_ref_to_insert_only_reference_chain() {
         let grove_version = GroveVersion::latest();
@@ -884,7 +884,7 @@ mod tests {
         .unwrap()
         .expect("insert base item");
 
-        // Batch: InsertOnlyKnownToNotExist a reference to base_item, then another ref to that
+        // Batch: InsertWithKnownToNotAlreadyExist a reference to base_item, then another ref to that
         let ops = vec![
             QualifiedGroveDbOp::insert_only_op(
                 vec![TEST_LEAF.to_vec()],
@@ -906,7 +906,7 @@ mod tests {
 
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
-            .expect("batch ref chain through InsertOnlyKnownToNotExist reference");
+            .expect("batch ref chain through InsertWithKnownToNotAlreadyExist reference");
 
         let result = db
             .get([TEST_LEAF].as_ref(), b"ref_a", None, grove_version)
@@ -1449,7 +1449,7 @@ mod tests {
 
     // ===================================================================
     // Group 14: follow_reference_get_value_hash — ref pointing to a
-    //           tree in an InsertOnlyKnownToNotExist/Replace/Patch op (L1492-1506)
+    //           tree in an InsertWithKnownToNotAlreadyExist/Replace/Patch op (L1492-1506)
     // ===================================================================
 
     #[test]

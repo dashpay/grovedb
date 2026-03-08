@@ -369,7 +369,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
-        // InsertOnlyKnownToNotExist should succeed when key does not exist
+        // InsertWithKnownToNotAlreadyExist should succeed when key does not exist
         let ops = vec![QualifiedGroveDbOp::insert_only_op(
             vec![TEST_LEAF.to_vec()],
             b"insert_only_key".to_vec(),
@@ -895,13 +895,13 @@ mod tests {
 
     #[test]
     fn test_grove_op_ordering() {
-        // DeleteTree = 0, Delete = 2, InsertOrReplace = 8, InsertOnlyKnownToNotExist = 9, InsertIfNotExists = 10
+        // DeleteTree = 0, Delete = 2, InsertOrReplace = 8, InsertWithKnownToNotAlreadyExist = 9, InsertIfNotExists = 10
         let delete_tree = GroveOp::DeleteTree(TreeType::NormalTree);
         let delete = GroveOp::Delete;
         let insert_or_replace = GroveOp::InsertOrReplace {
             element: Element::new_item(b"test".to_vec()),
         };
-        let insert_only = GroveOp::InsertOnlyKnownToNotExist {
+        let insert_only = GroveOp::InsertWithKnownToNotAlreadyExist {
             element: Element::new_item(b"test".to_vec()),
         };
         let insert_if_not_exists = GroveOp::InsertIfNotExists {
@@ -918,11 +918,11 @@ mod tests {
         );
         assert!(
             insert_or_replace < insert_only,
-            "InsertOrReplace (8) should be less than InsertOnlyKnownToNotExist (9)"
+            "InsertOrReplace (8) should be less than InsertWithKnownToNotAlreadyExist (9)"
         );
         assert!(
             insert_only < insert_if_not_exists,
-            "InsertOnlyKnownToNotExist (9) should be less than InsertIfNotExists (10)"
+            "InsertWithKnownToNotAlreadyExist (9) should be less than InsertIfNotExists (10)"
         );
     }
 
@@ -1798,7 +1798,7 @@ mod tests {
     }
 
     // ===================================================================
-    // 34. Batch: insert tree then items under it, using InsertOnlyKnownToNotExist
+    // 34. Batch: insert tree then items under it, using InsertWithKnownToNotAlreadyExist
     // ===================================================================
 
     #[test]
@@ -1806,8 +1806,8 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
-        // InsertOnlyKnownToNotExist for tree and items. The tree insert triggers the
-        // occupied-entry propagation path for InsertOnlyKnownToNotExist variant.
+        // InsertWithKnownToNotAlreadyExist for tree and items. The tree insert triggers the
+        // occupied-entry propagation path for InsertWithKnownToNotAlreadyExist variant.
         let ops = vec![
             QualifiedGroveDbOp::insert_only_op(vec![], b"new_tree".to_vec(), Element::empty_tree()),
             QualifiedGroveDbOp::insert_only_op(

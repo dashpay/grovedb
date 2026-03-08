@@ -167,7 +167,7 @@ impl NonMerkTreeMeta {
 
 /// Operations for batch processing.
 ///
-/// User-facing variants: `InsertOnlyKnownToNotExist`, `InsertIfNotExists`,
+/// User-facing variants: `InsertWithKnownToNotAlreadyExist`, `InsertIfNotExists`,
 /// `InsertOrReplace`, `Replace`, `Patch`, `RefreshReference`, `Delete`,
 /// `DeleteTree`, `CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
 /// `DenseTreeInsert`.
@@ -199,7 +199,7 @@ pub enum GroveOp {
     /// Inserts an element that the caller knows does not yet exist.
     /// This is a performance optimization hint — no existence check is
     /// performed. The caller asserts the key is new.
-    InsertOnlyKnownToNotExist {
+    InsertWithKnownToNotAlreadyExist {
         /// Element
         element: Element,
     },
@@ -230,7 +230,7 @@ pub enum GroveOp {
     /// **Internal only — do not construct directly.**
     /// Insert tree with root hash for standard Merk trees.
     ///
-    /// Created during batch propagation from an `InsertOrReplace`/`InsertOnlyKnownToNotExist`/`InsertIfNotExists`
+    /// Created during batch propagation from an `InsertOrReplace`/`InsertWithKnownToNotAlreadyExist`/`InsertIfNotExists`
     /// occupied entry when a child subtree's root hash is propagated upward.
     /// For non-Merk trees, see `InsertNonMerkTree`.
     ///
@@ -340,7 +340,7 @@ impl GroveOp {
             GroveOp::Replace { .. } => 6,
             GroveOp::Patch { .. } => 7,
             GroveOp::InsertOrReplace { .. } => 8,
-            GroveOp::InsertOnlyKnownToNotExist { .. } => 9,
+            GroveOp::InsertWithKnownToNotAlreadyExist { .. } => 9,
             GroveOp::InsertIfNotExists { .. } => 10,
             GroveOp::CommitmentTreeInsert { .. } => 11,
             GroveOp::MmrTreeAppend { .. } => 12,
@@ -569,7 +569,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
 
         let op_dbg = match &self.op {
             GroveOp::InsertOrReplace { element } => format!("Insert Or Replace {:?}", element),
-            GroveOp::InsertOnlyKnownToNotExist { element } => {
+            GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 format!("Insert Only Known To Not Exist {:?}", element)
             }
             GroveOp::InsertIfNotExists { element } => {
@@ -622,13 +622,25 @@ impl QualifiedGroveDbOp {
     /// An insert op using a known owned path and known key.
     /// The caller asserts the key is new — no existence check is performed.
     /// This is a performance optimization hint.
-    pub fn insert_only_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
+    pub fn insert_only_known_to_not_already_exist_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        element: Element,
+    ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: Some(KnownKey(key)),
-            op: GroveOp::InsertOnlyKnownToNotExist { element },
+            op: GroveOp::InsertWithKnownToNotAlreadyExist { element },
         }
+    }
+
+    #[deprecated(
+        note = "use insert_only_known_to_not_already_exist_op or insert_if_not_exists_op instead"
+    )]
+    /// Deprecated: use `insert_only_known_to_not_already_exist_op` instead.
+    pub fn insert_only_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
+        Self::insert_only_known_to_not_already_exist_op(path, key, element)
     }
 
     /// An insert op that checks if the key already exists and rejects
@@ -948,7 +960,7 @@ impl QualifiedGroveDbOp {
         let mut conflicts: HashMap<KeyInfoPath, Vec<usize>> = HashMap::new();
         for (idx, op) in ops.iter().enumerate() {
             match op.op {
-                GroveOp::InsertOnlyKnownToNotExist { .. }
+                GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                 | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
                 | GroveOp::Replace { .. }
@@ -1540,7 +1552,7 @@ where
                         }
                     }
                 }
-                GroveOp::InsertOnlyKnownToNotExist { element }
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 | GroveOp::InsertIfNotExists { element } => match element {
                     Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
@@ -1706,7 +1718,7 @@ where
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
-                op_ref @ (GroveOp::InsertOnlyKnownToNotExist { .. }
+                op_ref @ (GroveOp::InsertWithKnownToNotAlreadyExist { .. }
                 | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
                 | GroveOp::Replace { .. }
@@ -1714,7 +1726,7 @@ where
                     let is_insert_if_not_exists =
                         matches!(op_ref, GroveOp::InsertIfNotExists { .. });
                     let element = match op_ref {
-                        GroveOp::InsertOnlyKnownToNotExist { element }
+                        GroveOp::InsertWithKnownToNotAlreadyExist { element }
                         | GroveOp::InsertIfNotExists { element }
                         | GroveOp::InsertOrReplace { element }
                         | GroveOp::Replace { element }
@@ -2444,7 +2456,9 @@ impl GroveDb {
                                                     .wrap_with_cost(cost);
                                                 }
                                                 GroveOp::InsertOrReplace { element }
-                                                | GroveOp::InsertOnlyKnownToNotExist { element }
+                                                | GroveOp::InsertWithKnownToNotAlreadyExist {
+                                                    element,
+                                                }
                                                 | GroveOp::InsertIfNotExists { element }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::Patch { element, .. } => {
@@ -2822,7 +2836,7 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::InsertOnlyKnownToNotExist { element } => {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
