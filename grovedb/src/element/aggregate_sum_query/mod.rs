@@ -1,6 +1,8 @@
 //! Query
 //! Implements functions in Element for querying
 
+#[cfg(feature = "minimal")]
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::element::SumValue;
@@ -427,8 +429,14 @@ impl ElementAggregateSumQueryExtensions for Element {
 
             let tx = TxRef::new(args.storage, args.transaction);
             let mut hops_left = MAX_AGGREGATE_REFERENCE_HOPS;
+            let mut visited: HashSet<Vec<Vec<u8>>> = HashSet::new();
 
             loop {
+                if visited.contains(&current_qualified_path) {
+                    return Err(Error::CyclicReference).wrap_with_cost(cost);
+                }
+                visited.insert(current_qualified_path.clone());
+
                 let Some((key, ref_path_slices)) = current_qualified_path.split_last() else {
                     return Err(Error::CorruptedData("empty reference path".to_string()))
                         .wrap_with_cost(cost);

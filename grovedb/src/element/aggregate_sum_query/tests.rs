@@ -1,14 +1,19 @@
+use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_merk::proofs::query::AggregateSumQuery;
 use grovedb_merk::proofs::query::QueryItem;
+use grovedb_merk::tree::NULL_HASH;
+use grovedb_path::SubtreePath;
+use grovedb_storage::Storage;
 use grovedb_version::version::GroveVersion;
 
 use crate::element::aggregate_sum_query::{
     AggregateSumQueryOptions, ElementAggregateSumQueryExtensions,
 };
+use crate::merk_cache::MerkCache;
 use crate::reference_path::ReferencePathType;
 use crate::{
     tests::{make_test_sum_tree_grovedb, TEST_LEAF},
-    AggregateSumPathQuery, Element,
+    AggregateSumPathQuery, Element, Error,
 };
 
 #[test]
@@ -2959,5 +2964,149 @@ fn test_descending_reference_followed() {
             (b"r".to_vec(), 42),
             (b"a".to_vec(), 1),
         ]
+    );
+}
+
+#[test]
+fn test_cyclic_reference_detected_in_aggregate_sum_query() {
+    // Two references form a cycle: ref_a -> ref_b -> ref_a.
+    // Before the fix, this would waste reads cycling through hops until hitting
+    // MAX_AGGREGATE_REFERENCE_HOPS and returning ReferenceLimit.
+    // After the fix, the visited set detects the cycle immediately and returns
+    // CyclicReference with a more accurate error.
+    let grove_version = GroveVersion::latest();
+    let db = make_test_sum_tree_grovedb(grove_version);
+
+    let tx = db.start_transaction();
+
+    // Use MerkCache to insert cyclic references at the Merk level,
+    // bypassing GroveDB-level validation that would reject them.
+    {
+        let cache = MerkCache::new(&db, &tx, grove_version);
+        let path: SubtreePath<&[u8]> = SubtreePath::from(&[TEST_LEAF] as &[&[u8]]);
+
+        // ref_a points to [TEST_LEAF, "ref_b"]
+        let ref_a = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"ref_b".to_vec(),
+        ]));
+
+        // ref_b points to [TEST_LEAF, "ref_a"]
+        let ref_b = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"ref_a".to_vec(),
+        ]));
+
+        let mut merk = cache
+            .get_merk(path.derive_owned())
+            .unwrap()
+            .expect("should open merk");
+
+        merk.for_merk(|m| {
+            ref_a
+                .insert_reference(m, b"ref_a", NULL_HASH, None, grove_version)
+                .unwrap()
+                .expect("should insert ref_a at merk level");
+        });
+
+        merk.for_merk(|m| {
+            ref_b
+                .insert_reference(m, b"ref_b", NULL_HASH, None, grove_version)
+                .unwrap()
+                .expect("should insert ref_b at merk level");
+        });
+
+        drop(merk);
+
+        // Commit the batch to make the writes visible in the transaction
+        let batch = cache.into_batch().unwrap().expect("should produce batch");
+        db.db
+            .commit_multi_context_batch(*batch, Some(&tx))
+            .unwrap()
+            .expect("should commit batch");
+    }
+
+    // Query for ref_a which forms a cycle: ref_a -> ref_b -> ref_a -> ...
+    let aggregate_sum_query = AggregateSumQuery::new_single_key(b"ref_a".to_vec(), 100);
+    let aggregate_sum_path_query = AggregateSumPathQuery {
+        path: vec![TEST_LEAF.to_vec()],
+        aggregate_sum_query,
+    };
+
+    let result = Element::get_aggregate_sum_query(
+        &db.db,
+        &aggregate_sum_path_query,
+        AggregateSumQueryOptions::default(),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap();
+
+    assert!(
+        matches!(result, Err(Error::CyclicReference)),
+        "expected CyclicReference error for cyclic ref_a -> ref_b -> ref_a, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_self_referencing_element_detected_in_aggregate_sum_query() {
+    // A reference that points to itself: ref_self -> ref_self.
+    // The visited set should detect this immediately on the second iteration.
+    let grove_version = GroveVersion::latest();
+    let db = make_test_sum_tree_grovedb(grove_version);
+
+    let tx = db.start_transaction();
+
+    {
+        let cache = MerkCache::new(&db, &tx, grove_version);
+        let path: SubtreePath<&[u8]> = SubtreePath::from(&[TEST_LEAF] as &[&[u8]]);
+
+        // ref_self points to itself: [TEST_LEAF, "ref_self"]
+        let ref_self = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"ref_self".to_vec(),
+        ]));
+
+        let mut merk = cache
+            .get_merk(path.derive_owned())
+            .unwrap()
+            .expect("should open merk");
+
+        merk.for_merk(|m| {
+            ref_self
+                .insert_reference(m, b"ref_self", NULL_HASH, None, grove_version)
+                .unwrap()
+                .expect("should insert ref_self at merk level");
+        });
+
+        drop(merk);
+
+        let batch = cache.into_batch().unwrap().expect("should produce batch");
+        db.db
+            .commit_multi_context_batch(*batch, Some(&tx))
+            .unwrap()
+            .expect("should commit batch");
+    }
+
+    let aggregate_sum_query = AggregateSumQuery::new_single_key(b"ref_self".to_vec(), 100);
+    let aggregate_sum_path_query = AggregateSumPathQuery {
+        path: vec![TEST_LEAF.to_vec()],
+        aggregate_sum_query,
+    };
+
+    let result = Element::get_aggregate_sum_query(
+        &db.db,
+        &aggregate_sum_path_query,
+        AggregateSumQueryOptions::default(),
+        Some(&tx),
+        grove_version,
+    )
+    .unwrap();
+
+    assert!(
+        matches!(result, Err(Error::CyclicReference)),
+        "expected CyclicReference error for self-referencing element, got: {:?}",
+        result
     );
 }
