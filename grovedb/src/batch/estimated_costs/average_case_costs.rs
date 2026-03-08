@@ -84,7 +84,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::InsertIfNotExists { element } => {
+            GroveOp::InsertIfNotExists { element, .. } => {
                 // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
                 // additional seek to check whether the key already exists.
                 let estimated_element_size = match element.serialized_size(grove_version) {

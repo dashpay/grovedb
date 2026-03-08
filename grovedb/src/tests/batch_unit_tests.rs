@@ -125,6 +125,7 @@ mod tests {
             GroveOp::InsertIfNotExists {
                 // 10
                 element: dummy_element.clone(),
+                error_if_exists: true,
             },
             GroveOp::CommitmentTreeInsert {
                 // 11

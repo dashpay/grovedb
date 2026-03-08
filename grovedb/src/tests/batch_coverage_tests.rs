@@ -906,6 +906,7 @@ mod tests {
         };
         let insert_if_not_exists = GroveOp::InsertIfNotExists {
             element: Element::new_item(b"test".to_vec()),
+            error_if_exists: true,
         };
 
         assert!(
@@ -1595,6 +1596,7 @@ mod tests {
 
     #[test]
     fn test_insert_if_not_exists_debug_format() {
+        // error_if_exists = true (default)
         let op = QualifiedGroveDbOp::insert_if_not_exists_op(
             vec![b"path".to_vec()],
             b"key".to_vec(),
@@ -1602,8 +1604,20 @@ mod tests {
         );
         let debug_str = format!("{:?}", op);
         assert!(
-            debug_str.contains("Insert If Not Exists"),
-            "Debug output should contain 'Insert If Not Exists', got: {debug_str}"
+            debug_str.contains("Insert If Not Exists (error on existing)"),
+            "Debug output should contain 'Insert If Not Exists (error on existing)', got: {debug_str}"
+        );
+
+        // error_if_exists = false (skip)
+        let op_skip = QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str_skip = format!("{:?}", op_skip);
+        assert!(
+            debug_str_skip.contains("Insert If Not Exists (skip on existing)"),
+            "Debug output should contain 'Insert If Not Exists (skip on existing)', got: {debug_str_skip}"
         );
     }
 
@@ -1638,6 +1652,94 @@ mod tests {
             .unwrap()
             .expect("ref should resolve");
         assert_eq!(fetched, Element::new_item(b"hello".to_vec()));
+    }
+
+    // ===================================================================
+    // 30e. InsertIfNotExists: skip on existing (error_if_exists = false)
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_if_not_exists_skip_on_existing() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"skip_key",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original item");
+
+        // InsertIfNotExists with error_if_exists=false should silently skip
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"skip_key".to_vec(),
+            Element::new_item(b"should_be_ignored".to_vec()),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists with skip should succeed");
+
+        // The original element should still be there, not overwritten
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"skip_key", None, grove_version)
+            .unwrap()
+            .expect("element should still exist");
+        assert_eq!(
+            result,
+            Element::new_item(b"original".to_vec()),
+            "original value should be preserved"
+        );
+    }
+
+    // ===================================================================
+    // 30f. InsertIfNotExists: skip on existing via sequential (without-batching) path
+    // ===================================================================
+
+    #[test]
+    fn test_apply_operations_without_batching_insert_if_not_exists_skip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"skip_seq_key",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original item");
+
+        // InsertIfNotExists with error_if_exists=false via sequential path
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"skip_seq_key".to_vec(),
+            Element::new_item(b"should_be_ignored".to_vec()),
+        )];
+
+        db.apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists with skip should succeed on sequential path");
+
+        // The original element should still be there
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"skip_seq_key", None, grove_version)
+            .unwrap()
+            .expect("element should still exist");
+        assert_eq!(
+            result,
+            Element::new_item(b"original".to_vec()),
+            "original value should be preserved on sequential path"
+        );
     }
 
     // ===================================================================

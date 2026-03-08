@@ -204,11 +204,16 @@ pub enum GroveOp {
         element: Element,
     },
     /// Inserts an element only if the key does not already exist.
-    /// An existence check is performed; if the key is found the operation
-    /// is rejected with an error.
+    /// An existence check is performed; if the key is found the behaviour
+    /// depends on `error_if_exists`:
+    /// - `true`: the operation is rejected with an error (default).
+    /// - `false`: the insert is silently skipped.
     InsertIfNotExists {
         /// Element
         element: Element,
+        /// If true, return an error when the key already exists.
+        /// If false, silently skip the insert.
+        error_if_exists: bool,
     },
     /// Inserts or Replaces an element
     InsertOrReplace {
@@ -572,8 +577,15 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 format!("Insert With Known To Not Already Exist {:?}", element)
             }
-            GroveOp::InsertIfNotExists { element } => {
-                format!("Insert If Not Exists {:?}", element)
+            GroveOp::InsertIfNotExists {
+                element,
+                error_if_exists,
+            } => {
+                if *error_if_exists {
+                    format!("Insert If Not Exists (error on existing) {:?}", element)
+                } else {
+                    format!("Insert If Not Exists (skip on existing) {:?}", element)
+                }
             }
             GroveOp::Replace { element } => format!("Replace {:?}", element),
             GroveOp::Patch { element, .. } => format!("Patch {:?}", element),
@@ -650,7 +662,28 @@ impl QualifiedGroveDbOp {
         Self {
             path,
             key: Some(KnownKey(key)),
-            op: GroveOp::InsertIfNotExists { element },
+            op: GroveOp::InsertIfNotExists {
+                element,
+                error_if_exists: true,
+            },
+        }
+    }
+
+    /// An insert op that checks if the key already exists and silently
+    /// skips the insert when it does (no error).
+    pub fn insert_if_not_exists_or_skip_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        element: Element,
+    ) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: Some(KnownKey(key)),
+            op: GroveOp::InsertIfNotExists {
+                element,
+                error_if_exists: false,
+            },
         }
     }
 
@@ -1553,7 +1586,7 @@ where
                     }
                 }
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                | GroveOp::InsertIfNotExists { element } => match element {
+                | GroveOp::InsertIfNotExists { element, .. } => match element {
                     Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
                             cost,
@@ -1723,11 +1756,15 @@ where
                 | GroveOp::InsertOrReplace { .. }
                 | GroveOp::Replace { .. }
                 | GroveOp::Patch { .. }) => {
-                    let is_insert_if_not_exists =
-                        matches!(op_ref, GroveOp::InsertIfNotExists { .. });
+                    let (is_insert_if_not_exists, error_if_exists) = match &op_ref {
+                        GroveOp::InsertIfNotExists {
+                            error_if_exists, ..
+                        } => (true, *error_if_exists),
+                        _ => (false, false),
+                    };
                     let element = match op_ref {
                         GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                        | GroveOp::InsertIfNotExists { element }
+                        | GroveOp::InsertIfNotExists { element, .. }
                         | GroveOp::InsertOrReplace { element }
                         | GroveOp::Replace { element }
                         | GroveOp::Patch { element, .. } => element,
@@ -1889,7 +1926,10 @@ where
                                         grove_version,
                                     )
                                 );
-                                if !inserted {
+                                if !inserted
+                                    && (error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override)
+                                {
                                     return Err(Error::InvalidBatchOperation(
                                         "attempting to insert element that already exists",
                                     ))
@@ -2459,7 +2499,7 @@ impl GroveDb {
                                                 | GroveOp::InsertWithKnownToNotAlreadyExist {
                                                     element,
                                                 }
-                                                | GroveOp::InsertIfNotExists { element }
+                                                | GroveOp::InsertIfNotExists { element, .. }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::Patch { element, .. } => {
                                                     // Standard Merk trees
@@ -2857,7 +2897,10 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::InsertIfNotExists { element } => {
+                GroveOp::InsertIfNotExists {
+                    element,
+                    error_if_exists,
+                } => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
@@ -2866,22 +2909,35 @@ impl GroveDb {
                             "insert_if_not_exists op is missing a key",
                         ))
                     );
-                    let mut insert_options = options
-                        .clone()
-                        .map(|o| o.as_insert_options())
-                        .unwrap_or_default();
-                    insert_options.validate_insertion_does_not_override = true;
-                    cost_return_on_error!(
-                        &mut cost,
-                        self.insert(
-                            path_slices.as_slice(),
-                            key.as_slice(),
-                            element.to_owned(),
-                            Some(insert_options),
-                            transaction,
-                            grove_version,
-                        )
-                    );
+                    if error_if_exists {
+                        let mut insert_options = options
+                            .clone()
+                            .map(|o| o.as_insert_options())
+                            .unwrap_or_default();
+                        insert_options.validate_insertion_does_not_override = true;
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.insert(
+                                path_slices.as_slice(),
+                                key.as_slice(),
+                                element.to_owned(),
+                                Some(insert_options),
+                                transaction,
+                                grove_version,
+                            )
+                        );
+                    } else {
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.insert_if_not_exists(
+                                path_slices.as_slice(),
+                                key.as_slice(),
+                                element.to_owned(),
+                                transaction,
+                                grove_version,
+                            )
+                        );
+                    }
                 }
                 GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     let path_slices: Vec<&[u8]> =
