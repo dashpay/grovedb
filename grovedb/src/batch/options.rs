@@ -18,7 +18,28 @@ pub struct BatchApplyOptions {
     pub allow_deleting_non_empty_trees: bool,
     /// Deleting non empty trees returns error
     pub deleting_non_empty_trees_returns_error: bool,
-    /// Disable operation consistency check
+    /// Disable the operation consistency check that detects duplicate or
+    /// conflicting operations targeting the same `(path, key)` pair within a
+    /// batch.
+    ///
+    /// When this is `false` (the default), the batch system calls
+    /// [`QualifiedGroveDbOp::verify_consistency_of_operations`] before
+    /// applying and rejects the batch if any duplicates are found.
+    ///
+    /// # Warning -- silent last-op-wins behavior
+    ///
+    /// When set to `true`, duplicate operations on the same `(path, key)` are
+    /// **not** detected. Because the internal batch structure is a `BTreeMap`
+    /// keyed by `(path, key)`, inserting a second operation for an already-seen
+    /// key silently overwrites the first. The **last** operation encountered in
+    /// the input `Vec` wins, and the earlier operation is lost without any
+    /// error or warning.
+    ///
+    /// This is safe **only** when the caller has already guaranteed that the
+    /// operation list contains no conflicting entries for the same key, or
+    /// when the caller intentionally relies on last-op-wins semantics (e.g.,
+    /// an idempotent replay scenario). In all other cases, leave this set to
+    /// `false` to catch accidental duplicates early.
     pub disable_operation_consistency_check: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
