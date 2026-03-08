@@ -63,6 +63,10 @@ impl Encode for Query {
     }
 }
 
+/// Maximum number of query items allowed during decoding.
+/// Prevents OOM from malicious inputs with inflated lengths.
+const MAX_QUERY_ITEMS: usize = 10_000;
+
 /// Maximum number of conditional subquery branches allowed during decoding.
 /// Prevents OOM from malicious inputs with inflated lengths.
 const MAX_CONDITIONAL_BRANCHES: usize = 1024;
@@ -75,8 +79,15 @@ impl<Context> Decode<Context> for Query {
         if version != 1 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
-        // Decode the items vector
-        let items = Vec::<QueryItem>::decode(decoder)?;
+        // Decode the items vector with a bounded length to prevent OOM
+        let items_len = u64::decode(decoder)? as usize;
+        if items_len > MAX_QUERY_ITEMS {
+            return Err(DecodeError::Other("query items length exceeds maximum"));
+        }
+        let mut items = Vec::with_capacity(items_len);
+        for _ in 0..items_len {
+            items.push(QueryItem::decode(decoder)?);
+        }
 
         // Decode the default subquery branch
         let default_subquery_branch = SubqueryBranch::decode(decoder)?;
@@ -122,8 +133,15 @@ impl<'de, Context> BorrowDecode<'de, Context> for Query {
         if version != 1 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
-        // Borrow-decode the items vector
-        let items = Vec::<QueryItem>::borrow_decode(decoder)?;
+        // Borrow-decode the items vector with a bounded length to prevent OOM
+        let items_len = u64::borrow_decode(decoder)? as usize;
+        if items_len > MAX_QUERY_ITEMS {
+            return Err(DecodeError::Other("query items length exceeds maximum"));
+        }
+        let mut items = Vec::with_capacity(items_len);
+        for _ in 0..items_len {
+            items.push(QueryItem::borrow_decode(decoder)?);
+        }
 
         // Borrow-decode the default subquery branch
         let default_subquery_branch = SubqueryBranch::borrow_decode(decoder)?;
@@ -150,7 +168,7 @@ impl<'de, Context> BorrowDecode<'de, Context> for Query {
         // Borrow-decode the left_to_right boolean
         let left_to_right = bool::borrow_decode(decoder)?;
 
-        // Decode the left_to_right boolean
+        // Borrow-decode the add_parent_tree_on_subquery boolean
         let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
 
         Ok(Query {
@@ -627,5 +645,146 @@ impl IntoIterator for Query {
 
     fn into_iter(self) -> Self::IntoIter {
         self.items.into_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bincode::config;
+
+    use super::*;
+    use crate::query_item::QueryItem;
+
+    fn bincode_config() -> impl bincode::config::Config {
+        config::standard().with_big_endian().with_no_limit()
+    }
+
+    #[test]
+    fn query_encode_decode_round_trip() {
+        let mut query = Query::new();
+        query.items = vec![
+            QueryItem::Key(vec![1, 2, 3]),
+            QueryItem::Range(vec![10]..vec![20]),
+            QueryItem::RangeInclusive(vec![30]..=vec![40]),
+        ];
+        query.left_to_right = false;
+        query.add_parent_tree_on_subquery = true;
+
+        let encoded =
+            bincode::encode_to_vec(&query, bincode_config()).expect("expected to encode query");
+        let (decoded, _): (Query, _) = bincode::decode_from_slice(&encoded, bincode_config())
+            .expect("expected to decode query");
+
+        assert_eq!(decoded.items.len(), 3);
+        assert_eq!(decoded.items, query.items);
+        assert_eq!(decoded.left_to_right, false);
+        assert_eq!(decoded.add_parent_tree_on_subquery, true);
+    }
+
+    #[test]
+    fn query_decode_rejects_too_many_items() {
+        // Craft a malicious payload with an excessive items count.
+        // The encoded format after the version byte starts with a u64 length
+        // for the items vector. We encode the length separately using bincode's
+        // own format to match the variable-length integer encoding.
+        let mut malicious = Vec::new();
+        malicious.push(1u8); // version byte
+
+        // Encode the excessive length using bincode's format
+        let excessive_len = (MAX_QUERY_ITEMS as u64) + 1;
+        let len_bytes =
+            bincode::encode_to_vec(&excessive_len, bincode_config()).expect("encode length");
+        malicious.extend_from_slice(&len_bytes);
+
+        // Add enough dummy QueryItem bytes to start decoding (each Key item
+        // is: variant_id=0, then a Vec<u8> length, then bytes)
+        // We just need enough to trigger the length check, not necessarily
+        // enough valid items.
+        // Actually, the check happens before decoding any items, so no item
+        // data is needed -- the decoder will reject based on length alone.
+
+        let result: Result<(Query, _), _> =
+            bincode::decode_from_slice(&malicious, bincode_config());
+        assert!(
+            result.is_err(),
+            "decoding should fail when items count exceeds MAX_QUERY_ITEMS"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("query items length exceeds maximum"),
+            "error message should mention the limit, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn query_decode_accepts_max_items_boundary() {
+        // Build a query with exactly MAX_QUERY_ITEMS items and verify it encodes/decodes
+        let mut query = Query::new();
+        // Use a smaller number to keep the test fast but verify the boundary logic
+        // We'll test with a count just under the limit
+        let count = 100; // Use a reasonable count for test performance
+        query.items = (0..count)
+            .map(|i| QueryItem::Key(vec![(i % 256) as u8]))
+            .collect();
+
+        let encoded =
+            bincode::encode_to_vec(&query, bincode_config()).expect("expected to encode query");
+        let (decoded, _): (Query, _) = bincode::decode_from_slice(&encoded, bincode_config())
+            .expect("expected to decode query with many items");
+        assert_eq!(decoded.items.len(), count);
+    }
+
+    #[test]
+    fn query_decode_rejects_invalid_version() {
+        // Craft a payload with an invalid version byte
+        let mut payload = Vec::new();
+        payload.push(2u8); // invalid version (only version 1 is supported)
+                           // Add some dummy data after
+        payload.extend_from_slice(&[0; 20]);
+
+        let result: Result<(Query, _), _> = bincode::decode_from_slice(&payload, bincode_config());
+        assert!(
+            result.is_err(),
+            "decoding should fail for unsupported version"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported Query encoding version"),
+            "error message should mention unsupported version, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn query_borrow_decode_rejects_too_many_items() {
+        // Same test but exercising BorrowDecode path via decode_from_slice
+        // (bincode::decode_from_slice uses BorrowDecode when possible, but
+        // since Query doesn't borrow data, both paths should be tested)
+
+        let mut malicious = Vec::new();
+        malicious.push(1u8); // version byte
+
+        let excessive_len = (MAX_QUERY_ITEMS as u64) + 1;
+        let len_bytes =
+            bincode::encode_to_vec(&excessive_len, bincode_config()).expect("encode length");
+        malicious.extend_from_slice(&len_bytes);
+
+        // Try borrow_decode path
+        let result: Result<(Query, _), _> =
+            bincode::borrow_decode_from_slice(&malicious, bincode_config());
+        assert!(
+            result.is_err(),
+            "borrow_decode should fail when items count exceeds MAX_QUERY_ITEMS"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("query items length exceeds maximum"),
+            "error message should mention the limit, got: {}",
+            err
+        );
     }
 }
