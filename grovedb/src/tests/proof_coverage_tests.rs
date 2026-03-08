@@ -5915,4 +5915,233 @@ mod tests {
             results.len()
         );
     }
+
+    #[test]
+    fn prove_v1_add_parent_tree_respects_limit() {
+        // M6 regression test: when add_parent_tree_on_subquery is true,
+        // parent tree elements must count against the limit. Previously,
+        // parent tree results were pushed without decrementing limit_left,
+        // allowing total results to exceed the requested limit.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // Create structure:
+        //   root
+        //   ├── tree_a (CountTree)
+        //   │   ├── item1
+        //   │   ├── item2
+        //   │   └── item3
+        //   └── tree_b (CountTree)
+        //       ├── item4
+        //       ├── item5
+        //       └── item6
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_a",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_a");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_b",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_b");
+
+        for (tree_key, items) in [
+            (b"tree_a".as_slice(), [b"item1", b"item2", b"item3"]),
+            (b"tree_b".as_slice(), [b"item4", b"item5", b"item6"]),
+        ] {
+            for item_key in items {
+                db.insert(
+                    [b"root".as_slice(), tree_key].as_ref(),
+                    item_key,
+                    Element::new_item(item_key.to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap_or_else(|_| {
+                    panic!("should insert {}", std::str::from_utf8(item_key).unwrap())
+                });
+            }
+        }
+
+        // Query all subtrees under root with add_parent_tree_on_subquery = true
+        // and a limit of 3. Without fix, parent trees would not count against
+        // the limit, so we could get parent_a + 3 items + parent_b + 3 items = 8.
+        // With fix, we should get at most 3 total results.
+        let mut inner = Query::new();
+        inner.insert_all();
+        let query = Query {
+            items: vec![QueryItem::RangeInclusive(
+                b"tree_a".to_vec()..=b"tree_b".to_vec(),
+            )],
+            default_subquery_branch: SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(inner)),
+            },
+            left_to_right: true,
+            conditional_subquery_branches: None,
+            add_parent_tree_on_subquery: true,
+        };
+        let path_query = PathQuery::new(
+            vec![b"root".to_vec()],
+            SizedQuery::new(query, Some(3), None),
+        );
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+        .expect("should verify proof");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert!(
+            results.len() <= 3,
+            "with limit=3 and add_parent_tree_on_subquery=true, total results \
+             (including parent trees) must not exceed the limit; got {} results",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn prove_v0_add_parent_tree_respects_limit() {
+        // Same test as above but targeting the V0 proof path.
+        use grovedb_version::version::v2::GROVE_V2;
+
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_a",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_a");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_b",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_b");
+
+        for (tree_key, items) in [
+            (b"tree_a".as_slice(), [b"item1", b"item2", b"item3"]),
+            (b"tree_b".as_slice(), [b"item4", b"item5", b"item6"]),
+        ] {
+            for item_key in items {
+                db.insert(
+                    [b"root".as_slice(), tree_key].as_ref(),
+                    item_key,
+                    Element::new_item(item_key.to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .unwrap_or_else(|_| {
+                    panic!("should insert {}", std::str::from_utf8(item_key).unwrap())
+                });
+            }
+        }
+
+        let mut inner = Query::new();
+        inner.insert_all();
+        let query = Query {
+            items: vec![QueryItem::RangeInclusive(
+                b"tree_a".to_vec()..=b"tree_b".to_vec(),
+            )],
+            default_subquery_branch: SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(inner)),
+            },
+            left_to_right: true,
+            conditional_subquery_branches: None,
+            add_parent_tree_on_subquery: true,
+        };
+        let path_query = PathQuery::new(
+            vec![b"root".to_vec()],
+            SizedQuery::new(query, Some(3), None),
+        );
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+        .expect("should verify proof");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert!(
+            results.len() <= 3,
+            "V0: with limit=3 and add_parent_tree_on_subquery=true, total results \
+             (including parent trees) must not exceed the limit; got {} results",
+            results.len()
+        );
+    }
 }

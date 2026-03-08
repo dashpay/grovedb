@@ -501,15 +501,23 @@ impl GroveDb {
                                         current_path,
                                         grove_version,
                                     )? {
-                                        let path_key_optional_value =
-                                            ProvedPathKeyOptionalValue::from_proved_key_value(
-                                                path.iter().map(|p| p.to_vec()).collect(),
-                                                proved_key_value.clone(),
+                                        if limit_left.is_none_or(|l| l > 0) {
+                                            let path_key_optional_value =
+                                                ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                    path.iter().map(|p| p.to_vec()).collect(),
+                                                    proved_key_value.clone(),
+                                                );
+                                            result.push(
+                                                path_key_optional_value
+                                                    .try_into_versioned(grove_version)?,
                                             );
-                                        result.push(
-                                            path_key_optional_value
-                                                .try_into_versioned(grove_version)?,
-                                        );
+                                            limit_left
+                                                .iter_mut()
+                                                .for_each(|limit| *limit = limit.saturating_sub(1));
+                                        }
+                                        if limit_left == &Some(0) {
+                                            break;
+                                        }
                                     }
 
                                     // Dispatch based on lower layer proof type
@@ -1411,16 +1419,24 @@ impl GroveDb {
                                         current_path,
                                         grove_version,
                                     )? {
-                                        let path_key_optional_value =
-                                            ProvedPathKeyOptionalValue::from_proved_key_value(
-                                                path.iter().map(|p| p.to_vec()).collect(),
-                                                proved_key_value.clone(),
-                                            );
+                                        if limit_left.is_none_or(|l| l > 0) {
+                                            let path_key_optional_value =
+                                                ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                    path.iter().map(|p| p.to_vec()).collect(),
+                                                    proved_key_value.clone(),
+                                                );
 
-                                        result.push(
-                                            path_key_optional_value
-                                                .try_into_versioned(grove_version)?,
-                                        );
+                                            result.push(
+                                                path_key_optional_value
+                                                    .try_into_versioned(grove_version)?,
+                                            );
+                                            limit_left
+                                                .iter_mut()
+                                                .for_each(|limit| *limit = limit.saturating_sub(1));
+                                        }
+                                        if limit_left == &Some(0) {
+                                            break;
+                                        }
                                     }
                                     let lower_hash = Self::verify_layer_proof(
                                         lower_layer,

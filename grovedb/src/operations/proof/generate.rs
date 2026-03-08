@@ -418,6 +418,29 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // If add_parent_tree_on_subquery is set, the parent tree
+                                // element counts as a result against the limit
+                                let should_add_parent = cost_return_on_error_no_add!(
+                                    cost,
+                                    path_query
+                                        .should_add_parent_tree_at_path(
+                                            path.as_slice(),
+                                            grove_version,
+                                        )
+                                        .map_err(|e| {
+                                            Error::InternalError(format!(
+                                                "should_add_parent_tree_at_path error: {}",
+                                                e
+                                            ))
+                                        })
+                                );
+                                if should_add_parent {
+                                    if let Some(limit) = overall_limit.as_mut() {
+                                        *limit = limit.saturating_sub(1);
+                                    }
+                                    has_a_result_at_level |= true;
+                                }
+
                                 let previous_limit = *overall_limit;
 
                                 let layer_proof = cost_return_on_error!(
@@ -431,9 +454,9 @@ impl GroveDb {
                                     )
                                 );
 
-                                if previous_limit != *overall_limit {
-                                    // a lower layer updated the limit, don't subtract 1 at this
-                                    // level
+                                if previous_limit != *overall_limit || should_add_parent {
+                                    // a lower layer updated the limit (or we added the parent
+                                    // tree), don't subtract 1 at this level
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
@@ -1001,6 +1024,26 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // If add_parent_tree_on_subquery is set, the parent tree
+                                // element counts as a result against the limit
+                                let should_add_parent = cost_return_on_error_no_add!(
+                                    cost,
+                                    path_query
+                                        .should_add_parent_tree_at_path(
+                                            path.as_slice(),
+                                            grove_version,
+                                        )
+                                        .map_err(|e| {
+                                            Error::InternalError(format!(
+                                                "should_add_parent_tree_at_path error: {}",
+                                                e
+                                            ))
+                                        })
+                                );
+                                if should_add_parent && let Some(limit) = overall_limit.as_mut() {
+                                    *limit = limit.saturating_sub(1);
+                                }
+
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.generate_mmr_layer_proof(
@@ -1025,6 +1068,26 @@ impl GroveDb {
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
+
+                                // If add_parent_tree_on_subquery is set, the parent tree
+                                // element counts as a result against the limit
+                                let should_add_parent = cost_return_on_error_no_add!(
+                                    cost,
+                                    path_query
+                                        .should_add_parent_tree_at_path(
+                                            path.as_slice(),
+                                            grove_version,
+                                        )
+                                        .map_err(|e| {
+                                            Error::InternalError(format!(
+                                                "should_add_parent_tree_at_path error: {}",
+                                                e
+                                            ))
+                                        })
+                                );
+                                if should_add_parent && let Some(limit) = overall_limit.as_mut() {
+                                    *limit = limit.saturating_sub(1);
+                                }
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -1056,6 +1119,26 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // If add_parent_tree_on_subquery is set, the parent tree
+                                // element counts as a result against the limit
+                                let should_add_parent = cost_return_on_error_no_add!(
+                                    cost,
+                                    path_query
+                                        .should_add_parent_tree_at_path(
+                                            path.as_slice(),
+                                            grove_version,
+                                        )
+                                        .map_err(|e| {
+                                            Error::InternalError(format!(
+                                                "should_add_parent_tree_at_path error: {}",
+                                                e
+                                            ))
+                                        })
+                                );
+                                if should_add_parent && let Some(limit) = overall_limit.as_mut() {
+                                    *limit = limit.saturating_sub(1);
+                                }
+
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
                                     self.generate_dense_tree_layer_proof(
@@ -1081,6 +1164,26 @@ impl GroveDb {
                             {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
+
+                                // If add_parent_tree_on_subquery is set, the parent tree
+                                // element counts as a result against the limit
+                                let should_add_parent = cost_return_on_error_no_add!(
+                                    cost,
+                                    path_query
+                                        .should_add_parent_tree_at_path(
+                                            path.as_slice(),
+                                            grove_version,
+                                        )
+                                        .map_err(|e| {
+                                            Error::InternalError(format!(
+                                                "should_add_parent_tree_at_path error: {}",
+                                                e
+                                            ))
+                                        })
+                                );
+                                if should_add_parent && let Some(limit) = overall_limit.as_mut() {
+                                    *limit = limit.saturating_sub(1);
+                                }
 
                                 let layer_proof = cost_return_on_error!(
                                     &mut cost,
@@ -1113,6 +1216,29 @@ impl GroveDb {
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
+                                // If add_parent_tree_on_subquery is set, the parent tree
+                                // element counts as a result against the limit
+                                let should_add_parent = cost_return_on_error_no_add!(
+                                    cost,
+                                    path_query
+                                        .should_add_parent_tree_at_path(
+                                            path.as_slice(),
+                                            grove_version,
+                                        )
+                                        .map_err(|e| {
+                                            Error::InternalError(format!(
+                                                "should_add_parent_tree_at_path error: {}",
+                                                e
+                                            ))
+                                        })
+                                );
+                                if should_add_parent {
+                                    if let Some(limit) = overall_limit.as_mut() {
+                                        *limit = limit.saturating_sub(1);
+                                    }
+                                    has_a_result_at_level |= true;
+                                }
+
                                 let previous_limit = *overall_limit;
 
                                 let layer_proof = cost_return_on_error!(
@@ -1126,7 +1252,7 @@ impl GroveDb {
                                     )
                                 );
 
-                                if previous_limit != *overall_limit {
+                                if previous_limit != *overall_limit || should_add_parent {
                                     has_a_result_at_level |= true;
                                 }
                                 lower_layers.insert(key.clone(), layer_proof);
