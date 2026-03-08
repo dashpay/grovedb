@@ -327,9 +327,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                             traversal_instruction_as_vec_bytes(node_traversal_instruction);
                         new_chunk_ids.push(chunk_id.to_vec());
                         self.chunk_id_to_root_hash.insert(chunk_id.to_vec(), *hash);
-                        // TODO: handle unwrap
-                        self.parent_keys
-                            .insert(chunk_id, parent_key.unwrap().to_owned());
+                        let parent = parent_key.ok_or(Error::ChunkRestoringError(
+                            ChunkError::InvalidChunkProof(
+                                "hash node at root of chunk has no parent key",
+                            ),
+                        ))?;
+                        self.parent_keys.insert(chunk_id, parent.to_owned());
                         Ok(())
                     }
                     _ => {
@@ -407,7 +410,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         self.merk
             .storage
             .put(parent_key, &parent_bytes, None, None)
-            .unwrap()
+            .value
             .map_err(StorageError)?;
 
         self.parent_keys
@@ -426,14 +429,15 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             batch: &mut <S as StorageContext<'db>>::Batch,
             grove_version: &GroveVersion,
         ) -> Result<(u8, u8), Error> {
-            // TODO: remove unwrap
             let mut cloned_node = TreeNode::decode(
                 walker.tree().key().to_vec(),
                 walker.tree().encode().as_slice(),
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
-            .unwrap();
+            .map_err(|_| {
+                Error::CorruptedState("failed to decode tree node during height rewrite")
+            })?;
 
             let mut left_height = 0;
             let mut right_height = 0;
@@ -444,11 +448,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
             {
                 let left_child_heights = rewrite_child_heights(left_walker, batch, grove_version)?;
                 left_height = left_child_heights.0.max(left_child_heights.1) + 1;
-                *cloned_node.link_mut(LEFT).unwrap().child_heights_mut() = left_child_heights;
+                *cloned_node
+                    .link_mut(LEFT)
+                    .ok_or(Error::CorruptedState(
+                        "expected left link to exist after walking left child",
+                    ))?
+                    .child_heights_mut() = left_child_heights;
             }
 
             if let Some(right_walker) = walker
@@ -457,12 +466,17 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
             {
                 let right_child_heights =
                     rewrite_child_heights(right_walker, batch, grove_version)?;
                 right_height = right_child_heights.0.max(right_child_heights.1) + 1;
-                *cloned_node.link_mut(RIGHT).unwrap().child_heights_mut() = right_child_heights;
+                *cloned_node
+                    .link_mut(RIGHT)
+                    .ok_or(Error::CorruptedState(
+                        "expected right link to exist after walking right child",
+                    ))?
+                    .child_heights_mut() = right_child_heights;
             }
 
             let bytes = cloned_node.encode();
@@ -617,7 +631,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height, grove_version)?;
             }
@@ -633,7 +647,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height, grove_version)?;
             }
@@ -770,6 +784,57 @@ mod tests {
                 "expected chunk proof to contain only kv or hash nodes",
             )))
         ));
+    }
+
+    /// A malicious peer could send a crafted chunk proof containing only a
+    /// Hash node at the root. Before the fix, this would cause a panic in
+    /// write_chunk because parent_key is None for the root node. After the
+    /// fix, this returns a proper error.
+    #[test]
+    fn test_hash_node_at_chunk_root_returns_error_not_panic() {
+        let grove_version = GroveVersion::latest();
+        // Use a known hash value that we will also set as expected_root_hash
+        // so that verify_chunk passes (a Hash node's proof tree hash equals
+        // the hash it contains).
+        let crafted_hash: CryptoHash = [0xAB; 32];
+        let malicious_chunk = vec![Op::Push(Node::Hash(crafted_hash))];
+
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut restorer = Restorer::new(restoration_merk, crafted_hash, None);
+
+        // process_chunk calls verify_chunk then write_chunk; the Hash node at
+        // the root of the chunk will have parent_key = None and should produce
+        // an error rather than panicking.
+        let result = restorer.process_chunk(
+            &traversal_instruction_as_vec_bytes(&[]),
+            malicious_chunk,
+            grove_version,
+        );
+        assert!(
+            result.is_err(),
+            "expected error for hash-only chunk at root"
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ChunkRestoringError(InvalidChunkProof(
+                    "hash node at root of chunk has no parent key"
+                )))
+            ),
+            "expected InvalidChunkProof error for hash node at root"
+        );
     }
 
     fn get_node_hash(node: Node) -> Result<CryptoHash, String> {
