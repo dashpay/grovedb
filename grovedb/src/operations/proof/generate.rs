@@ -205,6 +205,7 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 &prove_options,
+                0,
                 grove_version
             )
         );
@@ -224,9 +225,17 @@ impl GroveDb {
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> CostResult<MerkOnlyLayerProof, Error> {
         let mut cost = OperationCost::default();
+
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidInput(
+                "proof generation exceeded maximum depth limit",
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let tx = self.start_transaction();
 
@@ -427,6 +436,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        current_depth + 1,
                                         grove_version,
                                     )
                                 );
@@ -834,6 +844,7 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 &prove_options,
+                0,
                 grove_version
             )
         );
@@ -853,9 +864,17 @@ impl GroveDb {
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
+
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidInput(
+                "proof generation exceeded maximum depth limit",
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let tx = self.start_transaction();
 
@@ -1122,6 +1141,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        current_depth + 1,
                                         grove_version,
                                     )
                                 );

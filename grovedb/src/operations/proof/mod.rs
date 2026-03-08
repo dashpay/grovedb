@@ -8,6 +8,14 @@ mod verify;
 
 use std::{collections::BTreeMap, fmt};
 
+/// Maximum allowed recursion depth for proof generation and verification.
+///
+/// This limit prevents stack overflow from deeply nested subqueries or
+/// maliciously crafted proofs with excessive `LayerProof` nesting. A depth
+/// of 128 is well beyond any practical GroveDB tree hierarchy while still
+/// fitting comfortably within typical stack sizes.
+pub const MAX_PROOF_DEPTH: usize = 128;
+
 use bincode::{Decode, Encode};
 use grovedb_bulk_append_tree::BulkAppendTreeProof;
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
