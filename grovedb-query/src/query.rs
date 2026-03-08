@@ -25,7 +25,7 @@ pub struct Query {
     /// When `true`, the parent tree element (e.g. a `CountTree` or `SumTree`)
     /// is included in query results alongside its subquery children.
     ///
-    /// # Known limitation (audit M6)
+    /// # Known limitation
     ///
     /// Parent tree results added by this flag do **not** currently count
     /// against `SizedQuery::limit`. A query with `limit = 10` may return
