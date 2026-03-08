@@ -13,6 +13,7 @@ use grovedb_costs::{
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
     add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
+    MERK_BIGGEST_VALUE_SIZE,
 };
 use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
@@ -85,20 +86,14 @@ impl GroveOp {
             GroveOp::InsertIfNotExists { element, .. } => {
                 // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
                 // additional seek to check whether the key already exists.
-                let max_element_size = match element.serialized_size(grove_version) {
-                    Ok(size) => size as u32,
-                    Err(e) => {
-                        return Err(Error::InternalError(format!(
-                            "unable to estimate element size: {e}"
-                        )))
-                        .wrap_with_cost(OperationCost::default())
-                    }
-                };
+                // Use MERK_BIGGEST_VALUE_SIZE for the existing value size since
+                // the value already stored could be larger than the element
+                // being inserted.
                 let mut has_cost = OperationCost::default();
                 add_worst_case_merk_has_value(
                     &mut has_cost,
                     key.max_length() as u32,
-                    max_element_size,
+                    MERK_BIGGEST_VALUE_SIZE,
                 );
                 GroveDb::worst_case_merk_insert_element(
                     key,

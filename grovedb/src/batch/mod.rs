@@ -2882,7 +2882,7 @@ impl GroveDb {
                     let key = cost_return_on_error_no_add!(
                         cost,
                         op.key.as_ref().ok_or(Error::InvalidBatchOperation(
-                            "insert_only_known_to_not_exist op is missing a key",
+                            "insert_only_known_to_not_already_exist op is missing a key",
                         ))
                     );
                     cost_return_on_error!(
