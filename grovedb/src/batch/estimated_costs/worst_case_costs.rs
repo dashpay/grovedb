@@ -12,11 +12,14 @@ use grovedb_costs::{
 };
 #[cfg(feature = "minimal")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
-    worst_case_merk_propagate, WorstCaseLayerInformation,
+    add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
+    MERK_BIGGEST_VALUE_SIZE,
 };
 use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
+#[cfg(feature = "minimal")]
+use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use itertools::Itertools;
@@ -70,7 +73,8 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
-            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
+            GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
@@ -78,6 +82,27 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 )
+            }
+            GroveOp::InsertIfNotExists { element, .. } => {
+                // Same insert cost as InsertWithKnownToNotAlreadyExist, plus an
+                // additional seek to check whether the key already exists.
+                // Use MERK_BIGGEST_VALUE_SIZE for the existing value size since
+                // the value already stored could be larger than the element
+                // being inserted.
+                let mut has_cost = OperationCost::default();
+                add_worst_case_merk_has_value(
+                    &mut has_cost,
+                    key.max_length() as u32,
+                    MERK_BIGGEST_VALUE_SIZE,
+                );
+                GroveDb::worst_case_merk_insert_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+                .add_cost(has_cost)
             }
             GroveOp::RefreshReference {
                 reference_path_type,

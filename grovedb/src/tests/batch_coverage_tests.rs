@@ -365,11 +365,11 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_operations_without_batching_insert_only() {
+    fn test_apply_operations_without_batching_insert_only_known_to_not_exist() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
-        // InsertOnly should succeed when key does not exist
+        // InsertWithKnownToNotAlreadyExist should succeed when key does not exist
         let ops = vec![QualifiedGroveDbOp::insert_only_op(
             vec![TEST_LEAF.to_vec()],
             b"insert_only_key".to_vec(),
@@ -390,9 +390,37 @@ mod tests {
             .unwrap()
             .expect("element should exist");
         assert_eq!(result, Element::new_item(b"val".to_vec()));
+    }
 
-        // InsertOnly should fail when key already exists
-        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+    #[test]
+    fn test_apply_operations_without_batching_insert_if_not_exists() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // InsertIfNotExists should succeed when key does not exist
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"insert_only_key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        )];
+
+        db.apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists should succeed for new key");
+
+        let result = db
+            .get(
+                [TEST_LEAF].as_ref(),
+                b"insert_only_key",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("element should exist");
+        assert_eq!(result, Element::new_item(b"val".to_vec()));
+
+        // InsertIfNotExists should fail when key already exists
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
             vec![TEST_LEAF.to_vec()],
             b"insert_only_key".to_vec(),
             Element::new_item(b"val2".to_vec()),
@@ -403,7 +431,7 @@ mod tests {
             .unwrap();
         assert!(
             result.is_err(),
-            "insert_only should fail when key already exists"
+            "insert_if_not_exists should fail when key already exists"
         );
     }
 
@@ -867,14 +895,18 @@ mod tests {
 
     #[test]
     fn test_grove_op_ordering() {
-        // DeleteTree = 0, Delete = 2, InsertOrReplace = 8, InsertOnly = 9
+        // DeleteTree = 0, Delete = 2, InsertOrReplace = 8, InsertWithKnownToNotAlreadyExist = 9, InsertIfNotExists = 10
         let delete_tree = GroveOp::DeleteTree(TreeType::NormalTree);
         let delete = GroveOp::Delete;
         let insert_or_replace = GroveOp::InsertOrReplace {
             element: Element::new_item(b"test".to_vec()),
         };
-        let insert_only = GroveOp::InsertOnly {
+        let insert_only = GroveOp::InsertWithKnownToNotAlreadyExist {
             element: Element::new_item(b"test".to_vec()),
+        };
+        let insert_if_not_exists = GroveOp::InsertIfNotExists {
+            element: Element::new_item(b"test".to_vec()),
+            error_if_exists: true,
         };
 
         assert!(
@@ -887,7 +919,11 @@ mod tests {
         );
         assert!(
             insert_or_replace < insert_only,
-            "InsertOrReplace (8) should be less than InsertOnly (9)"
+            "InsertOrReplace (8) should be less than InsertWithKnownToNotAlreadyExist (9)"
+        );
+        assert!(
+            insert_only < insert_if_not_exists,
+            "InsertWithKnownToNotAlreadyExist (9) should be less than InsertIfNotExists (10)"
         );
     }
 
@@ -1480,11 +1516,11 @@ mod tests {
     }
 
     // ===================================================================
-    // 30. Batch: InsertOnly when element already exists (with validation)
+    // 30. Batch: InsertIfNotExists when element already exists
     // ===================================================================
 
     #[test]
-    fn test_batch_insert_only_existing_element_with_validation_fails() {
+    fn test_batch_insert_if_not_exists_existing_element_fails() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
@@ -1500,22 +1536,209 @@ mod tests {
         .unwrap()
         .expect("insert existing item");
 
-        // Try InsertOnly on the same key with validate_insertion_does_not_override
-        let ops = vec![QualifiedGroveDbOp::insert_only_op(
+        // Try InsertIfNotExists on the same key — should fail without needing options
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
             vec![TEST_LEAF.to_vec()],
             b"existing".to_vec(),
             Element::new_item(b"should_fail".to_vec()),
         )];
 
-        let options = Some(BatchApplyOptions {
-            validate_insertion_does_not_override: true,
-            ..Default::default()
-        });
-
-        let result = db.apply_batch(ops, options, None, grove_version).unwrap();
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
         assert!(
             result.is_err(),
-            "InsertOnly on existing element with validation should fail"
+            "InsertIfNotExists on existing element should fail"
+        );
+    }
+
+    // ===================================================================
+    // 30b. InsertIfNotExists: tree + items in same batch (propagation path)
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_if_not_exists_tree_then_items_same_batch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // InsertIfNotExists for tree and items. The tree insert triggers the
+        // occupied-entry propagation path for InsertIfNotExists variant.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![],
+                b"new_tree".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![b"new_tree".to_vec()],
+                b"item1".to_vec(),
+                Element::new_item(b"v1".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![b"new_tree".to_vec()],
+                b"item2".to_vec(),
+                Element::new_item(b"v2".to_vec()),
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists batch with tree + items should succeed");
+
+        let i1 = db
+            .get([b"new_tree"].as_ref(), b"item1", None, grove_version)
+            .unwrap()
+            .expect("item1 should exist");
+        assert_eq!(i1, Element::new_item(b"v1".to_vec()));
+    }
+
+    // ===================================================================
+    // 30c. InsertIfNotExists: Debug format
+    // ===================================================================
+
+    #[test]
+    fn test_insert_if_not_exists_debug_format() {
+        // error_if_exists = true (default)
+        let op = QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op);
+        assert!(
+            debug_str.contains("Insert If Not Exists (error on existing)"),
+            "Debug output should contain 'Insert If Not Exists (error on existing)', got: {debug_str}"
+        );
+
+        // error_if_exists = false (skip)
+        let op_skip = QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str_skip = format!("{:?}", op_skip);
+        assert!(
+            debug_str_skip.contains("Insert If Not Exists (skip on existing)"),
+            "Debug output should contain 'Insert If Not Exists (skip on existing)', got: {debug_str_skip}"
+        );
+    }
+
+    // ===================================================================
+    // 30d. InsertIfNotExists: reference to InsertIfNotExists item in same batch
+    // ===================================================================
+
+    #[test]
+    fn test_batch_ref_to_insert_if_not_exists_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![TEST_LEAF.to_vec()],
+                b"if_ne_item".to_vec(),
+                Element::new_item(b"hello".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"ref_to_if_ne".to_vec(),
+                Element::new_reference(ReferencePathType::SiblingReference(b"if_ne_item".to_vec())),
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch ref to InsertIfNotExists item");
+
+        let fetched = db
+            .get([TEST_LEAF].as_ref(), b"ref_to_if_ne", None, grove_version)
+            .unwrap()
+            .expect("ref should resolve");
+        assert_eq!(fetched, Element::new_item(b"hello".to_vec()));
+    }
+
+    // ===================================================================
+    // 30e. InsertIfNotExists: skip on existing (error_if_exists = false)
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_if_not_exists_skip_on_existing() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"skip_key",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original item");
+
+        // InsertIfNotExists with error_if_exists=false should silently skip
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"skip_key".to_vec(),
+            Element::new_item(b"should_be_ignored".to_vec()),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists with skip should succeed");
+
+        // The original element should still be there, not overwritten
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"skip_key", None, grove_version)
+            .unwrap()
+            .expect("element should still exist");
+        assert_eq!(
+            result,
+            Element::new_item(b"original".to_vec()),
+            "original value should be preserved"
+        );
+    }
+
+    // ===================================================================
+    // 30f. InsertIfNotExists: skip on existing via sequential (without-batching) path
+    // ===================================================================
+
+    #[test]
+    fn test_apply_operations_without_batching_insert_if_not_exists_skip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"skip_seq_key",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original item");
+
+        // InsertIfNotExists with error_if_exists=false via sequential path
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"skip_seq_key".to_vec(),
+            Element::new_item(b"should_be_ignored".to_vec()),
+        )];
+
+        db.apply_operations_without_batching(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists with skip should succeed on sequential path");
+
+        // The original element should still be there
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"skip_seq_key", None, grove_version)
+            .unwrap()
+            .expect("element should still exist");
+        assert_eq!(
+            result,
+            Element::new_item(b"original".to_vec()),
+            "original value should be preserved on sequential path"
         );
     }
 
@@ -1677,7 +1900,7 @@ mod tests {
     }
 
     // ===================================================================
-    // 34. Batch: insert tree then items under it, using InsertOnly
+    // 34. Batch: insert tree then items under it, using InsertWithKnownToNotAlreadyExist
     // ===================================================================
 
     #[test]
@@ -1685,8 +1908,8 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
-        // InsertOnly for tree and items. The tree insert triggers the
-        // occupied-entry propagation path for InsertOnly variant.
+        // InsertWithKnownToNotAlreadyExist for tree and items. The tree insert triggers the
+        // occupied-entry propagation path for InsertWithKnownToNotAlreadyExist variant.
         let ops = vec![
             QualifiedGroveDbOp::insert_only_op(vec![], b"new_tree".to_vec(), Element::empty_tree()),
             QualifiedGroveDbOp::insert_only_op(
