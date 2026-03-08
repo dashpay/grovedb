@@ -18,13 +18,17 @@ pub struct BatchApplyOptions {
     pub allow_deleting_non_empty_trees: bool,
     /// Deleting non empty trees returns error
     pub deleting_non_empty_trees_returns_error: bool,
-    /// Disable the operation consistency check that detects duplicate or
-    /// conflicting operations targeting the same `(path, key)` pair within a
-    /// batch.
+    /// Disable the full operation consistency check performed by
+    /// [`QualifiedGroveDbOp::verify_consistency_of_operations`].
+    ///
+    /// This check detects several conflict types including:
+    /// - Duplicate operations targeting the same `(path, key)` pair
+    /// - Inserts below paths that are being deleted in the same batch
+    /// - Append/delete conflicts on the same tree
     ///
     /// When this is `false` (the default), the batch system calls
     /// [`QualifiedGroveDbOp::verify_consistency_of_operations`] before
-    /// applying and rejects the batch if any duplicates are found.
+    /// applying and rejects the batch if any conflicts are found.
     ///
     /// # Warning -- silent last-op-wins behavior
     ///
@@ -36,10 +40,10 @@ pub struct BatchApplyOptions {
     /// error or warning.
     ///
     /// This is safe **only** when the caller has already guaranteed that the
-    /// operation list contains no conflicting entries for the same key, or
-    /// when the caller intentionally relies on last-op-wins semantics (e.g.,
-    /// an idempotent replay scenario). In all other cases, leave this set to
-    /// `false` to catch accidental duplicates early.
+    /// operation list contains no conflicting entries, or when the caller
+    /// intentionally relies on last-op-wins semantics (e.g., an idempotent
+    /// replay scenario). In all other cases, leave this set to `false` to
+    /// catch accidental conflicts early.
     pub disable_operation_consistency_check: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,

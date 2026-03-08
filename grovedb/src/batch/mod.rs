@@ -2841,12 +2841,17 @@ impl GroveDb {
     /// # Warning -- not atomic
     ///
     /// Unlike [`apply_batch`](Self::apply_batch), this method processes each
-    /// operation individually and commits its side-effects immediately. If an
-    /// operation in the middle of the list fails, all preceding operations
-    /// will have already been persisted and **will not be rolled back**.
+    /// operation individually and applies its side-effects to the current
+    /// storage context immediately. If an operation in the middle of the list
+    /// fails, all preceding operations will have already been applied and
+    /// **will not be rolled back** within this method. (Note: when a
+    /// `transaction` is supplied, the caller can still roll back the entire
+    /// transaction; the non-atomicity refers to the inability to undo
+    /// *individual* operations within the list.)
     /// This means:
     ///
-    /// * The database may be left in a partially-updated state on failure.
+    /// * The storage context may be left in a partially-updated state on
+    ///   failure.
     /// * Root hashes may differ from the result of applying the same
     ///   operations via `apply_batch`, because batch application propagates
     ///   root hashes in a single pass whereas this method updates trees
