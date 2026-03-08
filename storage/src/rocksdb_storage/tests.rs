@@ -1446,3 +1446,125 @@ mod storage_management {
         );
     }
 }
+
+mod transactional_context_without_batch {
+    use super::*;
+    use crate::{Storage, StorageBatch, StorageContext};
+
+    #[test]
+    fn test_write_operations_error_when_batch_is_none() {
+        let storage = TempStorage::new();
+        let transaction = storage.start_transaction();
+
+        // Create a transactional context with batch = None (read-only context)
+        let context = storage
+            .get_transactional_storage_context([b"test"].as_ref().into(), None, &transaction)
+            .unwrap();
+
+        // All write operations should return an error instead of silently succeeding
+
+        // put
+        let result = context.put(b"key", b"value", None, None).unwrap();
+        assert!(
+            result.is_err(),
+            "put should fail on transactional context without a batch"
+        );
+
+        // put_aux
+        let result = context.put_aux(b"key", b"value", None).unwrap();
+        assert!(
+            result.is_err(),
+            "put_aux should fail on transactional context without a batch"
+        );
+
+        // put_root
+        let result = context.put_root(b"key", b"value", None).unwrap();
+        assert!(
+            result.is_err(),
+            "put_root should fail on transactional context without a batch"
+        );
+
+        // put_meta
+        let result = context.put_meta(b"key", b"value", None).unwrap();
+        assert!(
+            result.is_err(),
+            "put_meta should fail on transactional context without a batch"
+        );
+
+        // delete
+        let result = context.delete(b"key", None).unwrap();
+        assert!(
+            result.is_err(),
+            "delete should fail on transactional context without a batch"
+        );
+
+        // delete_aux
+        let result = context.delete_aux(b"key", None).unwrap();
+        assert!(
+            result.is_err(),
+            "delete_aux should fail on transactional context without a batch"
+        );
+
+        // delete_root
+        let result = context.delete_root(b"key", None).unwrap();
+        assert!(
+            result.is_err(),
+            "delete_root should fail on transactional context without a batch"
+        );
+
+        // delete_meta
+        let result = context.delete_meta(b"key", None).unwrap();
+        assert!(
+            result.is_err(),
+            "delete_meta should fail on transactional context without a batch"
+        );
+
+        // commit_batch
+        let new_batch = context.new_batch();
+        let result = context.commit_batch(new_batch).unwrap();
+        assert!(
+            result.is_err(),
+            "commit_batch should fail on transactional context without a batch"
+        );
+    }
+
+    #[test]
+    fn test_read_operations_succeed_when_batch_is_none() {
+        let storage = TempStorage::new();
+        let transaction = storage.start_transaction();
+
+        // First, write some data using a context WITH a batch
+        let batch = StorageBatch::new();
+        let write_context = storage
+            .get_transactional_storage_context(
+                [b"test"].as_ref().into(),
+                Some(&batch),
+                &transaction,
+            )
+            .unwrap();
+        write_context
+            .put(b"key", b"value", None, None)
+            .unwrap()
+            .expect("put with batch should succeed");
+        storage
+            .commit_multi_context_batch(batch, Some(&transaction))
+            .unwrap()
+            .expect("commit batch should succeed");
+
+        // Now create a read-only context (batch = None) and verify reads work
+        let read_context = storage
+            .get_transactional_storage_context([b"test"].as_ref().into(), None, &transaction)
+            .unwrap();
+
+        let result = read_context.get(b"key").unwrap();
+        assert!(
+            result.is_ok(),
+            "get should succeed on transactional context without a batch"
+        );
+        assert_eq!(
+            result.unwrap(),
+            Some(b"value".to_vec()),
+            "get should return the correct value"
+        );
+    }
+}

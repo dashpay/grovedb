@@ -124,14 +124,21 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         children_sizes: ChildrenSizesWithIsSumTree,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                children_sizes,
-                cost_info,
-            );
-        }
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted put operation on transactional context without a batch".to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.put(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            children_sizes,
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -141,13 +148,21 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put_aux(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                cost_info,
-            );
-        }
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted put_aux operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.put_aux(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -157,13 +172,21 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put_root(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                cost_info,
-            );
-        }
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted put_root operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.put_root(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -173,13 +196,21 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         value: &[u8],
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.put_meta(
-                make_prefixed_key(&self.prefix, key),
-                value.to_vec(),
-                cost_info,
-            );
-        }
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted put_meta operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.put_meta(
+            make_prefixed_key(&self.prefix, key),
+            value.to_vec(),
+            cost_info,
+        );
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -188,10 +219,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted delete operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.delete(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -200,10 +238,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted delete_aux operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.delete_aux(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -212,10 +257,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete_root(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted delete_root operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.delete_root(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -224,10 +276,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
         key: K,
         cost_info: Option<KeyValueStorageCost>,
     ) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
-        }
-
+        let batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted delete_meta operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        batch.delete_meta(make_prefixed_key(&self.prefix, key), cost_info);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
@@ -303,10 +362,17 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbTransactionContext<'db> {
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
-        if let Some(existing_batch) = self.batch {
-            existing_batch.merge(batch.batch);
-        }
-
+        let existing_batch = match self.batch {
+            Some(b) => b,
+            None => {
+                return Err(Error::StorageError(
+                    "attempted commit_batch operation on transactional context without a batch"
+                        .to_string(),
+                ))
+                .wrap_with_cost(OperationCost::default())
+            }
+        };
+        existing_batch.merge(batch.batch);
         Ok(()).wrap_with_cost(OperationCost::default())
     }
 
