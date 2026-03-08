@@ -70,7 +70,8 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
-            GroveOp::InsertOrReplace { element } | GroveOp::InsertOnly { element } => {
+            GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertOnlyKnownToNotExist { element } => {
                 GroveDb::worst_case_merk_insert_element(
                     key,
                     element,
@@ -78,6 +79,23 @@ impl GroveOp {
                     propagate_if_input(),
                     grove_version,
                 )
+            }
+            GroveOp::InsertIfNotExists { element } => {
+                // Same insert cost as InsertOnlyKnownToNotExist, plus an
+                // additional seek to check whether the key already exists.
+                use grovedb_storage::worst_case_costs::WorstKeyLength;
+                GroveDb::worst_case_merk_insert_element(
+                    key,
+                    element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+                .add_cost(OperationCost {
+                    seek_count: 1,
+                    storage_loaded_bytes: key.max_length() as u64,
+                    ..Default::default()
+                })
             }
             GroveOp::RefreshReference {
                 reference_path_type,
