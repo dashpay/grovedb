@@ -32,6 +32,14 @@ pub struct Query {
     /// more than 10 results when this flag is active, because the limit
     /// only governs child-level results. This will be resolved in a future
     /// redesign that introduces per-level limits.
+    ///
+    /// # Absence-proof verification
+    ///
+    /// When verifying with `verify_query_with_absence_proof` or
+    /// `verify_subset_query_with_absence_proof`, results are reconstructed
+    /// from `terminal_keys()` which does not emit parent-tree entries.
+    /// Parent tree elements will therefore not appear in the verified
+    /// result set in those modes.
     pub add_parent_tree_on_subquery: bool,
 }
 
