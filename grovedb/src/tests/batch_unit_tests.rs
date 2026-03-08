@@ -122,22 +122,26 @@ mod tests {
                 // 9
                 element: dummy_element.clone(),
             },
-            GroveOp::CommitmentTreeInsert {
+            GroveOp::InsertIfNotExists {
                 // 10
+                element: dummy_element.clone(),
+            },
+            GroveOp::CommitmentTreeInsert {
+                // 11
                 cmx: dummy_hash,
                 rho: dummy_hash,
                 payload: vec![],
             },
-            GroveOp::MmrTreeAppend { value: vec![] },   // 11
-            GroveOp::BulkAppend { value: vec![] },      // 12
-            GroveOp::DenseTreeInsert { value: vec![] }, // 13
+            GroveOp::MmrTreeAppend { value: vec![] },   // 12
+            GroveOp::BulkAppend { value: vec![] },      // 13
+            GroveOp::DenseTreeInsert { value: vec![] }, // 14
             GroveOp::ReplaceNonMerkTreeRoot {
-                // 14
+                // 15
                 hash: dummy_hash,
                 meta: meta_commitment.clone(),
             },
             GroveOp::InsertNonMerkTree {
-                // 15
+                // 16
                 hash: dummy_hash,
                 root_key: None,
                 flags: None,
@@ -335,7 +339,15 @@ mod tests {
                     b"k".to_vec(),
                     element.clone(),
                 ),
-                "Insert",
+                "Insert With Known To Not Already Exist",
+            ),
+            (
+                QualifiedGroveDbOp::insert_if_not_exists_op(
+                    vec![b"p".to_vec()],
+                    b"k".to_vec(),
+                    element.clone(),
+                ),
+                "Insert If Not Exists",
             ),
             (
                 QualifiedGroveDbOp::replace_op(vec![b"p".to_vec()], b"k".to_vec(), element.clone()),

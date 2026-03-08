@@ -570,7 +570,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
         let op_dbg = match &self.op {
             GroveOp::InsertOrReplace { element } => format!("Insert Or Replace {:?}", element),
             GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
-                format!("Insert Only Known To Not Exist {:?}", element)
+                format!("Insert With Known To Not Already Exist {:?}", element)
             }
             GroveOp::InsertIfNotExists { element } => {
                 format!("Insert If Not Exists {:?}", element)
