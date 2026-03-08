@@ -148,9 +148,21 @@ impl Link {
         }
     }
 
-    /// Returns the hash of the tree referenced by the link. Panics if link is
-    /// of variant `Link::Modified` since we have not yet recomputed the tree's
-    /// hash.
+    /// Returns the hash of the tree referenced by the link.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `Link::Modified` — this is **intentional invariant enforcement**.
+    /// A `Modified` link has pending uncommitted changes, so its hash is stale
+    /// and must not be consumed. All code paths must commit modified links
+    /// (transitioning them to `Uncommitted` or `Loaded`) before reading their
+    /// hash. A panic here indicates a logic bug in the caller, not a missing
+    /// error path.
+    ///
+    /// **Design note (audit M1, 2026-03-08):** Replacing this panic with a
+    /// fallback (e.g. returning the stale kv-hash) was considered and rejected
+    /// because it would silently produce invalid Merkle hashes, which is worse
+    /// than a loud crash. The panic is the correct behavior.
     #[inline]
     pub const fn hash(&self) -> &CryptoHash {
         match self {
@@ -161,13 +173,24 @@ impl Link {
         }
     }
 
-    /// Returns the sum of the tree referenced by the link. Panics if link is
-    /// of variant `Link::Modified` since we have not yet recomputed the tree's
-    /// hash.
+    /// Returns the aggregate data of the tree referenced by the link.
+    ///
+    /// # Panics
+    ///
+    /// Panics on `Link::Modified` — this is **intentional invariant enforcement**.
+    /// A `Modified` link has pending uncommitted changes, so its aggregate data
+    /// is stale and must not be consumed. All code paths must commit modified
+    /// links before reading their aggregate data. A panic here indicates a
+    /// logic bug in the caller.
+    ///
+    /// **Design note (audit M1, 2026-03-08):** Replacing this panic with
+    /// `NoAggregateData` was considered and rejected because it would silently
+    /// drop sums/counts from parent computations, leading to incorrect
+    /// cryptographic state. The panic is the correct behavior.
     #[inline]
     pub const fn aggregate_data(&self) -> AggregateData {
         match self {
-            Link::Modified { .. } => panic!("Cannot get hash from modified link"),
+            Link::Modified { .. } => panic!("Cannot get aggregate data from modified link"),
             Link::Reference { aggregate_data, .. } => *aggregate_data,
             Link::Uncommitted { aggregate_data, .. } => *aggregate_data,
             Link::Loaded { aggregate_data, .. } => *aggregate_data,
