@@ -1291,10 +1291,15 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let transaction = storage.start_transaction();
+        let storage_batch = StorageBatch::new();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .get_transactional_storage_context(
+                    SubtreePath::empty(),
+                    Some(&storage_batch),
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1319,10 +1324,15 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let transaction = storage.start_transaction();
+        let storage_batch = StorageBatch::new();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .get_transactional_storage_context(
+                    SubtreePath::empty(),
+                    Some(&storage_batch),
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1605,9 +1615,14 @@ mod test {
             .unwrap()
             .expect("cannot commit batch");
 
+        let batch2 = StorageBatch::new();
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .get_transactional_storage_context(
+                    SubtreePath::empty(),
+                    Some(&batch2),
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

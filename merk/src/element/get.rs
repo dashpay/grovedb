@@ -609,8 +609,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        let batch2 = StorageBatch::new();
         let ctx = storage
-            .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch2), &transaction)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,
