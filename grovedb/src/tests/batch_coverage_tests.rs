@@ -1550,6 +1550,97 @@ mod tests {
     }
 
     // ===================================================================
+    // 30b. InsertIfNotExists: tree + items in same batch (propagation path)
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_if_not_exists_tree_then_items_same_batch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // InsertIfNotExists for tree and items. The tree insert triggers the
+        // occupied-entry propagation path for InsertIfNotExists variant.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![],
+                b"new_tree".to_vec(),
+                Element::empty_tree(),
+            ),
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![b"new_tree".to_vec()],
+                b"item1".to_vec(),
+                Element::new_item(b"v1".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![b"new_tree".to_vec()],
+                b"item2".to_vec(),
+                Element::new_item(b"v2".to_vec()),
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists batch with tree + items should succeed");
+
+        let i1 = db
+            .get([b"new_tree"].as_ref(), b"item1", None, grove_version)
+            .unwrap()
+            .expect("item1 should exist");
+        assert_eq!(i1, Element::new_item(b"v1".to_vec()));
+    }
+
+    // ===================================================================
+    // 30c. InsertIfNotExists: Debug format
+    // ===================================================================
+
+    #[test]
+    fn test_insert_if_not_exists_debug_format() {
+        let op = QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op);
+        assert!(
+            debug_str.contains("Insert If Not Exists"),
+            "Debug output should contain 'Insert If Not Exists', got: {debug_str}"
+        );
+    }
+
+    // ===================================================================
+    // 30d. InsertIfNotExists: reference to InsertIfNotExists item in same batch
+    // ===================================================================
+
+    #[test]
+    fn test_batch_ref_to_insert_if_not_exists_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_if_not_exists_op(
+                vec![TEST_LEAF.to_vec()],
+                b"if_ne_item".to_vec(),
+                Element::new_item(b"hello".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"ref_to_if_ne".to_vec(),
+                Element::new_reference(ReferencePathType::SiblingReference(b"if_ne_item".to_vec())),
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch ref to InsertIfNotExists item");
+
+        let fetched = db
+            .get([TEST_LEAF].as_ref(), b"ref_to_if_ne", None, grove_version)
+            .unwrap()
+            .expect("ref should resolve");
+        assert_eq!(fetched, Element::new_item(b"hello".to_vec()));
+    }
+
+    // ===================================================================
     // 31. Batch: RefreshReference with trust_refresh_reference = false
     // ===================================================================
 
