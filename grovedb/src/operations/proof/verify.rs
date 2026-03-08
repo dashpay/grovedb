@@ -515,12 +515,14 @@ impl GroveDb {
                                                 .iter_mut()
                                                 .for_each(|limit| *limit = limit.saturating_sub(1));
                                         }
-                                        if limit_left == &Some(0) {
-                                            break;
-                                        }
                                     }
 
                                     // Dispatch based on lower layer proof type
+                                    // NOTE: We must ALWAYS verify the child layer
+                                    // proof even when the limit is exhausted from the
+                                    // parent tree result. Skipping verification here
+                                    // would allow a corrupted child proof to be
+                                    // silently accepted.
                                     let lower_hash = match &lower_layer.merk_proof {
                                         ProofBytes::Merk(_) => {
                                             // Standard Merk subtree - recurse
@@ -1434,10 +1436,12 @@ impl GroveDb {
                                                 .iter_mut()
                                                 .for_each(|limit| *limit = limit.saturating_sub(1));
                                         }
-                                        if limit_left == &Some(0) {
-                                            break;
-                                        }
                                     }
+                                    // NOTE: We must ALWAYS verify the child layer
+                                    // proof even when the limit is exhausted from the
+                                    // parent tree result. Skipping verification here
+                                    // would allow a corrupted child proof to be
+                                    // silently accepted.
                                     let lower_hash = Self::verify_layer_proof(
                                         lower_layer,
                                         prove_options,
