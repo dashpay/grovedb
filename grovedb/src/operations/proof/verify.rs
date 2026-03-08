@@ -391,7 +391,7 @@ impl GroveDb {
         Ok((root_hash, last_tree_feature_type, result))
     }
 
-    fn verify_layer_proof_v1<T>(
+    pub(crate) fn verify_layer_proof_v1<T>(
         layer_proof: &LayerProof,
         prove_options: &ProveOptions,
         query: &PathQuery,
@@ -1285,7 +1285,7 @@ impl GroveDb {
         Ok(positions)
     }
 
-    fn verify_layer_proof<T>(
+    pub(crate) fn verify_layer_proof<T>(
         layer_proof: &MerkOnlyLayerProof,
         prove_options: &ProveOptions,
         query: &PathQuery,

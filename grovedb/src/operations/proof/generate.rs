@@ -219,7 +219,7 @@ impl GroveDb {
 
     /// Perform a pre-order traversal of the tree based on the provided
     /// subqueries
-    fn prove_subqueries(
+    pub(crate) fn prove_subqueries(
         &self,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
@@ -858,7 +858,7 @@ impl GroveDb {
 
     /// V1 version of prove_subqueries that returns `LayerProof` and handles
     /// MmrTree/BulkAppendTree elements with type-specific proofs.
-    fn prove_subqueries_v1(
+    pub(crate) fn prove_subqueries_v1(
         &self,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
