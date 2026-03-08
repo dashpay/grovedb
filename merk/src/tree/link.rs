@@ -293,7 +293,14 @@ impl Link {
         not_prefixed_key_len + HASH_LENGTH_U32 + 4 + sum_tree_cost
     }
 
-    /// The encoding cost is always 8 bytes for the sum instead of a varint
+    /// Returns the estimated encoding cost of this link in bytes.
+    ///
+    /// This intentionally uses fixed sizes (8 bytes for single aggregate
+    /// values, 16 bytes for double) rather than exact varint lengths. The
+    /// actual `encode_into()` uses varint encoding, so the real encoded size
+    /// may be smaller for small values. The fixed-size approach is preferred
+    /// for fee calculation simplicity and consistency — changing to exact
+    /// sizes would be a breaking change to cost/fee computations.
     #[inline]
     pub fn encoding_cost(&self) -> Result<usize> {
         debug_assert!(self.key().len() < 256, "Key length must be less than 256");
