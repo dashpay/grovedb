@@ -65,7 +65,7 @@ impl Encode for Query {
 
 /// Maximum number of query items allowed during decoding.
 /// Prevents OOM from malicious inputs with inflated lengths.
-const MAX_QUERY_ITEMS: usize = 10_000;
+const MAX_QUERY_ITEMS: usize = 262_144;
 
 /// Maximum number of conditional subquery branches allowed during decoding.
 /// Prevents OOM from malicious inputs with inflated lengths.
