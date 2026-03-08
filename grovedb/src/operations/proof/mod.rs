@@ -36,6 +36,19 @@ use crate::{
 };
 
 /// Options controlling proof generation behavior.
+///
+/// # Security note
+///
+/// `ProveOptions` is serialized as part of the proof via `bincode::Encode` /
+/// `bincode::Decode`. During verification the verifier deserializes these
+/// options from the proof bytes, which means **the values come from the
+/// (potentially untrusted) prover**. A malicious prover could craft a proof
+/// with `decrease_limit_on_empty_sub_query_result` set to `true` even when
+/// the original query used `false`, causing the verifier to consume its
+/// result limit faster and therefore return fewer results than actually
+/// exist. Verifiers that need to guard against this should compare the
+/// deserialized options against the expected values for the query being
+/// verified.
 #[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct ProveOptions {
     /// This tells the proof system to decrease the available limit of the query
@@ -44,11 +57,23 @@ pub struct ProveOptions {
     /// known structure where we know that there are only a few empty
     /// subtrees.
     ///
-    /// !!! Warning !!! Be very careful:
-    /// If this is set to `false` then you must be sure that the sub queries do
-    /// not match many trees, Otherwise you could crash the system as the
-    /// proof system goes through millions of subtrees and eventually runs
-    /// out of memory
+    /// # Warning
+    ///
+    /// Be very careful: if this is set to `false` then you must be sure that
+    /// the sub queries do not match many trees. Otherwise you could crash the
+    /// system as the proof system goes through millions of subtrees and
+    /// eventually runs out of memory.
+    ///
+    /// # Security note
+    ///
+    /// This field is embedded in the serialized proof and deserialized by the
+    /// verifier. Because it originates from the prover, it must be treated as
+    /// **untrusted input**. A malicious prover can set this to `true`
+    /// regardless of the original query intent, which causes the verifier to
+    /// count empty subtrees against the query limit and thereby return fewer
+    /// results than it should. Applications that need to defend against
+    /// result-truncation attacks should validate this value after
+    /// deserialization.
     pub decrease_limit_on_empty_sub_query_result: bool,
 }
 

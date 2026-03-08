@@ -2839,7 +2839,30 @@ impl GroveDb {
             .add_cost(cost)
     }
 
-    /// Applies operations on GroveDB without batching
+    /// Applies operations on GroveDB one at a time, without batching.
+    ///
+    /// # Warning -- not atomic
+    ///
+    /// Unlike [`apply_batch`](Self::apply_batch), this method processes each
+    /// operation individually and applies its side-effects to the current
+    /// storage context immediately. If an operation in the middle of the list
+    /// fails, all preceding operations will have already been applied and
+    /// **will not be rolled back** within this method. (Note: when a
+    /// `transaction` is supplied, the caller can still roll back the entire
+    /// transaction; the non-atomicity refers to the inability to undo
+    /// *individual* operations within the list.)
+    /// This means:
+    ///
+    /// * The storage context may be left in a partially-updated state on
+    ///   failure.
+    /// * Root hashes may differ from the result of applying the same
+    ///   operations via `apply_batch`, because batch application propagates
+    ///   root hashes in a single pass whereas this method updates trees
+    ///   one-by-one.
+    ///
+    /// Use this method **only** for testing, debugging, or situations where
+    /// partial application is explicitly acceptable. For production workloads
+    /// that require atomicity, use [`apply_batch`](Self::apply_batch) instead.
     pub fn apply_operations_without_batching(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -5312,6 +5335,47 @@ mod tests {
         db.apply_batch(ops, None, Some(&tx), grove_version)
             .unwrap()
             .expect("batch with 255-byte key should succeed");
+    }
+
+    #[test]
+    fn test_apply_operations_without_batching_is_not_atomic() {
+        // Demonstrates that apply_operations_without_batching is NOT atomic:
+        // if the second operation fails, the first operation's side-effects
+        // are still committed to the database.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        // Op 1: Insert a valid item under TEST_LEAF -- this should succeed.
+        // Op 2: Insert an item under a non-existent subtree -- this should fail.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_item(b"value1".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"nonexistent_subtree".to_vec()],
+                b"key2".to_vec(),
+                Element::new_item(b"value2".to_vec()),
+            ),
+        ];
+
+        // The overall call should fail because the second op targets a
+        // subtree that does not exist.
+        let result = db.apply_operations_without_batching(ops, None, Some(&tx), grove_version);
+        assert!(
+            result.unwrap().is_err(),
+            "should fail because the second op targets a non-existent subtree"
+        );
+
+        // Despite the failure, the first operation was already committed
+        // (non-atomic behavior). We can observe this by reading key1.
+        let element = db
+            .get([TEST_LEAF].as_ref(), b"key1", Some(&tx), grove_version)
+            .unwrap()
+            .expect("first op should have been committed despite later failure");
+        assert_eq!(element, Element::new_item(b"value1".to_vec()));
     }
 
     #[test]
