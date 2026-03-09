@@ -6598,4 +6598,435 @@ mod tests {
             err
         );
     }
+
+    // =========================================================================
+    // KVValueHashFeatureTypeWithChildHash proof node coverage
+    // =========================================================================
+
+    #[test]
+    fn prove_non_empty_merk_tree_without_subquery() {
+        // A non-empty regular Tree queried without a subquery should produce
+        // a KVValueHashFeatureTypeWithChildHash proof node during generation
+        // and pass the child_hash_verified check during verification.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert subtree");
+
+        // Populate subtree so it becomes non-empty (root hash != None)
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_a",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_a");
+
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_b",
+            Element::new_item(b"world".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_b");
+
+        // Query "subtree" key under [root] WITHOUT a subquery
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-empty tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify non-empty tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(results.len(), 1, "should return the subtree element itself");
+    }
+
+    #[test]
+    fn prove_non_empty_sum_tree_without_subquery() {
+        // A non-empty SumTree queried without a subquery should use
+        // KVValueHashFeatureTypeWithChildHash and pass verification.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_tree");
+
+        db.insert(
+            [b"root".as_slice(), b"sum_tree".as_slice()].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item a");
+
+        db.insert(
+            [b"root".as_slice(), b"sum_tree".as_slice()].as_ref(),
+            b"b",
+            Element::new_sum_item(10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item b");
+
+        // Query "sum_tree" under [root] without subquery
+        let mut query = Query::new();
+        query.insert_key(b"sum_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-empty sum tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify non-empty sum tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(
+            results.len(),
+            1,
+            "should return the sum tree element itself"
+        );
+    }
+
+    #[test]
+    fn prove_non_empty_count_tree_without_subquery() {
+        // A non-empty CountTree queried without a subquery should use
+        // KVValueHashFeatureTypeWithChildHash and pass verification.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"count_tree",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert count_tree");
+
+        db.insert(
+            [b"root".as_slice(), b"count_tree".as_slice()].as_ref(),
+            b"x",
+            Element::new_item(b"data".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item x into count_tree");
+
+        // Query "count_tree" under [root] without subquery
+        let mut query = Query::new();
+        query.insert_key(b"count_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-empty count tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify non-empty count tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(
+            results.len(),
+            1,
+            "should return the count tree element itself"
+        );
+    }
+
+    #[test]
+    fn prove_v0_non_empty_merk_tree_without_subquery() {
+        // Same as prove_non_empty_merk_tree_without_subquery but forces V0 proof
+        // generation (GROVE_V2 uses prove_query_non_serialized version 0).
+        // This exercises the V0 child hash injection in generate.rs and the
+        // V0 child_hash_verified check in verify.rs.
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert subtree");
+
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_a",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_a");
+
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_b",
+            Element::new_item(b"world".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_b");
+
+        // Query "subtree" key under [root] WITHOUT a subquery
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove V0 non-empty tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify V0 non-empty tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(
+            results.len(),
+            1,
+            "should return the subtree element itself (V0)"
+        );
+    }
+
+    #[test]
+    fn prove_multiple_non_empty_trees_without_subquery() {
+        // Mix of tree types (Tree, SumTree, CountTree) and a plain Item at the
+        // same level, all queried with a range-all query without subquery.
+        // Non-empty trees should each produce KVValueHashFeatureTypeWithChildHash
+        // proof nodes; the plain Item and empty trees produce normal nodes.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        // tree_a: regular non-empty Tree
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_a",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_a");
+
+        db.insert(
+            [b"root".as_slice(), b"tree_a".as_slice()].as_ref(),
+            b"child1",
+            Element::new_item(b"v1".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert child1 into tree_a");
+
+        // tree_b: non-empty SumTree
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_b",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_b (sum tree)");
+
+        db.insert(
+            [b"root".as_slice(), b"tree_b".as_slice()].as_ref(),
+            b"s1",
+            Element::new_sum_item(42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item into tree_b");
+
+        // item_c: plain Item (not a tree)
+        db.insert(
+            [b"root"].as_ref(),
+            b"item_c",
+            Element::new_item(b"plain_value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_c");
+
+        // Range-all query on [root] without subquery
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove multiple non-empty trees without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify multiple non-empty trees without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        // item_c + tree_a + tree_b = 3 elements (sorted lexicographically)
+        assert_eq!(
+            results.len(),
+            3,
+            "should return all 3 elements (item + 2 non-empty trees)"
+        );
+    }
 }
