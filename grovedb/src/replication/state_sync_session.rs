@@ -208,7 +208,12 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     /// Returns true if all subtrees have been fully synchronized.
+    /// Returns false if sync has never started (no prefixes processed).
     pub fn is_sync_completed(&self) -> bool {
+        if self.current_prefixes.is_empty() && self.processed_prefixes.is_empty() {
+            return false;
+        }
+
         for (_, subtree_state_info) in self.current_prefixes.iter() {
             if !subtree_state_info.pending_chunks.is_empty() {
                 return false;
@@ -223,10 +228,46 @@ impl<'db> MultiStateSyncSession<'db> {
     }
 
     /// Commits the sync session by finalizing the underlying transaction.
-    pub fn commit(self: Pin<Box<Self>>) -> Result<(), Error> {
+    ///
+    /// Before committing, verifies that the GroveDB root hash matches the
+    /// expected `app_hash` to ensure the overall composition of all restored
+    /// subtrees is correct.
+    pub fn commit(self: Pin<Box<Self>>, grove_version: &GroveVersion) -> Result<(), Error> {
+        if !self.is_sync_completed() {
+            return Err(Error::CorruptedData(
+                "cannot commit an incomplete state sync session".to_string(),
+            ));
+        }
+
         // SAFETY: the struct isn't used anymore and no storage contexts would access
-        // transaction
+        // transaction — is_sync_completed() guarantees all restorers are finished
+        // and current_prefixes has no active storage contexts.
         let session = unsafe { Pin::into_inner_unchecked(self) };
+
+        // Verify the final root hash matches the expected app_hash before committing.
+        // Individual subtree chunks are hash-verified during restore, but we must also
+        // verify the overall GroveDB root to ensure the composition is correct.
+        //
+        // TODO: This check is not fully atomic. apply_chunk() flushes completed
+        // subtree batches via set_new_transaction()/commit_transaction(), so on
+        // mismatch only the last transaction is rolled back while earlier subtrees
+        // remain on disk. A full fix requires staging all subtree commits and only
+        // persisting them after root hash verification passes.
+        let actual_root_hash = session
+            .db
+            .root_hash(Some(&session.transaction), grove_version)
+            .unwrap()
+            .map_err(|e| {
+                Error::CorruptedData(format!("failed to compute root hash before commit: {e}"))
+            })?;
+        if actual_root_hash != session.app_hash {
+            return Err(Error::CorruptedData(format!(
+                "state sync root hash mismatch: expected {}, got {}",
+                hex::encode(session.app_hash),
+                hex::encode(actual_root_hash),
+            )));
+        }
+
         session
             .db
             .commit_transaction(session.transaction)
@@ -240,10 +281,11 @@ impl<'db> MultiStateSyncSession<'db> {
     unsafe fn set_new_transaction(
         self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
     ) -> Result<(), Error> {
-        debug_assert!(
-            self.current_prefixes.is_empty(),
-            "current_prefixes must be empty before replacing transaction"
-        );
+        if !self.current_prefixes.is_empty() {
+            return Err(Error::InternalError(
+                "current_prefixes must be empty before replacing transaction".to_string(),
+            ));
+        }
         let this = unsafe { Pin::as_mut(self).get_unchecked_mut() };
         let old_tx = mem::replace(&mut this.transaction, this.db.start_transaction());
         self.db.commit_transaction(old_tx).value.map_err(|e| {
@@ -314,12 +356,7 @@ impl<'db> MultiStateSyncSession<'db> {
             self.as_mut()
                 .current_prefixes()
                 .insert(chunk_prefix, sync_info);
-            Ok(encode_global_chunk_id(
-                chunk_prefix,
-                root_key,
-                tree_type,
-                vec![],
-            ))
+            encode_global_chunk_id(chunk_prefix, root_key, tree_type, vec![])
         } else {
             Err(Error::InternalError(
                 "Unable to open merk for replication".to_string(),
@@ -485,7 +522,7 @@ impl<'db> MultiStateSyncSession<'db> {
                         subtree_state_sync.root_key.clone(),
                         subtree_state_sync.tree_type,
                         grouped_ids.to_vec(),
-                    ));
+                    )?);
                 }
                 next_global_chunk_ids.extend(next_chunk_ids);
             } else if subtree_state_sync.pending_chunks.is_empty() {
@@ -494,9 +531,19 @@ impl<'db> MultiStateSyncSession<'db> {
                 // Subtree is finished. We can save it.
                 let is_subtree_empty = subtree_state_sync.num_processed_chunks == 0;
                 if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
-                    if !is_subtree_empty
-                        && let Err(err) = prefix_data.restorer.finalize(grove_version)
-                    {
+                    if is_subtree_empty {
+                        // For empty subtrees, verify the restorer's underlying merk has a
+                        // NULL root hash. A malicious peer that sends empty data for a
+                        // non-empty subtree will be caught here (and also at commit time
+                        // via H3 root hash verification).
+                        let merk = prefix_data.restorer.into_merk();
+                        let merk_root = merk.root_hash().unwrap();
+                        if merk_root != grovedb_merk::tree::hash::NULL_HASH {
+                            return Err(Error::InternalError(
+                                "empty subtree has non-null root hash".to_string(),
+                            ));
+                        }
+                    } else if let Err(err) = prefix_data.restorer.finalize(grove_version) {
                         return Err(Error::InternalError(format!(
                             "Unable to finalize Merk: {:?}",
                             err
@@ -570,7 +617,7 @@ impl<'db> MultiStateSyncSession<'db> {
         let mut res: Vec<Vec<u8>> = vec![];
         for grouped_next_global_chunk_ids in next_global_chunk_ids.chunks(CONST_GROUP_PACKING_SIZE)
         {
-            res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec()));
+            res.push(pack_nested_bytes(grouped_next_global_chunk_ids.to_vec())?);
         }
 
         Ok(res)

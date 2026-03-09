@@ -370,6 +370,12 @@ impl GroveDb {
             // Pre-validate capacity for ALL values before writing anything to
             // storage. Without this check, partial inserts would persist in the
             // transaction on failure.
+            if height >= 16 {
+                return Err(Error::InvalidInput(
+                    "dense tree height must be less than 16",
+                ))
+                .wrap_with_cost(cost);
+            }
             let capacity = ((1u32 << height) - 1) as u16;
             let needed = existing_count as u32 + values.len() as u32;
             if needed > capacity as u32 {

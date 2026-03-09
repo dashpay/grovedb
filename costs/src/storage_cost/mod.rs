@@ -56,8 +56,8 @@ impl Add for StorageCost {
 
     fn add(self, rhs: Self) -> Self::Output {
         Self {
-            added_bytes: self.added_bytes + rhs.added_bytes,
-            replaced_bytes: self.replaced_bytes + rhs.replaced_bytes,
+            added_bytes: self.added_bytes.saturating_add(rhs.added_bytes),
+            replaced_bytes: self.replaced_bytes.saturating_add(rhs.replaced_bytes),
             removed_bytes: self.removed_bytes + rhs.removed_bytes,
         }
     }
@@ -65,8 +65,8 @@ impl Add for StorageCost {
 
 impl AddAssign for StorageCost {
     fn add_assign(&mut self, rhs: Self) {
-        self.added_bytes += rhs.added_bytes;
-        self.replaced_bytes += rhs.replaced_bytes;
+        self.added_bytes = self.added_bytes.saturating_add(rhs.added_bytes);
+        self.replaced_bytes = self.replaced_bytes.saturating_add(rhs.replaced_bytes);
         self.removed_bytes += rhs.removed_bytes;
     }
 }

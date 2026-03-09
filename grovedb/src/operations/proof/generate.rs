@@ -205,6 +205,7 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 &prove_options,
+                0,
                 grove_version
             )
         );
@@ -218,15 +219,23 @@ impl GroveDb {
 
     /// Perform a pre-order traversal of the tree based on the provided
     /// subqueries
-    fn prove_subqueries(
+    pub(crate) fn prove_subqueries(
         &self,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> CostResult<MerkOnlyLayerProof, Error> {
         let mut cost = OperationCost::default();
+
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidInput(
+                "proof generation exceeded maximum depth limit",
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let tx = self.start_transaction();
 
@@ -427,6 +436,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        current_depth + 1,
                                         grove_version,
                                     )
                                 );
@@ -834,6 +844,7 @@ impl GroveDb {
                 path_query,
                 &mut limit,
                 &prove_options,
+                0,
                 grove_version
             )
         );
@@ -847,15 +858,23 @@ impl GroveDb {
 
     /// V1 version of prove_subqueries that returns `LayerProof` and handles
     /// MmrTree/BulkAppendTree elements with type-specific proofs.
-    fn prove_subqueries_v1(
+    pub(crate) fn prove_subqueries_v1(
         &self,
         path: Vec<&[u8]>,
         path_query: &PathQuery,
         overall_limit: &mut Option<u16>,
         prove_options: &ProveOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> CostResult<LayerProof, Error> {
         let mut cost = OperationCost::default();
+
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidInput(
+                "proof generation exceeded maximum depth limit",
+            ))
+            .wrap_with_cost(cost);
+        }
 
         let tx = self.start_transaction();
 
@@ -1122,6 +1141,7 @@ impl GroveDb {
                                         path_query,
                                         overall_limit,
                                         prove_options,
+                                        current_depth + 1,
                                         grove_version,
                                     )
                                 );
@@ -1291,7 +1311,7 @@ impl GroveDb {
 
         // Update limit
         if let Some(limit) = overall_limit.as_mut() {
-            let count = mmr_proof.leaves().len() as u16;
+            let count = mmr_proof.leaves().len().min(u16::MAX as usize) as u16;
             *limit = limit.saturating_sub(count);
         }
 
@@ -1378,7 +1398,7 @@ impl GroveDb {
 
         // Update limit: count individual values in the queried range
         if let Some(limit) = overall_limit.as_mut() {
-            let count = (end.min(total_count) - start) as u16;
+            let count = (end.min(total_count) - start).min(u16::MAX as u64) as u16;
             *limit = limit.saturating_sub(count);
         }
 
@@ -1535,7 +1555,7 @@ impl GroveDb {
 
         // Update limit
         if let Some(limit) = overall_limit.as_mut() {
-            let count = dense_proof.entries.len() as u16;
+            let count = dense_proof.entries.len().min(u16::MAX as usize) as u16;
             *limit = limit.saturating_sub(count);
         }
 
@@ -1642,7 +1662,7 @@ impl GroveDb {
                 }
                 QueryItem::RangeAfter(range) => {
                     let start = Self::decode_be_u16(&range.start)?;
-                    for idx in (start + 1)..count {
+                    for idx in start.saturating_add(1)..count {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
                             return Err(Error::InvalidInput(
@@ -1654,7 +1674,7 @@ impl GroveDb {
                 QueryItem::RangeAfterTo(range) => {
                     let start = Self::decode_be_u16(&range.start)?;
                     let end = Self::decode_be_u16(&range.end)?;
-                    for idx in (start + 1)..end.min(count) {
+                    for idx in start.saturating_add(1)..end.min(count) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
                             return Err(Error::InvalidInput(
@@ -1666,7 +1686,7 @@ impl GroveDb {
                 QueryItem::RangeAfterToInclusive(range) => {
                     let start = Self::decode_be_u16(range.start())?;
                     let end = Self::decode_be_u16(range.end())?;
-                    for idx in (start + 1)..=end.min(max_idx) {
+                    for idx in start.saturating_add(1)..=end.min(max_idx) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
                             return Err(Error::InvalidInput(
@@ -1766,7 +1786,7 @@ impl GroveDb {
                 }
                 QueryItem::RangeAfter(range) => {
                     let start = Self::decode_be_u64(&range.start)?;
-                    for idx in (start + 1)..leaf_count {
+                    for idx in start.saturating_add(1)..leaf_count {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
                             return Err(Error::InvalidInput("query range too large for MMR proof"));
@@ -1776,7 +1796,7 @@ impl GroveDb {
                 QueryItem::RangeAfterTo(range) => {
                     let start = Self::decode_be_u64(&range.start)?;
                     let end = Self::decode_be_u64(&range.end)?;
-                    for idx in (start + 1)..end.min(leaf_count) {
+                    for idx in start.saturating_add(1)..end.min(leaf_count) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
                             return Err(Error::InvalidInput("query range too large for MMR proof"));
@@ -1786,7 +1806,7 @@ impl GroveDb {
                 QueryItem::RangeAfterToInclusive(range) => {
                     let start = Self::decode_be_u64(range.start())?;
                     let end = Self::decode_be_u64(range.end())?;
-                    for idx in (start + 1)..=end.min(max_idx) {
+                    for idx in start.saturating_add(1)..=end.min(max_idx) {
                         indices.push(idx);
                         if indices.len() > MAX_INDICES {
                             return Err(Error::InvalidInput("query range too large for MMR proof"));
@@ -1811,13 +1831,13 @@ impl GroveDb {
                 QueryItem::Key(key) => {
                     let pos = Self::decode_be_u64(key)?;
                     min_start = min_start.min(pos);
-                    max_end = max_end.max(pos + 1);
+                    max_end = max_end.max(pos.saturating_add(1));
                 }
                 QueryItem::RangeInclusive(range) => {
                     let s = Self::decode_be_u64(range.start())?;
                     let e = Self::decode_be_u64(range.end())?;
                     min_start = min_start.min(s);
-                    max_end = max_end.max(e + 1);
+                    max_end = max_end.max(e.saturating_add(1));
                 }
                 QueryItem::Range(range) => {
                     let s = Self::decode_be_u64(&range.start)?;
@@ -1838,7 +1858,7 @@ impl GroveDb {
                 QueryItem::RangeToInclusive(range) => {
                     min_start = 0;
                     let e = Self::decode_be_u64(&range.end)?;
-                    max_end = max_end.max(e + 1);
+                    max_end = max_end.max(e.saturating_add(1));
                 }
                 QueryItem::RangeFull(..) => {
                     min_start = 0;
@@ -1846,20 +1866,20 @@ impl GroveDb {
                 }
                 QueryItem::RangeAfter(range) => {
                     let s = Self::decode_be_u64(&range.start)?;
-                    min_start = min_start.min(s + 1);
+                    min_start = min_start.min(s.saturating_add(1));
                     max_end = total_count;
                 }
                 QueryItem::RangeAfterTo(range) => {
                     let s = Self::decode_be_u64(&range.start)?;
                     let e = Self::decode_be_u64(&range.end)?;
-                    min_start = min_start.min(s + 1);
+                    min_start = min_start.min(s.saturating_add(1));
                     max_end = max_end.max(e);
                 }
                 QueryItem::RangeAfterToInclusive(range) => {
                     let s = Self::decode_be_u64(range.start())?;
                     let e = Self::decode_be_u64(range.end())?;
-                    min_start = min_start.min(s + 1);
-                    max_end = max_end.max(e + 1);
+                    min_start = min_start.min(s.saturating_add(1));
+                    max_end = max_end.max(e.saturating_add(1));
                 }
             }
         }
@@ -1893,5 +1913,149 @@ impl GroveDb {
             .try_into()
             .map_err(|_| Error::InvalidInput("invalid u16 key bytes"))?;
         Ok(u16::from_be_bytes(arr))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_merk::proofs::query::QueryItem;
+
+    use crate::GroveDb;
+
+    /// Helper: encode a u16 as big-endian bytes.
+    fn be_u16(v: u16) -> Vec<u8> {
+        v.to_be_bytes().to_vec()
+    }
+
+    /// Helper: encode a u64 as big-endian bytes.
+    fn be_u64(v: u64) -> Vec<u8> {
+        v.to_be_bytes().to_vec()
+    }
+
+    // -----------------------------------------------------------------------
+    // query_items_to_positions (u16, dense tree)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn range_after_u16_max_returns_empty() {
+        // RangeAfter(u16::MAX) should produce empty: no index after 65535
+        let items = vec![QueryItem::RangeAfter(be_u16(u16::MAX)..)];
+        let result = GroveDb::query_items_to_positions(&items, 100).unwrap();
+        assert!(result.is_empty(), "expected empty, got {:?}", result);
+    }
+
+    #[test]
+    fn range_after_to_u16_max_returns_empty() {
+        // RangeAfterTo(u16::MAX..100): saturated start >= end, so empty
+        let items = vec![QueryItem::RangeAfterTo(be_u16(u16::MAX)..be_u16(100))];
+        let result = GroveDb::query_items_to_positions(&items, 200).unwrap();
+        assert!(result.is_empty(), "expected empty, got {:?}", result);
+    }
+
+    #[test]
+    fn range_after_to_inclusive_u16_max_returns_empty() {
+        // RangeAfterToInclusive(u16::MAX..=u16::MAX) with count=100:
+        // saturated start (u16::MAX) > end.min(99), so empty
+        let items = vec![QueryItem::RangeAfterToInclusive(
+            be_u16(u16::MAX)..=be_u16(u16::MAX),
+        )];
+        let result = GroveDb::query_items_to_positions(&items, 100).unwrap();
+        assert!(result.is_empty(), "expected empty, got {:?}", result);
+    }
+
+    #[test]
+    fn range_after_normal_u16_works() {
+        // RangeAfter(5) with count=10 should yield [6, 7, 8, 9]
+        let items = vec![QueryItem::RangeAfter(be_u16(5)..)];
+        let result = GroveDb::query_items_to_positions(&items, 10).unwrap();
+        assert_eq!(result, vec![6, 7, 8, 9]);
+    }
+
+    // -----------------------------------------------------------------------
+    // query_items_to_leaf_indices (u64, MMR)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn range_after_u64_max_returns_empty() {
+        // RangeAfter(u64::MAX) should produce empty indices
+        let items = vec![QueryItem::RangeAfter(be_u64(u64::MAX)..)];
+        // mmr_size=7 -> leaf_count=4
+        let result = GroveDb::query_items_to_leaf_indices(&items, 7).unwrap();
+        assert!(result.is_empty(), "expected empty, got {:?}", result);
+    }
+
+    #[test]
+    fn range_after_to_u64_max_returns_empty() {
+        let items = vec![QueryItem::RangeAfterTo(be_u64(u64::MAX)..be_u64(100))];
+        let result = GroveDb::query_items_to_leaf_indices(&items, 7).unwrap();
+        assert!(result.is_empty(), "expected empty, got {:?}", result);
+    }
+
+    #[test]
+    fn range_after_to_inclusive_u64_max_returns_empty() {
+        let items = vec![QueryItem::RangeAfterToInclusive(
+            be_u64(u64::MAX)..=be_u64(u64::MAX),
+        )];
+        // leaf_count=4, max_idx=3; saturated u64::MAX..=3 is empty
+        let result = GroveDb::query_items_to_leaf_indices(&items, 7).unwrap();
+        assert!(result.is_empty(), "expected empty, got {:?}", result);
+    }
+
+    // -----------------------------------------------------------------------
+    // query_items_to_range (u64, BulkAppendTree)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn range_after_u64_max_range_no_overflow() {
+        let items = vec![QueryItem::RangeAfter(be_u64(u64::MAX)..)];
+        let (start, end) = GroveDb::query_items_to_range(&items, 100).unwrap();
+        assert!(
+            start >= end,
+            "expected empty range, got ({}, {})",
+            start,
+            end
+        );
+    }
+
+    #[test]
+    fn key_u64_max_range_no_overflow() {
+        let items = vec![QueryItem::Key(be_u64(u64::MAX))];
+        let (start, end) = GroveDb::query_items_to_range(&items, 100).unwrap();
+        assert!(
+            start >= end,
+            "expected empty range, got ({}, {})",
+            start,
+            end
+        );
+    }
+
+    #[test]
+    fn range_inclusive_u64_max_end_no_overflow() {
+        let items = vec![QueryItem::RangeInclusive(be_u64(0)..=be_u64(u64::MAX))];
+        let (start, end) = GroveDb::query_items_to_range(&items, 100).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(end, 100); // clamped to total_count
+    }
+
+    #[test]
+    fn range_to_inclusive_u64_max_no_overflow() {
+        let items = vec![QueryItem::RangeToInclusive(..=be_u64(u64::MAX))];
+        let (start, end) = GroveDb::query_items_to_range(&items, 50).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(end, 50); // clamped
+    }
+
+    #[test]
+    fn range_after_to_inclusive_u64_max_no_overflow() {
+        let items = vec![QueryItem::RangeAfterToInclusive(
+            be_u64(u64::MAX)..=be_u64(u64::MAX),
+        )];
+        let (start, end) = GroveDb::query_items_to_range(&items, 100).unwrap();
+        assert!(
+            start >= end,
+            "expected empty range, got ({}, {})",
+            start,
+            end
+        );
     }
 }

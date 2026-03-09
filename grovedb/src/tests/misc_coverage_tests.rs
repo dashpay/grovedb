@@ -2994,6 +2994,132 @@ fn batch_worst_case_insert_only_item_cost() {
     );
 }
 
+#[test]
+fn batch_average_case_insert_if_not_exists_item_cost() {
+    let grove_version = GroveVersion::latest();
+
+    let ops_insert_only = vec![QualifiedGroveDbOp::insert_only_op(
+        vec![],
+        b"key1".to_vec(),
+        Element::new_item(b"value1".to_vec()),
+    )];
+
+    let ops_if_not_exists = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+        vec![],
+        b"key1".to_vec(),
+        Element::new_item(b"value1".to_vec()),
+    )];
+
+    let make_paths = || {
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLayerCount::ApproximateElements(5),
+                estimated_layer_sizes: EstimatedLayerSizes::AllItems(15, 17, None),
+            },
+        );
+        paths
+    };
+
+    let cost_insert_only = GroveDb::estimated_case_operations_for_batch(
+        AverageCaseCostsType(make_paths()),
+        ops_insert_only,
+        None,
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| Ok((NoStorageRemoval, NoStorageRemoval)),
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("average case insert only cost should succeed");
+
+    let cost_if_not_exists = GroveDb::estimated_case_operations_for_batch(
+        AverageCaseCostsType(make_paths()),
+        ops_if_not_exists,
+        None,
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| Ok((NoStorageRemoval, NoStorageRemoval)),
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("average case insert_if_not_exists cost should succeed");
+
+    assert!(
+        cost_if_not_exists.seek_count > cost_insert_only.seek_count,
+        "insert_if_not_exists should have more seeks than insert_only ({} vs {})",
+        cost_if_not_exists.seek_count,
+        cost_insert_only.seek_count,
+    );
+    assert!(
+        cost_if_not_exists.storage_loaded_bytes > cost_insert_only.storage_loaded_bytes,
+        "insert_if_not_exists should load more bytes than insert_only ({} vs {})",
+        cost_if_not_exists.storage_loaded_bytes,
+        cost_insert_only.storage_loaded_bytes,
+    );
+}
+
+#[test]
+fn batch_worst_case_insert_if_not_exists_item_cost() {
+    let grove_version = GroveVersion::latest();
+
+    let ops_insert_only = vec![QualifiedGroveDbOp::insert_only_op(
+        vec![],
+        b"key1".to_vec(),
+        Element::new_item(b"value1".to_vec()),
+    )];
+
+    let ops_if_not_exists = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+        vec![],
+        b"key1".to_vec(),
+        Element::new_item(b"value1".to_vec()),
+    )];
+
+    let make_paths = || {
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            WorstCaseLayerInformation::MaxElementsNumber(5),
+        );
+        paths
+    };
+
+    let cost_insert_only = GroveDb::estimated_case_operations_for_batch(
+        WorstCaseCostsType(make_paths()),
+        ops_insert_only,
+        None,
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| Ok((NoStorageRemoval, NoStorageRemoval)),
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("worst case insert only cost should succeed");
+
+    let cost_if_not_exists = GroveDb::estimated_case_operations_for_batch(
+        WorstCaseCostsType(make_paths()),
+        ops_if_not_exists,
+        None,
+        |_cost, _old_flags, _new_flags| Ok(false),
+        |_flags, _removed_key_bytes, _removed_value_bytes| Ok((NoStorageRemoval, NoStorageRemoval)),
+        grove_version,
+    )
+    .cost_as_result()
+    .expect("worst case insert_if_not_exists cost should succeed");
+
+    assert!(
+        cost_if_not_exists.seek_count > cost_insert_only.seek_count,
+        "insert_if_not_exists should have more seeks than insert_only ({} vs {})",
+        cost_if_not_exists.seek_count,
+        cost_insert_only.seek_count,
+    );
+    assert!(
+        cost_if_not_exists.storage_loaded_bytes > cost_insert_only.storage_loaded_bytes,
+        "insert_if_not_exists should load more bytes than insert_only ({} vs {})",
+        cost_if_not_exists.storage_loaded_bytes,
+        cost_insert_only.storage_loaded_bytes,
+    );
+}
+
 // ===========================================================================
 // Additional batch estimated cost tests for edge cases
 // ===========================================================================

@@ -554,20 +554,25 @@ where
         res
     }
 
-    /// Sets the tree's top node (base) key
+    /// Sets the tree's top node (base) key.
+    ///
     /// The base root key should only be used if the Merk tree is independent
-    /// Meaning that it doesn't have a parent Merk
+    /// (i.e., it does not have a parent Merk).
+    ///
+    /// When clearing the root key (\`key\` is \`None\`), the delete is issued
+    /// with \`cost_info: None\` so freed-bytes cost is estimated from
+    /// committed DB state. This is acceptable because root-key storage is
+    /// treated as free in the default configuration
+    /// (\`base_root_storage_is_free: true\`).
     pub fn set_base_root_key(&mut self, key: Option<Vec<u8>>) -> CostResult<(), Error> {
         if let Some(key) = key {
             self.storage
                 .put_root(ROOT_KEY_KEY, key.as_slice(), None)
-                .map_err(Error::StorageError) // todo: maybe
-                                              // change None?
+                .map_err(Error::StorageError)
         } else {
             self.storage
                 .delete_root(ROOT_KEY_KEY, None)
-                .map_err(Error::StorageError) // todo: maybe
-                                              // change None?
+                .map_err(Error::StorageError)
         }
     }
 
@@ -769,7 +774,7 @@ where
         }
 
         let node = node.unwrap();
-        if node.hash().unwrap() != hash {
+        if node.hash_for_link(self.tree_type).unwrap() != hash {
             bad_link_map.insert(instruction_id.to_vec(), hash);
             parent_keys.insert(instruction_id.to_vec(), parent_key.to_vec());
             return;
@@ -871,12 +876,15 @@ where
         );
         let chunk_depths = if let Some(min) = min_depth {
             if is_provable_count_tree {
-                calculate_chunk_depths_with_minimum(tree_depth, max_depth, min)
+                cost_return_on_error_no_add!(
+                    cost,
+                    calculate_chunk_depths_with_minimum(tree_depth, max_depth, min)
+                )
             } else {
-                calculate_chunk_depths(tree_depth, max_depth)
+                cost_return_on_error_no_add!(cost, calculate_chunk_depths(tree_depth, max_depth))
             }
         } else {
-            calculate_chunk_depths(tree_depth, max_depth)
+            cost_return_on_error_no_add!(cost, calculate_chunk_depths(tree_depth, max_depth))
         };
 
         // Generate proof using create_chunk
@@ -1288,10 +1296,15 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let transaction = storage.start_transaction();
+        let storage_batch = StorageBatch::new();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .get_transactional_storage_context(
+                    SubtreePath::empty(),
+                    Some(&storage_batch),
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1316,10 +1329,15 @@ mod test {
         let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
             .expect("cannot open rocksdb storage");
         let transaction = storage.start_transaction();
+        let storage_batch = StorageBatch::new();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .get_transactional_storage_context(
+                    SubtreePath::empty(),
+                    Some(&storage_batch),
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1602,9 +1620,14 @@ mod test {
             .unwrap()
             .expect("cannot commit batch");
 
+        let batch2 = StorageBatch::new();
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+                .get_transactional_storage_context(
+                    SubtreePath::empty(),
+                    Some(&batch2),
+                    &transaction,
+                )
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,

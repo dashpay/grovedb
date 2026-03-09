@@ -128,7 +128,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         entries.push(new_value.to_vec());
 
         // Serialize chunk blob as a standard MMR leaf — hash = blake3(0x00 || blob)
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries)?;
         let leaf = MmrNode::leaf(blob);
 
         // Append chunk root to MMR

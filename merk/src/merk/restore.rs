@@ -57,6 +57,41 @@ use crate::{
 /// Restorer handles verification of chunks and replication of Merk trees.
 /// Chunks can be processed randomly as long as their parent has been processed
 /// already.
+///
+/// # Height safety during restoration (audit finding #15, 2026-03-09)
+///
+/// During chunk processing, `Link::Reference` entries are written with
+/// child-height values derived from the proof tree structure within each
+/// chunk. For `Node::Hash` boundaries between chunks, these heights are
+/// placeholders (typically `(0, 0)`) because the actual subtree behind a
+/// hash node has not yet been received. This means that between
+/// `process_chunk` calls, the on-disk tree may contain links with
+/// inaccurate height metadata.
+///
+/// **This is safe by design for three reasons:**
+///
+/// 1. **Exclusive ownership.** The `Restorer` takes full ownership of the
+///    `Merk` instance. No external queries, inserts, or balancing
+///    operations are served from the partially-restored tree. At the
+///    GroveDB level, the Merk is wrapped inside `SubtreeStateSyncInfo`
+///    within a `MultiStateSyncSession`, which is inaccessible to normal
+///    database operations.
+///
+/// 2. **No structural mutations.** During restoration the tree is only
+///    being populated, never rebalanced. Heights are used for AVL
+///    balancing decisions during inserts/deletes, but those operations
+///    never occur on a restoring tree. The intermediate height values
+///    therefore have no effect on correctness.
+///
+/// 3. **Mandatory finalization.** Callers must invoke [`Restorer::finalize`]
+///    to obtain the restored `Merk`. `finalize` runs `verify_height`
+///    which performs a full recursive height audit, and if any
+///    discrepancy is found, `rewrite_heights` traverses the entire tree
+///    bottom-up to compute correct heights from the actual structure.
+///    After height correction, `finalize` additionally calls
+///    `merk.verify()` to validate the full tree integrity before
+///    returning. A `Merk` with incorrect heights can never escape the
+///    `Restorer`.
 pub struct Restorer<S> {
     merk: Merk<S>,
     chunk_id_to_root_hash: BTreeMap<Vec<u8>, CryptoHash>,
@@ -81,6 +116,13 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
             parent_key_value_hash,
             parent_keys: BTreeMap::new(),
         }
+    }
+
+    /// Consumes the `Restorer` and returns the underlying `Merk` without
+    /// finalizing. Useful for inspecting the merk state (e.g., checking its
+    /// root hash) when no chunks have been processed.
+    pub fn into_merk(self) -> Merk<S> {
+        self.merk
     }
 
     /// Processes a chunk at some chunk id, returns the chunks id's of chunks
@@ -225,7 +267,18 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         Ok(tree)
     }
 
-    /// Write the verified chunk to storage
+    /// Write the verified chunk to storage.
+    ///
+    /// Note on child heights: `Child::as_link()` produces `Link::Reference`
+    /// entries whose `child_heights` are derived from the proof tree built
+    /// by `execute()`. For KV children within the same chunk these heights
+    /// are correct (computed bottom-up by `Tree::attach`). For `Node::Hash`
+    /// children -- which represent chunk boundaries -- the heights are
+    /// placeholders (`(0, 0)`) because the referenced subtree has not been
+    /// received yet. These placeholder heights are harmless: the Restorer
+    /// owns the Merk exclusively (no queries or balancing occur), and
+    /// `finalize()` will verify and rewrite all heights before returning
+    /// the Merk. See the struct-level doc comment for full rationale.
     fn write_chunk(
         &mut self,
         chunk_tree: ProofTree,
@@ -250,7 +303,9 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                         )
                         .unwrap();
 
-                        // update tree links
+                        // Update tree links. Heights in these links may be
+                        // placeholders for Hash-node children (chunk
+                        // boundaries); corrected by finalize().
                         *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
                         *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
 
@@ -320,9 +375,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                             traversal_instruction_as_vec_bytes(node_traversal_instruction);
                         new_chunk_ids.push(chunk_id.to_vec());
                         self.chunk_id_to_root_hash.insert(chunk_id.to_vec(), *hash);
-                        // TODO: handle unwrap
-                        self.parent_keys
-                            .insert(chunk_id, parent_key.unwrap().to_owned());
+                        let parent = parent_key.ok_or(Error::ChunkRestoringError(
+                            ChunkError::InvalidChunkProof(
+                                "hash node at root of chunk has no parent key",
+                            ),
+                        ))?;
+                        self.parent_keys.insert(chunk_id, parent.to_owned());
                         Ok(())
                     }
                     _ => {
@@ -400,7 +458,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         self.merk
             .storage
             .put(parent_key, &parent_bytes, None, None)
-            .unwrap()
+            .value
             .map_err(StorageError)?;
 
         self.parent_keys
@@ -410,23 +468,31 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         Ok(())
     }
 
-    /// Each nodes height is not added to state as such the producer could lie
-    /// about the height values after replication we need to verify the
-    /// heights and if invalid recompute the correct values
+    /// Recomputes all child heights bottom-up from the actual tree structure.
+    ///
+    /// Heights are not part of the cryptographic commitment (they do not
+    /// affect the Merkle root hash), so a chunk producer could supply
+    /// arbitrary height values. Additionally, during multi-chunk
+    /// restoration, heights for chunk-boundary links are stored as
+    /// placeholders. This method walks the entire tree, computes true
+    /// heights from the leaves up, and rewrites every node with the
+    /// correct values. Called by `finalize()` when `verify_height` detects
+    /// a discrepancy.
     fn rewrite_heights(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
         fn rewrite_child_heights<'s, 'db, S: StorageContext<'db>>(
             mut walker: RefWalker<MerkSource<'s, S>>,
             batch: &mut <S as StorageContext<'db>>::Batch,
             grove_version: &GroveVersion,
         ) -> Result<(u8, u8), Error> {
-            // TODO: remove unwrap
             let mut cloned_node = TreeNode::decode(
                 walker.tree().key().to_vec(),
                 walker.tree().encode().as_slice(),
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
-            .unwrap();
+            .map_err(|_| {
+                Error::CorruptedState("failed to decode tree node during height rewrite")
+            })?;
 
             let mut left_height = 0;
             let mut right_height = 0;
@@ -437,11 +503,16 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
             {
                 let left_child_heights = rewrite_child_heights(left_walker, batch, grove_version)?;
                 left_height = left_child_heights.0.max(left_child_heights.1) + 1;
-                *cloned_node.link_mut(LEFT).unwrap().child_heights_mut() = left_child_heights;
+                *cloned_node
+                    .link_mut(LEFT)
+                    .ok_or(Error::CorruptedState(
+                        "expected left link to exist after walking left child",
+                    ))?
+                    .child_heights_mut() = left_child_heights;
             }
 
             if let Some(right_walker) = walker
@@ -450,12 +521,17 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
             {
                 let right_child_heights =
                     rewrite_child_heights(right_walker, batch, grove_version)?;
                 right_height = right_child_heights.0.max(right_child_heights.1) + 1;
-                *cloned_node.link_mut(RIGHT).unwrap().child_heights_mut() = right_child_heights;
+                *cloned_node
+                    .link_mut(RIGHT)
+                    .ok_or(Error::CorruptedState(
+                        "expected right link to exist after walking right child",
+                    ))?
+                    .child_heights_mut() = right_child_heights;
             }
 
             let bytes = cloned_node.encode();
@@ -504,6 +580,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
     /// Consumes the `Restorer` and returns a newly created, fully populated
     /// Merk instance. This method will return an error if called before
     /// processing all chunks.
+    ///
+    /// This is the only way to obtain the restored `Merk`. It guarantees
+    /// that all height metadata is correct before returning, regardless of
+    /// any placeholder heights stored during intermediate chunk processing.
+    /// See the struct-level doc comment on [`Restorer`] for the full safety
+    /// argument.
     pub fn finalize(mut self, grove_version: &GroveVersion) -> Result<Merk<S>, Error> {
         // ensure all chunks have been processed
         if !self.chunk_id_to_root_hash.is_empty() || !self.parent_keys.is_empty() {
@@ -525,7 +607,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 ))
             })?;
 
-        // if height values are wrong, rewrite height
+        // Heights written during chunk processing may be placeholders (see
+        // write_chunk doc comment). Verify them here, and rewrite if needed.
         if self.verify_height(grove_version).is_err() {
             self.rewrite_heights(grove_version)?;
             // update the root node after height rewrite
@@ -610,7 +693,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&left_tree, left_height, grove_version)?;
             }
@@ -626,7 +709,7 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                     grove_version,
                 )
-                .unwrap()?
+                .value?
                 .ok_or(Error::CorruptedState("link points to non-existent node"))?;
                 self.verify_tree_height(&right_tree, right_height, grove_version)?;
             }
@@ -763,6 +846,57 @@ mod tests {
                 "expected chunk proof to contain only kv or hash nodes",
             )))
         ));
+    }
+
+    /// A malicious peer could send a crafted chunk proof containing only a
+    /// Hash node at the root. Before the fix, this would cause a panic in
+    /// write_chunk because parent_key is None for the root node. After the
+    /// fix, this returns a proper error.
+    #[test]
+    fn test_hash_node_at_chunk_root_returns_error_not_panic() {
+        let grove_version = GroveVersion::latest();
+        // Use a known hash value that we will also set as expected_root_hash
+        // so that verify_chunk passes (a Hash node's proof tree hash equals
+        // the hash it contains).
+        let crafted_hash: CryptoHash = [0xAB; 32];
+        let malicious_chunk = vec![Op::Push(Node::Hash(crafted_hash))];
+
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut restorer = Restorer::new(restoration_merk, crafted_hash, None);
+
+        // process_chunk calls verify_chunk then write_chunk; the Hash node at
+        // the root of the chunk will have parent_key = None and should produce
+        // an error rather than panicking.
+        let result = restorer.process_chunk(
+            &traversal_instruction_as_vec_bytes(&[]),
+            malicious_chunk,
+            grove_version,
+        );
+        assert!(
+            result.is_err(),
+            "expected error for hash-only chunk at root"
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ChunkRestoringError(InvalidChunkProof(
+                    "hash node at root of chunk has no parent key"
+                )))
+            ),
+            "expected InvalidChunkProof error for hash node at root"
+        );
     }
 
     fn get_node_hash(node: Node) -> Result<CryptoHash, String> {

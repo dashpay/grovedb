@@ -380,6 +380,9 @@ impl Query {
 
                 let mut our_subquery_path = our_subquery_path.clone();
 
+                // Save our subquery before overwriting with theirs
+                let our_subquery = self.default_subquery_branch.subquery.clone();
+
                 self.default_subquery_branch.subquery_path = None;
                 self.default_subquery_branch.subquery =
                     other_default_subquery_branch.subquery.clone();
@@ -398,7 +401,7 @@ impl Query {
                     QueryItem::Key(our_top_key),
                     SubqueryBranch {
                         subquery_path: maybe_our_subquery_path,
-                        subquery: other_default_subquery_branch.subquery.clone(),
+                        subquery: our_subquery,
                     },
                 );
             }
@@ -444,8 +447,13 @@ impl Query {
                 mut items,
                 default_subquery_branch,
                 conditional_subquery_branches,
-                ..
+                left_to_right: _,
+                add_parent_tree_on_subquery,
             } = query;
+            // Preserve add_parent_tree_on_subquery if any query requests it
+            if add_parent_tree_on_subquery {
+                merged_query.add_parent_tree_on_subquery = true;
+            }
             // the searched for items are the union of all items
             merged_query.insert_items(items.clone());
 
@@ -505,8 +513,13 @@ impl Query {
             mut items,
             default_subquery_branch,
             conditional_subquery_branches,
-            ..
+            left_to_right: _,
+            add_parent_tree_on_subquery,
         } = other;
+        // Preserve add_parent_tree_on_subquery if either query requests it
+        if add_parent_tree_on_subquery {
+            self.add_parent_tree_on_subquery = true;
+        }
         self.insert_items(items.clone());
 
         // let intersection_result = QueryItem::intersect_many_ordered(&mut self.items,
@@ -698,5 +711,63 @@ impl Query {
             merged_items.insert(query_item_merging_in, subquery_branch_merging_in);
         }
         merged_items
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Query;
+
+    /// Demonstrates that merging a query with a subquery_path into one without
+    /// must preserve the original (self) subquery in the conditional branch,
+    /// not duplicate the other's subquery.
+    #[test]
+    fn merge_default_subquery_branch_preserves_self_subquery() {
+        // "self" query: has subquery_path ["a"] and its own subquery selecting key "self_key"
+        let mut self_query = Query::new();
+        let mut self_subquery = Query::new();
+        self_subquery.insert_key(b"self_key".to_vec());
+
+        self_query.default_subquery_branch = SubqueryBranch {
+            subquery_path: Some(vec![b"a".to_vec()]),
+            subquery: Some(Box::new(self_subquery.clone())),
+        };
+
+        // "other" branch: no subquery_path, has its own subquery selecting key "other_key"
+        let mut other_subquery = Query::new();
+        other_subquery.insert_key(b"other_key".to_vec());
+
+        let other_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(other_subquery.clone())),
+        };
+
+        self_query.merge_default_subquery_branch(other_branch);
+
+        // After merge:
+        // - default subquery should be other's (no path, so it applies broadly)
+        assert_eq!(self_query.default_subquery_branch.subquery_path, None);
+        assert_eq!(
+            self_query.default_subquery_branch.subquery,
+            Some(Box::new(other_subquery.clone())),
+            "default subquery should be other's subquery"
+        );
+
+        // - conditional branch at key "a" should have self's ORIGINAL subquery
+        let conditionals = self_query
+            .conditional_subquery_branches
+            .expect("should have conditional branches");
+        let branch_a = conditionals
+            .get(&QueryItem::Key(b"a".to_vec()))
+            .expect("should have conditional branch for key 'a'");
+
+        // This is the critical assertion: the conditional branch must contain
+        // self's original subquery (selecting "self_key"), NOT other's subquery.
+        assert_eq!(
+            branch_a.subquery,
+            Some(Box::new(self_subquery)),
+            "conditional branch should preserve self's original subquery, not other's"
+        );
     }
 }

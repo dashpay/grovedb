@@ -39,10 +39,12 @@ fn make_3_node_tree() -> TreeNode {
             true,
             Some(TreeNode::new(vec![3], vec![3], None, BasicMerkNode).unwrap()),
         )
+        .unwrap()
         .attach(
             false,
             Some(TreeNode::new(vec![7], vec![7], None, BasicMerkNode).unwrap()),
-        );
+        )
+        .unwrap();
     tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
         .expect("commit failed");
@@ -55,7 +57,9 @@ fn make_6_node_tree() -> TreeNode {
     let mut three_tree = TreeNode::new(vec![3], vec![3], None, BasicMerkNode)
         .unwrap()
         .attach(true, Some(two_tree))
-        .attach(false, Some(four_tree));
+        .unwrap()
+        .attach(false, Some(four_tree))
+        .unwrap();
     three_tree
         .commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
@@ -64,7 +68,8 @@ fn make_6_node_tree() -> TreeNode {
     let seven_tree = TreeNode::new(vec![7], vec![7], None, BasicMerkNode).unwrap();
     let mut eight_tree = TreeNode::new(vec![8], vec![8], None, BasicMerkNode)
         .unwrap()
-        .attach(true, Some(seven_tree));
+        .attach(true, Some(seven_tree))
+        .unwrap();
     eight_tree
         .commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
@@ -73,7 +78,9 @@ fn make_6_node_tree() -> TreeNode {
     let mut root_tree = TreeNode::new(vec![5], vec![5], None, BasicMerkNode)
         .unwrap()
         .attach(true, Some(three_tree))
-        .attach(false, Some(eight_tree));
+        .unwrap()
+        .attach(false, Some(eight_tree))
+        .unwrap();
     root_tree
         .commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
@@ -707,6 +714,7 @@ fn doc_proof() {
                         true,
                         Some(TreeNode::new(vec![1], vec![1], None, BasicMerkNode).unwrap()),
                     )
+                    .unwrap()
                     .attach(
                         false,
                         Some(
@@ -718,11 +726,14 @@ fn doc_proof() {
                                         TreeNode::new(vec![3], vec![3], None, BasicMerkNode)
                                             .unwrap(),
                                     ),
-                                ),
+                                )
+                                .unwrap(),
                         ),
-                    ),
+                    )
+                    .unwrap(),
             ),
         )
+        .unwrap()
         .attach(
             false,
             Some(
@@ -740,15 +751,18 @@ fn doc_proof() {
                                             .unwrap(),
                                     ),
                                 )
+                                .unwrap()
                                 .attach(
                                     false,
                                     Some(
                                         TreeNode::new(vec![8], vec![8], None, BasicMerkNode)
                                             .unwrap(),
                                     ),
-                                ),
+                                )
+                                .unwrap(),
                         ),
                     )
+                    .unwrap()
                     .attach(
                         false,
                         Some(
@@ -760,11 +774,14 @@ fn doc_proof() {
                                         TreeNode::new(vec![10], vec![10], None, BasicMerkNode)
                                             .unwrap(),
                                     ),
-                                ),
+                                )
+                                .unwrap(),
                         ),
-                    ),
+                    )
+                    .unwrap(),
             ),
-        );
+        )
+        .unwrap();
     tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
         .unwrap();
@@ -3678,7 +3695,8 @@ fn test_5_item_tree_tampering_detected_with_elements() {
     // Create [2] with [1] as left child
     let mut two_tree = TreeNode::new(vec![2], val2.clone(), None, BasicMerkNode)
         .unwrap()
-        .attach(true, Some(one_tree));
+        .attach(true, Some(one_tree))
+        .unwrap();
     two_tree
         .commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
@@ -3687,7 +3705,8 @@ fn test_5_item_tree_tampering_detected_with_elements() {
     // Create [4] with [5] as right child
     let mut four_tree = TreeNode::new(vec![4], val4.clone(), None, BasicMerkNode)
         .unwrap()
-        .attach(false, Some(five_tree));
+        .attach(false, Some(five_tree))
+        .unwrap();
     four_tree
         .commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
@@ -3697,7 +3716,9 @@ fn test_5_item_tree_tampering_detected_with_elements() {
     let mut tree = TreeNode::new(vec![3], val3.clone(), None, BasicMerkNode)
         .unwrap()
         .attach(true, Some(two_tree))
-        .attach(false, Some(four_tree));
+        .unwrap()
+        .attach(false, Some(four_tree))
+        .unwrap();
     tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
         .expect("commit failed");
@@ -3844,7 +3865,8 @@ fn test_5_item_tree_tampering_detected_raw_values() {
     // Create [2] with [1] as left child
     let mut two_tree = TreeNode::new(vec![2], b"bbb".to_vec(), None, BasicMerkNode)
         .unwrap()
-        .attach(true, Some(one_tree));
+        .attach(true, Some(one_tree))
+        .unwrap();
     two_tree
         .commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
@@ -3853,7 +3875,8 @@ fn test_5_item_tree_tampering_detected_raw_values() {
     // Create [4] with [5] as right child
     let mut four_tree = TreeNode::new(vec![4], b"ddd".to_vec(), None, BasicMerkNode)
         .unwrap()
-        .attach(false, Some(five_tree));
+        .attach(false, Some(five_tree))
+        .unwrap();
     four_tree
         .commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
@@ -3863,7 +3886,9 @@ fn test_5_item_tree_tampering_detected_raw_values() {
     let mut tree = TreeNode::new(vec![3], b"ccc".to_vec(), None, BasicMerkNode)
         .unwrap()
         .attach(true, Some(two_tree))
-        .attach(false, Some(four_tree));
+        .unwrap()
+        .attach(false, Some(four_tree))
+        .unwrap();
     tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
         .expect("commit failed");
@@ -4003,7 +4028,9 @@ fn test_tampering_detected_invalid_discriminant() {
     let mut tree = TreeNode::new(vec![5], vec![99], None, BasicMerkNode)
         .unwrap()
         .attach(true, Some(left))
-        .attach(false, Some(right));
+        .unwrap()
+        .attach(false, Some(right))
+        .unwrap();
     tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
         .unwrap()
         .expect("commit failed");
@@ -4225,5 +4252,54 @@ fn test_kvvaluehash_still_used_for_tree_discriminants() {
     assert!(
         err_msg.contains("must not contain an item element"),
         "Expected item rejection error, got: {err_msg}"
+    );
+}
+
+/// Verify that `execute_proof` rejects proofs with trailing bytes appended
+/// after valid operations.
+#[test]
+fn test_execute_proof_rejects_trailing_bytes() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_3_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    let keys = vec![vec![3], vec![5], vec![7]];
+    let (proof, ..) = walker
+        .create_proof(
+            keys.iter()
+                .cloned()
+                .map(QueryItem::Key)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            None,
+            true,
+            grove_version,
+        )
+        .unwrap()
+        .expect("failed to create proof");
+
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    // Sanity: valid proof verifies fine
+    let mut query = Query::new();
+    for key in &keys {
+        query.insert_key(key.clone());
+    }
+    let expected_hash = tree.hash().unwrap();
+    query
+        .verify_proof(bytes.as_slice(), None, true, expected_hash)
+        .unwrap()
+        .expect("valid proof should verify");
+
+    // Append trailing garbage bytes
+    bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+    let result = query.execute_proof(bytes.as_slice(), None, true).unwrap();
+
+    assert!(
+        result.is_err(),
+        "proof with trailing bytes should be rejected, got: {:?}",
+        result.as_ref().unwrap()
     );
 }

@@ -508,8 +508,34 @@ impl TreeNode {
         }
     }
 
-    /// Returns the sum of the root node's child on the given side, if any. If
-    /// there is no child, returns 0.
+    /// Returns the i64 sum from the child link's aggregate data on the given
+    /// side. If there is no child, returns 0.
+    ///
+    /// Called by `aggregate_data()` for `SummedMerkNode`,
+    /// `CountedSummedMerkNode`, `ProvableCountedSummedMerkNode` parents to
+    /// collect the sum component from children.
+    ///
+    /// # Cross-type aggregate safety (audit finding #11)
+    ///
+    /// Some `AggregateData` variants (e.g. `Count`, `ProvableCount`) carry no
+    /// sum component, so this method returns 0 for them. In theory a
+    /// `SummedMerkNode` parent calling this on a child with `Count` aggregate
+    /// data would silently get 0 instead of an error, which could mask data
+    /// corruption.
+    ///
+    /// **Why this is safe in practice:** GroveDB enforces homogeneous node
+    /// types within each Merk tree. The `get_feature_type()` method
+    /// (in `element/tree_type.rs`) assigns every node's `TreeFeatureType`
+    /// based on the parent `TreeType`, guaranteeing all nodes in a SumTree
+    /// are `SummedMerkNode`, all in a CountTree are `CountedMerkNode`, etc.
+    /// Therefore a `SummedMerkNode` will never have a child with
+    /// `AggregateData::Count` unless the on-disk data is corrupted.
+    ///
+    /// The `BigSum` variant is the only cross-type case that returns an
+    /// error because
+    /// `BigSumTree` can legitimately appear as a child tree element within
+    /// a parent Merk (stored as a subtree element), and the i128-to-i64
+    /// conversion would silently lose data.
     #[inline]
     pub fn child_aggregate_sum_data_as_i64(&self, left: bool) -> Result<i64, Error> {
         match self.link(left) {
@@ -528,8 +554,19 @@ impl TreeNode {
         }
     }
 
-    /// Returns the sum of the root node's child on the given side, if any. If
-    /// there is no child, returns 0.
+    /// Returns the u64 count from the child link's aggregate data on the given
+    /// side. If there is no child, returns 0.
+    ///
+    /// Called by `aggregate_data()` for `CountedMerkNode`,
+    /// `CountedSummedMerkNode`, `ProvableCountedMerkNode`,
+    /// `ProvableCountedSummedMerkNode` parents to collect the count component.
+    ///
+    /// # Cross-type aggregate safety (audit finding #11)
+    ///
+    /// Some `AggregateData` variants (e.g. `Sum`, `BigSum`) carry no count
+    /// component, so this method returns 0 for them. This is safe because
+    /// GroveDB's type enforcement ensures homogeneous node types within each
+    /// Merk tree -- see `child_aggregate_sum_data_as_i64` docs for details.
     #[inline]
     pub fn child_aggregate_count_data_as_u64(&self, left: bool) -> Result<u64, Error> {
         match self.link(left) {
@@ -546,8 +583,17 @@ impl TreeNode {
         }
     }
 
-    /// Returns the sum of the root node's child on the given side, if any. If
-    /// there is no child, returns 0.
+    /// Returns the i128 sum from the child link's aggregate data on the given
+    /// side. If there is no child, returns 0.
+    ///
+    /// Called by `aggregate_data()` for `BigSummedMerkNode` parents.
+    ///
+    /// # Cross-type aggregate safety (audit finding #11)
+    ///
+    /// `Count` and `ProvableCount` variants return 0 since they carry no sum.
+    /// This is safe because GroveDB's type enforcement ensures homogeneous
+    /// node types within each Merk tree -- see
+    /// `child_aggregate_sum_data_as_i64` docs for details.
     #[inline]
     pub fn child_aggregate_sum_data_as_i128(&self, left: bool) -> i128 {
         match self.link(left) {
@@ -618,7 +664,26 @@ impl TreeNode {
         }
     }
 
-    /// Computes and returns the hash of the root node.
+    /// Computes and returns the aggregate data for this node by combining its
+    /// own value with the aggregate data of its children.
+    ///
+    /// The computation dispatches based on this node's `TreeFeatureType`:
+    /// - `SummedMerkNode`: sums own value + left child sum + right child sum
+    /// - `BigSummedMerkNode`: same but with i128
+    /// - `CountedMerkNode`: sums own count + left child count + right child
+    ///   count
+    /// - `CountedSummedMerkNode`: aggregates both count and sum from children
+    /// - `ProvableCountedMerkNode` / `ProvableCountedSummedMerkNode`: same as
+    ///   counted variants
+    ///
+    /// # Cross-type aggregate safety (audit finding #11)
+    ///
+    /// Each child helper (`child_aggregate_sum_data_as_i64`, etc.) returns 0
+    /// for aggregate variants that don't carry the requested component (e.g.
+    /// requesting sum from a `Count` child). This is safe because GroveDB
+    /// enforces homogeneous `TreeFeatureType` within each Merk tree via
+    /// `get_feature_type()`, so all siblings in a SumTree will be
+    /// `SummedMerkNode`, etc.
     #[inline]
     pub fn aggregate_data(&self) -> Result<AggregateData, Error> {
         match self.inner.kv.feature_type {
@@ -740,6 +805,10 @@ impl TreeNode {
     /// subtree is 2 levels taller than the left subtree.
     #[inline]
     pub const fn balance_factor(&self) -> i8 {
+        // Cast to i8 is safe: child_height() returns at most the tree height,
+        // which is O(log n). Even with 2^127 elements the height would be ~127,
+        // well within i8 range. An AVL tree that could overflow u8 child heights
+        // (>255) is physically impossible.
         let left_height = self.child_height(true) as i8;
         let right_height = self.child_height(false) as i8;
         right_height - left_height
@@ -748,34 +817,28 @@ impl TreeNode {
     /// Attaches the child (if any) to the root node on the given side. Creates
     /// a `Link` of variant `Link::Modified` which contains the child.
     ///
-    /// Panics if there is already a child on the given side.
+    /// Returns an error if there is already a child on the given side,
+    /// indicating a corrupted tree state.
     #[inline]
-    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Self {
+    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Result<Self, Error> {
         debug_assert_ne!(
             Some(self.key()),
             maybe_child.as_ref().map(|c| c.key()),
             "Tried to attach tree with same key"
         );
 
-        // let parent = std::str::from_utf8(self.key());
-        // if maybe_child.is_some(){
-        //     let child = std::str::from_utf8(maybe_child.as_ref().unwrap().key());
-        //     println!("attaching {} to {}", child.unwrap(), parent.unwrap());
-        // } else {
-        //     println!("attaching nothing to {}", parent.unwrap());
-        // }
-
         let slot = self.slot_mut(left);
 
         if slot.is_some() {
-            panic!(
-                "Tried to attach to {} tree slot, but it is already Some",
-                side_to_str(left)
-            );
+            return Err(Error::CorruptedState(if left {
+                "Tried to attach to left tree slot, but it is already Some"
+            } else {
+                "Tried to attach to right tree slot, but it is already Some"
+            }));
         }
         *slot = Link::maybe_from_modified_tree(maybe_child);
 
-        self
+        Ok(self)
     }
 
     /// Detaches the child on the given side (if any) from the root node, and
@@ -801,21 +864,23 @@ impl TreeNode {
     /// Detaches the child on the given side from the root node, and
     /// returns `(root_node, child)`.
     ///
-    /// Panics if there is no child on the given side.
+    /// Returns an error if there is no child on the given side, indicating
+    /// a corrupted tree state.
     ///
     /// One will usually want to reattach (see `attach`) a child on the same
     /// side after applying some operation to the detached child.
     #[inline]
-    pub fn detach_expect(self, left: bool) -> (Self, Self) {
+    pub fn detach_expect(self, left: bool) -> Result<(Self, Self), Error> {
         let (parent, maybe_child) = self.detach(left);
 
         if let Some(child) = maybe_child {
-            (parent, child)
+            Ok((parent, child))
         } else {
-            panic!(
-                "Expected tree to have {} child, but got None",
-                side_to_str(left)
-            );
+            Err(Error::CorruptedState(if left {
+                "Expected tree to have left child, but got None"
+            } else {
+                "Expected tree to have right child, but got None"
+            }))
         }
     }
 
@@ -828,7 +893,7 @@ impl TreeNode {
     /// less error prone that detaching with `detach` and reattaching with
     /// `attach`.
     #[inline]
-    pub fn walk<F>(self, left: bool, f: F) -> Self
+    pub fn walk<F>(self, left: bool, f: F) -> Result<Self, Error>
     where
         F: FnOnce(Option<Self>) -> Option<Self>,
     {
@@ -836,13 +901,14 @@ impl TreeNode {
         tree.attach(left, f(maybe_child))
     }
 
-    /// Like `walk`, but panics if there is no child on the given side.
+    /// Like `walk`, but returns an error if there is no child on the given
+    /// side, indicating a corrupted tree state.
     #[inline]
-    pub fn walk_expect<F>(self, left: bool, f: F) -> Self
+    pub fn walk_expect<F>(self, left: bool, f: F) -> Result<Self, Error>
     where
         F: FnOnce(Self) -> Option<Self>,
     {
-        let (tree, child) = self.detach_expect(left);
+        let (tree, child) = self.detach_expect(left)?;
         tree.attach(left, f(child))
     }
 
@@ -1191,11 +1257,17 @@ impl TreeNode {
         // println!("done committing {}", std::str::from_utf8(self.key()).unwrap());
 
         let (prune_left, prune_right) = c.prune(self);
-        if prune_left {
-            self.inner.left = self.inner.left.take().map(|link| link.into_reference());
+        if prune_left && let Some(link) = self.inner.left.take() {
+            match link.into_reference() {
+                Ok(r) => self.inner.left = Some(r),
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            }
         }
-        if prune_right {
-            self.inner.right = self.inner.right.take().map(|link| link.into_reference());
+        if prune_right && let Some(link) = self.inner.right.take() {
+            match link.into_reference() {
+                Ok(r) => self.inner.right = Some(r),
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            }
         }
 
         Ok(()).wrap_with_cost(cost)
@@ -1284,39 +1356,43 @@ mod test {
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
-        let tree = tree.attach(true, None);
+        let tree = tree.attach(true, None).unwrap();
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_none());
 
-        let tree = tree.attach(
-            true,
-            Some(TreeNode::new(vec![2], vec![102], None, BasicMerkNode).unwrap()),
-        );
+        let tree = tree
+            .attach(
+                true,
+                Some(TreeNode::new(vec![2], vec![102], None, BasicMerkNode).unwrap()),
+            )
+            .unwrap();
         assert_eq!(tree.key(), &[1]);
         assert_eq!(tree.child(true).unwrap().key(), &[2]);
         assert!(tree.child(false).is_none());
 
         let tree = TreeNode::new(vec![3], vec![103], None, BasicMerkNode)
             .unwrap()
-            .attach(false, Some(tree));
+            .attach(false, Some(tree))
+            .unwrap();
         assert_eq!(tree.key(), &[3]);
         assert_eq!(tree.child(false).unwrap().key(), &[1]);
         assert!(tree.child(true).is_none());
     }
 
-    #[should_panic]
     #[test]
     fn attach_existing() {
-        TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
+        let result = TreeNode::new(vec![0], vec![1], None, BasicMerkNode)
             .unwrap()
             .attach(
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
+            .unwrap()
             .attach(
                 true,
                 Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
             );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1327,28 +1403,36 @@ mod test {
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
             )
+            .unwrap()
             .attach(
                 false,
                 Some(TreeNode::new(vec![4], vec![5], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
 
-        let tree = tree.walk(true, |left_opt| {
-            assert_eq!(left_opt.as_ref().unwrap().key(), &[2]);
-            None
-        });
+        let tree = tree
+            .walk(true, |left_opt| {
+                assert_eq!(left_opt.as_ref().unwrap().key(), &[2]);
+                None
+            })
+            .unwrap();
         assert!(tree.child(true).is_none());
         assert!(tree.child(false).is_some());
 
-        let tree = tree.walk(true, |left_opt| {
-            assert!(left_opt.is_none());
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap())
-        });
+        let tree = tree
+            .walk(true, |left_opt| {
+                assert!(left_opt.is_none());
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap())
+            })
+            .unwrap();
         assert_eq!(tree.link(true).unwrap().key(), &[2]);
 
-        let tree = tree.walk_expect(false, |right| {
-            assert_eq!(right.key(), &[4]);
-            None
-        });
+        let tree = tree
+            .walk_expect(false, |right| {
+                assert_eq!(right.key(), &[4]);
+                None
+            })
+            .unwrap();
         assert!(tree.child(true).is_some());
         assert!(tree.child(false).is_none());
     }
@@ -1360,7 +1444,8 @@ mod test {
             .attach(
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
         assert!(tree.link(true).expect("expected link").is_modified());
         assert!(tree.child(true).is_some());
         assert!(tree.link(false).is_none());
@@ -1376,7 +1461,7 @@ mod test {
         // assert!(tree.link(true).expect("expected link").is_pruned());
         // assert!(tree.child(true).is_none());
 
-        let tree = tree.walk(true, |_| None);
+        let tree = tree.walk(true, |_| None).unwrap();
         assert!(tree.link(true).is_none());
         assert!(tree.child(true).is_none());
     }
@@ -1388,7 +1473,8 @@ mod test {
             .attach(
                 true,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
@@ -1420,10 +1506,12 @@ mod test {
         assert_eq!(tree.child_pending_writes(true), 0);
         assert_eq!(tree.child_pending_writes(false), 0);
 
-        let tree = tree.attach(
-            true,
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-        );
+        let tree = tree
+            .attach(
+                true,
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
+            )
+            .unwrap();
         assert_eq!(tree.child_pending_writes(true), 1);
         assert_eq!(tree.child_pending_writes(false), 0);
     }
@@ -1436,17 +1524,19 @@ mod test {
         assert_eq!(tree.child_height(false), 0);
         assert_eq!(tree.balance_factor(), 0);
 
-        let tree = tree.attach(
-            true,
-            Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-        );
+        let tree = tree
+            .attach(
+                true,
+                Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
+            )
+            .unwrap();
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 1);
         assert_eq!(tree.child_height(false), 0);
         assert_eq!(tree.balance_factor(), -1);
 
         let (tree, maybe_child) = tree.detach(true);
-        let tree = tree.attach(false, maybe_child);
+        let tree = tree.attach(false, maybe_child).unwrap();
         assert_eq!(tree.height(), 2);
         assert_eq!(tree.child_height(true), 0);
         assert_eq!(tree.child_height(false), 1);
@@ -1460,7 +1550,8 @@ mod test {
             .attach(
                 false,
                 Some(TreeNode::new(vec![2], vec![3], None, BasicMerkNode).unwrap()),
-            );
+            )
+            .unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");
@@ -1475,7 +1566,8 @@ mod test {
             .attach(
                 false,
                 Some(TreeNode::new(vec![2], vec![3], None, SummedMerkNode(5)).unwrap()),
-            );
+            )
+            .unwrap();
         tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
             .unwrap()
             .expect("commit failed");

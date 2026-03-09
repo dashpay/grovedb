@@ -7,6 +7,7 @@ mod query_tests;
 mod sum_tree_tests;
 
 mod batch_coverage_tests;
+mod batch_delete_tree_tests;
 mod batch_rejection_tests;
 mod batch_unit_tests;
 mod bulk_append_tree_tests;
@@ -27,8 +28,10 @@ mod is_empty_tree_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;
 mod operations_coverage_tests;
+mod partial_batch_consistency_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
+mod proof_depth_limit_tests;
 mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;

@@ -18,7 +18,59 @@ pub struct BatchApplyOptions {
     pub allow_deleting_non_empty_trees: bool,
     /// Deleting non empty trees returns error
     pub deleting_non_empty_trees_returns_error: bool,
-    /// Disable operation consistency check
+    /// Disable the full operation consistency check performed by
+    /// [`super::QualifiedGroveDbOp::verify_consistency_of_operations`].
+    ///
+    /// This check detects several conflict types including:
+    /// - Duplicate operations targeting the same `(path, key)` pair
+    /// - Inserts below paths that are being deleted in the same batch
+    /// - Append/delete conflicts on the same tree
+    ///
+    /// When this is `false` (the default), the batch system calls
+    /// [`super::QualifiedGroveDbOp::verify_consistency_of_operations`] before
+    /// applying and rejects the batch if any conflicts are found.
+    ///
+    /// # Warning -- silent last-op-wins behavior
+    ///
+    /// When set to `true`, duplicate operations on the same `(path, key)` are
+    /// **not** detected. Because the internal batch structure is a `BTreeMap`
+    /// keyed by `(path, key)`, inserting a second operation for an already-seen
+    /// key silently overwrites the first. The **last** operation encountered in
+    /// the input `Vec` wins, and the earlier operation is lost without any
+    /// error or warning.
+    ///
+    /// This is safe **only** when the caller has already guaranteed that the
+    /// operation list contains no conflicting entries, or when the caller
+    /// intentionally relies on last-op-wins semantics (e.g., an idempotent
+    /// replay scenario). In all other cases, leave this set to `false` to
+    /// catch accidental conflicts early.
+    ///
+    /// # Warning -- potential storage leak on insert-under-delete
+    ///
+    /// When set to `true`, the consistency check that rejects inserts below
+    /// deleted paths is also skipped. If a batch both inserts a subtree and
+    /// deletes an ancestor of that subtree, the post-`apply_body` cleanup
+    /// uses [`GroveDb::find_subtrees`](crate::GroveDb::find_subtrees) to
+    /// discover nested subtrees for storage removal. However,
+    /// `find_subtrees` reads from the committed transaction state (without
+    /// the pending `StorageBatch`), so subtrees created by the same batch
+    /// are invisible to it. This means the newly-inserted subtree's storage
+    /// prefix will not be cleaned up, resulting in orphaned data in the
+    /// underlying store.
+    ///
+    /// With the consistency check enabled (the default), such batches are
+    /// rejected before `apply_body` runs, so this stale-state window is
+    /// never reachable.
+    ///
+    /// # Emptiness check limitation
+    ///
+    /// The pre-deletion emptiness check for `DeleteTree` ops uses
+    /// `is_empty_tree_except` which only accounts for Delete/DeleteTree ops
+    /// in the same batch -- it does not consider Insert ops that would add
+    /// new keys to the subtree. With the consistency check enabled (default),
+    /// such conflicting batches are rejected before the emptiness check runs.
+    /// When this flag is `true`, the caller must ensure no batch contains
+    /// both inserts into a subtree and a `DeleteTree` of that subtree.
     pub disable_operation_consistency_check: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,

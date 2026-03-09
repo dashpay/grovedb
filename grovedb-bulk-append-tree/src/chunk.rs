@@ -33,9 +33,9 @@ const MAX_CHUNK_ENTRIES: usize = 1 << 20;
 /// - Otherwise -> variable-size format
 ///
 /// Returns an empty `Vec` for an empty slice (no header byte).
-pub fn serialize_chunk_blob(entries: &[Vec<u8>]) -> Vec<u8> {
+pub fn serialize_chunk_blob(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendError> {
     if entries.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let all_same_len = entries.iter().all(|e| e.len() == entries[0].len());
@@ -69,19 +69,23 @@ pub fn deserialize_chunk_blob(blob: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendErr
 // -- Fixed-size format -------------------------------------------------------
 // Layout: [0x01] [count: u32 BE] [entry_size: u32 BE] [entry_0] [entry_1] ...
 
-fn serialize_fixed(entries: &[Vec<u8>]) -> Vec<u8> {
-    let count = entries.len();
-    let entry_size = entries[0].len();
+fn serialize_fixed(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendError> {
+    let count: u32 = entries.len().try_into().map_err(|_| {
+        BulkAppendError::InvalidInput("chunk entry count exceeds u32::MAX".to_string())
+    })?;
+    let entry_size: u32 = entries[0].len().try_into().map_err(|_| {
+        BulkAppendError::InvalidInput("chunk entry size exceeds u32::MAX".to_string())
+    })?;
     // 1 (flag) + 4 (count) + 4 (entry_size) + N * entry_size
-    let total = 1 + 4 + 4 + count * entry_size;
+    let total = 1 + 4 + 4 + entries.len() * entries[0].len();
     let mut blob = Vec::with_capacity(total);
     blob.push(FORMAT_FIXED);
-    blob.extend_from_slice(&(count as u32).to_be_bytes());
-    blob.extend_from_slice(&(entry_size as u32).to_be_bytes());
+    blob.extend_from_slice(&count.to_be_bytes());
+    blob.extend_from_slice(&entry_size.to_be_bytes());
     for entry in entries {
         blob.extend_from_slice(entry);
     }
-    blob
+    Ok(blob)
 }
 
 fn deserialize_fixed(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
@@ -139,15 +143,18 @@ fn deserialize_fixed(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
 // -- Variable-size format ----------------------------------------------------
 // Layout: [0x00] [len_0: u32 BE] [entry_0] [len_1: u32 BE] [entry_1] ...
 
-fn serialize_variable(entries: &[Vec<u8>]) -> Vec<u8> {
+fn serialize_variable(entries: &[Vec<u8>]) -> Result<Vec<u8>, BulkAppendError> {
     let total: usize = 1 + entries.iter().map(|e| 4 + e.len()).sum::<usize>();
     let mut blob = Vec::with_capacity(total);
     blob.push(FORMAT_VARIABLE);
     for entry in entries {
-        blob.extend_from_slice(&(entry.len() as u32).to_be_bytes());
+        let len: u32 = entry.len().try_into().map_err(|_| {
+            BulkAppendError::InvalidInput("chunk entry length exceeds u32::MAX".to_string())
+        })?;
+        blob.extend_from_slice(&len.to_be_bytes());
         blob.extend_from_slice(entry);
     }
-    blob
+    Ok(blob)
 }
 
 fn deserialize_variable(data: &[u8]) -> Result<Vec<Vec<u8>>, BulkAppendError> {
@@ -189,7 +196,7 @@ mod tests {
     #[test]
     fn fixed_size_roundtrip() {
         let entries = vec![b"hello".to_vec(), b"world".to_vec(), b"12345".to_vec()];
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries).expect("serialize fixed blob");
         assert_eq!(blob[0], FORMAT_FIXED);
         // 1 (flag) + 4 (count) + 4 (entry_size) + 3*5 = 24
         assert_eq!(blob.len(), 24);
@@ -200,7 +207,7 @@ mod tests {
     #[test]
     fn variable_size_roundtrip() {
         let entries = vec![b"hi".to_vec(), b"world".to_vec(), b"!".to_vec()];
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries).expect("serialize variable blob");
         assert_eq!(blob[0], FORMAT_VARIABLE);
         let decoded = deserialize_chunk_blob(&blob).expect("decode variable blob");
         assert_eq!(entries, decoded);
@@ -209,7 +216,7 @@ mod tests {
     #[test]
     fn empty_blob() {
         let entries: Vec<Vec<u8>> = vec![];
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries).expect("serialize empty blob");
         assert!(blob.is_empty());
         let decoded = deserialize_chunk_blob(&blob).expect("decode empty blob");
         assert!(decoded.is_empty());
@@ -218,7 +225,7 @@ mod tests {
     #[test]
     fn single_entry_uses_fixed() {
         let entries = vec![b"only".to_vec()];
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries).expect("serialize single-entry blob");
         assert_eq!(blob[0], FORMAT_FIXED);
         let decoded = deserialize_chunk_blob(&blob).expect("decode single-entry blob");
         assert_eq!(entries, decoded);
@@ -232,7 +239,7 @@ mod tests {
             vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             b"a long string value for testing".to_vec(),
         ];
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries).expect("serialize variable-length entries");
         assert_eq!(blob[0], FORMAT_VARIABLE);
         let decoded = deserialize_chunk_blob(&blob).expect("decode variable-length entries");
         assert_eq!(entries, decoded);
@@ -242,7 +249,7 @@ mod tests {
     fn fixed_size_savings() {
         // 8 entries of 32 bytes each (typical hash commitments)
         let entries: Vec<Vec<u8>> = (0..8).map(|i| vec![i; 32]).collect();
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries).expect("serialize fixed-size savings blob");
         assert_eq!(blob[0], FORMAT_FIXED);
         // Fixed: 1 + 4 + 4 + 8*32 = 265
         // Variable would be: 1 + 8*(4+32) = 289
@@ -255,7 +262,7 @@ mod tests {
     fn fixed_zero_length_entries() {
         // All entries are empty -- count in header tells us how many
         let entries = vec![vec![], vec![], vec![]];
-        let blob = serialize_chunk_blob(&entries);
+        let blob = serialize_chunk_blob(&entries).expect("serialize zero-length entries blob");
         assert_eq!(blob[0], FORMAT_FIXED);
         // 1 (flag) + 4 (count=3) + 4 (entry_size=0) + 0 = 9
         assert_eq!(blob.len(), 9);

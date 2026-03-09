@@ -8,13 +8,25 @@ mod verify;
 
 use std::{collections::BTreeMap, fmt};
 
-use bincode::{Decode, Encode};
+/// Maximum allowed recursion depth for proof generation and verification.
+///
+/// This limit prevents stack overflow from deeply nested subqueries or
+/// maliciously crafted proofs with excessive `LayerProof` nesting. A depth
+/// of 128 is well beyond any practical GroveDB tree hierarchy while still
+/// fitting comfortably within typical stack sizes.
+pub const MAX_PROOF_DEPTH: usize = 128;
+
+use bincode::{
+    de::{BorrowDecoder, Decoder as BincodeDecoder},
+    error::DecodeError,
+    BorrowDecode, Decode, Encode,
+};
 use grovedb_bulk_append_tree::BulkAppendTreeProof;
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
     proofs::{
         query::{Key, VerifyOptions},
-        Decoder, Node, Op,
+        Decoder as MerkDecoder, Node, Op,
     },
     CryptoHash,
 };
@@ -28,6 +40,19 @@ use crate::{
 };
 
 /// Options controlling proof generation behavior.
+///
+/// # Security note
+///
+/// `ProveOptions` is serialized as part of the proof via `bincode::Encode` /
+/// `bincode::Decode`. During verification the verifier deserializes these
+/// options from the proof bytes, which means **the values come from the
+/// (potentially untrusted) prover**. A malicious prover could craft a proof
+/// with `decrease_limit_on_empty_sub_query_result` set to `true` even when
+/// the original query used `false`, causing the verifier to consume its
+/// result limit faster and therefore return fewer results than actually
+/// exist. Verifiers that need to guard against this should compare the
+/// deserialized options against the expected values for the query being
+/// verified.
 #[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct ProveOptions {
     /// This tells the proof system to decrease the available limit of the query
@@ -36,11 +61,23 @@ pub struct ProveOptions {
     /// known structure where we know that there are only a few empty
     /// subtrees.
     ///
-    /// !!! Warning !!! Be very careful:
-    /// If this is set to `false` then you must be sure that the sub queries do
-    /// not match many trees, Otherwise you could crash the system as the
-    /// proof system goes through millions of subtrees and eventually runs
-    /// out of memory
+    /// # Warning
+    ///
+    /// Be very careful: if this is set to `false` then you must be sure that
+    /// the sub queries do not match many trees. Otherwise you could crash the
+    /// system as the proof system goes through millions of subtrees and
+    /// eventually runs out of memory.
+    ///
+    /// # Security note
+    ///
+    /// This field is embedded in the serialized proof and deserialized by the
+    /// verifier. Because it originates from the prover, it must be treated as
+    /// **untrusted input**. A malicious prover can set this to `true`
+    /// regardless of the original query intent, which causes the verifier to
+    /// count empty subtrees against the query limit and thereby return fewer
+    /// results than it should. Applications that need to defend against
+    /// result-truncation attacks should validate this value after
+    /// deserialization.
     pub decrease_limit_on_empty_sub_query_result: bool,
 }
 
@@ -63,12 +100,83 @@ impl Default for ProveOptions {
 }
 
 /// A single layer of a legacy (v0) GroveDB proof containing only merk proofs.
-#[derive(Encode, Decode)]
+///
+/// Uses a custom `Decode` implementation that enforces [`MAX_PROOF_DEPTH`]
+/// during deserialization to prevent stack overflow from deeply nested proofs.
+#[derive(Encode)]
 pub struct MerkOnlyLayerProof {
     /// Encoded merk proof bytes for this layer.
     pub merk_proof: Vec<u8>,
     /// Proofs for child subtrees keyed by their key in the parent tree.
     pub lower_layers: BTreeMap<Key, MerkOnlyLayerProof>,
+}
+
+impl MerkOnlyLayerProof {
+    fn decode_with_depth<D: BincodeDecoder>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other(
+                "proof layer nesting depth exceeded maximum",
+            ));
+        }
+        let merk_proof = Vec::<u8>::decode(decoder)?;
+        let len = u64::decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
+        let mut lower_layers = BTreeMap::new();
+        for _ in 0..len {
+            let key = Key::decode(decoder)?;
+            let value = Self::decode_with_depth(decoder, depth + 1)?;
+            lower_layers.insert(key, value);
+        }
+        Ok(MerkOnlyLayerProof {
+            merk_proof,
+            lower_layers,
+        })
+    }
+
+    fn borrow_decode_with_depth<'de, D: BorrowDecoder<'de>>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other(
+                "proof layer nesting depth exceeded maximum",
+            ));
+        }
+        let merk_proof = Vec::<u8>::borrow_decode(decoder)?;
+        let len = u64::borrow_decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
+        let mut lower_layers = BTreeMap::new();
+        for _ in 0..len {
+            let key = Key::borrow_decode(decoder)?;
+            let value = Self::borrow_decode_with_depth(decoder, depth + 1)?;
+            lower_layers.insert(key, value);
+        }
+        Ok(MerkOnlyLayerProof {
+            merk_proof,
+            lower_layers,
+        })
+    }
+}
+
+impl<Context> Decode<Context> for MerkOnlyLayerProof {
+    fn decode<D: BincodeDecoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl<'de, Context> BorrowDecode<'de, Context> for MerkOnlyLayerProof {
+    fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
 }
 
 /// Encoded proof bytes for different tree backing store types.
@@ -88,12 +196,83 @@ pub enum ProofBytes {
 }
 
 /// A single layer of a v1 GroveDB proof supporting multiple tree types.
-#[derive(Encode, Decode)]
+///
+/// Uses a custom `Decode` implementation that enforces [`MAX_PROOF_DEPTH`]
+/// during deserialization to prevent stack overflow from deeply nested proofs.
+#[derive(Encode)]
 pub struct LayerProof {
     /// Proof bytes for this layer (may be any supported tree type).
     pub merk_proof: ProofBytes,
     /// Proofs for child subtrees keyed by their key in the parent tree.
     pub lower_layers: BTreeMap<Key, LayerProof>,
+}
+
+impl LayerProof {
+    fn decode_with_depth<D: BincodeDecoder>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other(
+                "proof layer nesting depth exceeded maximum",
+            ));
+        }
+        let merk_proof = ProofBytes::decode(decoder)?;
+        let len = u64::decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
+        let mut lower_layers = BTreeMap::new();
+        for _ in 0..len {
+            let key = Key::decode(decoder)?;
+            let value = Self::decode_with_depth(decoder, depth + 1)?;
+            lower_layers.insert(key, value);
+        }
+        Ok(LayerProof {
+            merk_proof,
+            lower_layers,
+        })
+    }
+
+    fn borrow_decode_with_depth<'de, D: BorrowDecoder<'de>>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other(
+                "proof layer nesting depth exceeded maximum",
+            ));
+        }
+        let merk_proof = ProofBytes::borrow_decode(decoder)?;
+        let len = u64::borrow_decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
+        let mut lower_layers = BTreeMap::new();
+        for _ in 0..len {
+            let key = Key::borrow_decode(decoder)?;
+            let value = Self::borrow_decode_with_depth(decoder, depth + 1)?;
+            lower_layers.insert(key, value);
+        }
+        Ok(LayerProof {
+            merk_proof,
+            lower_layers,
+        })
+    }
+}
+
+impl<Context> Decode<Context> for LayerProof {
+    fn decode<D: BincodeDecoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl<'de, Context> BorrowDecode<'de, Context> for LayerProof {
+    fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
 }
 
 /// A versioned GroveDB proof that can be verified against a path query.
@@ -339,7 +518,7 @@ impl fmt::Display for GroveDBProofV1 {
 
 fn decode_merk_proof(proof: &[u8]) -> Result<String, fmt::Error> {
     let mut result = String::new();
-    let ops = Decoder::new(proof);
+    let ops = MerkDecoder::new(proof);
 
     for (i, op) in ops.enumerate() {
         match op {

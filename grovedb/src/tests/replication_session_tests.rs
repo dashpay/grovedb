@@ -72,7 +72,7 @@ mod tests {
             "sync should be completed after all chunks are applied"
         );
 
-        dest.commit_session(session)
+        dest.commit_session(session, grove_version)
             .expect("should commit sync session");
 
         dest
@@ -583,6 +583,62 @@ mod tests {
     }
 
     #[test]
+    fn sync_with_empty_subtree_succeeds() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        // Insert a subtree with no items — it will be genuinely empty
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"empty_child",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert empty subtree");
+
+        // Also insert a non-empty sibling so the tree is non-trivial
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"item",
+                Element::new_item(b"val".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert item");
+
+        // Full sync should succeed (exercises the is_subtree_empty path)
+        let dest = sync_source_to_destination(&source, grove_version);
+
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+        let dest_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get dest hash");
+        assert_eq!(source_hash, dest_hash);
+    }
+
+    #[test]
+    fn is_sync_completed_returns_false_before_any_sync() {
+        let grove_version = GroveVersion::latest();
+        let dest = make_empty_grovedb();
+        let session = crate::replication::MultiStateSyncSession::new(&dest, [0u8; 32], 64);
+        assert!(
+            !session.is_sync_completed(),
+            "is_sync_completed should return false when no sync has ever started"
+        );
+    }
+
+    #[test]
     fn fetch_chunk_unsupported_version_error() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);
@@ -610,5 +666,27 @@ mod tests {
             "error message should mention unsupported version, got: {}",
             err_msg
         );
+    }
+
+    #[test]
+    fn commit_session_rejects_incomplete_session() {
+        let grove_version = GroveVersion::latest();
+        let dest = make_empty_grovedb();
+
+        // Create a session that has never synced any chunks
+        let session = crate::replication::MultiStateSyncSession::new(&dest, [0xAB; 32], 64);
+
+        // commit() should reject because the session is incomplete
+        let err = dest
+            .commit_session(session, grove_version)
+            .expect_err("commit should fail for incomplete session");
+        match err {
+            crate::Error::CorruptedData(message) => assert!(
+                message.contains("incomplete"),
+                "error should mention incomplete, got: {}",
+                message
+            ),
+            other => panic!("expected CorruptedData, got: {:?}", other),
+        }
     }
 }

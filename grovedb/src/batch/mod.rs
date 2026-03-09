@@ -28,7 +28,7 @@ mod single_sum_item_insert_cost_tests;
 use core::fmt;
 use std::{
     cmp::Ordering,
-    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap},
+    collections::{btree_map::Entry, hash_map::Entry as HashMapEntry, BTreeMap, HashMap, HashSet},
     hash::{Hash, Hasher},
     ops::{Add, AddAssign},
     slice::Iter,
@@ -52,8 +52,8 @@ use grovedb_costs::{
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
-        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
-        tree_type::ElementTreeTypeExtensions,
+        exists::ElementExistsInStorageExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
@@ -167,9 +167,10 @@ impl NonMerkTreeMeta {
 
 /// Operations for batch processing.
 ///
-/// User-facing variants: `InsertOnly`, `InsertOrReplace`, `Replace`, `Patch`,
-/// `RefreshReference`, `Delete`, `DeleteTree`, `CommitmentTreeInsert`,
-/// `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`.
+/// User-facing variants: `InsertWithKnownToNotAlreadyExist`, `InsertIfNotExists`,
+/// `InsertOrReplace`, `Replace`, `Patch`, `RefreshReference`, `Delete`,
+/// `DeleteTree`, `CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
+/// `DenseTreeInsert`.
 ///
 /// Internal variants (`ReplaceTreeRootKey`, `InsertTreeWithRootHash`,
 /// `ReplaceNonMerkTreeRoot`, `InsertNonMerkTree`) are marked
@@ -195,10 +196,24 @@ pub enum GroveOp {
         /// Aggregate data
         aggregate_data: AggregateData,
     },
-    /// Inserts an element that is known to not yet exist
-    InsertOnly {
+    /// Inserts an element that the caller knows does not yet exist.
+    /// This is a performance optimization hint — no existence check is
+    /// performed. The caller asserts the key is new.
+    InsertWithKnownToNotAlreadyExist {
         /// Element
         element: Element,
+    },
+    /// Inserts an element only if the key does not already exist.
+    /// An existence check is performed; if the key is found the behaviour
+    /// depends on `error_if_exists`:
+    /// - `true`: the operation is rejected with an error (default).
+    /// - `false`: the insert is silently skipped.
+    InsertIfNotExists {
+        /// Element
+        element: Element,
+        /// If true, return an error when the key already exists.
+        /// If false, silently skip the insert.
+        error_if_exists: bool,
     },
     /// Inserts or Replaces an element
     InsertOrReplace {
@@ -220,7 +235,7 @@ pub enum GroveOp {
     /// **Internal only — do not construct directly.**
     /// Insert tree with root hash for standard Merk trees.
     ///
-    /// Created during batch propagation from an `InsertOrReplace`/`InsertOnly`
+    /// Created during batch propagation from an `InsertOrReplace`/`InsertWithKnownToNotAlreadyExist`/`InsertIfNotExists`
     /// occupied entry when a child subtree's root hash is propagated upward.
     /// For non-Merk trees, see `InsertNonMerkTree`.
     ///
@@ -330,13 +345,14 @@ impl GroveOp {
             GroveOp::Replace { .. } => 6,
             GroveOp::Patch { .. } => 7,
             GroveOp::InsertOrReplace { .. } => 8,
-            GroveOp::InsertOnly { .. } => 9,
-            GroveOp::CommitmentTreeInsert { .. } => 10,
-            GroveOp::MmrTreeAppend { .. } => 11,
-            GroveOp::BulkAppend { .. } => 12,
-            GroveOp::DenseTreeInsert { .. } => 13,
-            GroveOp::ReplaceNonMerkTreeRoot { .. } => 14,
-            GroveOp::InsertNonMerkTree { .. } => 15,
+            GroveOp::InsertWithKnownToNotAlreadyExist { .. } => 9,
+            GroveOp::InsertIfNotExists { .. } => 10,
+            GroveOp::CommitmentTreeInsert { .. } => 11,
+            GroveOp::MmrTreeAppend { .. } => 12,
+            GroveOp::BulkAppend { .. } => 13,
+            GroveOp::DenseTreeInsert { .. } => 14,
+            GroveOp::ReplaceNonMerkTreeRoot { .. } => 15,
+            GroveOp::InsertNonMerkTree { .. } => 16,
         }
     }
 }
@@ -430,10 +446,10 @@ impl Visualize for KeyInfoPath {
         let mut path_out = Vec::new();
         let mut path_drawer = Drawer::new(&mut path_out);
         for k in &self.0 {
-            path_drawer = k.visualize(path_drawer).unwrap();
-            path_drawer.write(b" ").unwrap();
+            path_drawer = k.visualize(path_drawer)?;
+            path_drawer.write(b" ")?;
         }
-        drawer.write(path_out.as_slice()).unwrap();
+        drawer.write(path_out.as_slice())?;
         Ok(drawer)
     }
 }
@@ -558,7 +574,19 @@ impl fmt::Debug for QualifiedGroveDbOp {
 
         let op_dbg = match &self.op {
             GroveOp::InsertOrReplace { element } => format!("Insert Or Replace {:?}", element),
-            GroveOp::InsertOnly { element } => format!("Insert {:?}", element),
+            GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
+                format!("Insert With Known To Not Already Exist {:?}", element)
+            }
+            GroveOp::InsertIfNotExists {
+                element,
+                error_if_exists,
+            } => {
+                if *error_if_exists {
+                    format!("Insert If Not Exists (error on existing) {:?}", element)
+                } else {
+                    format!("Insert If Not Exists (skip on existing) {:?}", element)
+                }
+            }
             GroveOp::Replace { element } => format!("Replace {:?}", element),
             GroveOp::Patch { element, .. } => format!("Patch {:?}", element),
             GroveOp::RefreshReference {
@@ -603,13 +631,59 @@ impl fmt::Debug for QualifiedGroveDbOp {
 }
 
 impl QualifiedGroveDbOp {
-    /// An insert op using a known owned path and known key
-    pub fn insert_only_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
+    /// An insert op using a known owned path and known key.
+    /// The caller asserts the key is new — no existence check is performed.
+    /// This is a performance optimization hint.
+    pub fn insert_only_known_to_not_already_exist_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        element: Element,
+    ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: Some(KnownKey(key)),
-            op: GroveOp::InsertOnly { element },
+            op: GroveOp::InsertWithKnownToNotAlreadyExist { element },
+        }
+    }
+
+    #[deprecated(
+        note = "use insert_only_known_to_not_already_exist_op or insert_if_not_exists_op instead"
+    )]
+    /// Deprecated: use `insert_only_known_to_not_already_exist_op` instead.
+    pub fn insert_only_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
+        Self::insert_only_known_to_not_already_exist_op(path, key, element)
+    }
+
+    /// An insert op that checks if the key already exists and rejects
+    /// the operation if it does, enforcing uniqueness.
+    pub fn insert_if_not_exists_op(path: Vec<Vec<u8>>, key: Vec<u8>, element: Element) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: Some(KnownKey(key)),
+            op: GroveOp::InsertIfNotExists {
+                element,
+                error_if_exists: true,
+            },
+        }
+    }
+
+    /// An insert op that checks if the key already exists and silently
+    /// skips the insert when it does (no error).
+    pub fn insert_if_not_exists_or_skip_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        element: Element,
+    ) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: Some(KnownKey(key)),
+            op: GroveOp::InsertIfNotExists {
+                element,
+                error_if_exists: false,
+            },
         }
     }
 
@@ -919,7 +993,8 @@ impl QualifiedGroveDbOp {
         let mut conflicts: HashMap<KeyInfoPath, Vec<usize>> = HashMap::new();
         for (idx, op) in ops.iter().enumerate() {
             match op.op {
-                GroveOp::InsertOnly { .. }
+                GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+                | GroveOp::InsertIfNotExists { .. }
                 | GroveOp::InsertOrReplace { .. }
                 | GroveOp::Replace { .. }
                 | GroveOp::Patch { .. } => {}
@@ -1073,6 +1148,7 @@ where
         intermediate_reference_info: Option<&'a ReferencePathType>,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1142,6 +1218,7 @@ where
                 recursions_allowed - 1,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         } else {
@@ -1157,6 +1234,7 @@ where
                 recursions_allowed,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         }
@@ -1294,6 +1372,7 @@ where
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1341,6 +1420,7 @@ where
                     recursions_allowed - 1,
                     flags_update,
                     split_removal_bytes,
+                    visited,
                     grove_version,
                 )
             }
@@ -1378,6 +1458,7 @@ where
         recursions_allowed: u8,
         flags_update: &mut G,
         split_removal_bytes: &mut SR,
+        visited: &mut HashSet<Vec<Vec<u8>>>,
         grove_version: &GroveVersion,
     ) -> CostResult<CryptoHash, Error>
     where
@@ -1389,8 +1470,15 @@ where
         ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
         let mut cost = OperationCost::default();
+        // Cap recursion depth to MAX_REFERENCE_HOPS to prevent excessive stack
+        // depth even if the user-provided element_max_reference_hop is larger.
+        let recursions_allowed = recursions_allowed.min(MAX_REFERENCE_HOPS as u8);
         if recursions_allowed == 0 {
             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
+        }
+        let path_vec = qualified_path.to_vec();
+        if !visited.insert(path_vec) {
+            return Err(Error::CyclicReference).wrap_with_cost(cost);
         }
         // If the element being referenced changes in the same batch
         // we need to set the value_hash based on the new change and not the old state.
@@ -1478,6 +1566,7 @@ where
                                 recursions_allowed - 1,
                                 flags_update,
                                 split_removal_bytes,
+                                visited,
                                 grove_version,
                             )
                         }
@@ -1499,7 +1588,8 @@ where
                         }
                     }
                 }
-                GroveOp::InsertOnly { element } => match element {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. } => match element {
                     Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
                             cost,
@@ -1519,6 +1609,7 @@ where
                             recursions_allowed - 1,
                             flags_update,
                             split_removal_bytes,
+                            visited,
                             grove_version,
                         )
                     }
@@ -1557,6 +1648,7 @@ where
                         reference_info,
                         flags_update,
                         split_removal_bytes,
+                        visited,
                         grove_version,
                     )
                 }
@@ -1573,6 +1665,7 @@ where
                 None,
                 flags_update,
                 split_removal_bytes,
+                visited,
                 grove_version,
             )
         }
@@ -1661,142 +1754,256 @@ where
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {
-                GroveOp::InsertOnly { element }
-                | GroveOp::InsertOrReplace { element }
-                | GroveOp::Replace { element }
-                | GroveOp::Patch { element, .. } => match &element {
-                    Element::Reference(path_reference, element_max_reference_hop, _) => {
-                        let merk_feature_type = cost_return_on_error_into!(
-                            &mut cost,
-                            element
-                                .get_feature_type(in_tree_type)
-                                .wrap_with_cost(OperationCost::default())
-                        );
-                        let path_reference = cost_return_on_error_into!(
-                            &mut cost,
-                            path_from_reference_path_type(
-                                path_reference.clone(),
-                                path,
-                                Some(key_info.as_slice())
-                            )
-                            .wrap_with_cost(OperationCost::default())
-                        );
-                        if path_reference.is_empty() {
-                            return Err(Error::InvalidBatchOperation(
-                                "attempting to insert an empty reference",
-                            ))
-                            .wrap_with_cost(cost);
-                        }
+                op_ref @ (GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+                | GroveOp::InsertIfNotExists { .. }
+                | GroveOp::InsertOrReplace { .. }
+                | GroveOp::Replace { .. }
+                | GroveOp::Patch { .. }) => {
+                    let (is_insert_if_not_exists, error_if_exists) = match &op_ref {
+                        GroveOp::InsertIfNotExists {
+                            error_if_exists, ..
+                        } => (true, *error_if_exists),
+                        _ => (false, false),
+                    };
+                    let element = match op_ref {
+                        GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                        | GroveOp::InsertIfNotExists { element, .. }
+                        | GroveOp::InsertOrReplace { element }
+                        | GroveOp::Replace { element }
+                        | GroveOp::Patch { element, .. } => element,
+                        _ => unreachable!(),
+                    };
 
-                        let referenced_element_value_hash = cost_return_on_error!(
+                    // Check tree-override protection for all non-reference elements.
+                    if batch_apply_options.validate_insertion_does_not_override_tree
+                        && !matches!(&element, Element::Reference(..))
+                    {
+                        let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                        let maybe_existing = cost_return_on_error_into!(
                             &mut cost,
-                            self.follow_reference_get_value_hash(
-                                path_reference.as_slice(),
-                                ops_by_qualified_paths,
-                                element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
-                                flags_update,
-                                split_removal_bytes,
+                            merk.get(
+                                key_info.get_key_clone().as_slice(),
+                                true,
+                                Some(&Element::value_defined_cost_for_serialized_value,),
                                 grove_version,
                             )
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to check for existing tree: {e}"
+                                ))
+                            })
                         );
-
-                        cost_return_on_error_into!(
-                            &mut cost,
-                            element.insert_reference_into_batch_operations(
-                                key_info.get_key_clone(),
-                                referenced_element_value_hash,
-                                &mut batch_operations,
-                                merk_feature_type,
-                                grove_version,
-                            )
-                        );
-                    }
-                    Element::Tree(..)
-                    | Element::SumTree(..)
-                    | Element::BigSumTree(..)
-                    | Element::CountTree(..)
-                    | Element::CountSumTree(..)
-                    | Element::ProvableCountTree(..)
-                    | Element::ProvableCountSumTree(..)
-                    | Element::MmrTree(..)
-                    | Element::BulkAppendTree(..)
-                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
-                        let merk_feature_type = cost_return_on_error_into!(
-                            &mut cost,
-                            element
-                                .get_feature_type(in_tree_type)
-                                .wrap_with_cost(OperationCost::default())
-                        );
-                        cost_return_on_error_into!(
-                            &mut cost,
-                            element.insert_subtree_into_batch_operations(
-                                key_info.get_key_clone(),
-                                NULL_HASH,
-                                false,
-                                &mut batch_operations,
-                                merk_feature_type,
-                                grove_version,
-                            )
-                        );
-                    }
-                    Element::CommitmentTree(..) => {
-                        let merk_feature_type = cost_return_on_error_into!(
-                            &mut cost,
-                            element
-                                .get_feature_type(in_tree_type)
-                                .wrap_with_cost(OperationCost::default())
-                        );
-                        cost_return_on_error_into!(
-                            &mut cost,
-                            element.insert_subtree_into_batch_operations(
-                                key_info.get_key_clone(),
-                                grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
-                                false,
-                                &mut batch_operations,
-                                merk_feature_type,
-                                grove_version,
-                            )
-                        );
-                    }
-                    Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                        let merk_feature_type = cost_return_on_error_into!(
-                            &mut cost,
-                            element
-                                .get_feature_type(in_tree_type)
-                                .wrap_with_cost(OperationCost::default())
-                        );
-                        if batch_apply_options.validate_insertion_does_not_override {
-                            let merk = self.merks.get_mut(path).expect("the Merk is cached");
-
-                            let inserted = cost_return_on_error_into!(
-                                &mut cost,
-                                element.insert_if_not_exists_into_batch_operations(
-                                    merk,
-                                    key_info.get_key(),
-                                    &mut batch_operations,
-                                    merk_feature_type,
-                                    grove_version,
-                                )
+                        if let Some(existing_bytes) = maybe_existing {
+                            let existing_element = cost_return_on_error_no_add!(
+                                cost,
+                                Element::deserialize(existing_bytes.as_slice(), grove_version)
+                                    .map_err(|_| {
+                                        Error::CorruptedData(
+                                            "unable to deserialize existing element".to_string(),
+                                        )
+                                    })
                             );
-                            if !inserted {
+                            if existing_element.is_any_tree() {
                                 return Err(Error::InvalidBatchOperation(
                                     "attempting to overwrite a tree",
                                 ))
                                 .wrap_with_cost(cost);
                             }
-                        } else {
+                        }
+                    }
+
+                    match &element {
+                        Element::Reference(path_reference, element_max_reference_hop, _) => {
+                            // Check existence for InsertIfNotExists on references
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert reference that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            let path_reference = cost_return_on_error_into!(
+                                &mut cost,
+                                path_from_reference_path_type(
+                                    path_reference.clone(),
+                                    path,
+                                    Some(key_info.as_slice())
+                                )
+                                .wrap_with_cost(OperationCost::default())
+                            );
+                            if path_reference.is_empty() {
+                                return Err(Error::InvalidBatchOperation(
+                                    "attempting to insert an empty reference",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+
+                            let referenced_element_value_hash = cost_return_on_error!(
+                                &mut cost,
+                                self.follow_reference_get_value_hash(
+                                    path_reference.as_slice(),
+                                    ops_by_qualified_paths,
+                                    element_max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
+                                    flags_update,
+                                    split_removal_bytes,
+                                    &mut HashSet::new(),
+                                    grove_version,
+                                )
+                            );
+
                             cost_return_on_error_into!(
                                 &mut cost,
-                                element.insert_into_batch_operations(
-                                    key_info.get_key(),
+                                element.insert_reference_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    referenced_element_value_hash,
                                     &mut batch_operations,
                                     merk_feature_type,
                                     grove_version,
                                 )
                             );
                         }
+                        Element::Tree(..)
+                        | Element::SumTree(..)
+                        | Element::BigSumTree(..)
+                        | Element::CountTree(..)
+                        | Element::CountSumTree(..)
+                        | Element::ProvableCountTree(..)
+                        | Element::ProvableCountSumTree(..)
+                        | Element::MmrTree(..)
+                        | Element::BulkAppendTree(..)
+                        | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            // Check existence for InsertIfNotExists on subtrees
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert subtree that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        Element::CommitmentTree(..) => {
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+
+                                let inserted = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.insert_if_not_exists_into_batch_operations(
+                                        merk,
+                                        key_info.get_key(),
+                                        &mut batch_operations,
+                                        merk_feature_type,
+                                        grove_version,
+                                    )
+                                );
+                                if !inserted
+                                    && (error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override)
+                                {
+                                    return Err(Error::InvalidBatchOperation(
+                                        "attempting to insert element that already exists",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                            } else {
+                                cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.insert_into_batch_operations(
+                                        key_info.get_key(),
+                                        &mut batch_operations,
+                                        merk_feature_type,
+                                        grove_version,
+                                    )
+                                );
+                            }
+                        }
                     }
-                },
+                }
                 GroveOp::RefreshReference {
                     reference_path_type,
                     max_reference_hop,
@@ -1867,6 +2074,7 @@ where
                             max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
                             flags_update,
                             split_removal_bytes,
+                            &mut HashSet::new(),
                             grove_version
                         )
                     );
@@ -1895,13 +2103,13 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(tree_type) => {
+                GroveOp::DeleteTree(_tree_type) => {
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
                             key_info.get_key(),
                             true,
-                            tree_type,
+                            in_tree_type, /* use parent tree type, not the deleted subtree's type */
                             &mut batch_operations,
                             grove_version
                         )
@@ -2343,7 +2551,10 @@ impl GroveDb {
                                                     .wrap_with_cost(cost);
                                                 }
                                                 GroveOp::InsertOrReplace { element }
-                                                | GroveOp::InsertOnly { element }
+                                                | GroveOp::InsertWithKnownToNotAlreadyExist {
+                                                    element,
+                                                }
+                                                | GroveOp::InsertIfNotExists { element, .. }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::Patch { element, .. } => {
                                                     // Standard Merk trees
@@ -2680,7 +2891,30 @@ impl GroveDb {
             .add_cost(cost)
     }
 
-    /// Applies operations on GroveDB without batching
+    /// Applies operations on GroveDB one at a time, without batching.
+    ///
+    /// # Warning -- not atomic
+    ///
+    /// Unlike [`apply_batch`](Self::apply_batch), this method processes each
+    /// operation individually and applies its side-effects to the current
+    /// storage context immediately. If an operation in the middle of the list
+    /// fails, all preceding operations will have already been applied and
+    /// **will not be rolled back** within this method. (Note: when a
+    /// `transaction` is supplied, the caller can still roll back the entire
+    /// transaction; the non-atomicity refers to the inability to undo
+    /// *individual* operations within the list.)
+    /// This means:
+    ///
+    /// * The storage context may be left in a partially-updated state on
+    ///   failure.
+    /// * Root hashes may differ from the result of applying the same
+    ///   operations via `apply_batch`, because batch application propagates
+    ///   root hashes in a single pass whereas this method updates trees
+    ///   one-by-one.
+    ///
+    /// Use this method **only** for testing, debugging, or situations where
+    /// partial application is explicitly acceptable. For production workloads
+    /// that require atomicity, use [`apply_batch`](Self::apply_batch) instead.
     pub fn apply_operations_without_batching(
         &self,
         ops: Vec<QualifiedGroveDbOp>,
@@ -2720,7 +2954,70 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::Delete => {
+                GroveOp::InsertWithKnownToNotAlreadyExist { element } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key.as_ref().ok_or(Error::InvalidBatchOperation(
+                            "insert_only_known_to_not_already_exist op is missing a key",
+                        ))
+                    );
+                    cost_return_on_error!(
+                        &mut cost,
+                        self.insert(
+                            path_slices.as_slice(),
+                            key.as_slice(),
+                            element.to_owned(),
+                            options.clone().map(|o| o.as_insert_options()),
+                            transaction,
+                            grove_version,
+                        )
+                    );
+                }
+                GroveOp::InsertIfNotExists {
+                    element,
+                    error_if_exists,
+                } => {
+                    let path_slices: Vec<&[u8]> =
+                        op.path.iterator().map(|p| p.as_slice()).collect();
+                    let key = cost_return_on_error_no_add!(
+                        cost,
+                        op.key.as_ref().ok_or(Error::InvalidBatchOperation(
+                            "insert_if_not_exists op is missing a key",
+                        ))
+                    );
+                    if error_if_exists {
+                        let mut insert_options = options
+                            .clone()
+                            .map(|o| o.as_insert_options())
+                            .unwrap_or_default();
+                        insert_options.validate_insertion_does_not_override = true;
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.insert(
+                                path_slices.as_slice(),
+                                key.as_slice(),
+                                element.to_owned(),
+                                Some(insert_options),
+                                transaction,
+                                grove_version,
+                            )
+                        );
+                    } else {
+                        cost_return_on_error!(
+                            &mut cost,
+                            self.insert_if_not_exists(
+                                path_slices.as_slice(),
+                                key.as_slice(),
+                                element.to_owned(),
+                                transaction,
+                                grove_version,
+                            )
+                        );
+                    }
+                }
+                GroveOp::Delete | GroveOp::DeleteTree(_) => {
                     let path_slices: Vec<&[u8]> =
                         op.path.iterator().map(|p| p.as_slice()).collect();
                     let key = cost_return_on_error_no_add!(
@@ -2822,9 +3119,19 @@ impl GroveDb {
                         )
                     );
                 }
-                _ => {
+                GroveOp::Patch { .. } | GroveOp::RefreshReference { .. } => {
                     return Err(Error::NotSupported(
-                        "operation not supported in apply_operations_without_batching".to_string(),
+                        "Patch and RefreshReference are batch-only operations".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                GroveOp::ReplaceTreeRootKey { .. }
+                | GroveOp::InsertTreeWithRootHash { .. }
+                | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                | GroveOp::InsertNonMerkTree { .. } => {
+                    return Err(Error::NotSupported(
+                        "internal tree ops not supported in apply_operations_without_batching"
+                            .to_string(),
                     ))
                     .wrap_with_cost(cost);
                 }
@@ -3074,6 +3381,8 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
+        // Collect paths of subtrees being deleted, separated by type.
+        //
         // Non-Merk trees (MmrTree, BulkAppendTree, DenseTree, CommitmentTree)
         // store their data in the data storage namespace of their subtree path
         // (e.g. MMR nodes, buffer entries, dense tree values). When apply_body
@@ -3081,21 +3390,174 @@ impl GroveDb {
         // and clears the subtree's Merk metadata, but does NOT clear the raw
         // data these tree types wrote. Without explicit cleanup, deleting a
         // non-Merk tree would leave orphaned data that could corrupt a new tree
-        // inserted at the same path. Standard Merk trees don't need this because
-        // their data IS their Merk — deleting the subtree clears everything.
-        let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
-            .iter()
-            .filter_map(|op| {
-                if let GroveOp::DeleteTree(tree_type) = &op.op
-                    && tree_type.uses_non_merk_data_storage()
-                {
-                    let mut child_path = op.path.to_path();
-                    child_path.push(op.key.as_ref()?.as_slice().to_vec());
-                    return Some(child_path);
+        // inserted at the same path.
+        //
+        // Standard Merk trees also need cleanup: when a Merk subtree has child
+        // subtrees, deleting the parent key in the parent Merk does NOT clear
+        // the child subtree's storage. We must recursively find and clear all
+        // nested subtrees.
+        let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+
+        let batch_apply_options_ref = batch_apply_options.as_ref().cloned().unwrap_or_default();
+
+        for op in ops.iter() {
+            if let GroveOp::DeleteTree(tree_type) = &op.op
+                && let Some(key) = op.key.as_ref()
+            {
+                let mut child_path = op.path.to_path();
+                child_path.push(key.as_slice().to_vec());
+
+                // H2 fix: check emptiness of the subtree before allowing
+                // deletion, respecting batch_apply_options just like the
+                // non-batch path does.
+                if !batch_apply_options_ref.allow_deleting_non_empty_trees {
+                    let is_empty = if tree_type.uses_non_merk_data_storage() {
+                        // Non-Merk trees: check element-level entry count.
+                        let parent_path_vec = op.path.to_path();
+                        let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
+                        let parent_storage = self
+                            .db
+                            .get_transactional_storage_context(
+                                parent_path,
+                                Some(&storage_batch),
+                                tx.as_ref(),
+                            )
+                            .unwrap_add_cost(&mut cost);
+                        let element = cost_return_on_error!(
+                            &mut cost,
+                            Element::get_from_storage(
+                                &parent_storage,
+                                key.as_slice(),
+                                grove_version,
+                            )
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to get element for delete tree emptiness check: {e}"
+                                ))
+                            })
+                        );
+                        element.non_merk_entry_count().unwrap_or(0) == 0
+                    } else {
+                        // Standard Merk trees: use is_empty_tree_except to
+                        // account for other delete ops in the same batch that
+                        // target this subtree.
+                        //
+                        // Limitation: this only considers Delete/DeleteTree ops
+                        // when building the exception set. It does NOT account
+                        // for Insert ops in the same batch that would add new
+                        // keys to this subtree. In theory, a batch could
+                        // contain deletes for every existing key (making the
+                        // tree appear empty) while also containing inserts that
+                        // add new keys, and this check would still report the
+                        // tree as empty.
+                        //
+                        // This is safe in practice because the consistency
+                        // check (`verify_consistency_of_operations`), which
+                        // runs before this code, detects "inserts under a
+                        // deleted path" and rejects such batches. The only way
+                        // to reach this code with conflicting insert + delete-
+                        // tree ops is by setting
+                        // `disable_operation_consistency_check = true`, in
+                        // which case the caller has accepted responsibility for
+                        // ensuring no such conflicts exist.
+                        let batch_deleted_keys = ops
+                            .iter()
+                            .filter_map(|other_op| match &other_op.op {
+                                GroveOp::Delete | GroveOp::DeleteTree(_) => {
+                                    if other_op.path.to_path() == child_path {
+                                        Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<Vec<u8>>>();
+                        let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
+                            batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+
+                        let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+                        let child_storage = self
+                            .db
+                            .get_transactional_storage_context(
+                                child_subtree_path,
+                                Some(&storage_batch),
+                                tx.as_ref(),
+                            )
+                            .unwrap_add_cost(&mut cost);
+
+                        let child_merk = cost_return_on_error!(
+                            &mut cost,
+                            Merk::open_layered_with_root_key(
+                                child_storage,
+                                None,
+                                *tree_type,
+                                Some(&Element::value_defined_cost_for_serialized_value),
+                                grove_version,
+                            )
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to open subtree for emptiness check: {e}"
+                                ))
+                            })
+                        );
+
+                        child_merk
+                            .is_empty_tree_except(batch_deleted_keys_refs)
+                            .unwrap_add_cost(&mut cost)
+                    };
+
+                    if !is_empty {
+                        if batch_apply_options_ref.deleting_non_empty_trees_returns_error {
+                            return Err(Error::DeletingNonEmptyTree(
+                                "trying to do a batch delete operation for a non empty tree, \
+                                 but options not allowing this",
+                            ))
+                            .wrap_with_cost(cost);
+                        } else {
+                            // Skip this DeleteTree op — don't add to cleanup
+                            // paths and the op will still be in the batch but
+                            // we filter it out below.
+                            continue;
+                        }
+                    }
                 }
-                None
-            })
-            .collect();
+
+                if tree_type.uses_non_merk_data_storage() {
+                    non_merk_delete_paths.push(child_path);
+                } else {
+                    merk_delete_paths.push(child_path);
+                }
+            }
+        }
+
+        // When allow_deleting_non_empty_trees is false and
+        // deleting_non_empty_trees_returns_error is false, we need to filter
+        // out DeleteTree ops for non-empty trees (they were skipped above).
+        let ops = if !batch_apply_options_ref.allow_deleting_non_empty_trees
+            && !batch_apply_options_ref.deleting_non_empty_trees_returns_error
+        {
+            let all_delete_paths: std::collections::HashSet<Vec<Vec<u8>>> = non_merk_delete_paths
+                .iter()
+                .chain(merk_delete_paths.iter())
+                .cloned()
+                .collect();
+            ops.into_iter()
+                .filter(|op| {
+                    if let GroveOp::DeleteTree(_) = &op.op
+                        && let Some(key) = op.key.as_ref()
+                    {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(key.as_slice().to_vec());
+                        return all_delete_paths.contains(&child_path);
+                    }
+                    true
+                })
+                .collect()
+        } else {
+            ops
+        };
 
         // With the only one difference (if there is a transaction) do the following:
         // 2. If nothing left to do and we were on a non-leaf subtree or we're done with
@@ -3147,6 +3609,43 @@ impl GroveDb {
                     ))
                 })
             );
+        }
+
+        // Clean up storage for deleted standard Merk subtrees.
+        // The parent key has been removed from the parent Merk by apply_body,
+        // but the child subtree's storage (and any nested subtrees) remains.
+        // We use find_subtrees to recursively discover all nested subtrees
+        // and clear their storage, matching the non-batch delete behavior.
+        //
+        // NOTE: find_subtrees reads from the committed transaction state
+        // (without the pending storage_batch), so any subtrees *inserted*
+        // by this same batch are invisible to it.  This is safe because
+        // verify_consistency_of_operations (enabled by default) rejects
+        // batches that insert under a path being deleted.  If the caller
+        // disables the consistency check, inserts under deleted paths can
+        // cause orphaned storage prefixes.  See the doc comment on
+        // BatchApplyOptions::disable_operation_consistency_check.
+        for child_path in &merk_delete_paths {
+            let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&child_subtree_path, Some(tx.as_ref()), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up merk subtree storage in batch delete: {e}",
+                        ))
+                    })
+                );
+            }
         }
 
         // TODO: compute batch costs
@@ -3263,23 +3762,153 @@ impl GroveDb {
             self.preprocess_dense_tree_ops(ops, tx.as_ref(), grove_version)
         );
 
-        // See comment above in apply_batch_with_element_flags_update for why
-        // non-Merk tree deletions need explicit data storage cleanup.
-        let non_merk_delete_paths: Vec<Vec<Vec<u8>>> = ops
-            .iter()
-            .filter_map(|op| {
-                if let GroveOp::DeleteTree(tree_type) = &op.op
-                    && tree_type.uses_non_merk_data_storage()
-                {
-                    let mut child_path = op.path.to_path();
-                    child_path.push(op.key.as_ref()?.as_slice().to_vec());
-                    return Some(child_path);
-                }
-                None
-            })
-            .collect();
+        // See comment in apply_batch_with_element_flags_update for why
+        // deleted tree subtrees need explicit storage cleanup, and why
+        // emptiness checks are needed (H2).
+        let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
 
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();
+
+        for op in ops.iter() {
+            if let GroveOp::DeleteTree(tree_type) = &op.op
+                && let Some(key) = op.key.as_ref()
+            {
+                let mut child_path = op.path.to_path();
+                child_path.push(key.as_slice().to_vec());
+
+                // H2 fix: check emptiness of the subtree before allowing
+                // deletion (same logic as apply_batch_with_element_flags_update).
+                if !batch_apply_options.allow_deleting_non_empty_trees {
+                    let is_empty = if tree_type.uses_non_merk_data_storage() {
+                        let parent_path_vec = op.path.to_path();
+                        let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
+                        let parent_storage = self
+                            .db
+                            .get_transactional_storage_context(
+                                parent_path,
+                                Some(&storage_batch),
+                                tx.as_ref(),
+                            )
+                            .unwrap_add_cost(&mut cost);
+                        let element = cost_return_on_error!(
+                            &mut cost,
+                            Element::get_from_storage(
+                                &parent_storage,
+                                key.as_slice(),
+                                grove_version,
+                            )
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to get element for delete tree emptiness check: {e}"
+                                ))
+                            })
+                        );
+                        element.non_merk_entry_count().unwrap_or(0) == 0
+                    } else {
+                        // Standard Merk trees: use is_empty_tree_except to
+                        // account for other delete ops in the same batch that
+                        // target this subtree.
+                        //
+                        // Limitation: this only considers Delete/DeleteTree ops
+                        // when building the exception set. It does NOT account
+                        // for Insert ops in the same batch that would add new
+                        // keys to this subtree. See the matching comment in
+                        // `apply_batch_with_element_flags_update` for details
+                        // on why this is safe in practice (the consistency
+                        // check guards against this scenario).
+                        let batch_deleted_keys = ops
+                            .iter()
+                            .filter_map(|other_op| match &other_op.op {
+                                GroveOp::Delete | GroveOp::DeleteTree(_) => {
+                                    if other_op.path.to_path() == child_path {
+                                        Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<Vec<u8>>>();
+                        let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
+                            batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+
+                        let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+                        let child_storage = self
+                            .db
+                            .get_transactional_storage_context(
+                                child_subtree_path,
+                                Some(&storage_batch),
+                                tx.as_ref(),
+                            )
+                            .unwrap_add_cost(&mut cost);
+
+                        let child_merk = cost_return_on_error!(
+                            &mut cost,
+                            Merk::open_layered_with_root_key(
+                                child_storage,
+                                None,
+                                *tree_type,
+                                Some(&Element::value_defined_cost_for_serialized_value),
+                                grove_version,
+                            )
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to open subtree for emptiness check: {e}"
+                                ))
+                            })
+                        );
+
+                        child_merk
+                            .is_empty_tree_except(batch_deleted_keys_refs)
+                            .unwrap_add_cost(&mut cost)
+                    };
+
+                    if !is_empty {
+                        if batch_apply_options.deleting_non_empty_trees_returns_error {
+                            return Err(Error::DeletingNonEmptyTree(
+                                "trying to do a batch delete operation for a non empty tree, \
+                                 but options not allowing this",
+                            ))
+                            .wrap_with_cost(cost);
+                        } else {
+                            continue;
+                        }
+                    }
+                }
+
+                if tree_type.uses_non_merk_data_storage() {
+                    non_merk_delete_paths.push(child_path);
+                } else {
+                    merk_delete_paths.push(child_path);
+                }
+            }
+        }
+
+        // Filter out skipped DeleteTree ops when non-error mode is active.
+        let ops = if !batch_apply_options.allow_deleting_non_empty_trees
+            && !batch_apply_options.deleting_non_empty_trees_returns_error
+        {
+            let all_delete_paths: std::collections::HashSet<Vec<Vec<u8>>> = non_merk_delete_paths
+                .iter()
+                .chain(merk_delete_paths.iter())
+                .cloned()
+                .collect();
+            ops.into_iter()
+                .filter(|op| {
+                    if let GroveOp::DeleteTree(_) = &op.op
+                        && let Some(key) = op.key.as_ref()
+                    {
+                        let mut child_path = op.path.to_path();
+                        child_path.push(key.as_slice().to_vec());
+                        return all_delete_paths.contains(&child_path);
+                    }
+                    true
+                })
+                .collect()
+        } else {
+            ops
+        };
         if batch_apply_options.batch_pause_height.is_none() {
             // we default to pausing at the root tree, which is the most common case
             batch_apply_options.batch_pause_height = Some(1);
@@ -3337,6 +3966,21 @@ impl GroveDb {
             add_on_operations(&total_current_costs, &left_over_operations)
         );
 
+        // Validate the add-on operations for consistency. The callback is
+        // caller-provided, so the returned operations could contain duplicates,
+        // internal-only ops, or inserts under paths being deleted. Apply the
+        // same consistency gate used for the initial batch.
+        if check_batch_operation_consistency && !new_operations.is_empty() {
+            let consistency_result =
+                QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
+            if !consistency_result.is_empty() {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on operations from callback fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
 
@@ -3382,6 +4026,44 @@ impl GroveDb {
                     ))
                 })
             );
+        }
+
+        // Clean up storage for deleted standard Merk subtrees (same as
+        // apply_batch_with_element_flags_update).
+        //
+        // NOTE: find_subtrees reads from the committed transaction state
+        // (without the pending storage_batch), so any subtrees *inserted*
+        // by this same batch are invisible to it.  This is safe because
+        // verify_consistency_of_operations (enabled by default) rejects
+        // batches that insert under a path being deleted.  If the caller
+        // disables the consistency check, inserts under deleted paths can
+        // cause orphaned storage prefixes.  See the doc comment on
+        // BatchApplyOptions::disable_operation_consistency_check.
+        for child_path in &merk_delete_paths {
+            let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&child_subtree_path, Some(tx.as_ref()), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        p,
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up merk subtree storage in batch delete: {e}",
+                        ))
+                    })
+                );
+            }
         }
 
         // let's build the write batch
@@ -4830,14 +5512,20 @@ mod tests {
         .unwrap()
         .expect("insert commitment tree data");
 
-        // Delete it via batch.
+        // Delete it via batch.  The tree is non-empty (has one entry),
+        // so we must set allow_deleting_non_empty_trees.
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"ct".to_vec(),
             grovedb_merk::tree_type::TreeType::CommitmentTree(4),
         )];
 
-        db.apply_batch(ops, None, Some(&tx), grove_version)
+        let batch_options = Some(BatchApplyOptions {
+            allow_deleting_non_empty_trees: true,
+            ..Default::default()
+        });
+
+        db.apply_batch(ops, batch_options, Some(&tx), grove_version)
             .unwrap()
             .expect("batch delete non-merk tree");
 
@@ -4912,13 +5600,20 @@ mod tests {
                 .expect("append mmr value");
         }
 
+        // The tree is non-empty (has 3 entries), so we must set
+        // allow_deleting_non_empty_trees.
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"mmr".to_vec(),
             grovedb_merk::tree_type::TreeType::MmrTree,
         )];
 
-        db.apply_batch(ops, None, Some(&tx), grove_version)
+        let batch_options = Some(BatchApplyOptions {
+            allow_deleting_non_empty_trees: true,
+            ..Default::default()
+        });
+
+        db.apply_batch(ops, batch_options, Some(&tx), grove_version)
             .unwrap()
             .expect("batch delete mmr tree");
 
@@ -4984,15 +5679,22 @@ mod tests {
                 .expect("insert dense tree value");
         }
 
+        // The tree is non-empty (has 3 entries), so we must set
+        // allow_deleting_non_empty_trees.
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"dense".to_vec(),
             grovedb_merk::tree_type::TreeType::DenseAppendOnlyFixedSizeTree(3),
         )];
 
+        let batch_options = Some(BatchApplyOptions {
+            allow_deleting_non_empty_trees: true,
+            ..Default::default()
+        });
+
         db.apply_partial_batch(
             ops,
-            None,
+            batch_options,
             |_cost, _left_over_ops| Ok(vec![]),
             Some(&tx),
             grove_version,
@@ -5040,6 +5742,335 @@ mod tests {
         }
     }
 
+    // ===================================================================
+    // InsertIfNotExists and InsertWithKnownToNotAlreadyExist tests
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_if_not_exists_succeeds_for_new_key() {
+        // InsertIfNotExists should succeed when the key does not exist.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"new_key".to_vec(),
+            Element::new_item(b"value".to_vec()),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists should succeed for new key");
+
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"new_key", None, grove_version)
+            .unwrap()
+            .expect("get inserted item");
+        assert_eq!(result, Element::new_item(b"value".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_errors_when_key_exists() {
+        // InsertIfNotExists (with error_if_exists=true) should fail when key exists.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Try to insert at the same key with insert_if_not_exists
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+
+        assert!(
+            result.is_err(),
+            "insert_if_not_exists should fail when key exists, got: {:?}",
+            result,
+        );
+
+        // Original value should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"existing", None, grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_or_skip_silently_skips() {
+        // InsertIfNotExists with error_if_exists=false should silently skip
+        // when the key already exists.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Use insert_if_not_exists_or_skip (error_if_exists=false)
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_if_not_exists_or_skip should succeed (skip)");
+
+        // Original value should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"existing", None, grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_only_known_to_not_already_exist() {
+        // InsertWithKnownToNotAlreadyExist should succeed for a new key.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![TEST_LEAF.to_vec()],
+                b"brand_new".to_vec(),
+                Element::new_item(b"data".to_vec()),
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("insert_only_known_to_not_already_exist should succeed");
+
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"brand_new", None, grove_version)
+            .unwrap()
+            .expect("get inserted item");
+        assert_eq!(result, Element::new_item(b"data".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_with_flags_update() {
+        // Test InsertIfNotExists through the apply_batch_with_element_flags_update
+        // code path (with element flags function).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"flagged",
+            Element::new_item(b"original".to_vec()),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Try insert_if_not_exists with element flags (uses the flags update path)
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"flagged".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        let batch_options = Some(BatchApplyOptions {
+            validate_insertion_does_not_override: false,
+            ..Default::default()
+        });
+
+        let result = db
+            .apply_batch_with_element_flags_update(
+                ops,
+                batch_options,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap();
+
+        assert!(
+            result.is_err(),
+            "insert_if_not_exists via flags update should fail when key exists: {:?}",
+            result,
+        );
+
+        // Original should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"flagged", Some(&tx), grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_or_skip_with_flags_update() {
+        // Test InsertIfNotExists (skip mode) through the flags update path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        // Insert an item first
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"flagged2",
+            Element::new_item(b"original".to_vec()),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert original");
+
+        // Use insert_if_not_exists_or_skip with element flags
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"flagged2".to_vec(),
+            Element::new_item(b"new_value".to_vec()),
+        )];
+
+        let batch_options = Some(BatchApplyOptions {
+            validate_insertion_does_not_override: false,
+            ..Default::default()
+        });
+
+        db.apply_batch_with_element_flags_update(
+            ops,
+            batch_options,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert_if_not_exists_or_skip via flags update should succeed (skip)");
+
+        // Original should be preserved
+        let val = db
+            .get([TEST_LEAF].as_ref(), b"flagged2", Some(&tx), grove_version)
+            .unwrap()
+            .expect("get existing");
+        assert_eq!(val, Element::new_item(b"original".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_new_key_with_flags_update() {
+        // Test InsertIfNotExists for a new key through the flags update path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"new_flagged".to_vec(),
+            Element::new_item(b"fresh".to_vec()),
+        )];
+
+        let batch_options = Some(BatchApplyOptions {
+            validate_insertion_does_not_override: false,
+            ..Default::default()
+        });
+
+        db.apply_batch_with_element_flags_update(
+            ops,
+            batch_options,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert_if_not_exists should succeed for new key via flags update");
+
+        let val = db
+            .get(
+                [TEST_LEAF].as_ref(),
+                b"new_flagged",
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("get new item");
+        assert_eq!(val, Element::new_item(b"fresh".to_vec()));
+    }
+
+    // ===================================================================
+    // Debug formatting tests for new op variants
+    // ===================================================================
+
+    #[test]
+    fn test_debug_format_insert_if_not_exists_ops() {
+        // Verify Debug formatting covers the new InsertIfNotExists variants
+        let op_error = QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op_error);
+        assert!(
+            debug_str.contains("Insert If Not Exists (error on existing)"),
+            "unexpected debug format: {}",
+            debug_str,
+        );
+
+        let op_skip = QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op_skip);
+        assert!(
+            debug_str.contains("Insert If Not Exists (skip on existing)"),
+            "unexpected debug format: {}",
+            debug_str,
+        );
+
+        let op_known = QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            vec![b"path".to_vec()],
+            b"key".to_vec(),
+            Element::new_item(b"val".to_vec()),
+        );
+        let debug_str = format!("{:?}", op_known);
+        assert!(
+            debug_str.contains("Insert With Known To Not Already Exist"),
+            "unexpected debug format: {}",
+            debug_str,
+        );
+    }
+
     #[test]
     fn test_batch_rejects_key_longer_than_255_bytes() {
         let grove_version = GroveVersion::latest();
@@ -5080,5 +6111,145 @@ mod tests {
         db.apply_batch(ops, None, Some(&tx), grove_version)
             .unwrap()
             .expect("batch with 255-byte key should succeed");
+    }
+
+    #[test]
+    fn test_apply_operations_without_batching_is_not_atomic() {
+        // Demonstrates that apply_operations_without_batching is NOT atomic:
+        // if the second operation fails, the first operation's side-effects
+        // are still committed to the database.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let tx = db.start_transaction();
+
+        // Op 1: Insert a valid item under TEST_LEAF -- this should succeed.
+        // Op 2: Insert an item under a non-existent subtree -- this should fail.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"key1".to_vec(),
+                Element::new_item(b"value1".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"nonexistent_subtree".to_vec()],
+                b"key2".to_vec(),
+                Element::new_item(b"value2".to_vec()),
+            ),
+        ];
+
+        // The overall call should fail because the second op targets a
+        // subtree that does not exist.
+        let result = db.apply_operations_without_batching(ops, None, Some(&tx), grove_version);
+        assert!(
+            result.unwrap().is_err(),
+            "should fail because the second op targets a non-existent subtree"
+        );
+
+        // Despite the failure, the first operation was already committed
+        // (non-atomic behavior). We can observe this by reading key1.
+        let element = db
+            .get([TEST_LEAF].as_ref(), b"key1", Some(&tx), grove_version)
+            .unwrap()
+            .expect("first op should have been committed despite later failure");
+        assert_eq!(element, Element::new_item(b"value1".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_reference_hop_count_capped_to_max() {
+        // Audit L2: Verify that even if a reference specifies
+        // max_reference_hop = Some(255), the effective recursion depth is
+        // capped to MAX_REFERENCE_HOPS (10).
+        //
+        // We build a chain of MAX_REFERENCE_HOPS + 1 references (11 hops)
+        // ending at an item.  With the cap enforced, this should fail with
+        // ReferenceLimit because 10 < 11.  Without the cap, 255 >= 11 would
+        // allow all hops to succeed.
+        use crate::operations::get::MAX_REFERENCE_HOPS;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let chain_len = MAX_REFERENCE_HOPS + 1; // 11 references before the item
+        let mut batch = Vec::new();
+
+        // Insert the base item that the chain ultimately points to.
+        batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"item".to_vec(),
+            Element::new_item(b"value".to_vec()),
+        ));
+
+        // Build chain: ref_0 -> ref_1 -> ... -> ref_{chain_len-1} -> item
+        // ref_{chain_len-1} points to "item".
+        // ref_i points to ref_{i+1} for i < chain_len-1.
+        for i in (0..chain_len).rev() {
+            let key = format!("ref_{}", i).into_bytes();
+            let target_key = if i == chain_len - 1 {
+                b"item".to_vec()
+            } else {
+                format!("ref_{}", i + 1).into_bytes()
+            };
+
+            // Only the first reference in the chain (ref_0) carries the
+            // user-specified hop limit of 255.  The others use None
+            // (which defaults to MAX_REFERENCE_HOPS inside the batch
+            // resolution code).
+            let max_hops = if i == 0 { Some(255u8) } else { None };
+
+            batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                key,
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), target_key]),
+                    max_hops,
+                ),
+            ));
+        }
+
+        // With the cap in place, the batch should fail because 11 hops
+        // exceed the capped limit of MAX_REFERENCE_HOPS (10).
+        let result = db.apply_batch(batch, None, None, grove_version).unwrap();
+        assert!(
+            matches!(result, Err(Error::ReferenceLimit)),
+            "expected ReferenceLimit error due to hop cap, got: {:?}",
+            result,
+        );
+
+        // Verify that a chain of exactly MAX_REFERENCE_HOPS still succeeds
+        // with max_reference_hop = Some(255), proving the cap allows up to
+        // MAX_REFERENCE_HOPS hops.
+        let db = make_test_grovedb(grove_version);
+        let ok_chain_len = MAX_REFERENCE_HOPS; // 10 references before the item
+        let mut batch = Vec::new();
+
+        batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"ok_item".to_vec(),
+            Element::new_item(b"ok_value".to_vec()),
+        ));
+
+        for i in (0..ok_chain_len).rev() {
+            let key = format!("ok_ref_{}", i).into_bytes();
+            let target_key = if i == ok_chain_len - 1 {
+                b"ok_item".to_vec()
+            } else {
+                format!("ok_ref_{}", i + 1).into_bytes()
+            };
+
+            let max_hops = if i == 0 { Some(255u8) } else { None };
+
+            batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                key,
+                Element::new_reference_with_hops(
+                    ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), target_key]),
+                    max_hops,
+                ),
+            ));
+        }
+
+        db.apply_batch(batch, None, None, grove_version)
+            .unwrap()
+            .expect("chain of exactly MAX_REFERENCE_HOPS with hop cap should succeed");
     }
 }

@@ -94,7 +94,7 @@ mod tests {
             b"world".to_vec(),
             vec![0x00, 0x01, 0x02, 0xFF],
         ];
-        let packed = pack_nested_bytes(input.clone());
+        let packed = pack_nested_bytes(input.clone()).unwrap();
         let unpacked = unpack_nested_bytes(&packed).expect("should unpack valid packed data");
         assert_eq!(unpacked, input);
     }
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn pack_unpack_nested_bytes_single_element() {
         let input = vec![b"only_one".to_vec()];
-        let packed = pack_nested_bytes(input.clone());
+        let packed = pack_nested_bytes(input.clone()).unwrap();
         let unpacked =
             unpack_nested_bytes(&packed).expect("should unpack single-element packed data");
         assert_eq!(unpacked, input);
@@ -112,7 +112,7 @@ mod tests {
     fn pack_unpack_nested_bytes_empty_inner_vecs() {
         // Packing a list that contains empty byte vectors
         let input = vec![vec![], vec![], b"data".to_vec()];
-        let packed = pack_nested_bytes(input.clone());
+        let packed = pack_nested_bytes(input.clone()).unwrap();
         let unpacked =
             unpack_nested_bytes(&packed).expect("should unpack data with empty inner vecs");
         assert_eq!(unpacked, input);
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn pack_unpack_empty() {
         let input: Vec<Vec<u8>> = vec![];
-        let packed = pack_nested_bytes(input.clone());
+        let packed = pack_nested_bytes(input.clone()).unwrap();
         let unpacked = unpack_nested_bytes(&packed).expect("should unpack empty nested bytes");
         assert_eq!(unpacked, input);
     }
@@ -181,7 +181,7 @@ mod tests {
     fn unpack_nested_bytes_extra_trailing_data_error() {
         // Valid packed data followed by extra trailing bytes should fail
         let input = vec![b"test".to_vec()];
-        let mut packed = pack_nested_bytes(input);
+        let mut packed = pack_nested_bytes(input).unwrap();
         packed.push(0xFF); // extra byte
         let result = unpack_nested_bytes(&packed);
         assert!(
@@ -221,7 +221,8 @@ mod tests {
         let tree_type = TreeType::NormalTree;
         let chunk_ids = vec![b"chunk1".to_vec(), b"chunk2".to_vec()];
 
-        let encoded = encode_global_chunk_id(subtree_prefix, None, tree_type, chunk_ids.clone());
+        let encoded =
+            encode_global_chunk_id(subtree_prefix, None, tree_type, chunk_ids.clone()).unwrap();
 
         let (dec_prefix, dec_root_key, dec_tree_type, dec_chunk_ids) =
             decode_global_chunk_id(&encoded, &app_hash)
@@ -246,7 +247,8 @@ mod tests {
             Some(root_key.clone()),
             tree_type,
             chunk_ids.clone(),
-        );
+        )
+        .unwrap();
 
         let (dec_prefix, dec_root_key, dec_tree_type, dec_chunk_ids) =
             decode_global_chunk_id(&encoded, &app_hash)
@@ -265,7 +267,7 @@ mod tests {
         let app_hash = [0x00u8; 32];
         let tree_type = TreeType::CountTree;
 
-        let encoded = encode_global_chunk_id(subtree_prefix, None, tree_type, vec![]);
+        let encoded = encode_global_chunk_id(subtree_prefix, None, tree_type, vec![]).unwrap();
 
         let (dec_prefix, dec_root_key, dec_tree_type, dec_chunk_ids) =
             decode_global_chunk_id(&encoded, &app_hash)
@@ -413,6 +415,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decode_vec_ops_rejects_trailing_bytes() {
+        let ops = vec![Op::Push(Node::Hash([0x42u8; 32])), Op::Parent, Op::Child];
+        let mut encoded = encode_vec_ops(ops).expect("should encode ops");
+        // Append trailing garbage
+        encoded.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let result = decode_vec_ops(&encoded);
+        assert!(
+            result.is_err(),
+            "chunk with trailing bytes should be rejected"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // fetch_chunk
     // -----------------------------------------------------------------------
@@ -530,10 +545,11 @@ mod tests {
             root_key.clone(),
             tree_type,
             chunk_ids.clone(),
-        );
+        )
+        .unwrap();
 
         // Pack into a nested bytes structure
-        let packed = pack_nested_bytes(vec![encoded.clone()]);
+        let packed = pack_nested_bytes(vec![encoded.clone()]).unwrap();
         let unpacked = unpack_nested_bytes(&packed).expect("should unpack nested global chunk id");
         assert_eq!(unpacked.len(), 1);
         assert_eq!(unpacked[0], encoded);

@@ -400,7 +400,8 @@ impl ElementQueryExtensions for Element {
                         // we should decrease by 1 in this case
                         *limit = limit.saturating_sub(1);
                     } else {
-                        *limit = limit.saturating_sub(sub_elements.len() as u16);
+                        *limit =
+                            limit.saturating_sub(sub_elements.len().min(u16::MAX as usize) as u16);
                     }
                 }
                 if let Some(offset) = offset {

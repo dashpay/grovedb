@@ -32,6 +32,11 @@ impl<'db, S: StorageContext<'db>> Merk<S> {
     }
 
     /// Delete metadata under `key`.
+    ///
+    /// Uses `cost_info: None`, so freed-bytes cost is estimated from
+    /// committed DB state. Metadata is not part of the authenticated
+    /// tree structure and has no associated storage fees, so cost
+    /// precision is not required here.
     pub fn delete_meta(&mut self, key: &[u8]) -> CostResult<(), Error> {
         self.storage
             .delete_meta(key, None)

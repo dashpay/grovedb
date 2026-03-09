@@ -228,7 +228,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         self.transaction
             .rebuild_from_writebatch(&batch.batch)
             .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(batch.cost_acc)
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

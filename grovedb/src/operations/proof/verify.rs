@@ -212,6 +212,7 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
 
@@ -307,6 +308,7 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
         Ok((root_hash, last_tree_feature_type, result))
@@ -337,6 +339,7 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
 
@@ -382,12 +385,13 @@ impl GroveDb {
             &mut result,
             &mut last_tree_feature_type,
             &options,
+            0,
             grove_version,
         )?;
         Ok((root_hash, last_tree_feature_type, result))
     }
 
-    fn verify_layer_proof_v1<T>(
+    pub(crate) fn verify_layer_proof_v1<T>(
         layer_proof: &LayerProof,
         prove_options: &ProveOptions,
         query: &PathQuery,
@@ -396,12 +400,19 @@ impl GroveDb {
         result: &mut Vec<T>,
         last_parent_tree_type: &mut Option<TreeFeatureType>,
         options: &VerifyOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "proof verification exceeded maximum depth limit".to_string(),
+            ));
+        }
         // The merk proof at this layer must be Merk type
         let merk_proof_bytes = match &layer_proof.merk_proof {
             ProofBytes::Merk(bytes) => bytes,
@@ -497,6 +508,10 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
+                                    // Known limitation: this parent tree result
+                                    // is pushed without decrementing limit_left.
+                                    // Will be addressed by per-level limits
+                                    // redesign.
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
@@ -525,6 +540,7 @@ impl GroveDb {
                                                 result,
                                                 last_parent_tree_type,
                                                 options,
+                                                current_depth + 1,
                                                 grove_version,
                                             )?
                                         }
@@ -1273,7 +1289,7 @@ impl GroveDb {
         Ok(positions)
     }
 
-    fn verify_layer_proof<T>(
+    pub(crate) fn verify_layer_proof<T>(
         layer_proof: &MerkOnlyLayerProof,
         prove_options: &ProveOptions,
         query: &PathQuery,
@@ -1282,12 +1298,19 @@ impl GroveDb {
         result: &mut Vec<T>,
         last_parent_tree_type: &mut Option<TreeFeatureType>,
         options: &VerifyOptions,
+        current_depth: usize,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
         T: TryFromVersioned<ProvedPathKeyOptionalValue>,
         Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
     {
+        if current_depth > super::MAX_PROOF_DEPTH {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "proof verification exceeded maximum depth limit".to_string(),
+            ));
+        }
         check_grovedb_v0!(
             "verify_layer_proof",
             grove_version
@@ -1407,6 +1430,10 @@ impl GroveDb {
                                         break;
                                     }
                                 } else {
+                                    // Known limitation: this parent tree result
+                                    // is pushed without decrementing limit_left.
+                                    // Will be addressed by per-level limits
+                                    // redesign.
                                     if query.should_add_parent_tree_at_path(
                                         current_path,
                                         grove_version,
@@ -1431,6 +1458,7 @@ impl GroveDb {
                                         result,
                                         last_parent_tree_type,
                                         options,
+                                        current_depth + 1,
                                         grove_version,
                                     )?;
 
@@ -1980,13 +2008,21 @@ impl GroveDb {
         }
 
         let tree_depth = calculate_max_tree_depth_from_count(count);
-        let chunk_depths = calculate_chunk_depths(tree_depth, query.max_depth);
+        let chunk_depths = calculate_chunk_depths(tree_depth, query.max_depth)
+            .map_err(|e| Error::CorruptedData(format!("invalid chunk depth parameters: {}", e)))?;
 
         // Now we're at the target layer - decode and execute the trunk proof
-        let decoder = Decoder::new(&current_layer.merk_proof);
+        let mut decoder = Decoder::new(&current_layer.merk_proof);
         let ops: Vec<Op> = decoder
+            .by_ref()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| Error::CorruptedData(format!("Failed to decode trunk proof: {}", e)))?;
+        if decoder.remaining_bytes() > 0 {
+            return Err(Error::CorruptedData(format!(
+                "Trunk proof has {} unconsumed trailing bytes",
+                decoder.remaining_bytes()
+            )));
+        }
 
         // Execute the proof to build the tree structure and get its root hash
         // Use collapse=false to preserve the full tree structure for element extraction
@@ -2234,10 +2270,17 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> Result<crate::query::GroveBranchQueryResult, Error> {
         // Decode the proof ops
-        let decoder = Decoder::new(proof);
+        let mut decoder = Decoder::new(proof);
         let ops: Vec<Op> = decoder
+            .by_ref()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| Error::CorruptedData(format!("Failed to decode branch proof: {}", e)))?;
+        if decoder.remaining_bytes() > 0 {
+            return Err(Error::CorruptedData(format!(
+                "Branch proof has {} unconsumed trailing bytes",
+                decoder.remaining_bytes()
+            )));
+        }
 
         // Execute the proof to build the tree structure and get its root hash
         // Use collapse=false to preserve the full tree structure for element extraction
