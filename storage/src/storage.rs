@@ -44,9 +44,19 @@ use grovedb_visualize::visualize_to_vec;
 use crate::{worst_case_costs::WorstKeyLength, Error};
 pub type SubtreePrefix = [u8; 32];
 
-/// Top-level storage_cost abstraction.
-/// Should be able to hold storage_cost connection and to start transaction when
+/// Top-level storage abstraction.
+/// Should be able to hold a storage connection and to start transactions when
 /// needed. All query operations will be exposed using [StorageContext].
+///
+/// # Single-Writer Constraint
+///
+/// Implementations assume at most one write transaction is active at a time.
+/// The RocksDB-backed implementation uses `OptimisticTransactionDB`, which
+/// allows multiple concurrent transactions at the storage level but detects
+/// write conflicts only at commit time. Upper layers (GroveDb) build
+/// in-memory Merk tree state during a transaction that cannot be cheaply
+/// unwound on commit failure. Callers must therefore serialize write
+/// transactions externally.
 pub trait Storage<'db> {
     /// Storage transaction type
     type Transaction;
@@ -58,13 +68,21 @@ pub trait Storage<'db> {
     /// is replication process.
     type ImmediateStorageContext: StorageContext<'db>;
 
-    /// Starts a new transaction
+    /// Starts a new transaction.
+    ///
+    /// Only one write transaction should be active at a time. See the
+    /// [trait-level documentation](Storage) for details.
     fn start_transaction(&'db self) -> Self::Transaction;
 
-    /// Consumes and commits a transaction
+    /// Consumes and commits a transaction.
+    ///
+    /// For the `OptimisticTransactionDB` backend, commit may fail with a
+    /// `Busy` or `TryAgain` error if a concurrent transaction modified the
+    /// same keys. On failure the transaction is consumed and the caller must
+    /// discard any derived in-memory state.
     fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error>;
 
-    /// Rollback a transaction
+    /// Rolls back a transaction, reverting its pending writes.
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error>;
 
     /// Consumes and applies multi-context batch.

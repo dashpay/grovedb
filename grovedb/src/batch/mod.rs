@@ -52,8 +52,8 @@ use grovedb_costs::{
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
-        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
-        tree_type::ElementTreeTypeExtensions,
+        exists::ElementExistsInStorageExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
@@ -1814,6 +1814,32 @@ where
 
                     match &element {
                         Element::Reference(path_reference, element_max_reference_hop, _) => {
+                            // Check existence for InsertIfNotExists on references
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert reference that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
                                 element
@@ -1870,6 +1896,32 @@ where
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            // Check existence for InsertIfNotExists on subtrees
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert subtree that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
                                 element
@@ -3390,6 +3442,25 @@ impl GroveDb {
                         // Standard Merk trees: use is_empty_tree_except to
                         // account for other delete ops in the same batch that
                         // target this subtree.
+                        //
+                        // Limitation: this only considers Delete/DeleteTree ops
+                        // when building the exception set. It does NOT account
+                        // for Insert ops in the same batch that would add new
+                        // keys to this subtree. In theory, a batch could
+                        // contain deletes for every existing key (making the
+                        // tree appear empty) while also containing inserts that
+                        // add new keys, and this check would still report the
+                        // tree as empty.
+                        //
+                        // This is safe in practice because the consistency
+                        // check (`verify_consistency_of_operations`), which
+                        // runs before this code, detects "inserts under a
+                        // deleted path" and rejects such batches. The only way
+                        // to reach this code with conflicting insert + delete-
+                        // tree ops is by setting
+                        // `disable_operation_consistency_check = true`, in
+                        // which case the caller has accepted responsibility for
+                        // ensuring no such conflicts exist.
                         let batch_deleted_keys = ops
                             .iter()
                             .filter_map(|other_op| match &other_op.op {
@@ -3735,6 +3806,17 @@ impl GroveDb {
                         );
                         element.non_merk_entry_count().unwrap_or(0) == 0
                     } else {
+                        // Standard Merk trees: use is_empty_tree_except to
+                        // account for other delete ops in the same batch that
+                        // target this subtree.
+                        //
+                        // Limitation: this only considers Delete/DeleteTree ops
+                        // when building the exception set. It does NOT account
+                        // for Insert ops in the same batch that would add new
+                        // keys to this subtree. See the matching comment in
+                        // `apply_batch_with_element_flags_update` for details
+                        // on why this is safe in practice (the consistency
+                        // check guards against this scenario).
                         let batch_deleted_keys = ops
                             .iter()
                             .filter_map(|other_op| match &other_op.op {
@@ -3883,6 +3965,21 @@ impl GroveDb {
             cost,
             add_on_operations(&total_current_costs, &left_over_operations)
         );
+
+        // Validate the add-on operations for consistency. The callback is
+        // caller-provided, so the returned operations could contain duplicates,
+        // internal-only ops, or inserts under paths being deleted. Apply the
+        // same consistency gate used for the initial batch.
+        if check_batch_operation_consistency && !new_operations.is_empty() {
+            let consistency_result =
+                QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
+            if !consistency_result.is_empty() {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on operations from callback fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
 
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
