@@ -40,6 +40,17 @@ pub enum NonMerkTreeMeta {
 }
 ```
 
+**SubelementsDeletionBehavior** controls how a `DeleteTree` handles non-empty subtrees:
+
+```rust
+pub enum SubelementsDeletionBehavior {
+    DontCheck,       // Skip emptiness check; caller guarantees tree is empty
+    Error,           // Return Error::DeletingNonEmptyTree if non-empty
+    DeleteChildren,  // Check, and recursively delete children if non-empty
+    Skip,            // Check, and silently skip deletion if non-empty
+}
+```
+
 Jede Operation wird in ein `QualifiedGroveDbOp` verpackt, das den Pfad enthält:
 
 ```rust

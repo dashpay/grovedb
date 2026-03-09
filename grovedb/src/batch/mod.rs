@@ -3083,6 +3083,14 @@ impl GroveDb {
                             .as_ref()
                             .ok_or(Error::InvalidBatchOperation("delete op is missing a key"))
                     );
+                    // Map the per-op enum to the lower-level DeleteOptions.
+                    // DontCheck and DeleteChildren both set
+                    // allow_deleting_non_empty_trees = true because the
+                    // single-op `delete()` already performs recursive child
+                    // subtree cleanup when that flag is true — the two
+                    // behaviors converge at this layer.  Skip maps to
+                    // allow=false + error=false, which makes `delete()`
+                    // silently return Ok(false) for non-empty trees.
                     let delete_options = DeleteOptions {
                         allow_deleting_non_empty_trees: matches!(
                             subelements_deletion_behavior,
@@ -3550,31 +3558,15 @@ impl GroveDb {
                             let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
                                 batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
 
-                            let child_subtree_path: SubtreePath<Vec<u8>> =
-                                child_path.as_slice().into();
-                            let child_storage = self
-                                .db
-                                .get_transactional_storage_context(
-                                    child_subtree_path,
-                                    Some(&storage_batch),
-                                    tx.as_ref(),
-                                )
-                                .unwrap_add_cost(&mut cost);
-
                             let child_merk = cost_return_on_error!(
                                 &mut cost,
-                                Merk::open_layered_with_root_key(
-                                    child_storage,
-                                    None,
-                                    *tree_type,
-                                    Some(&Element::value_defined_cost_for_serialized_value),
+                                self.open_batch_transactional_merk_at_path(
+                                    &storage_batch,
+                                    child_path.as_slice().into(),
+                                    tx.as_ref(),
+                                    false,
                                     grove_version,
                                 )
-                                .map_err(|e| {
-                                    Error::CorruptedData(format!(
-                                        "unable to open subtree for emptiness check: {e}"
-                                    ))
-                                })
                             );
 
                             child_merk
@@ -3914,31 +3906,15 @@ impl GroveDb {
                             let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
                                 batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
 
-                            let child_subtree_path: SubtreePath<Vec<u8>> =
-                                child_path.as_slice().into();
-                            let child_storage = self
-                                .db
-                                .get_transactional_storage_context(
-                                    child_subtree_path,
-                                    Some(&storage_batch),
-                                    tx.as_ref(),
-                                )
-                                .unwrap_add_cost(&mut cost);
-
                             let child_merk = cost_return_on_error!(
                                 &mut cost,
-                                Merk::open_layered_with_root_key(
-                                    child_storage,
-                                    None,
-                                    *tree_type,
-                                    Some(&Element::value_defined_cost_for_serialized_value),
+                                self.open_batch_transactional_merk_at_path(
+                                    &storage_batch,
+                                    child_path.as_slice().into(),
+                                    tx.as_ref(),
+                                    false,
                                     grove_version,
                                 )
-                                .map_err(|e| {
-                                    Error::CorruptedData(format!(
-                                        "unable to open subtree for emptiness check: {e}"
-                                    ))
-                                })
                             );
 
                             child_merk
@@ -4055,6 +4031,17 @@ impl GroveDb {
         // caller-provided, so the returned operations could contain duplicates,
         // internal-only ops, or inserts under paths being deleted. Apply the
         // same consistency gate used for the initial batch.
+        //
+        // Limitation: add-on DeleteTree ops bypass the
+        // SubelementsDeletionBehavior preflight (emptiness check, Skip
+        // filtering, cleanup path collection) that runs on the initial
+        // batch.  They go straight into continue_partial_apply_body →
+        // apply_body, where DeleteTree is a simple layered Merk delete
+        // with no emptiness enforcement.  In practice this is safe because
+        // partial-batch callers (Platform) control the callback and only
+        // return root-level propagation ops, not new DeleteTree ops.  If
+        // add-on DeleteTree support is needed in the future, the preflight
+        // must be extended to cover new_operations as well.
         if check_batch_operation_consistency && !new_operations.is_empty() {
             let consistency_result =
                 QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
