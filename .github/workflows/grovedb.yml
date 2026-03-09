@@ -31,15 +31,11 @@ jobs:
               - '**/Cargo.toml'
               - 'Cargo.lock'
 
-  test:
-    name: Test (${{ matrix.partition }}/3)
+  build-test:
+    name: Build Tests (instrumented)
     needs: detect-changes
     if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        partition: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,6 +50,41 @@ jobs:
           workspaces: ". -> target/llvm-cov-target"
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@cargo-nextest
+      - name: Build test binaries with coverage instrumentation
+        run: >
+          cargo llvm-cov nextest
+          --no-run
+          --workspace
+          --all-features
+      - name: Save instrumented build artifacts
+        uses: actions/cache/save@v4
+        with:
+          path: target/llvm-cov-target
+          key: llvm-cov-build-${{ github.sha }}-${{ hashFiles('**/Cargo.lock') }}
+
+  test:
+    name: Test (${{ matrix.partition }}/3)
+    needs: [detect-changes, build-test]
+    if: needs.detect-changes.outputs.any-code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-nextest
+      - name: Restore instrumented build artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: target/llvm-cov-target
+          key: llvm-cov-build-${{ github.sha }}-${{ hashFiles('**/Cargo.lock') }}
       - name: Run tests (shard ${{ matrix.partition }}/3)
         run: >
           cargo llvm-cov nextest
