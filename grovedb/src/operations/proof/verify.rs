@@ -658,6 +658,27 @@ impl GroveDb {
                             }
                         }
 
+                        // For non-empty Merk trees without a subquery (no
+                        // lower layer proof), the prover must use
+                        // KVValueHashFeatureTypeWithChildHash so the merk
+                        // verifier can confirm combine_hash(H(value),
+                        // child_hash) == value_hash. If child_hash_verified is
+                        // false, an attacker may have downgraded the node type
+                        // to hide child hash verification.
+                        // Non-Merk trees (MmrTree, BulkAppendTree, etc.) are
+                        // excluded — they use different proof structures.
+                        if element.is_non_empty_merk_tree() && !proved_key_value.child_hash_verified
+                        {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "V1 non-empty tree at key {} without subquery must use \
+                                     KVValueHashFeatureTypeWithChildHash proof node",
+                                    hex::encode(key),
+                                ),
+                            ));
+                        }
+
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                 path.iter().map(|p| p.to_vec()).collect(),
@@ -1593,6 +1614,27 @@ impl GroveDb {
                                     ),
                                 ));
                             }
+                        }
+
+                        // For non-empty Merk trees without a subquery (no
+                        // lower layer proof), the prover must use
+                        // KVValueHashFeatureTypeWithChildHash so the merk
+                        // verifier can confirm combine_hash(H(value),
+                        // child_hash) == value_hash. If child_hash_verified is
+                        // false, an attacker may have downgraded the node type
+                        // to hide child hash verification.
+                        // Non-Merk trees (MmrTree, BulkAppendTree, etc.) are
+                        // excluded — they use different proof structures.
+                        if element.is_non_empty_merk_tree() && !proved_key_value.child_hash_verified
+                        {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "non-empty tree at key {} without subquery must use \
+                                     KVValueHashFeatureTypeWithChildHash proof node",
+                                    hex::encode(key),
+                                ),
+                            ));
                         }
 
                         let path_key_optional_value =
