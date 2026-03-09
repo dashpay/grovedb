@@ -755,6 +755,7 @@ impl TreeNode {
     /// Returns an error if there is already a child on the given side,
     /// indicating a corrupted tree state.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Result<Self, (Self, Error)> {
         debug_assert_ne!(
             Some(self.key()),
@@ -863,6 +864,7 @@ impl TreeNode {
     /// Replaces the root node's value with the given value and returns the
     /// modified `Tree`.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn put_value(
         mut self,
         value: Vec<u8>,
@@ -915,6 +917,7 @@ impl TreeNode {
     /// Replaces the root node's value with the given value and returns the
     /// modified `Tree`.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn put_value_with_fixed_cost(
         mut self,
         value: Vec<u8>,
@@ -970,6 +973,7 @@ impl TreeNode {
     /// Replaces the root node's value with the given value and value hash
     /// and returns the modified `Tree`.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn put_value_and_reference_value_hash(
         mut self,
         value: Vec<u8>,
@@ -1027,6 +1031,7 @@ impl TreeNode {
     /// Replaces the root node's value with the given value and value hash
     /// and returns the modified `Tree`.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn put_value_with_reference_value_hash_and_value_cost(
         mut self,
         value: Vec<u8>,
