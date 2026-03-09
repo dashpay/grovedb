@@ -67,12 +67,28 @@ impl<T> Owner<T> {
     /// The function must return a result of the same type (the same value, or a
     /// new value to take its place).
     ///
-    /// # Warning
+    /// # Poisoning behavior
     ///
     /// If `f` returns `Err`, the contained value has been consumed and the
     /// `Owner` is left in a poisoned state (`inner = None`). Any subsequent
     /// access (deref, `own`, `own_return`, etc.) will panic. Callers **must**
     /// not use the `Owner` after `own_result` returns an error.
+    ///
+    /// # Why this is safe in practice (audit note)
+    ///
+    /// All call sites are in [`Walker`](crate::tree::walk::Walker) methods
+    /// (`walk`, `walk_expect`, `attach`, `put_value`, etc.) where `own_result`
+    /// is called on `self.tree` (an `Owner<TreeNode>`). On every error path
+    /// the `Walker` is dropped immediately — it is never accessed after
+    /// `own_result` returns `Err`. This means the poisoned `Owner` is always
+    /// dropped without further use, so the panic is unreachable in practice.
+    ///
+    /// Changing the signature to `FnOnce(T) -> Result<T, (T, E)>` to force
+    /// value recovery was evaluated and rejected: it adds complexity to every
+    /// closure for no practical benefit, since the ownership pattern already
+    /// guarantees safe drop-on-error. If new call sites are added in the
+    /// future, they must follow the same pattern of not accessing the `Owner`
+    /// after an error.
     pub fn own_result<F, E>(&mut self, f: F) -> Result<(), E>
     where
         F: FnOnce(T) -> Result<T, E>,
