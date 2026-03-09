@@ -775,9 +775,173 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_delete_some_children_plus_delete_tree_dont_check() {
+        // Delete SOME children + DeleteTree(DontCheck) on parent.
+        // DontCheck skips the emptiness check, but apply_body rejects
+        // the combination because child ops produce a new root key for
+        // a tree that is being deleted.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent");
+
+        db.insert(
+            [b"parent".as_ref()].as_ref(),
+            b"child1",
+            Element::new_item(b"v1".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child1");
+
+        db.insert(
+            [b"parent".as_ref()].as_ref(),
+            b"child2",
+            Element::new_item(b"v2".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child2");
+
+        // Delete only child1, DontCheck on parent
+        let ops = vec![
+            QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"child1".to_vec()),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"parent".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::DontCheck,
+            ),
+        ];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+
+        match result {
+            Err(Error::InvalidBatchOperation(msg)) => {
+                assert!(
+                    msg.contains("modification of tree when it will be deleted"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            Err(e) => panic!("expected InvalidBatchOperation, got: {:?}", e),
+            Ok(()) => {
+                panic!("expected error: child ops produce a root key for a tree being deleted")
+            }
+        }
+    }
+
+    #[test]
+    fn test_batch_delete_some_children_plus_delete_tree_skip() {
+        // Delete SOME children + DeleteTree(Skip) on parent.
+        // The emptiness check finds the tree non-empty (child2 remains),
+        // so the DeleteTree is skipped (filtered out of the batch).
+        // The child Delete op still runs: child1 is removed, parent and
+        // child2 survive.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent");
+
+        db.insert(
+            [b"parent".as_ref()].as_ref(),
+            b"child1",
+            Element::new_item(b"v1".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child1");
+
+        db.insert(
+            [b"parent".as_ref()].as_ref(),
+            b"child2",
+            Element::new_item(b"v2".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child2");
+
+        // Delete only child1, Skip on parent
+        let ops = vec![
+            QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"child1".to_vec()),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"parent".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Skip,
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("Skip mode: DeleteTree filtered out, child delete still runs");
+
+        // Parent should still exist (DeleteTree was skipped)
+        assert!(
+            db.get(EMPTY_PATH, b"parent", None, grove_version)
+                .unwrap()
+                .is_ok(),
+            "parent should still exist"
+        );
+
+        // child1 should be gone (the Delete op ran)
+        assert!(
+            db.get(
+                [b"parent".as_ref()].as_ref(),
+                b"child1",
+                None,
+                grove_version
+            )
+            .unwrap()
+            .is_err(),
+            "child1 should have been deleted"
+        );
+
+        // child2 should still exist
+        assert!(
+            db.get(
+                [b"parent".as_ref()].as_ref(),
+                b"child2",
+                None,
+                grove_version
+            )
+            .unwrap()
+            .is_ok(),
+            "child2 should still exist"
+        );
+    }
+
+    #[test]
     fn test_batch_delete_tree_with_partial_child_delete_still_non_empty() {
         // When only some children are deleted in the same batch, the tree
         // should still be considered non-empty and the delete should fail.
+        // (This is the Error mode variant of the partial-delete scenario.)
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
