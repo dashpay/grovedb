@@ -593,7 +593,7 @@ impl TreeNode {
     /// `Count` and `ProvableCount` variants return 0 since they carry no sum.
     /// This is safe because GroveDB's type enforcement ensures homogeneous
     /// node types within each Merk tree -- see
-    /// `child_aggregate_sum_data_as_i64` docs for details. The
+    /// `child_aggregate_sum_data_as_i64` docs for details.
     #[inline]
     pub fn child_aggregate_sum_data_as_i128(&self, left: bool) -> i128 {
         match self.link(left) {
