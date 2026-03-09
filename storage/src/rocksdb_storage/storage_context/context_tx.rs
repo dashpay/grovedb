@@ -70,6 +70,13 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
 
     /// Clears all data in the default (data) column family for this prefix.
     /// Auxiliary, roots, and meta column families are **not** affected.
+    ///
+    /// Note: deletes are issued with `cost_info: None`, so freed-bytes cost
+    /// is estimated from committed DB state rather than pre-computed. This is
+    /// acceptable for a bulk-clear operation where precise per-key cost
+    /// tracking is not required. See
+    /// [`RocksDbStorage::continue_write_batch`](super::super::storage::RocksDbStorage::continue_write_batch)
+    /// for the full rationale.
     pub fn clear(&mut self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -78,11 +85,7 @@ impl<'db> PrefixedRocksDbTransactionContext<'db> {
 
         while iter.valid().unwrap_add_cost(&mut cost) {
             if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                cost_return_on_error!(
-                    &mut cost,
-                    // todo: calculate cost
-                    self.delete(key, None)
-                );
+                cost_return_on_error!(&mut cost, self.delete(key, None));
             }
             iter.next().unwrap_add_cost(&mut cost);
         }

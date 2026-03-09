@@ -7,7 +7,12 @@ impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
 {
-    /// Deletes tree data
+    /// Deletes all tree data (nodes) from storage.
+    ///
+    /// Deletes are issued with `cost_info: None`, so freed-bytes cost is
+    /// estimated from committed DB state. This is acceptable for a
+    /// bulk-clear operation. See `RocksDbStorage::continue_write_batch`
+    /// for the full rationale.
     pub fn clear(&mut self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -17,7 +22,6 @@ where
         let mut to_delete = self.storage.new_batch();
         while iter.valid().unwrap_add_cost(&mut cost) {
             if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
-                // todo: deal with cost reimbursement
                 to_delete.delete(key, None);
             }
             iter.next().unwrap_add_cost(&mut cost);
