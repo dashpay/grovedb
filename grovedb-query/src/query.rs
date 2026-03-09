@@ -88,15 +88,25 @@ const MAX_QUERY_ITEMS: usize = 65_536;
 /// Prevents OOM from malicious inputs with inflated lengths.
 const MAX_CONDITIONAL_BRANCHES: usize = 1024;
 
-impl<Context> Decode<Context> for Query {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
+/// Maximum subquery nesting depth allowed during deserialization.
+/// Prevents stack overflow from deeply nested Query ↔ SubqueryBranch
+/// mutual recursion. Matches `MAX_TERMINAL_KEYS_DEPTH`.
+const MAX_SUBQUERY_DECODE_DEPTH: usize = 64;
+
+impl Query {
+    pub(crate) fn decode_with_depth<D: bincode::de::Decoder>(
         decoder: &mut D,
+        depth: usize,
     ) -> Result<Self, DecodeError> {
+        if depth > MAX_SUBQUERY_DECODE_DEPTH {
+            return Err(DecodeError::Other(
+                "subquery nesting depth exceeded maximum during deserialization",
+            ));
+        }
         let version = u8::decode(decoder)?;
         if version != 1 {
             return Err(DecodeError::Other("unsupported Query encoding version"));
         }
-        // Decode the items vector with a bounded length to prevent OOM
         let items_len = u64::decode(decoder)? as usize;
         if items_len > MAX_QUERY_ITEMS {
             return Err(DecodeError::Other("query items length exceeds maximum"));
@@ -106,10 +116,8 @@ impl<Context> Decode<Context> for Query {
             items.push(QueryItem::decode(decoder)?);
         }
 
-        // Decode the default subquery branch
-        let default_subquery_branch = SubqueryBranch::decode(decoder)?;
+        let default_subquery_branch = SubqueryBranch::decode_with_depth(decoder, depth)?;
 
-        // Decode the conditional subquery branches
         let conditional_subquery_branches = if u8::decode(decoder)? == 1 {
             let len = u64::decode(decoder)? as usize;
             if len > MAX_CONDITIONAL_BRANCHES {
@@ -120,7 +128,7 @@ impl<Context> Decode<Context> for Query {
             let mut map = IndexMap::with_capacity(len);
             for _ in 0..len {
                 let key = QueryItem::decode(decoder)?;
-                let value = SubqueryBranch::decode(decoder)?;
+                let value = SubqueryBranch::decode_with_depth(decoder, depth)?;
                 map.insert(key, value);
             }
             Some(map)
@@ -129,8 +137,61 @@ impl<Context> Decode<Context> for Query {
         };
 
         let left_to_right = bool::decode(decoder)?;
-
         let add_parent_tree_on_subquery = bool::decode(decoder)?;
+
+        Ok(Query {
+            items,
+            default_subquery_branch,
+            conditional_subquery_branches,
+            left_to_right,
+            add_parent_tree_on_subquery,
+        })
+    }
+
+    pub(crate) fn borrow_decode_with_depth<'de, D: bincode::de::BorrowDecoder<'de>>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_SUBQUERY_DECODE_DEPTH {
+            return Err(DecodeError::Other(
+                "subquery nesting depth exceeded maximum during deserialization",
+            ));
+        }
+        let version = u8::borrow_decode(decoder)?;
+        if version != 1 {
+            return Err(DecodeError::Other("unsupported Query encoding version"));
+        }
+        let items_len = u64::borrow_decode(decoder)? as usize;
+        if items_len > MAX_QUERY_ITEMS {
+            return Err(DecodeError::Other("query items length exceeds maximum"));
+        }
+        let mut items = Vec::with_capacity(items_len);
+        for _ in 0..items_len {
+            items.push(QueryItem::borrow_decode(decoder)?);
+        }
+
+        let default_subquery_branch = SubqueryBranch::borrow_decode_with_depth(decoder, depth)?;
+
+        let conditional_subquery_branches = if u8::borrow_decode(decoder)? == 1 {
+            let len = u64::borrow_decode(decoder)? as usize;
+            if len > MAX_CONDITIONAL_BRANCHES {
+                return Err(DecodeError::Other(
+                    "conditional subquery branches length exceeds maximum",
+                ));
+            }
+            let mut map = IndexMap::with_capacity(len);
+            for _ in 0..len {
+                let key = QueryItem::borrow_decode(decoder)?;
+                let value = SubqueryBranch::borrow_decode_with_depth(decoder, depth)?;
+                map.insert(key, value);
+            }
+            Some(map)
+        } else {
+            None
+        };
+
+        let left_to_right = bool::borrow_decode(decoder)?;
+        let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
 
         Ok(Query {
             items,
@@ -142,59 +203,19 @@ impl<Context> Decode<Context> for Query {
     }
 }
 
+impl<Context> Decode<Context> for Query {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
 impl<'de, Context> BorrowDecode<'de, Context> for Query {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        let version = u8::borrow_decode(decoder)?;
-        if version != 1 {
-            return Err(DecodeError::Other("unsupported Query encoding version"));
-        }
-        // Borrow-decode the items vector with a bounded length to prevent OOM
-        let items_len = u64::borrow_decode(decoder)? as usize;
-        if items_len > MAX_QUERY_ITEMS {
-            return Err(DecodeError::Other("query items length exceeds maximum"));
-        }
-        let mut items = Vec::with_capacity(items_len);
-        for _ in 0..items_len {
-            items.push(QueryItem::borrow_decode(decoder)?);
-        }
-
-        // Borrow-decode the default subquery branch
-        let default_subquery_branch = SubqueryBranch::borrow_decode(decoder)?;
-
-        // Borrow-decode the conditional subquery branches
-        let conditional_subquery_branches = if u8::borrow_decode(decoder)? == 1 {
-            let len = u64::borrow_decode(decoder)? as usize;
-            if len > MAX_CONDITIONAL_BRANCHES {
-                return Err(DecodeError::Other(
-                    "conditional subquery branches length exceeds maximum",
-                ));
-            }
-            let mut map = IndexMap::with_capacity(len);
-            for _ in 0..len {
-                let key = QueryItem::borrow_decode(decoder)?;
-                let value = SubqueryBranch::borrow_decode(decoder)?;
-                map.insert(key, value);
-            }
-            Some(map)
-        } else {
-            None
-        };
-
-        // Borrow-decode the left_to_right boolean
-        let left_to_right = bool::borrow_decode(decoder)?;
-
-        // Borrow-decode the add_parent_tree_on_subquery boolean
-        let add_parent_tree_on_subquery = bool::borrow_decode(decoder)?;
-
-        Ok(Query {
-            items,
-            default_subquery_branch,
-            conditional_subquery_branches,
-            left_to_right,
-            add_parent_tree_on_subquery,
-        })
+        Self::borrow_decode_with_depth(decoder, 0)
     }
 }
 
@@ -802,6 +823,88 @@ mod tests {
                 .contains("query items length exceeds maximum"),
             "error message should mention the limit, got: {}",
             err
+        );
+    }
+
+    /// Build a query with `depth` levels of nested subqueries.
+    fn build_nested_query(depth: usize) -> Query {
+        let mut query = Query::new();
+        query.insert_all();
+        for _ in 0..depth {
+            let mut outer = Query::new();
+            outer.insert_all();
+            outer.set_subquery(query);
+            query = outer;
+        }
+        query
+    }
+
+    #[test]
+    fn query_decode_rejects_excessive_subquery_nesting() {
+        // Build a query nested deeper than MAX_SUBQUERY_DECODE_DEPTH
+        let deep_query = build_nested_query(MAX_SUBQUERY_DECODE_DEPTH + 5);
+
+        let encoded =
+            bincode::encode_to_vec(&deep_query, bincode_config()).expect("encoding should succeed");
+
+        let result: Result<(Query, _), _> = bincode::decode_from_slice(&encoded, bincode_config());
+        assert!(
+            result.is_err(),
+            "decode should reject query nested beyond MAX_SUBQUERY_DECODE_DEPTH"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("nesting depth exceeded"),
+            "error should mention nesting depth, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn query_borrow_decode_rejects_excessive_subquery_nesting() {
+        let deep_query = build_nested_query(MAX_SUBQUERY_DECODE_DEPTH + 5);
+
+        let encoded =
+            bincode::encode_to_vec(&deep_query, bincode_config()).expect("encoding should succeed");
+
+        let result: Result<(Query, _), _> =
+            bincode::borrow_decode_from_slice(&encoded, bincode_config());
+        assert!(
+            result.is_err(),
+            "borrow_decode should reject query nested beyond MAX_SUBQUERY_DECODE_DEPTH"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("nesting depth exceeded"),
+            "error should mention nesting depth, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn query_decode_round_trips_at_valid_nesting_depth() {
+        // Build a query at a depth well within the limit
+        let query = build_nested_query(10);
+
+        let encoded =
+            bincode::encode_to_vec(&query, bincode_config()).expect("encoding should succeed");
+
+        let (decoded, _): (Query, _) = bincode::decode_from_slice(&encoded, bincode_config())
+            .expect("decode should succeed for valid nesting depth");
+
+        // Verify structure preserved — walk down to the innermost query
+        let mut current = &decoded;
+        for _ in 0..10 {
+            let subquery = current
+                .default_subquery_branch
+                .subquery
+                .as_ref()
+                .expect("subquery should exist at this depth");
+            current = subquery.as_ref();
+        }
+        assert!(
+            current.default_subquery_branch.subquery.is_none(),
+            "innermost query should have no further subquery"
         );
     }
 }
