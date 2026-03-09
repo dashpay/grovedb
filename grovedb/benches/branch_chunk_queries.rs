@@ -177,11 +177,14 @@ fn get_ancestor_from_tree(
     fn get_node_count(tree: &Tree) -> Option<u64> {
         match &tree.node {
             Node::KVCount(_, _, count) => Some(*count),
-            Node::KVValueHashFeatureType(_, _, _, feature_type) => match feature_type {
-                TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
-                TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => Some(*count),
-                _ => None,
-            },
+            Node::KVValueHashFeatureType(_, _, _, feature_type)
+            | Node::KVValueHashFeatureTypeWithChildHash(_, _, _, feature_type, _) => {
+                match feature_type {
+                    TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    TreeFeatureType::ProvableCountedSummedMerkNode(count, _) => Some(*count),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }

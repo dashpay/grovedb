@@ -37,7 +37,8 @@ impl MapBuilder {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
             | Node::KVCount(key, value, _)
-            | Node::KVValueHashFeatureType(key, value, ..) => {
+            | Node::KVValueHashFeatureType(key, value, ..)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..) => {
                 if let Some((prev_key, _)) = self.0.entries.last_key_value()
                     && key <= prev_key
                 {
