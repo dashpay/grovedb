@@ -130,6 +130,7 @@ where
 
     /// Similar to `Tree#walk`, but yields a `Walker` which fetches from the
     /// same source as `self`.
+    #[allow(clippy::result_large_err)]
     pub fn walk<F, T, V>(
         self,
         left: bool,
@@ -158,6 +159,7 @@ where
 
     /// Similar to `Tree#walk_expect` but yields a `Walker` which fetches from
     /// the same source as `self`.
+    #[allow(clippy::result_large_err)]
     pub fn walk_expect<F, T, V>(
         self,
         left: bool,
@@ -210,6 +212,7 @@ where
     ///
     /// Returns an error if the slot is already occupied, indicating a
     /// corrupted tree state.
+    #[allow(clippy::result_large_err)]
     pub fn attach<T>(mut self, left: bool, maybe_child: Option<T>) -> Result<Self, Error>
     where
         T: Into<TreeNode>,
@@ -220,6 +223,7 @@ where
     }
 
     /// Similar to `Tree#put_value`.
+    #[allow(clippy::result_large_err)]
     pub fn put_value(
         mut self,
         value: Vec<u8>,
@@ -264,6 +268,7 @@ where
     }
 
     /// Similar to `Tree#put_value_with_fixed_cost`.
+    #[allow(clippy::result_large_err)]
     pub fn put_value_with_fixed_cost(
         mut self,
         value: Vec<u8>,
@@ -310,6 +315,7 @@ where
     }
 
     /// Similar to `Tree#put_value_and_reference_value_hash`.
+    #[allow(clippy::result_large_err)]
     pub fn put_value_and_reference_value_hash(
         mut self,
         value: Vec<u8>,
@@ -356,6 +362,7 @@ where
     }
 
     /// Similar to `Tree#put_value_with_reference_value_hash_and_value_cost`.
+    #[allow(clippy::result_large_err)]
     pub fn put_value_with_reference_value_hash_and_value_cost(
         mut self,
         value: Vec<u8>,
