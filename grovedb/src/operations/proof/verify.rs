@@ -2253,6 +2253,29 @@ impl GroveDb {
             )
         })?;
 
+        // For KVValueHashFeatureTypeWithChildHash nodes, verify that
+        // combine_hash(H(value), child_hash) == value_hash. Without this
+        // check an attacker could modify the value bytes while keeping
+        // the value_hash unchanged.
+        if let Node::KVValueHashFeatureTypeWithChildHash(_, _, node_value_hash, _, child_hash) =
+            &tree.node
+        {
+            let element_vh = value_hash(&value).value().to_owned();
+            let computed_vh = combine_hash(&element_vh, child_hash).value().to_owned();
+            if computed_vh != *node_value_hash {
+                return Err(Error::InvalidProof(
+                    PathQuery::new_unsized(Vec::new(), Query::default()),
+                    format!(
+                        "trunk/branch proof value/child hash mismatch at key {}: \
+                         combine_hash(H(value), child_hash) = {} but value_hash = {}",
+                        hex::encode(&key),
+                        hex::encode(computed_vh),
+                        hex::encode(node_value_hash),
+                    ),
+                ));
+            }
+        }
+
         let element = Element::deserialize(&value, grove_version)?;
         elements.insert(key.clone(), element);
 

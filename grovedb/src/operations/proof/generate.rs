@@ -11,7 +11,7 @@ use grovedb_costs::{
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
     proofs::{encode_into, query::QueryItem, Node, Op},
-    tree::value_hash,
+    tree::{combine_hash, value_hash},
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
@@ -511,8 +511,10 @@ impl GroveDb {
                                         (*vh, TreeFeatureType::BasicMerkNode)
                                     }
                                     _ => {
-                                        let vh =
+                                        let element_vh =
                                             value_hash(&value_owned).unwrap_add_cost(&mut cost);
+                                        let vh = combine_hash(&element_vh, &child_root_hash)
+                                            .unwrap_add_cost(&mut cost);
                                         (vh, TreeFeatureType::BasicMerkNode)
                                     }
                                 };
@@ -1260,8 +1262,10 @@ impl GroveDb {
                                         (*vh, TreeFeatureType::BasicMerkNode)
                                     }
                                     _ => {
-                                        let vh =
+                                        let element_vh =
                                             value_hash(&value_owned).unwrap_add_cost(&mut cost);
+                                        let vh = combine_hash(&element_vh, &child_root_hash)
+                                            .unwrap_add_cost(&mut cost);
                                         (vh, TreeFeatureType::BasicMerkNode)
                                     }
                                 };
