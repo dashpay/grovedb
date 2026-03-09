@@ -42,6 +42,14 @@ pub struct Child {
 impl Child {
     /// Converts this child into a `Link::Reference` for use during tree
     /// reconstruction.
+    ///
+    /// **Height caveat (audit finding #15):** The `child_heights` stored in
+    /// the resulting `Link::Reference` are taken directly from this proof
+    /// tree node. For `Node::Hash` nodes (chunk boundaries during
+    /// restoration), these will be `(0, 0)` -- not the true heights of the
+    /// referenced subtree. This is safe because the `Restorer` owns the
+    /// Merk exclusively and `finalize()` verifies/rewrites all heights
+    /// before the Merk is returned. See `Restorer` struct-level docs.
     #[cfg(feature = "minimal")]
     pub fn as_link(&self) -> Link {
         let (key, aggregate_data) = match &self.tree.node {
