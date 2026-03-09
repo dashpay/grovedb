@@ -239,7 +239,7 @@ impl RocksDbStorage {
     ///    - `Merk::delete_meta()` (metadata cleanup)
     ///    - `Merk::set_base_root_key(None)` (root key removal)
     ///    - `GroveDb::delete_aux()` when the caller omits cost info
-    ///    These operations intentionally trade cost precision for simplicity.
+    ///      These operations intentionally trade cost precision for simplicity.
     ///
     /// 3. The `StorageBatch` put-wins semantics (see [`StorageBatch::delete`])
     ///    prevents the worst-case scenario where a same-batch put+delete for
