@@ -34,9 +34,7 @@ jobs:
   build-test:
     name: Build Tests (instrumented)
     needs: detect-changes
-    if: >-
-      needs.detect-changes.outputs.any-code == 'true'
-      && !contains(github.event.pull_request.labels.*.name, 'skip-tests')
+    if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,9 +65,7 @@ jobs:
   test:
     name: Test (${{ matrix.partition }}/3)
     needs: [detect-changes, build-test]
-    if: >-
-      needs.detect-changes.outputs.any-code == 'true'
-      && !contains(github.event.pull_request.labels.*.name, 'skip-tests')
+    if: needs.detect-changes.outputs.any-code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
