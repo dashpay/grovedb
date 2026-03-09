@@ -150,6 +150,32 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                value_hash,
+                feature_type,
+                child_hash,
+            )) => {
+                debug_assert!(key.len() < 256);
+                if value.len() < 65536 {
+                    dest.write_all(&[0x1c, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                } else {
+                    dest.write_all(&[0x2e, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                }
+            }
 
             // PushInverted
             Op::PushInverted(Node::Hash(hash)) => {
@@ -283,6 +309,32 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                value_hash,
+                feature_type,
+                child_hash,
+            )) => {
+                debug_assert!(key.len() < 256);
+                if value.len() < 65536 {
+                    dest.write_all(&[0x1d, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                } else {
+                    dest.write_all(&[0x2f, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                }
+            }
 
             Op::Parent => dest.write_all(&[0x10])?,
             Op::Child => dest.write_all(&[0x11])?,
@@ -325,6 +377,15 @@ impl Encode for Op {
             Op::Push(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
             }
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(key, value, _, feature_type, _)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header
+                    + key.len()
+                    + value.len()
+                    + HASH_LENGTH
+                    + feature_type.encoding_length()?
+                    + HASH_LENGTH
+            }
             Op::PushInverted(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVHash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVDigest(key, _)) => 2 + key.len() + HASH_LENGTH,
@@ -357,6 +418,21 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
+            }
+            Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                _,
+                feature_type,
+                _,
+            )) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header
+                    + key.len()
+                    + value.len()
+                    + HASH_LENGTH
+                    + feature_type.encoding_length()?
+                    + HASH_LENGTH
             }
             Op::Parent => 1,
             Op::Child => 1,
@@ -621,6 +697,56 @@ impl Decode for Op {
                 let count: u64 = Decode::decode(&mut input)?;
                 Self::PushInverted(Node::KVDigestCount(key, value_hash, count))
             }
+            0x1c => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
+            }
+            0x1d => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
+            }
 
             // Large value variants (value_len as u32)
             // Push large variants: 0x20-0x25
@@ -835,6 +961,62 @@ impl Decode for Op {
 
                 let count: u64 = Decode::decode(&mut input)?;
                 Self::PushInverted(Node::KVRefValueHashCount(key, value, value_hash, count))
+            }
+            0x2e => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2e));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
+            }
+            0x2f => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2f));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
             }
 
             0x10 => Self::Parent,

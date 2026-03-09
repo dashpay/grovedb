@@ -136,9 +136,12 @@ impl Tree {
                 kv_digest_to_kv_hash(key.as_slice(), value_hash)
                     .flat_map(|kv_hash| compute_hash(self, kv_hash))
             }
-            Node::KVValueHashFeatureType(key, _, value_hash, feature_type) => {
+            Node::KVValueHashFeatureType(key, _, value_hash, feature_type)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, _, value_hash, feature_type, _) => {
                 // Note: Same as KVValueHash - cannot verify hash(value) == value_hash
                 // because value_hash may be combined for subtrees. Security via merkle root.
+                // For KVValueHashFeatureTypeWithChildHash, the child_hash is GroveDB-level
+                // metadata and does NOT participate in the merk hash computation.
                 kv_digest_to_kv_hash(key.as_slice(), value_hash).flat_map(|kv_hash| {
                     // For ProvableCountTree and ProvableCountSumTree, use node_hash_with_count
                     // Note: ProvableCountSumTree only includes count in hash, not sum
@@ -382,6 +385,7 @@ impl Tree {
             | Node::KVValueHash(key, ..)
             | Node::KVRefValueHash(key, ..)
             | Node::KVValueHashFeatureType(key, ..)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
             | Node::KVDigest(key, ..)
             | Node::KVDigestCount(key, ..)
             | Node::KVCount(key, ..)

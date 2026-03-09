@@ -6416,4 +6416,186 @@ mod tests {
             err
         );
     }
+
+    /// Tamper with a KVValueHashFeatureTypeWithChildHash node's value bytes
+    /// in serialized merk proof bytes. Finds the node matching `target_key`
+    /// whose value matches `real_element_bytes`, replaces value with
+    /// `fake_element_bytes`, keeps the same value_hash and child_hash.
+    fn tamper_kvvaluehash_feature_type_with_child_hash(
+        merk_proof: &mut Vec<u8>,
+        target_key: &[u8],
+        real_element_bytes: &[u8],
+        fake_element_bytes: &[u8],
+    ) -> bool {
+        // Tag 0x1c = Push(KVValueHashFeatureTypeWithChildHash) small
+        // Format: [0x1c, key_len_u8] + key + [value_len_u16] + value + [32 hash] +
+        //         [feature_type] + [32 child_hash]
+        let tag = 0x1c_u8;
+        let mut i = 0;
+        while i < merk_proof.len() {
+            if merk_proof[i] == tag {
+                let key_len = merk_proof[i + 1] as usize;
+                let key_start = i + 2;
+                let key_end = key_start + key_len;
+                if key_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                if &merk_proof[key_start..key_end] != target_key {
+                    i += 1;
+                    continue;
+                }
+                // Read value_len as u16 big-endian
+                let vl_start = key_end;
+                if vl_start + 2 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let value_len =
+                    u16::from_be_bytes([merk_proof[vl_start], merk_proof[vl_start + 1]]) as usize;
+                let val_start = vl_start + 2;
+                let val_end = val_start + value_len;
+                if val_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                if &merk_proof[val_start..val_end] != real_element_bytes {
+                    i += 1;
+                    continue;
+                }
+                // Found it. Replace value bytes with fake.
+                // After value: 32-byte value_hash, feature_type bytes, 32-byte child_hash
+                // We keep everything after the value untouched.
+                let after_value = merk_proof[val_end..].to_vec();
+                merk_proof.truncate(val_start);
+                // Update value_len
+                let new_len = fake_element_bytes.len() as u16;
+                merk_proof[vl_start] = (new_len >> 8) as u8;
+                merk_proof[vl_start + 1] = (new_len & 0xff) as u8;
+                merk_proof.extend_from_slice(fake_element_bytes);
+                merk_proof.extend_from_slice(&after_value);
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    #[test]
+    fn non_empty_count_tree_count_swap_is_detected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert a CountTree with 3 items under TEST_LEAF
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"my_count_tree",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        for i in 0..3u8 {
+            db.insert(
+                [TEST_LEAF, b"my_count_tree"].as_ref(),
+                &[i],
+                Element::new_item(vec![i; 4]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+
+        // Query for my_count_tree itself (no subquery = tree in result set)
+        let mut query = Query::new();
+        query.insert_key(b"my_count_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Verify unmodified proof works
+        let valid = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version);
+        assert!(valid.is_ok(), "valid proof should verify");
+        let (_, results) = valid.unwrap();
+        let orig_element = Element::deserialize(&results[0].value, grove_version).expect("deser");
+        assert!(
+            matches!(orig_element, Element::CountTree(_, 3, _)),
+            "should be CountTree with count=3, got {:?}",
+            orig_element
+        );
+
+        // Build fake element: CountTree with count=999
+        // The real element in the proof is CountTree(Some(root_key), 3, None).
+        // We just need the serialized value bytes that appear in the proof.
+        let real_element_bytes = results[0].value.clone();
+        let fake_element = match &orig_element {
+            Element::CountTree(root_key, _count, flags) => {
+                Element::CountTree(root_key.clone(), 999, flags.clone())
+            }
+            _ => panic!("expected CountTree"),
+        };
+        let fake_element_bytes = fake_element.serialize(grove_version).expect("serialize");
+
+        // Decode, tamper, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => {
+                let leaf_layer = v0.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                tamper_kvvaluehash_feature_type_with_child_hash(
+                    &mut leaf_layer.merk_proof,
+                    b"my_count_tree",
+                    &real_element_bytes,
+                    &fake_element_bytes,
+                )
+            }
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        tamper_kvvaluehash_feature_type_with_child_hash(
+                            bytes,
+                            b"my_count_tree",
+                            &real_element_bytes,
+                            &fake_element_bytes,
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(
+            tampered,
+            "should have found and tampered the KVValueHashFeatureTypeWithChildHash node"
+        );
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode");
+
+        // The tampered proof should be REJECTED: the merk verifier checks
+        // combine_hash(H(fake_value), child_hash) != value_hash
+        let tampered_result =
+            GroveDb::verify_query_raw(&tampered_proof_bytes, &path_query, grove_version);
+        assert!(
+            tampered_result.is_err(),
+            "non-empty CountTree count swap should be detected via child hash check"
+        );
+        let err = format!("{:?}", tampered_result.unwrap_err());
+        assert!(
+            err.contains("value/child hash mismatch"),
+            "error should mention value/child hash mismatch, got: {}",
+            err
+        );
+    }
 }

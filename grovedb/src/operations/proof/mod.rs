@@ -603,6 +603,20 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex::encode(value_hash),
             count
         ),
+        Node::KVValueHashFeatureTypeWithChildHash(
+            key,
+            value,
+            value_hash,
+            feature_type,
+            child_hash,
+        ) => format!(
+            "KVValueHashFeatureTypeWithChildHash({}, {}, HASH[{}], {:?}, HASH[{}])",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(value_hash),
+            feature_type,
+            hex::encode(child_hash)
+        ),
     };
     Ok(s)
 }

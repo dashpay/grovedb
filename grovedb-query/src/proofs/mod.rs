@@ -118,6 +118,15 @@ pub enum Node {
     ///
     /// Contains: `(key, value_hash, count)`
     KVDigestCount(Vec<u8>, CryptoHash, u64),
+
+    /// Key, value, value_hash, feature type, and child tree root hash.
+    /// Used for non-empty tree elements in the result set that have no
+    /// subquery (no lower-layer proof). The child_hash allows the verifier
+    /// to check `combine_hash(H(value), child_hash) == value_hash` without
+    /// needing a full lower-layer proof.
+    ///
+    /// Contains: `(key, value, value_hash, feature_type, child_hash)`
+    KVValueHashFeatureTypeWithChildHash(Vec<u8>, Vec<u8>, CryptoHash, TreeFeatureType, CryptoHash),
 }
 
 use std::fmt;
@@ -175,6 +184,20 @@ impl fmt::Display for Node {
                 hex_to_ascii(key),
                 hex::encode(value_hash),
                 count
+            ),
+            Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                value_hash,
+                feature_type,
+                child_hash,
+            ) => format!(
+                "KVValueHashFeatureTypeWithChildHash({}, {}, HASH[{}], {:?}, HASH[{}])",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                feature_type,
+                hex::encode(child_hash)
             ),
         };
         write!(f, "{}", node_string)

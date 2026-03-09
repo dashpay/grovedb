@@ -8,7 +8,7 @@ use crate::proofs::query::{Map, MapBuilder};
 use crate::{
     error::Error,
     proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
-    tree::value_hash,
+    tree::{combine_hash, value_hash},
     CryptoHash as MerkHash, CryptoHash,
 };
 
@@ -191,6 +191,7 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
                                 Some(Node::KVCount(..)) => {}
 
@@ -223,6 +224,7 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
                                 Some(Node::KVCount(..)) => {}
 
@@ -399,6 +401,48 @@ impl QueryProofVerify for Query {
                     }
                     execute_node(key, Some(value), *value_hash)?;
                 }
+                Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    node_value_hash,
+                    _feature_type,
+                    child_hash,
+                ) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVValueHashFeatureTypeWithChildHash node");
+                    }
+                    // Same element-type check as KVValueHashFeatureType
+                    let element_type = ElementType::from_serialized_value(value).map_err(|e| {
+                        Error::InvalidProofError(format!(
+                            "cannot determine element type in \
+                                 KVValueHashFeatureTypeWithChildHash node: {e}"
+                        ))
+                    })?;
+                    if element_type.has_simple_value_hash() {
+                        return Err(Error::InvalidProofError(
+                            "KVValueHashFeatureTypeWithChildHash node must not contain \
+                             an item element"
+                                .to_string(),
+                        ));
+                    }
+                    // Verify value integrity: combine_hash(H(value), child_hash) must
+                    // equal the provided value_hash. This prevents an attacker from
+                    // swapping the serialized element bytes (e.g. changing a CountTree's
+                    // count) while reusing the original value_hash.
+                    let element_value_hash = value_hash(value).unwrap();
+                    let computed_value_hash =
+                        combine_hash(&element_value_hash, child_hash).unwrap();
+                    if computed_value_hash != *node_value_hash {
+                        return Err(Error::InvalidProofError(format!(
+                            "value/child hash mismatch: combine_hash(H(value), child_hash) \
+                             = {} but value_hash = {}",
+                            hex::encode(computed_value_hash),
+                            hex::encode(node_value_hash)
+                        )));
+                    }
+                    execute_node(key, Some(value), *node_value_hash)?;
+                }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
@@ -439,6 +483,7 @@ impl QueryProofVerify for Query {
                     Some(Node::KVValueHash(..)) => {}
                     Some(Node::KVCount(..)) => {}
                     Some(Node::KVValueHashFeatureType(..)) => {}
+                    Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                     Some(Node::KVRefValueHashCount(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of

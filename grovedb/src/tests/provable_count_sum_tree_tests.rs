@@ -57,6 +57,7 @@ mod tests {
             let key = match &tree.node {
                 Node::KVCount(k, ..) => k.clone(),
                 Node::KVValueHashFeatureType(k, ..) => k.clone(),
+                Node::KVValueHashFeatureTypeWithChildHash(k, ..) => k.clone(),
                 Node::KV(k, _) => k.clone(),
                 Node::KVValueHash(k, ..) => k.clone(),
                 Node::KVDigest(k, _) => k.clone(),

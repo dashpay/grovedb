@@ -2276,6 +2276,7 @@ impl GroveDb {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
             | Node::KVValueHashFeatureType(key, value, ..)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)
             | Node::KVRefValueHash(key, value, ..)
             | Node::KVRefValueHashCount(key, value, ..) => Some((key.clone(), value.clone())),
