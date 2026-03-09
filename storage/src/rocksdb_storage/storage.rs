@@ -113,6 +113,16 @@ pub(crate) type Db = OptimisticTransactionDB;
 pub(crate) type Tx<'db> = Transaction<'db, Db>;
 
 /// Storage which uses RocksDB as its backend.
+///
+/// Uses `OptimisticTransactionDB` for transaction support. Optimistic
+/// transactions defer conflict detection to commit time rather than
+/// acquiring locks up front. This means multiple transactions can be
+/// started concurrently, but at most one write transaction should be
+/// active at a time. If two transactions modify overlapping keys, the
+/// later commit will fail with a `Busy` or `TryAgain` error.
+///
+/// See the [`Storage`] trait documentation for the single-writer
+/// requirement.
 pub struct RocksDbStorage {
     db: OptimisticTransactionDB,
 }
@@ -508,7 +518,10 @@ impl<'db> Storage<'db> for RocksDbStorage {
     }
 
     fn commit_transaction(&self, transaction: Self::Transaction) -> CostResult<(), Error> {
-        // All transaction costs were provided on method calls
+        // All transaction costs were provided on method calls.
+        // Note: for OptimisticTransactionDB, commit() performs conflict
+        // validation and may return a Busy or TryAgain error if another
+        // transaction modified the same keys concurrently.
         transaction
             .commit()
             .map_err(RocksDBError)

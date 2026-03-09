@@ -262,7 +262,28 @@ use crate::Error::MerkError;
 #[cfg(feature = "minimal")]
 type Hash = [u8; 32];
 
-/// GroveDb
+/// GroveDb is a hierarchical authenticated data structure database.
+///
+/// # Concurrency and Transaction Safety
+///
+/// `GroveDb` is `Send + Sync` because the underlying RocksDB
+/// `OptimisticTransactionDB` is thread-safe at the storage level. However,
+/// **GroveDb is designed for single-writer access**. Callers must ensure that
+/// at most one write transaction is active at any given time.
+///
+/// While RocksDB's optimistic transaction mechanism will detect conflicting
+/// concurrent writes and fail one transaction at commit time (returning a
+/// `Busy` or `TryAgain` error), GroveDb builds in-memory Merk tree state
+/// (hashes, balancing, root propagation) during the transaction that cannot
+/// be cheaply rolled back. A commit failure therefore requires the caller to
+/// discard all in-memory state derived from that transaction and retry the
+/// entire operation from scratch.
+///
+/// Concurrent **reads** (queries, proofs) are safe alongside a single writer.
+///
+/// In Dash Platform, the primary consumer of GroveDb, this constraint is
+/// naturally satisfied because block processing (state transitions) is
+/// sequential.
 pub struct GroveDb {
     #[cfg(feature = "minimal")]
     db: RocksDbStorage,
@@ -757,8 +778,21 @@ impl GroveDb {
         Ok(self.db.flush()?)
     }
 
-    /// Starts database transaction. Please note that you have to start
-    /// underlying storage transaction manually.
+    /// Starts a new database transaction.
+    ///
+    /// # Single-Writer Requirement
+    ///
+    /// Only one write transaction should be active at a time. While the
+    /// underlying RocksDB `OptimisticTransactionDB` permits multiple
+    /// concurrent transactions, GroveDb does not enforce mutual exclusion
+    /// internally. If two write transactions run concurrently and touch
+    /// overlapping keys, one will fail at commit time with a RocksDB `Busy`
+    /// or `TryAgain` error. In that case, all in-memory Merk state built
+    /// during the failed transaction is invalid and must be discarded; the
+    /// operation must be retried from the beginning.
+    ///
+    /// Concurrent read-only operations (e.g., `get`, `query`, `prove`) are
+    /// safe to perform alongside a single active write transaction.
     ///
     /// ## Examples:
     /// ```
@@ -827,15 +861,27 @@ impl GroveDb {
         self.db.start_transaction()
     }
 
-    /// Commits previously started db transaction. For more details on the
-    /// transaction usage, please check [`GroveDb::start_transaction`]
+    /// Consumes and commits a previously started transaction.
+    ///
+    /// On success the transaction's writes become visible to subsequent
+    /// operations. On failure (e.g., a `Busy` error from an optimistic
+    /// concurrency conflict) the transaction is consumed and all in-memory
+    /// Merk state derived from it must be discarded.
+    ///
+    /// For more details on the transaction usage, please check
+    /// [`GroveDb::start_transaction`].
     pub fn commit_transaction(&self, transaction: Transaction) -> CostResult<(), Error> {
         self.db.commit_transaction(transaction).map_err(Into::into)
     }
 
-    /// Rollbacks previously started db transaction to initial state.
+    /// Rolls back a previously started transaction to its initial state.
+    ///
+    /// After rollback, any in-memory Merk state derived from the transaction
+    /// is invalid and must be discarded. The transaction object itself remains
+    /// valid and can be reused for new operations.
+    ///
     /// For more details on the transaction usage, please check
-    /// [`GroveDb::start_transaction`]
+    /// [`GroveDb::start_transaction`].
     pub fn rollback_transaction(&self, transaction: &Transaction) -> Result<(), Error> {
         Ok(self.db.rollback_transaction(transaction)?)
     }
