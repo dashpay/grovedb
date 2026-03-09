@@ -12,7 +12,9 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::batch::key_info::KeyInfo::KnownKey;
-    use crate::batch::{GroveOp, KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp};
+    use crate::batch::{
+        GroveOp, KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp, SubelementsDeletionBehavior,
+    };
     use crate::reference_path::ReferencePathType;
     use crate::tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF};
     use crate::Element;
@@ -83,8 +85,8 @@ mod tests {
         };
 
         let all_ops: Vec<GroveOp> = vec![
-            GroveOp::DeleteTree(TreeType::NormalTree), // 0
-            GroveOp::Delete,                           // 2
+            GroveOp::DeleteTree(TreeType::NormalTree, SubelementsDeletionBehavior::Error), // 0
+            GroveOp::Delete,                                                               // 2
             GroveOp::InsertTreeWithRootHash {
                 // 3
                 hash: dummy_hash,
@@ -315,8 +317,12 @@ mod tests {
             path.clone(),
             key.clone(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         );
-        assert!(matches!(op.op, GroveOp::DeleteTree(TreeType::NormalTree)));
+        assert!(matches!(
+            op.op,
+            GroveOp::DeleteTree(TreeType::NormalTree, SubelementsDeletionBehavior::Error)
+        ));
     }
 
     #[test]
@@ -372,6 +378,7 @@ mod tests {
                     vec![b"p".to_vec()],
                     b"k".to_vec(),
                     TreeType::NormalTree,
+                    SubelementsDeletionBehavior::Error,
                 ),
                 "Delete Tree",
             ),
@@ -555,6 +562,7 @@ mod tests {
                 vec![b"root".to_vec()],
                 b"subtree".to_vec(),
                 TreeType::NormalTree,
+                SubelementsDeletionBehavior::Error,
             ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![b"root".to_vec(), b"subtree".to_vec()],

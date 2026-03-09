@@ -161,7 +161,7 @@ where
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(_) => {
+                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(..) => {
                     Ok(())
                 }
                 GroveOp::CommitmentTreeInsert { .. }

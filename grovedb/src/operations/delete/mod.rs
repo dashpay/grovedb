@@ -49,7 +49,7 @@ use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use crate::util::{compat, TxRef};
 #[cfg(feature = "minimal")]
 use crate::{
-    batch::{GroveOp, QualifiedGroveDbOp},
+    batch::{GroveOp, QualifiedGroveDbOp, SubelementsDeletionBehavior},
     Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
 };
 
@@ -637,7 +637,7 @@ impl GroveDb {
                     let batch_deleted_keys = current_batch_operations
                         .iter()
                         .filter_map(|op| match op.op {
-                            GroveOp::Delete | GroveOp::DeleteTree(_) => {
+                            GroveOp::Delete | GroveOp::DeleteTree(..) => {
                                 if op.path.eq_path_vec(&subtree_merk_path_vec) {
                                     Some(op.key.as_ref()?.as_slice())
                                 } else {
@@ -666,7 +666,7 @@ impl GroveDb {
                 // If there is any current batch operation that is inserting something in this
                 // tree then it is not empty either
                 is_empty &= !current_batch_operations.iter().any(|op| match op.op {
-                    GroveOp::Delete | GroveOp::DeleteTree(_) => false,
+                    GroveOp::Delete | GroveOp::DeleteTree(..) => false,
                     _ => op.path.eq_path_vec(&subtree_merk_path_vec),
                 });
 
@@ -680,10 +680,14 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
+                    // Emptiness was already verified above — use DontCheck
+                    // to avoid a redundant re-check when the batch processes
+                    // this op.
                     Ok(Some(QualifiedGroveDbOp::delete_tree_op(
                         path.to_vec(),
                         key.to_vec(),
                         tree_type,
+                        SubelementsDeletionBehavior::DontCheck,
                     )))
                 } else {
                     Err(Error::NotSupported(

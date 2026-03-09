@@ -13,7 +13,7 @@ pub enum GroveOp {
     Patch { element: Element, change_in_bytes: i32 },
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
-    DeleteTree(TreeType),                          // Parametrisiert nach Baumtyp
+    DeleteTree(TreeType, SubelementsDeletionBehavior),  // Per-op deletion policy
 
     // Nicht-Merk-Baum-Anhängeoperationen (benutzerseitig):
     CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },
@@ -37,6 +37,17 @@ pub enum NonMerkTreeMeta {
     MmrTree { mmr_size: u64 },
     BulkAppendTree { total_count: u64, chunk_power: u8 },
     DenseTree { count: u16, height: u8 },
+}
+```
+
+**SubelementsDeletionBehavior** controls how a `DeleteTree` handles non-empty subtrees:
+
+```rust
+pub enum SubelementsDeletionBehavior {
+    DontCheck,       // Skip emptiness check; caller guarantees tree is empty
+    Error,           // Return Error::DeletingNonEmptyTree if non-empty
+    DeleteChildren,  // Check, and recursively delete children if non-empty
+    Skip,            // Check, and silently skip deletion if non-empty
 }
 ```
 

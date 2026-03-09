@@ -151,7 +151,7 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::DeleteTree(tree_type) => GroveDb::average_case_merk_delete_tree(
+            GroveOp::DeleteTree(tree_type, _) => GroveDb::average_case_merk_delete_tree(
                 key,
                 *tree_type,
                 layer_element_estimates,
@@ -497,7 +497,7 @@ mod tests {
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::AverageCaseCostsType, key_info::KeyInfo, GroveOp,
-            KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp,
+            KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp, SubelementsDeletionBehavior,
         },
         reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
@@ -1226,6 +1226,7 @@ mod tests {
             vec![vec![7]],
             b"tree_key".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
         let mut paths = HashMap::new();
         paths.insert(
