@@ -20,8 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       any-code: ${{ steps.filter.outputs.any-code }}
+      needs-tests: ${{ steps.decide.outputs.needs-tests }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -30,11 +33,39 @@ jobs:
               - '**/*.rs'
               - '**/Cargo.toml'
               - 'Cargo.lock'
+            build-files:
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+      - name: Check if Rust changes are doc-comment-only
+        id: doc-check
+        if: >-
+          steps.filter.outputs.any-code == 'true'
+          && steps.filter.outputs.build-files == 'false'
+          && github.event_name == 'pull_request'
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          # Extract added/removed lines from .rs diffs, strip +/- prefix and leading whitespace
+          CHANGED=$(git diff "$BASE"...HEAD -- '*.rs' | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | sed 's/^[+-]//' | sed 's/^[[:space:]]*//')
+          # Check if any changed line is NOT a doc comment or blank
+          NON_DOC=$(echo "$CHANGED" | grep -vE '^$|^///|^//!' || true)
+          if [ -z "$NON_DOC" ]; then
+            echo "docs-only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs-only=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Determine if tests are needed
+        id: decide
+        run: |
+          if [[ "${{ steps.doc-check.outputs.docs-only }}" == "true" ]]; then
+            echo "needs-tests=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs-tests=${{ steps.filter.outputs.any-code }}" >> "$GITHUB_OUTPUT"
+          fi
 
   test:
     name: Test (${{ matrix.partition }}/3)
     needs: detect-changes
-    if: needs.detect-changes.outputs.any-code == 'true'
+    if: needs.detect-changes.outputs.needs-tests == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
