@@ -123,6 +123,9 @@ impl MerkOnlyLayerProof {
         }
         let merk_proof = Vec::<u8>::decode(decoder)?;
         let len = u64::decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
         let mut lower_layers = BTreeMap::new();
         for _ in 0..len {
             let key = Key::decode(decoder)?;
@@ -146,6 +149,9 @@ impl MerkOnlyLayerProof {
         }
         let merk_proof = Vec::<u8>::borrow_decode(decoder)?;
         let len = u64::borrow_decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
         let mut lower_layers = BTreeMap::new();
         for _ in 0..len {
             let key = Key::borrow_decode(decoder)?;
@@ -213,6 +219,9 @@ impl LayerProof {
         }
         let merk_proof = ProofBytes::decode(decoder)?;
         let len = u64::decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
         let mut lower_layers = BTreeMap::new();
         for _ in 0..len {
             let key = Key::decode(decoder)?;
@@ -236,6 +245,9 @@ impl LayerProof {
         }
         let merk_proof = ProofBytes::borrow_decode(decoder)?;
         let len = u64::borrow_decode(decoder)? as usize;
+        if len > MAX_PROOF_DEPTH {
+            return Err(DecodeError::Other("proof layer has too many children"));
+        }
         let mut lower_layers = BTreeMap::new();
         for _ in 0..len {
             let key = Key::borrow_decode(decoder)?;
