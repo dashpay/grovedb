@@ -4233,32 +4233,26 @@ fn test_kvvaluehash_still_used_for_tree_discriminants() {
     }
     assert!(found, "Should find KVValueHash node to tamper");
 
-    // Execute tampered proof
+    // Execute tampered proof — should be rejected because the tampered value
+    // [9] has discriminant 9 (ItemWithSumItem), which is an item type. Items
+    // use simple value_hash and must not appear in KVValueHash nodes.
     let mut query2 = Query::new();
     for key in keys.iter() {
         query2.insert_key(key.clone());
     }
-    let (tampered_root, tampered_result) = query2
+    let result = query2
         .execute_proof(tampered.as_slice(), None, true)
-        .unwrap()
-        .expect("execute_proof failed");
+        .unwrap();
 
-    // For KVValueHash, tampering is NOT detected at single-Merk level
-    // This is expected - these are subtree placeholders where combined hash
-    // verification happens at the GroveDB level
-    if tampered_root == expected_root {
-        println!(
-            "As expected: KVValueHash (for Tree discriminants) allows value tampering at \
-             single-Merk level"
-        );
-        println!(
-            "Tampered value returned: {:?}",
-            tampered_result.result_set[0].value
-        );
-        println!("This is BY DESIGN - GroveDB's multi-layer proofs catch this tampering");
-    } else {
-        panic!("Unexpected: root hash changed for KVValueHash node");
-    }
+    assert!(
+        result.is_err(),
+        "Tampered KVValueHash with item discriminant should be rejected"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("must not contain an item element"),
+        "Expected item rejection error, got: {err_msg}"
+    );
 }
 
 /// Verify that `execute_proof` rejects proofs with trailing bytes appended

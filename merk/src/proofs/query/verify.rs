@@ -1,6 +1,7 @@
 use std::fmt;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_element::ElementType;
 
 #[cfg(feature = "minimal")]
 use crate::proofs::query::{Map, MapBuilder};
@@ -327,11 +328,21 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KVValueHash node");
                     }
-                    // Note: We cannot verify hash(value) == value_hash here because for
-                    // subtrees, value_hash is a combined hash of hash(value) and the
-                    // child subtree's root hash. The security comes from the merkle root
-                    // verification - if the value_hash is wrong, the computed root won't
-                    // match the expected root.
+                    // KVValueHash exists for elements whose value_hash is a
+                    // combine_hash (subtrees and references). Reject item
+                    // elements to prevent KV→KVValueHash forgery where an
+                    // attacker substitutes a KV node with KVValueHash to inject
+                    // a fake value while keeping the original hash.
+                    let element_type = ElementType::from_serialized_value(value).map_err(|e| {
+                        Error::InvalidProofError(format!(
+                            "cannot determine element type in KVValueHash node: {e}"
+                        ))
+                    })?;
+                    if element_type.has_simple_value_hash() {
+                        return Err(Error::InvalidProofError(
+                            "KVValueHash node must not contain an item element".to_string(),
+                        ));
+                    }
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::KVDigest(key, value_hash) => {
@@ -346,9 +357,6 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KVDigestCount node");
                     }
-                    // Similar to KVDigest but in a ProvableCountTree context.
-                    // The count is used for hash verification (handled in tree.rs),
-                    // but we don't return a value since this is for absence proofs.
                     execute_node(key, None, *value_hash)?;
                 }
                 Node::KVRefValueHash(key, value, value_hash) => {
@@ -370,9 +378,18 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KVValueHashFeatureType node");
                     }
-                    // Note: Same as KVValueHash - we cannot verify hash(value) == value_hash
-                    // because value_hash may be a combined hash for subtrees. Security comes
-                    // from merkle root verification.
+                    // Same check as KVValueHash — reject item elements.
+                    let element_type = ElementType::from_serialized_value(value).map_err(|e| {
+                        Error::InvalidProofError(format!(
+                            "cannot determine element type in KVValueHashFeatureType node: {e}"
+                        ))
+                    })?;
+                    if element_type.has_simple_value_hash() {
+                        return Err(Error::InvalidProofError(
+                            "KVValueHashFeatureType node must not contain an item element"
+                                .to_string(),
+                        ));
+                    }
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::KVRefValueHashCount(key, value, value_hash, _count) => {
@@ -380,8 +397,6 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KVRefValueHashCount node");
                     }
-                    // Similar to KVRefValueHash but in a ProvableCountTree context.
-                    // Security comes from merkle root verification with count.
                     execute_node(key, Some(value), *value_hash)?;
                 }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
