@@ -6416,4 +6416,176 @@ mod tests {
             err
         );
     }
+
+    // =========================================================================
+    // Non-empty tree value swap investigation
+    //
+    // When a non-empty tree (e.g. CountTree with 3 items) appears in the
+    // result set WITHOUT the query drilling into it, there is no lower-layer
+    // combine_hash verification. The value bytes can be swapped (e.g. change
+    // the count from 3 to 1) without detection.
+    // =========================================================================
+
+    #[test]
+    fn non_empty_count_tree_count_swap_in_result_set() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert a CountTree under TEST_LEAF
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"my_count_tree",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count tree");
+
+        // Insert 3 items into the count tree
+        for i in 0u8..3 {
+            db.insert(
+                [TEST_LEAF, b"my_count_tree"].as_ref(),
+                &[b'a' + i],
+                Element::new_item(vec![i + 1]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+
+        // Query that returns the CountTree element itself (no subquery)
+        let mut query = Query::new();
+        query.insert_key(b"my_count_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Sanity: valid proof works
+        let valid_result = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version);
+        assert!(valid_result.is_ok(), "valid proof should verify");
+        let (_, results) = valid_result.unwrap();
+
+        // Confirm we got the CountTree element with count information
+        assert_eq!(results.len(), 1);
+        let returned_element =
+            Element::deserialize(&results[0].value, grove_version).expect("deserialize");
+        // The CountTree stores an aggregate count
+        match &returned_element {
+            Element::CountTree(Some(_), count, _) => {
+                println!("Original CountTree count in element: {}", count);
+            }
+            other => {
+                println!("Got element: {:?}", other);
+            }
+        }
+
+        // Get the real serialized element
+        let real_element_bytes = returned_element
+            .serialize(grove_version)
+            .expect("serialize");
+
+        // Create a fake element with a different count
+        let fake_element = match &returned_element {
+            Element::CountTree(root_key, _count, flags) => {
+                // Swap count to 999 — a clearly wrong value
+                Element::CountTree(root_key.clone(), 999, flags.clone())
+            }
+            _ => panic!("expected CountTree"),
+        };
+        let fake_element_bytes = fake_element.serialize(grove_version).expect("serialize");
+
+        println!(
+            "Real element bytes: {} (len {})",
+            hex::encode(&real_element_bytes),
+            real_element_bytes.len()
+        );
+        println!(
+            "Fake element bytes: {} (len {})",
+            hex::encode(&fake_element_bytes),
+            fake_element_bytes.len()
+        );
+
+        // Decode the proof, tamper the KVValueHash node, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => {
+                let leaf_layer = v0.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                tamper_kvvaluehash_value(
+                    &mut leaf_layer.merk_proof,
+                    b"my_count_tree",
+                    &real_element_bytes,
+                    &fake_element_bytes,
+                )
+            }
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        tamper_kvvaluehash_value(
+                            bytes,
+                            b"my_count_tree",
+                            &real_element_bytes,
+                            &fake_element_bytes,
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(
+            tampered,
+            "should have found and tampered the KVValueHash node"
+        );
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode");
+
+        // Verify the tampered proof
+        let tampered_result =
+            GroveDb::verify_query_raw(&tampered_proof_bytes, &path_query, grove_version);
+
+        // KNOWN VULNERABILITY: The verifier currently accepts this tampered proof.
+        // A non-empty CountTree's count can be changed without detection when the
+        // tree appears in the result set without a lower-layer subquery (no
+        // combine_hash check is performed). This documents the issue so a future
+        // fix can flip this assertion.
+        match tampered_result {
+            Ok((_, results)) => {
+                let tampered_element =
+                    Element::deserialize(&results[0].value, grove_version).expect("deserialize");
+                match &tampered_element {
+                    Element::CountTree(_, count, _) => {
+                        // Vulnerability confirmed: verifier accepted fake count
+                        assert_eq!(
+                            *count, 999,
+                            "expected tampered count of 999 to be accepted (known vulnerability)"
+                        );
+                    }
+                    other => {
+                        panic!("unexpected element type in tampered result: {:?}", other);
+                    }
+                }
+            }
+            Err(_) => {
+                // If this branch is reached, the vulnerability has been fixed!
+                // Update this test to assert Err and remove the Ok branch above.
+                panic!(
+                    "CountTree count swap was rejected — the vulnerability is fixed! \
+                     Update this test to expect rejection."
+                );
+            }
+        }
+    }
 }
