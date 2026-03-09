@@ -6,7 +6,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        batch::QualifiedGroveDbOp,
+        batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior},
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
     };
@@ -48,6 +48,7 @@ mod tests {
             vec![],
             b"key1".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
@@ -155,6 +156,7 @@ mod tests {
             vec![],
             b"key1".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)

@@ -13,7 +13,7 @@ pub enum GroveOp {
     Patch { element: Element, change_in_bytes: i32 },
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
-    DeleteTree(TreeType),                          // 트리 타입으로 매개변수화
+    DeleteTree(TreeType, IsSubtreeNonEmpty),                          // 트리 타입으로 매개변수화
 
     // 비-Merk 트리 추가 연산 (사용자 대면):
     CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },

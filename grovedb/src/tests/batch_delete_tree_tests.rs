@@ -12,7 +12,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
-        batch::{BatchApplyOptions, QualifiedGroveDbOp},
+        batch::{BatchApplyOptions, QualifiedGroveDbOp, SubelementsDeletionBehavior},
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, Error,
     };
@@ -53,17 +53,15 @@ mod tests {
         .unwrap()
         .expect("insert child item");
 
-        // Try to delete the non-empty tree via batch with default options
-        // (allow_deleting_non_empty_trees: false, deleting_non_empty_trees_returns_error: true)
+        // Try to delete the non-empty tree via batch with Error mode
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"parent_tree".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -119,11 +117,10 @@ mod tests {
             vec![],
             b"parent_tree".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::DontCheck,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: true,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -160,11 +157,10 @@ mod tests {
             vec![],
             b"empty_tree".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -226,16 +222,15 @@ mod tests {
         .unwrap()
         .expect("insert item into inner tree");
 
-        // Step 2: Delete the outer tree via batch (with allow_deleting_non_empty_trees)
+        // Step 2: Delete the outer tree via batch (with DontCheck for non-empty subtrees)
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"outer".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::DontCheck,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: true,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -358,10 +353,10 @@ mod tests {
             vec![],
             b"parent".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::DontCheck,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: true,
             ..Default::default()
         });
 
@@ -432,11 +427,10 @@ mod tests {
             vec![],
             b"skip_tree".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Skip,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: false,
             ..Default::default()
         });
 
@@ -490,11 +484,10 @@ mod tests {
             vec![],
             b"empty_tree".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Skip,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: false,
             ..Default::default()
         });
 
@@ -552,12 +545,15 @@ mod tests {
         // consider the tree empty.
         let ops = vec![
             QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"child".to_vec()),
-            QualifiedGroveDbOp::delete_tree_op(vec![], b"parent".to_vec(), TreeType::NormalTree),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"parent".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Error,
+            ),
         ];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -617,12 +613,15 @@ mod tests {
         // The tree still has child2, so it should fail.
         let ops = vec![
             QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"child1".to_vec()),
-            QualifiedGroveDbOp::delete_tree_op(vec![], b"parent".to_vec(), TreeType::NormalTree),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"parent".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Error,
+            ),
         ];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -680,11 +679,10 @@ mod tests {
             vec![],
             b"tree_a".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -743,11 +741,10 @@ mod tests {
             vec![],
             b"tree_b".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Skip,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: false,
             ..Default::default()
         });
 
@@ -817,10 +814,10 @@ mod tests {
             vec![],
             b"outer".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::DontCheck,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: true,
             ..Default::default()
         });
 
@@ -898,12 +895,15 @@ mod tests {
         // Delete the only child and the parent tree in the same batch
         let ops = vec![
             QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"only_child".to_vec()),
-            QualifiedGroveDbOp::delete_tree_op(vec![], b"parent".to_vec(), TreeType::NormalTree),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"parent".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Error,
+            ),
         ];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -962,11 +962,10 @@ mod tests {
             vec![],
             b"tree_tx".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             ..Default::default()
         });
 
@@ -1034,10 +1033,10 @@ mod tests {
             vec![],
             b"l1".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::DontCheck,
         )];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: true,
             ..Default::default()
         });
 
@@ -1107,8 +1106,18 @@ mod tests {
         // Batch: delete non-empty tree (should be skipped) and delete empty tree
         // (should succeed), plus insert an item
         let ops = vec![
-            QualifiedGroveDbOp::delete_tree_op(vec![], b"non_empty".to_vec(), TreeType::NormalTree),
-            QualifiedGroveDbOp::delete_tree_op(vec![], b"empty_one".to_vec(), TreeType::NormalTree),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"non_empty".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Skip,
+            ),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"empty_one".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Skip,
+            ),
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![],
                 b"new_item".to_vec(),
@@ -1117,8 +1126,6 @@ mod tests {
         ];
 
         let batch_options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: false,
             ..Default::default()
         });
 

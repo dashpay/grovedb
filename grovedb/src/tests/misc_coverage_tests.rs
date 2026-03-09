@@ -32,7 +32,7 @@ use crate::{
     batch::{
         estimated_costs::EstimatedCostsType::{AverageCaseCostsType, WorstCaseCostsType},
         key_info::KeyInfo,
-        KeyInfoPath, QualifiedGroveDbOp,
+        KeyInfoPath, QualifiedGroveDbOp, SubelementsDeletionBehavior,
     },
     operations::proof::util::{
         element_hex_to_ascii, hex_to_ascii, optional_element_hex_to_ascii,
@@ -1486,6 +1486,7 @@ fn batch_worst_case_delete_tree_cost() {
         vec![b"leaf".to_vec()],
         b"child_tree".to_vec(),
         TreeType::NormalTree,
+        SubelementsDeletionBehavior::Error,
     )];
 
     let mut paths = HashMap::new();
@@ -1523,6 +1524,7 @@ fn batch_average_case_delete_tree_cost() {
         vec![b"leaf".to_vec()],
         b"child_tree".to_vec(),
         TreeType::NormalTree,
+        SubelementsDeletionBehavior::Error,
     )];
 
     let mut paths = HashMap::new();
@@ -2357,6 +2359,7 @@ fn batch_worst_case_delete_sum_tree_cost() {
         vec![b"leaf".to_vec()],
         b"sum_tree_del".to_vec(),
         TreeType::SumTree,
+        SubelementsDeletionBehavior::Error,
     )];
 
     let mut paths = HashMap::new();
@@ -2394,6 +2397,7 @@ fn batch_average_case_delete_sum_tree_cost() {
         vec![b"leaf".to_vec()],
         b"sum_tree_del".to_vec(),
         TreeType::SumTree,
+        SubelementsDeletionBehavior::Error,
     )];
 
     let mut paths = HashMap::new();

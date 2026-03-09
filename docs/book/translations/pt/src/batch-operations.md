@@ -13,7 +13,7 @@ pub enum GroveOp {
     Patch { element: Element, change_in_bytes: i32 },
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
-    DeleteTree(TreeType),                          // Parametrizado pelo tipo de arvore
+    DeleteTree(TreeType, IsSubtreeNonEmpty),                          // Parametrizado pelo tipo de arvore
 
     // Operacoes de append para arvores nao-Merk (voltadas ao usuario):
     CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },

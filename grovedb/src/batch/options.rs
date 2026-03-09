@@ -14,10 +14,6 @@ pub struct BatchApplyOptions {
     pub validate_insertion_does_not_override: bool,
     /// Validate insertion does not override tree
     pub validate_insertion_does_not_override_tree: bool,
-    /// Allow deleting non-empty trees
-    pub allow_deleting_non_empty_trees: bool,
-    /// Deleting non empty trees returns error
-    pub deleting_non_empty_trees_returns_error: bool,
     /// Disable the full operation consistency check performed by
     /// [`super::QualifiedGroveDbOp::verify_consistency_of_operations`].
     ///
@@ -85,8 +81,6 @@ impl Default for BatchApplyOptions {
         BatchApplyOptions {
             validate_insertion_does_not_override: false,
             validate_insertion_does_not_override_tree: false,
-            allow_deleting_non_empty_trees: false,
-            deleting_non_empty_trees_returns_error: true,
             disable_operation_consistency_check: false,
             base_root_storage_is_free: true,
             batch_pause_height: None,
@@ -107,10 +101,10 @@ impl BatchApplyOptions {
     }
 
     /// As delete options
-    pub(crate) fn as_delete_options(&self) -> DeleteOptions where {
+    pub(crate) fn as_delete_options(&self) -> DeleteOptions {
         DeleteOptions {
-            allow_deleting_non_empty_trees: self.allow_deleting_non_empty_trees,
-            deleting_non_empty_trees_returns_error: self.deleting_non_empty_trees_returns_error,
+            allow_deleting_non_empty_trees: false,
+            deleting_non_empty_trees_returns_error: true,
             base_root_storage_is_free: self.base_root_storage_is_free,
             validate_tree_at_path_exists: false,
         }

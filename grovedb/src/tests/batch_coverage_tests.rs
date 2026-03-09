@@ -12,7 +12,7 @@ mod tests {
     use crate::{
         batch::{
             key_info::KeyInfo::KnownKey, BatchApplyOptions, GroveOp, KeyInfoPath, NonMerkTreeMeta,
-            QualifiedGroveDbOp,
+            QualifiedGroveDbOp, SubelementsDeletionBehavior,
         },
         reference_path::ReferencePathType,
         tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
@@ -154,6 +154,7 @@ mod tests {
             vec![],
             b"tree_to_del".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
 
         db.apply_batch(ops, None, None, grove_version)
@@ -194,15 +195,15 @@ mod tests {
         .unwrap()
         .expect("insert child item");
 
-        // Delete non-empty tree with allow_deleting_non_empty_trees = true
+        // Delete non-empty tree with SubelementsDeletionBehavior::DontCheck
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"tree_with_items".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::DontCheck,
         )];
 
         let options = Some(BatchApplyOptions {
-            allow_deleting_non_empty_trees: true,
             ..Default::default()
         });
 
@@ -457,6 +458,7 @@ mod tests {
             vec![TEST_LEAF.to_vec()],
             b"subtree_to_delete".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
 
         db.apply_operations_without_batching(ops, None, None, grove_version)
@@ -896,7 +898,8 @@ mod tests {
     #[test]
     fn test_grove_op_ordering() {
         // DeleteTree = 0, Delete = 2, InsertOrReplace = 8, InsertWithKnownToNotAlreadyExist = 9, InsertIfNotExists = 10
-        let delete_tree = GroveOp::DeleteTree(TreeType::NormalTree);
+        let delete_tree =
+            GroveOp::DeleteTree(TreeType::NormalTree, SubelementsDeletionBehavior::Error);
         let delete = GroveOp::Delete;
         let insert_or_replace = GroveOp::InsertOrReplace {
             element: Element::new_item(b"test".to_vec()),
@@ -2395,6 +2398,7 @@ mod tests {
             vec![b"parent_sum".to_vec()],
             b"child_tree".to_vec(),
             TreeType::NormalTree,
+            SubelementsDeletionBehavior::Error,
         )];
 
         db.apply_batch(ops, None, None, grove_version)

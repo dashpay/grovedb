@@ -13,7 +13,7 @@ pub enum GroveOp {
     Patch { element: Element, change_in_bytes: i32 },
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
-    DeleteTree(TreeType),                          // กำหนดพารามิเตอร์ตามประเภทต้นไม้
+    DeleteTree(TreeType, IsSubtreeNonEmpty),                          // กำหนดพารามิเตอร์ตามประเภทต้นไม้
 
     // การดำเนินการ append สำหรับต้นไม้ non-Merk (ผู้ใช้เรียกใช้):
     CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },
