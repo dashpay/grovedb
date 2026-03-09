@@ -6840,8 +6840,9 @@ mod tests {
     fn prove_v0_non_empty_merk_tree_without_subquery() {
         // Same as prove_non_empty_merk_tree_without_subquery but forces V0 proof
         // generation (GROVE_V2 uses prove_query_non_serialized version 0).
-        // This exercises the V0 child hash injection in generate.rs and the
-        // V0 child_hash_verified check in verify.rs.
+        // V0 does NOT inject KVValueHashFeatureTypeWithChildHash — non-empty
+        // trees without subqueries are returned as plain KVValueHashFeatureType
+        // nodes.  The V0 verifier does not check child_hash_verified.
         let grove_version = &GROVE_V2;
         let db = make_empty_grovedb();
 
