@@ -1,17 +1,78 @@
 use std::fmt;
 
-use bincode::{Decode, Encode};
+use bincode::{
+    de::{BorrowDecoder, Decoder},
+    error::DecodeError,
+    BorrowDecode, Decode, Encode,
+};
 
 use crate::{hex_to_ascii, Path, Query};
 
-#[derive(Debug, Default, Clone, PartialEq, Encode, Decode)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// Subquery branch
+///
+/// Uses a custom `Decode` implementation that tracks nesting depth through
+/// the mutual recursion with [`Query`] to prevent stack overflow from
+/// deeply nested subqueries during deserialization.
+#[derive(Debug, Default, Clone, PartialEq, Encode)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SubqueryBranch {
     /// Subquery path
     pub subquery_path: Option<Path>,
     /// Subquery
     pub subquery: Option<Box<Query>>,
+}
+
+impl SubqueryBranch {
+    pub(crate) fn decode_with_depth<D: Decoder>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        let subquery_path = Option::<Path>::decode(decoder)?;
+        let has_subquery = u8::decode(decoder)?;
+        let subquery = if has_subquery == 1 {
+            Some(Box::new(Query::decode_with_depth(decoder, depth + 1)?))
+        } else {
+            None
+        };
+        Ok(SubqueryBranch {
+            subquery_path,
+            subquery,
+        })
+    }
+
+    pub(crate) fn borrow_decode_with_depth<'de, D: BorrowDecoder<'de>>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        let subquery_path = Option::<Path>::borrow_decode(decoder)?;
+        let has_subquery = u8::borrow_decode(decoder)?;
+        let subquery = if has_subquery == 1 {
+            Some(Box::new(Query::borrow_decode_with_depth(
+                decoder,
+                depth + 1,
+            )?))
+        } else {
+            None
+        };
+        Ok(SubqueryBranch {
+            subquery_path,
+            subquery,
+        })
+    }
+}
+
+impl<Context> Decode<Context> for SubqueryBranch {
+    fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl<'de, Context> BorrowDecode<'de, Context> for SubqueryBranch {
+    fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
 }
 
 impl SubqueryBranch {
