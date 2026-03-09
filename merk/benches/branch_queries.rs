@@ -227,6 +227,7 @@ fn get_key_from_node(node: &Node) -> Option<Vec<u8>> {
         Node::KV(key, _) => Some(key.clone()),
         Node::KVValueHash(key, ..) => Some(key.clone()),
         Node::KVValueHashFeatureType(key, ..) => Some(key.clone()),
+        Node::KVValueHashFeatureTypeWithChildHash(key, ..) => Some(key.clone()),
         Node::KVDigest(key, _) => Some(key.clone()),
         Node::KVDigestCount(key, ..) => Some(key.clone()),
         Node::KVRefValueHash(key, ..) => Some(key.clone()),

@@ -37,7 +37,8 @@ impl MapBuilder {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
             | Node::KVCount(key, value, _)
-            | Node::KVValueHashFeatureType(key, value, ..) => {
+            | Node::KVValueHashFeatureType(key, value, ..)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..) => {
                 if let Some((prev_key, _)) = self.0.entries.last_key_value()
                     && key <= prev_key
                 {
@@ -339,6 +340,99 @@ mod tests {
         assert_eq!(range.next().unwrap().unwrap(), (&[1, 2, 3][..], &[1][..]));
         assert_eq!(range.next().unwrap().unwrap(), (&[1, 2, 4][..], &[2][..]));
         assert!(range.next().is_none());
+    }
+
+    #[test]
+    fn mapbuilder_insert_kvvalue_hash_feature_type_with_child_hash() {
+        use crate::TreeFeatureType;
+
+        let mut builder = MapBuilder::new();
+        let key = vec![1, 2, 3];
+        let value = vec![10, 20, 30];
+        let value_hash = [0xAA; HASH_LENGTH];
+        let feature_type = TreeFeatureType::BasicMerkNode;
+        let child_hash = [0xBB; HASH_LENGTH];
+
+        builder
+            .insert(&Node::KVValueHashFeatureTypeWithChildHash(
+                key.clone(),
+                value.clone(),
+                value_hash,
+                feature_type,
+                child_hash,
+            ))
+            .unwrap();
+
+        let map = builder.build();
+        assert_eq!(
+            map.get(&key).unwrap().unwrap(),
+            value.as_slice(),
+            "Value should be retrievable by key"
+        );
+        assert!(
+            map.right_edge,
+            "right_edge should be true after KV-like insert"
+        );
+    }
+
+    #[test]
+    fn mapbuilder_insert_kvvalue_hash_feature_type_with_child_hash_ordering() {
+        use crate::TreeFeatureType;
+
+        let mut builder = MapBuilder::new();
+        builder
+            .insert(&Node::KVValueHashFeatureTypeWithChildHash(
+                vec![1],
+                vec![10],
+                [0xAA; HASH_LENGTH],
+                TreeFeatureType::BasicMerkNode,
+                [0xBB; HASH_LENGTH],
+            ))
+            .unwrap();
+        builder.insert(&Node::Hash([0; HASH_LENGTH])).unwrap();
+        builder
+            .insert(&Node::KVValueHashFeatureTypeWithChildHash(
+                vec![2],
+                vec![20],
+                [0xCC; HASH_LENGTH],
+                TreeFeatureType::SummedMerkNode(5),
+                [0xDD; HASH_LENGTH],
+            ))
+            .unwrap();
+
+        let map = builder.build();
+        let mut entries = map.entries.iter();
+        assert_eq!(entries.next(), Some((&vec![1], &(true, vec![10]))));
+        // Second entry is not contiguous because of Hash in between
+        assert_eq!(entries.next(), Some((&vec![2], &(false, vec![20]))));
+        assert_eq!(entries.next(), None);
+        assert!(map.right_edge);
+    }
+
+    #[test]
+    #[should_panic(expected = "Expected nodes to be in increasing key order")]
+    fn mapbuilder_insert_kvvalue_hash_feature_type_with_child_hash_out_of_order() {
+        use crate::TreeFeatureType;
+
+        let mut builder = MapBuilder::new();
+        builder
+            .insert(&Node::KVValueHashFeatureTypeWithChildHash(
+                vec![5],
+                vec![50],
+                [0xAA; HASH_LENGTH],
+                TreeFeatureType::BasicMerkNode,
+                [0xBB; HASH_LENGTH],
+            ))
+            .unwrap();
+        builder
+            .insert(&Node::KVValueHashFeatureTypeWithChildHash(
+                vec![3],
+                vec![30],
+                [0xCC; HASH_LENGTH],
+                TreeFeatureType::BasicMerkNode,
+                [0xDD; HASH_LENGTH],
+            ))
+            .unwrap();
     }
 
     #[test]

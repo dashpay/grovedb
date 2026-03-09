@@ -8,7 +8,7 @@ use crate::proofs::query::{Map, MapBuilder};
 use crate::{
     error::Error,
     proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
-    tree::value_hash,
+    tree::{combine_hash, value_hash},
     CryptoHash as MerkHash, CryptoHash,
 };
 
@@ -137,7 +137,8 @@ impl QueryProofVerify for Query {
         let root_wrapped = execute(decoder.by_ref(), true, |node| {
             let mut execute_node = |key: &Vec<u8>,
                                     value: Option<&Vec<u8>>,
-                                    value_hash: CryptoHash|
+                                    value_hash: CryptoHash,
+                                    child_hash_verified: bool|
              -> Result<_, Error> {
                 while let Some(item) = query.peek() {
                     // get next item in query
@@ -191,6 +192,7 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
                                 Some(Node::KVCount(..)) => {}
 
@@ -223,6 +225,7 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHash(..)) => {}
                                 Some(Node::KVValueHash(..)) => {}
                                 Some(Node::KVValueHashFeatureType(..)) => {}
+                                Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                                 Some(Node::KVRefValueHashCount(..)) => {}
                                 Some(Node::KVCount(..)) => {}
 
@@ -291,6 +294,7 @@ impl QueryProofVerify for Query {
                                         key: key.clone(),
                                         value: Some(val.clone()),
                                         proof: value_hash,
+                                        child_hash_verified,
                                     }
                                 );
                             }
@@ -299,6 +303,7 @@ impl QueryProofVerify for Query {
                                 key: key.clone(),
                                 value: Some(val.clone()),
                                 proof: value_hash,
+                                child_hash_verified,
                             });
 
                             // continue to next push
@@ -321,7 +326,7 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KV node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap())?;
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
                 }
                 Node::KVValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
@@ -343,35 +348,35 @@ impl QueryProofVerify for Query {
                             "KVValueHash node must not contain an item element".to_string(),
                         ));
                     }
-                    execute_node(key, Some(value), *value_hash)?;
+                    execute_node(key, Some(value), *value_hash, false)?;
                 }
                 Node::KVDigest(key, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigest node");
                     }
-                    execute_node(key, None, *value_hash)?;
+                    execute_node(key, None, *value_hash, false)?;
                 }
                 Node::KVDigestCount(key, value_hash, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVDigestCount node");
                     }
-                    execute_node(key, None, *value_hash)?;
+                    execute_node(key, None, *value_hash, false)?;
                 }
                 Node::KVRefValueHash(key, value, value_hash) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHash node");
                     }
-                    execute_node(key, Some(value), *value_hash)?;
+                    execute_node(key, Some(value), *value_hash, false)?;
                 }
                 Node::KVCount(key, value, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVCount node");
                     }
-                    execute_node(key, Some(value), value_hash(value).unwrap())?;
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
                 }
                 Node::KVValueHashFeatureType(key, value, value_hash, _feature_type) => {
                     #[cfg(feature = "proof_debug")]
@@ -390,14 +395,56 @@ impl QueryProofVerify for Query {
                                 .to_string(),
                         ));
                     }
-                    execute_node(key, Some(value), *value_hash)?;
+                    execute_node(key, Some(value), *value_hash, false)?;
                 }
                 Node::KVRefValueHashCount(key, value, value_hash, _count) => {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashCount node");
                     }
-                    execute_node(key, Some(value), *value_hash)?;
+                    execute_node(key, Some(value), *value_hash, false)?;
+                }
+                Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    node_value_hash,
+                    _feature_type,
+                    child_hash,
+                ) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVValueHashFeatureTypeWithChildHash node");
+                    }
+                    // Same element-type check as KVValueHashFeatureType
+                    let element_type = ElementType::from_serialized_value(value).map_err(|e| {
+                        Error::InvalidProofError(format!(
+                            "cannot determine element type in \
+                                 KVValueHashFeatureTypeWithChildHash node: {e}"
+                        ))
+                    })?;
+                    if element_type.has_simple_value_hash() {
+                        return Err(Error::InvalidProofError(
+                            "KVValueHashFeatureTypeWithChildHash node must not contain \
+                             an item element"
+                                .to_string(),
+                        ));
+                    }
+                    // Verify value integrity: combine_hash(H(value), child_hash) must
+                    // equal the provided value_hash. This prevents an attacker from
+                    // swapping the serialized element bytes (e.g. changing a CountTree's
+                    // count) while reusing the original value_hash.
+                    let element_value_hash = value_hash(value).unwrap();
+                    let computed_value_hash =
+                        combine_hash(&element_value_hash, child_hash).unwrap();
+                    if computed_value_hash != *node_value_hash {
+                        return Err(Error::InvalidProofError(format!(
+                            "value/child hash mismatch: combine_hash(H(value), child_hash) \
+                             = {} but value_hash = {}",
+                            hex::encode(computed_value_hash),
+                            hex::encode(node_value_hash)
+                        )));
+                    }
+                    execute_node(key, Some(value), *node_value_hash, true)?;
                 }
                 Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
                     if in_range {
@@ -439,6 +486,7 @@ impl QueryProofVerify for Query {
                     Some(Node::KVValueHash(..)) => {}
                     Some(Node::KVCount(..)) => {}
                     Some(Node::KVValueHashFeatureType(..)) => {}
+                    Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                     Some(Node::KVRefValueHashCount(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of
@@ -495,6 +543,10 @@ pub struct ProvedKeyOptionalValue {
     pub value: Option<Vec<u8>>,
     /// Proof
     pub proof: CryptoHash,
+    /// Whether the merk verifier confirmed combine_hash(H(value), child_hash)
+    /// == value_hash for this element (true only for
+    /// KVValueHashFeatureTypeWithChildHash nodes).
+    pub child_hash_verified: bool,
 }
 
 impl From<ProvedKeyValue> for ProvedKeyOptionalValue {
@@ -505,6 +557,7 @@ impl From<ProvedKeyValue> for ProvedKeyOptionalValue {
             key,
             value: Some(value),
             proof,
+            child_hash_verified: false,
         }
     }
 }
@@ -513,7 +566,9 @@ impl TryFrom<ProvedKeyOptionalValue> for ProvedKeyValue {
     type Error = Error;
 
     fn try_from(value: ProvedKeyOptionalValue) -> Result<Self, Self::Error> {
-        let ProvedKeyOptionalValue { key, value, proof } = value;
+        let ProvedKeyOptionalValue {
+            key, value, proof, ..
+        } = value;
         let value = value.ok_or(Error::InvalidProofError(format!(
             "expected {}",
             hex_to_ascii(&key)
@@ -531,14 +586,15 @@ impl fmt::Display for ProvedKeyOptionalValue {
         };
         write!(
             f,
-            "ProvedKeyOptionalValue {{ key: {}, value: {}, proof: {} }}",
+            "ProvedKeyOptionalValue {{ key: {}, value: {}, proof: {}, child_hash_verified: {} }}",
             key_string,
             if let Some(value) = &self.value {
                 hex::encode(value)
             } else {
                 "None".to_string()
             },
-            hex::encode(self.proof)
+            hex::encode(self.proof),
+            self.child_hash_verified
         )
     }
 }

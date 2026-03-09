@@ -118,6 +118,15 @@ pub enum Node {
     ///
     /// Contains: `(key, value_hash, count)`
     KVDigestCount(Vec<u8>, CryptoHash, u64),
+
+    /// Key, value, value_hash, feature type, and child tree root hash.
+    /// Used for non-empty tree elements in the result set that have no
+    /// subquery (no lower-layer proof). The child_hash allows the verifier
+    /// to check `combine_hash(H(value), child_hash) == value_hash` without
+    /// needing a full lower-layer proof.
+    ///
+    /// Contains: `(key, value, value_hash, feature_type, child_hash)`
+    KVValueHashFeatureTypeWithChildHash(Vec<u8>, Vec<u8>, CryptoHash, TreeFeatureType, CryptoHash),
 }
 
 use std::fmt;
@@ -176,7 +185,94 @@ impl fmt::Display for Node {
                 hex::encode(value_hash),
                 count
             ),
+            Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                value_hash,
+                feature_type,
+                child_hash,
+            ) => format!(
+                "KVValueHashFeatureTypeWithChildHash({}, {}, HASH[{}], {:?}, HASH[{}])",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                feature_type,
+                hex::encode(child_hash)
+            ),
         };
         write!(f, "{}", node_string)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_kv_value_hash_feature_type_with_child_hash() {
+        let key = b"mykey".to_vec();
+        let value = b"myval".to_vec();
+        let value_hash = [0xAB; HASH_LENGTH];
+        let child_hash = [0xCD; HASH_LENGTH];
+        let feature_type = TreeFeatureType::BasicMerkNode;
+
+        let node = Node::KVValueHashFeatureTypeWithChildHash(
+            key,
+            value,
+            value_hash,
+            feature_type,
+            child_hash,
+        );
+        let display = node.to_string();
+
+        assert!(
+            display.starts_with("KVValueHashFeatureTypeWithChildHash("),
+            "Expected prefix, got: {}",
+            display
+        );
+        assert!(display.contains("mykey"), "Expected key in output");
+        assert!(display.contains("myval"), "Expected value in output");
+        assert!(
+            display.contains(&hex::encode(value_hash)),
+            "Expected value_hash in output"
+        );
+        assert!(
+            display.contains("BasicMerkNode"),
+            "Expected feature_type in output"
+        );
+        assert!(
+            display.contains(&hex::encode(child_hash)),
+            "Expected child_hash in output"
+        );
+    }
+
+    #[test]
+    fn display_kv_value_hash_feature_type_with_child_hash_non_ascii_key() {
+        let key = vec![0xFF, 0xFE, 0x01];
+        let value = vec![0x00, 0x80];
+        let value_hash = [0x11; HASH_LENGTH];
+        let child_hash = [0x22; HASH_LENGTH];
+        let feature_type = TreeFeatureType::SummedMerkNode(42);
+
+        let node = Node::KVValueHashFeatureTypeWithChildHash(
+            key,
+            value,
+            value_hash,
+            feature_type,
+            child_hash,
+        );
+        let display = node.to_string();
+
+        assert!(
+            display.starts_with("KVValueHashFeatureTypeWithChildHash("),
+            "Expected prefix, got: {}",
+            display
+        );
+        // Non-ASCII keys should be hex-encoded by hex_to_ascii
+        assert!(
+            display.contains("SummedMerkNode(42)"),
+            "Expected feature_type in output, got: {}",
+            display
+        );
     }
 }

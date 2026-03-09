@@ -235,6 +235,25 @@ impl Element {
         )
     }
 
+    /// Check if the element is a non-empty Merk-backed tree.
+    ///
+    /// Returns true only for standard Merk trees (Tree, SumTree, BigSumTree,
+    /// CountTree, CountSumTree, ProvableCountTree, ProvableCountSumTree)
+    /// with a `Some(_)` root key. Excludes non-Merk tree types (MmrTree,
+    /// BulkAppendTree, CommitmentTree, DenseAppendOnlyFixedSizeTree).
+    pub fn is_non_empty_merk_tree(&self) -> bool {
+        matches!(
+            self,
+            Element::Tree(Some(_), _)
+                | Element::SumTree(Some(_), ..)
+                | Element::BigSumTree(Some(_), ..)
+                | Element::CountTree(Some(_), ..)
+                | Element::CountSumTree(Some(_), ..)
+                | Element::ProvableCountTree(Some(_), ..)
+                | Element::ProvableCountSumTree(Some(_), ..)
+        )
+    }
+
     /// Check if the element is a reference
     pub fn is_reference(&self) -> bool {
         matches!(self, Element::Reference(..))

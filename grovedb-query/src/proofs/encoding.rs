@@ -150,6 +150,32 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                value_hash,
+                feature_type,
+                child_hash,
+            )) => {
+                debug_assert!(key.len() < 256);
+                if value.len() < 65536 {
+                    dest.write_all(&[0x1c, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                } else {
+                    dest.write_all(&[0x2e, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                }
+            }
 
             // PushInverted
             Op::PushInverted(Node::Hash(hash)) => {
@@ -283,6 +309,32 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                value_hash,
+                feature_type,
+                child_hash,
+            )) => {
+                debug_assert!(key.len() < 256);
+                if value.len() < 65536 {
+                    dest.write_all(&[0x1d, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u16).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                } else {
+                    dest.write_all(&[0x2f, key.len() as u8])?;
+                    dest.write_all(key)?;
+                    (value.len() as u32).encode_into(dest)?;
+                    dest.write_all(value)?;
+                    dest.write_all(value_hash)?;
+                    feature_type.encode_into(dest)?;
+                    dest.write_all(child_hash)?;
+                }
+            }
 
             Op::Parent => dest.write_all(&[0x10])?,
             Op::Child => dest.write_all(&[0x11])?,
@@ -325,6 +377,15 @@ impl Encode for Op {
             Op::Push(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
             }
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(key, value, _, feature_type, _)) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header
+                    + key.len()
+                    + value.len()
+                    + HASH_LENGTH
+                    + feature_type.encoding_length()?
+                    + HASH_LENGTH
+            }
             Op::PushInverted(Node::Hash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVHash(_)) => 1 + HASH_LENGTH,
             Op::PushInverted(Node::KVDigest(key, _)) => 2 + key.len() + HASH_LENGTH,
@@ -357,6 +418,21 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
+            }
+            Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                key,
+                value,
+                _,
+                feature_type,
+                _,
+            )) => {
+                let header = if value.len() < 65536 { 4 } else { 6 };
+                header
+                    + key.len()
+                    + value.len()
+                    + HASH_LENGTH
+                    + feature_type.encoding_length()?
+                    + HASH_LENGTH
             }
             Op::Parent => 1,
             Op::Child => 1,
@@ -621,6 +697,56 @@ impl Decode for Op {
                 let count: u64 = Decode::decode(&mut input)?;
                 Self::PushInverted(Node::KVDigestCount(key, value_hash, count))
             }
+            0x1c => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
+            }
+            0x1d => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u16 = Decode::decode(&mut input)?;
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
+            }
 
             // Large value variants (value_len as u32)
             // Push large variants: 0x20-0x25
@@ -835,6 +961,62 @@ impl Decode for Op {
 
                 let count: u64 = Decode::decode(&mut input)?;
                 Self::PushInverted(Node::KVRefValueHashCount(key, value, value_hash, count))
+            }
+            0x2e => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2e));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
+            }
+            0x2f => {
+                let key_len: u8 = Decode::decode(&mut input)?;
+                let mut key = vec![0; key_len as usize];
+                input.read_exact(key.as_mut_slice())?;
+
+                let value_len: u32 = Decode::decode(&mut input)?;
+                if value_len > MAX_VALUE_LEN {
+                    return Err(ed::Error::UnexpectedByte(0x2f));
+                }
+                let mut value = vec![0; value_len as usize];
+                input.read_exact(value.as_mut_slice())?;
+
+                let mut value_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut value_hash)?;
+
+                let tree_feature_type = TreeFeatureType::decode(&mut input)?;
+
+                let mut child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut child_hash)?;
+
+                Self::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    value,
+                    value_hash,
+                    tree_feature_type,
+                    child_hash,
+                ))
             }
 
             0x10 => Self::Parent,
@@ -1719,5 +1901,320 @@ mod test {
         // Remaining bytes include the trailing garbage (and possibly the next
         // attempted decode will fail, but remaining_bytes is nonzero either way)
         assert!(decoder.remaining_bytes() > 0);
+    }
+
+    #[test]
+    fn encode_push_kvvalue_hash_feature_type_with_child_hash() {
+        let op = Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+        // header(4) + key(3) + value(3) + value_hash(32) + feature_type(1) + child_hash(32) = 75
+        assert_eq!(op.encoding_length(), 75);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x1c, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, // feature_type: BasicMerkNode
+                0, // child_hash: 32 bytes of 42
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42
+            ]
+        );
+
+        let op = Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            SummedMerkNode(6),
+            [42; 32],
+        ));
+        // header(4) + key(3) + value(3) + value_hash(32) + feature_type(2) + child_hash(32) = 76
+        assert_eq!(op.encoding_length(), 76);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x1c, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, // feature_type: SummedMerkNode(6)
+                1, 12, // child_hash: 32 bytes of 42
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42
+            ]
+        );
+    }
+
+    #[test]
+    fn encode_push_inverted_kvvalue_hash_feature_type_with_child_hash() {
+        let op = Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+        assert_eq!(op.encoding_length(), 75);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x1d, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, // feature_type: BasicMerkNode
+                0, // child_hash: 32 bytes of 42
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42
+            ]
+        );
+
+        let op = Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            SummedMerkNode(6),
+            [42; 32],
+        ));
+        assert_eq!(op.encoding_length(), 76);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x1d, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, // feature_type: SummedMerkNode(6)
+                1, 12, // child_hash: 32 bytes of 42
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+                42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42
+            ]
+        );
+    }
+
+    #[test]
+    fn decode_push_kvvalue_hash_feature_type_with_child_hash() {
+        let bytes = [
+            0x1c, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, // feature_type: BasicMerkNode
+            0, // child_hash: 32 bytes of 42
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                BasicMerkNode,
+                [42; 32]
+            ))
+        );
+
+        let bytes = [
+            0x1c, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, // feature_type: SummedMerkNode(6)
+            1, 12, // child_hash: 32 bytes of 42
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                SummedMerkNode(6),
+                [42; 32]
+            ))
+        );
+    }
+
+    #[test]
+    fn decode_push_inverted_kvvalue_hash_feature_type_with_child_hash() {
+        let bytes = [
+            0x1d, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, // feature_type: BasicMerkNode
+            0, // child_hash: 32 bytes of 42
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                BasicMerkNode,
+                [42; 32]
+            ))
+        );
+
+        let bytes = [
+            0x1d, 3, 1, 2, 3, 0, 3, 4, 5, 6, // value_hash: 32 zero bytes
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, // feature_type: SummedMerkNode(6)
+            1, 12, // child_hash: 32 bytes of 42
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+            42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+        ];
+        let op = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(
+            op,
+            Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                vec![1, 2, 3],
+                vec![4, 5, 6],
+                [0; 32],
+                SummedMerkNode(6),
+                [42; 32]
+            ))
+        );
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_kvvalue_hash_feature_type_with_child_hash() {
+        // Push with BasicMerkNode
+        let op = Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+
+        // Push with SummedMerkNode
+        let op = Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            SummedMerkNode(6),
+            [42; 32],
+        ));
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+
+        // PushInverted with BasicMerkNode
+        let op = Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+
+        // PushInverted with SummedMerkNode
+        let op = Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            [0; 32],
+            SummedMerkNode(6),
+            [42; 32],
+        ));
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_push_kvvalue_hash_feature_type_with_child_hash_large_value() {
+        let large_value = vec![0xAB; 70000];
+        let op = Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            large_value,
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+        // 1 opcode + 1 key_len + 3 key + 4 value_len_u32 + 70000 value
+        // + 32 value_hash + 1 feature_type + 32 child_hash = 70074
+        assert_eq!(op.encoding_length(), 70074);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes[0], 0x2e); // large-value Push opcode
+    }
+
+    #[test]
+    fn encode_push_inverted_kvvalue_hash_feature_type_with_child_hash_large_value() {
+        let large_value = vec![0xAB; 70000];
+        let op = Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            large_value,
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+        // 1 opcode + 1 key_len + 3 key + 4 value_len_u32 + 70000 value
+        // + 32 value_hash + 1 feature_type + 32 child_hash = 70074
+        assert_eq!(op.encoding_length(), 70074);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes[0], 0x2f); // large-value PushInverted opcode
+    }
+
+    #[test]
+    fn decode_push_kvvalue_hash_feature_type_with_child_hash_large_value() {
+        let large_value = vec![0xAB; 70000];
+        let op = Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            large_value,
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn decode_push_inverted_kvvalue_hash_feature_type_with_child_hash_large_value() {
+        let large_value = vec![0xAB; 70000];
+        let op = Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+            vec![1, 2, 3],
+            large_value,
+            [0; 32],
+            BasicMerkNode,
+            [42; 32],
+        ));
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
     }
 }

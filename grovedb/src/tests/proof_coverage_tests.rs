@@ -6416,4 +6416,1139 @@ mod tests {
             err
         );
     }
+
+    /// Tamper with a KVValueHashFeatureTypeWithChildHash node's value bytes
+    /// in serialized merk proof bytes. Finds the node matching `target_key`
+    /// whose value matches `real_element_bytes`, replaces value with
+    /// `fake_element_bytes`, keeps the same value_hash and child_hash.
+    fn tamper_kvvaluehash_feature_type_with_child_hash(
+        merk_proof: &mut Vec<u8>,
+        target_key: &[u8],
+        real_element_bytes: &[u8],
+        fake_element_bytes: &[u8],
+    ) -> bool {
+        // Tag 0x1c = Push(KVValueHashFeatureTypeWithChildHash) small
+        // Format: [0x1c, key_len_u8] + key + [value_len_u16] + value + [32 hash] +
+        //         [feature_type] + [32 child_hash]
+        let tag = 0x1c_u8;
+        let mut i = 0;
+        while i < merk_proof.len() {
+            if merk_proof[i] == tag {
+                let key_len = merk_proof[i + 1] as usize;
+                let key_start = i + 2;
+                let key_end = key_start + key_len;
+                if key_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                if &merk_proof[key_start..key_end] != target_key {
+                    i += 1;
+                    continue;
+                }
+                // Read value_len as u16 big-endian
+                let vl_start = key_end;
+                if vl_start + 2 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let value_len =
+                    u16::from_be_bytes([merk_proof[vl_start], merk_proof[vl_start + 1]]) as usize;
+                let val_start = vl_start + 2;
+                let val_end = val_start + value_len;
+                if val_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                if &merk_proof[val_start..val_end] != real_element_bytes {
+                    i += 1;
+                    continue;
+                }
+                // Found it. Replace value bytes with fake.
+                // After value: 32-byte value_hash, feature_type bytes, 32-byte child_hash
+                // We keep everything after the value untouched.
+                let after_value = merk_proof[val_end..].to_vec();
+                merk_proof.truncate(val_start);
+                // Update value_len
+                let new_len = fake_element_bytes.len() as u16;
+                merk_proof[vl_start] = (new_len >> 8) as u8;
+                merk_proof[vl_start + 1] = (new_len & 0xff) as u8;
+                merk_proof.extend_from_slice(fake_element_bytes);
+                merk_proof.extend_from_slice(&after_value);
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    #[test]
+    fn non_empty_count_tree_count_swap_is_detected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert a CountTree with 3 items under TEST_LEAF
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"my_count_tree",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        for i in 0..3u8 {
+            db.insert(
+                [TEST_LEAF, b"my_count_tree"].as_ref(),
+                &[i],
+                Element::new_item(vec![i; 4]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+
+        // Query for my_count_tree itself (no subquery = tree in result set)
+        let mut query = Query::new();
+        query.insert_key(b"my_count_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Verify unmodified proof works
+        let valid = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version);
+        assert!(valid.is_ok(), "valid proof should verify");
+        let (_, results) = valid.unwrap();
+        let orig_element = Element::deserialize(&results[0].value, grove_version).expect("deser");
+        assert!(
+            matches!(orig_element, Element::CountTree(_, 3, _)),
+            "should be CountTree with count=3, got {:?}",
+            orig_element
+        );
+
+        // Build fake element: CountTree with count=999
+        // The real element in the proof is CountTree(Some(root_key), 3, None).
+        // We just need the serialized value bytes that appear in the proof.
+        let real_element_bytes = results[0].value.clone();
+        let fake_element = match &orig_element {
+            Element::CountTree(root_key, _count, flags) => {
+                Element::CountTree(root_key.clone(), 999, flags.clone())
+            }
+            _ => panic!("expected CountTree"),
+        };
+        let fake_element_bytes = fake_element.serialize(grove_version).expect("serialize");
+
+        // Decode, tamper, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => {
+                let leaf_layer = v0.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                tamper_kvvaluehash_feature_type_with_child_hash(
+                    &mut leaf_layer.merk_proof,
+                    b"my_count_tree",
+                    &real_element_bytes,
+                    &fake_element_bytes,
+                )
+            }
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        tamper_kvvaluehash_feature_type_with_child_hash(
+                            bytes,
+                            b"my_count_tree",
+                            &real_element_bytes,
+                            &fake_element_bytes,
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(
+            tampered,
+            "should have found and tampered the KVValueHashFeatureTypeWithChildHash node"
+        );
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode");
+
+        // The tampered proof should be REJECTED: the merk verifier checks
+        // combine_hash(H(fake_value), child_hash) != value_hash
+        let tampered_result =
+            GroveDb::verify_query_raw(&tampered_proof_bytes, &path_query, grove_version);
+        assert!(
+            tampered_result.is_err(),
+            "non-empty CountTree count swap should be detected via child hash check"
+        );
+        let err = format!("{:?}", tampered_result.unwrap_err());
+        assert!(
+            err.contains("value/child hash mismatch"),
+            "error should mention value/child hash mismatch, got: {}",
+            err
+        );
+    }
+
+    // =========================================================================
+    // KVValueHashFeatureTypeWithChildHash proof node coverage
+    // =========================================================================
+
+    #[test]
+    fn prove_non_empty_merk_tree_without_subquery() {
+        // A non-empty regular Tree queried without a subquery should produce
+        // a KVValueHashFeatureTypeWithChildHash proof node during generation
+        // and pass the child_hash_verified check during verification.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert subtree");
+
+        // Populate subtree so it becomes non-empty (root hash != None)
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_a",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_a");
+
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_b",
+            Element::new_item(b"world".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_b");
+
+        // Query "subtree" key under [root] WITHOUT a subquery
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-empty tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify non-empty tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(results.len(), 1, "should return the subtree element itself");
+    }
+
+    #[test]
+    fn prove_non_empty_sum_tree_without_subquery() {
+        // A non-empty SumTree queried without a subquery should use
+        // KVValueHashFeatureTypeWithChildHash and pass verification.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"sum_tree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum_tree");
+
+        db.insert(
+            [b"root".as_slice(), b"sum_tree".as_slice()].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item a");
+
+        db.insert(
+            [b"root".as_slice(), b"sum_tree".as_slice()].as_ref(),
+            b"b",
+            Element::new_sum_item(10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item b");
+
+        // Query "sum_tree" under [root] without subquery
+        let mut query = Query::new();
+        query.insert_key(b"sum_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-empty sum tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify non-empty sum tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(
+            results.len(),
+            1,
+            "should return the sum tree element itself"
+        );
+    }
+
+    #[test]
+    fn prove_non_empty_count_tree_without_subquery() {
+        // A non-empty CountTree queried without a subquery should use
+        // KVValueHashFeatureTypeWithChildHash and pass verification.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"count_tree",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert count_tree");
+
+        db.insert(
+            [b"root".as_slice(), b"count_tree".as_slice()].as_ref(),
+            b"x",
+            Element::new_item(b"data".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item x into count_tree");
+
+        // Query "count_tree" under [root] without subquery
+        let mut query = Query::new();
+        query.insert_key(b"count_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-empty count tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify non-empty count tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(
+            results.len(),
+            1,
+            "should return the count tree element itself"
+        );
+    }
+
+    #[test]
+    fn prove_v0_non_empty_merk_tree_without_subquery() {
+        // Same as prove_non_empty_merk_tree_without_subquery but forces V0 proof
+        // generation (GROVE_V2 uses prove_query_non_serialized version 0).
+        // This exercises the V0 child hash injection in generate.rs and the
+        // V0 child_hash_verified check in verify.rs.
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert subtree");
+
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_a",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_a");
+
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_b",
+            Element::new_item(b"world".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_b");
+
+        // Query "subtree" key under [root] WITHOUT a subquery
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove V0 non-empty tree without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify V0 non-empty tree without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(
+            results.len(),
+            1,
+            "should return the subtree element itself (V0)"
+        );
+    }
+
+    #[test]
+    fn prove_multiple_non_empty_trees_without_subquery() {
+        // Mix of tree types (Tree, SumTree, CountTree) and a plain Item at the
+        // same level, all queried with a range-all query without subquery.
+        // Non-empty trees should each produce KVValueHashFeatureTypeWithChildHash
+        // proof nodes; the plain Item and empty trees produce normal nodes.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert root");
+
+        // tree_a: regular non-empty Tree
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_a",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_a");
+
+        db.insert(
+            [b"root".as_slice(), b"tree_a".as_slice()].as_ref(),
+            b"child1",
+            Element::new_item(b"v1".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert child1 into tree_a");
+
+        // tree_b: non-empty SumTree
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_b",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert tree_b (sum tree)");
+
+        db.insert(
+            [b"root".as_slice(), b"tree_b".as_slice()].as_ref(),
+            b"s1",
+            Element::new_sum_item(42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert sum item into tree_b");
+
+        // item_c: plain Item (not a tree)
+        db.insert(
+            [b"root"].as_ref(),
+            b"item_c",
+            Element::new_item(b"plain_value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item_c");
+
+        // Range-all query on [root] without subquery
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove multiple non-empty trees without subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("should verify multiple non-empty trees without subquery");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        // item_c + tree_a + tree_b = 3 elements (sorted lexicographically)
+        assert_eq!(
+            results.len(),
+            3,
+            "should return all 3 elements (item + 2 non-empty trees)"
+        );
+    }
+
+    // =========================================================================
+    // Error path tests for child_hash_verified enforcement and combine_hash
+    // integrity checking.
+    //
+    // These tests exercise FAILURE paths in the verifier:
+    //   1. Downgrading KVValueHashFeatureTypeWithChildHash (0x1c) to
+    //      KVValueHashFeatureType (0x07) removes the child_hash, setting
+    //      child_hash_verified = false. The GroveDB verifier rejects this for
+    //      non-empty Merk trees without a subquery.
+    //   2. Tampering with the value bytes of a KVValueHashFeatureTypeWithChildHash
+    //      node so that combine_hash(H(new_value), child_hash) != value_hash.
+    //      The merk verifier rejects this at proof execution time.
+    // =========================================================================
+
+    /// Downgrade a KVValueHashFeatureTypeWithChildHash node (tag 0x1c) to
+    /// KVValueHashFeatureType (tag 0x07) in raw merk proof bytes by changing
+    /// the opcode and removing the trailing 32-byte child_hash.
+    ///
+    /// Encoding of 0x1c (small value):
+    ///   [0x1c, key_len_u8, key..., value_len_u16_be, value..., value_hash_32,
+    ///    feature_type_bytes, child_hash_32]
+    ///
+    /// Encoding of 0x07 (small value):
+    ///   [0x07, key_len_u8, key..., value_len_u16_be, value..., value_hash_32,
+    ///    feature_type_bytes]
+    ///
+    /// So we: (a) change tag from 0x1c to 0x07, (b) remove the last 32 bytes
+    /// (child_hash) from the node encoding.
+    fn downgrade_kvvaluehash_feature_type_with_child_hash(
+        merk_proof: &mut Vec<u8>,
+        target_key: &[u8],
+    ) -> bool {
+        let tag = 0x1c_u8;
+        let mut i = 0;
+        while i < merk_proof.len() {
+            if merk_proof[i] == tag {
+                if i + 1 >= merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_len = merk_proof[i + 1] as usize;
+                let key_start = i + 2;
+                let key_end = key_start + key_len;
+                if key_end + 2 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                if &merk_proof[key_start..key_end] != target_key {
+                    i += 1;
+                    continue;
+                }
+                // Read value_len as u16 big-endian
+                let vl_start = key_end;
+                let value_len =
+                    u16::from_be_bytes([merk_proof[vl_start], merk_proof[vl_start + 1]]) as usize;
+                let val_start = vl_start + 2;
+                let val_end = val_start + value_len;
+                // After value: 32-byte value_hash
+                let after_value_hash = val_end + 32;
+                if after_value_hash > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                // Determine feature_type length by reading its tag byte
+                let ft_tag = merk_proof[after_value_hash];
+                let ft_len = match ft_tag {
+                    0 => 1, // BasicMerkNode: just tag byte
+                    1 => {
+                        // SummedMerkNode: tag + varint(i64)
+                        // varint uses variable length; read until MSB is not set
+                        let mut len = 1;
+                        let mut pos = after_value_hash + 1;
+                        while pos < merk_proof.len() {
+                            len += 1;
+                            if merk_proof[pos] & 0x80 == 0 {
+                                break;
+                            }
+                            pos += 1;
+                        }
+                        len
+                    }
+                    2 => 17, // BigSummedMerkNode: tag + 16 bytes
+                    3 => {
+                        // CountedMerkNode: tag + varint(u64)
+                        let mut len = 1;
+                        let mut pos = after_value_hash + 1;
+                        while pos < merk_proof.len() {
+                            len += 1;
+                            if merk_proof[pos] & 0x80 == 0 {
+                                break;
+                            }
+                            pos += 1;
+                        }
+                        len
+                    }
+                    _ => {
+                        // Unknown feature type; skip this node
+                        i += 1;
+                        continue;
+                    }
+                };
+                let child_hash_start = after_value_hash + ft_len;
+                let child_hash_end = child_hash_start + 32;
+                if child_hash_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+
+                // (a) Change tag from 0x1c to 0x07
+                merk_proof[i] = 0x07;
+                // (b) Remove the 32-byte child_hash
+                merk_proof.drain(child_hash_start..child_hash_end);
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    #[test]
+    fn non_empty_merk_tree_rejects_downgraded_proof_node() {
+        // Setup: non-empty Tree with a child, queried without subquery so the
+        // tree itself appears in the result set.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert subtree");
+
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item",
+            Element::new_item(b"val".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item in subtree");
+
+        // Query for "subtree" key without subquery => non-empty tree in result
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Sanity: unmodified proof verifies
+        let valid = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: true,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        );
+        assert!(valid.is_ok(), "valid proof should verify, got: {:?}", valid);
+
+        // Decode proof, tamper the merk layer to downgrade the node type,
+        // then re-encode.
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => {
+                // The subtree node is in root_layer's merk_proof (querying [root])
+                downgrade_kvvaluehash_feature_type_with_child_hash(
+                    &mut v0
+                        .root_layer
+                        .lower_layers
+                        .values_mut()
+                        .next()
+                        .unwrap()
+                        .merk_proof,
+                    b"subtree",
+                )
+            }
+            GroveDBProof::V1(ref mut v1) => {
+                let layer = v1.root_layer.lower_layers.values_mut().next().unwrap();
+                match layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        downgrade_kvvaluehash_feature_type_with_child_hash(bytes, b"subtree")
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(
+            tampered,
+            "should have found and downgraded the KVValueHashFeatureTypeWithChildHash node"
+        );
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode");
+
+        // Verification should fail: the non-empty tree's proof node was
+        // downgraded from KVValueHashFeatureTypeWithChildHash to
+        // KVValueHashFeatureType, so child_hash_verified is false.
+        let result = GroveDb::verify_query_with_options(
+            &tampered_proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: true,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        );
+        assert!(
+            result.is_err(),
+            "downgraded proof node for non-empty tree should be rejected"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("KVValueHashFeatureTypeWithChildHash"),
+            "error should mention KVValueHashFeatureTypeWithChildHash requirement, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn combine_hash_mismatch_in_kvvaluehash_feature_type_with_child_hash_is_detected() {
+        // Setup: a non-empty CountTree, queried without subquery so the tree
+        // appears in the result set as KVValueHashFeatureTypeWithChildHash.
+        // We tamper the value bytes (change the count) without updating the
+        // value_hash, which should be caught by the combine_hash check in
+        // the merk verifier.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cnt_tree",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count tree");
+
+        for i in 0..3u8 {
+            db.insert(
+                [TEST_LEAF, b"cnt_tree"].as_ref(),
+                &[i],
+                Element::new_item(vec![i; 4]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+
+        let mut query = Query::new();
+        query.insert_key(b"cnt_tree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Verify original proof works
+        let valid = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version);
+        assert!(valid.is_ok(), "valid proof should verify");
+        let (_, results) = valid.unwrap();
+        let orig_element = Element::deserialize(&results[0].value, grove_version).expect("deser");
+        assert!(
+            matches!(orig_element, Element::CountTree(_, 3, _)),
+            "should be CountTree with count=3, got {:?}",
+            orig_element
+        );
+
+        // Build fake element: CountTree with count=999
+        let real_element_bytes = results[0].value.clone();
+        let fake_element = match &orig_element {
+            Element::CountTree(root_key, _count, flags) => {
+                Element::CountTree(root_key.clone(), 999, flags.clone())
+            }
+            _ => panic!("expected CountTree"),
+        };
+        let fake_element_bytes = fake_element.serialize(grove_version).expect("serialize");
+
+        // Decode, tamper, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => {
+                let leaf_layer = v0.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                tamper_kvvaluehash_feature_type_with_child_hash(
+                    &mut leaf_layer.merk_proof,
+                    b"cnt_tree",
+                    &real_element_bytes,
+                    &fake_element_bytes,
+                )
+            }
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        tamper_kvvaluehash_feature_type_with_child_hash(
+                            bytes,
+                            b"cnt_tree",
+                            &real_element_bytes,
+                            &fake_element_bytes,
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(
+            tampered,
+            "should have found and tampered the KVValueHashFeatureTypeWithChildHash node"
+        );
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode");
+
+        // The tampered proof should be rejected: combine_hash(H(new_value),
+        // child_hash) != value_hash because we changed the value bytes
+        // (count from 3 to 999) without updating the value_hash.
+        let result = GroveDb::verify_query_raw(&tampered_proof_bytes, &path_query, grove_version);
+        assert!(
+            result.is_err(),
+            "value tampering should be detected by combine_hash check"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("value/child hash mismatch") || err.contains("combine_hash"),
+            "error should mention value/child hash mismatch, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn kvvaluehash_feature_type_with_child_hash_rejects_item_element() {
+        // If an attacker crafts a proof with a KVValueHashFeatureTypeWithChildHash
+        // node containing an item element (which has has_simple_value_hash() == true),
+        // the merk verifier should reject it.
+        //
+        // Setup: insert a plain Item under TEST_LEAF, prove it, then tamper the
+        // proof's KV node to become a KVValueHashFeatureTypeWithChildHash node.
+        // The merk verifier should reject because item elements must not appear
+        // in KVValueHashFeatureTypeWithChildHash nodes.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"myitem",
+            Element::new_item(b"payload".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        let mut query = Query::new();
+        query.insert_key(b"myitem".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Verify original proof works
+        let valid = GroveDb::verify_query_raw(&proof_bytes, &path_query, grove_version);
+        assert!(valid.is_ok(), "valid proof should verify");
+
+        // Decode proof, find the KV node for "myitem" (tag 0x01) in the leaf
+        // layer, and upgrade it to KVValueHashFeatureTypeWithChildHash (tag 0x1c)
+        // by changing the tag and appending value_hash + feature_type + child_hash.
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => {
+                let leaf_layer = v0.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                upgrade_kv_to_kvvaluehash_feature_type_with_child_hash(
+                    &mut leaf_layer.merk_proof,
+                    b"myitem",
+                )
+            }
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        upgrade_kv_to_kvvaluehash_feature_type_with_child_hash(bytes, b"myitem")
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(
+            tampered,
+            "should have found and upgraded the KV node to KVValueHashFeatureTypeWithChildHash"
+        );
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode");
+
+        // The tampered proof should be rejected: the merk verifier checks
+        // that KVValueHashFeatureTypeWithChildHash nodes do not contain item
+        // elements (has_simple_value_hash() == true).
+        let result = GroveDb::verify_query_raw(&tampered_proof_bytes, &path_query, grove_version);
+        assert!(
+            result.is_err(),
+            "item element in KVValueHashFeatureTypeWithChildHash should be rejected"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("must not contain an item element")
+                || err.contains("KVValueHashFeatureTypeWithChildHash"),
+            "error should mention item element rejection, got: {}",
+            err
+        );
+    }
+
+    /// Upgrade a KV node (tag 0x01) to KVValueHashFeatureTypeWithChildHash
+    /// (tag 0x1c) in raw merk proof bytes. This is used to test that the
+    /// merk verifier rejects item elements in such nodes.
+    ///
+    /// KV encoding (small value):
+    ///   [0x01, key_len_u8, key..., value_len_u16_be, value...]
+    ///
+    /// KVValueHashFeatureTypeWithChildHash encoding (small value):
+    ///   [0x1c, key_len_u8, key..., value_len_u16_be, value..., value_hash_32,
+    ///    feature_type_bytes, child_hash_32]
+    ///
+    /// We change the tag, keep key and value, and append a fake value_hash,
+    /// BasicMerkNode feature type (0x00), and a fake child_hash.
+    fn upgrade_kv_to_kvvaluehash_feature_type_with_child_hash(
+        merk_proof: &mut Vec<u8>,
+        target_key: &[u8],
+    ) -> bool {
+        let tag = 0x03_u8; // Push(Node::KV) small value
+        let mut i = 0;
+        while i < merk_proof.len() {
+            if merk_proof[i] == tag {
+                if i + 1 >= merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_len = merk_proof[i + 1] as usize;
+                let key_start = i + 2;
+                let key_end = key_start + key_len;
+                if key_end + 2 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                if &merk_proof[key_start..key_end] != target_key {
+                    i += 1;
+                    continue;
+                }
+                // Read value_len as u16 big-endian
+                let vl_start = key_end;
+                let value_len =
+                    u16::from_be_bytes([merk_proof[vl_start], merk_proof[vl_start + 1]]) as usize;
+                let val_end = vl_start + 2 + value_len;
+                if val_end > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+
+                // Change tag from KV (0x01) to KVValueHashFeatureTypeWithChildHash (0x1c)
+                merk_proof[i] = 0x1c;
+
+                // Insert: 32-byte fake value_hash + 1 byte BasicMerkNode(0x00) +
+                // 32-byte fake child_hash = 65 bytes total
+                let mut extra = Vec::with_capacity(65);
+                extra.extend_from_slice(&[0xAA; 32]); // fake value_hash
+                extra.push(0x00); // BasicMerkNode
+                extra.extend_from_slice(&[0xBB; 32]); // fake child_hash
+
+                // Insert extra bytes right after the value
+                let insert_pos = val_end;
+                merk_proof.splice(insert_pos..insert_pos, extra);
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
 }

@@ -299,6 +299,62 @@ mod branch_tests {
         assert_eq!(keys, vec![vec![5]]);
     }
 
+    #[test]
+    fn terminal_keys_with_kv_value_hash_feature_type_with_child_hash_node() {
+        use crate::TreeFeatureType;
+
+        let proof = vec![
+            Op::Push(Node::Hash(dummy_hash(1))),
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                vec![5],
+                vec![50],
+                dummy_hash(10),
+                TreeFeatureType::BasicMerkNode,
+                dummy_hash(11),
+            )),
+            Op::Parent,
+            Op::Push(Node::Hash(dummy_hash(2))),
+            Op::Child,
+        ];
+        let result = TrunkQueryResult {
+            proof,
+            chunk_depths: vec![1],
+            tree_depth: 1,
+        };
+        let keys = result.terminal_node_keys();
+        assert_eq!(keys, vec![vec![5]]);
+    }
+
+    #[test]
+    fn trace_key_with_kv_value_hash_feature_type_with_child_hash_node() {
+        use crate::TreeFeatureType;
+
+        let proof = vec![
+            Op::Push(Node::Hash(dummy_hash(1))),
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                vec![5],
+                vec![50],
+                dummy_hash(10),
+                TreeFeatureType::SummedMerkNode(100),
+                dummy_hash(11),
+            )),
+            Op::Parent,
+            Op::Push(Node::Hash(dummy_hash(2))),
+            Op::Child,
+        ];
+        let result = TrunkQueryResult {
+            proof,
+            chunk_depths: vec![1],
+            tree_depth: 1,
+        };
+        // Key 3 < 5, goes left into Hash => terminal is key 5
+        assert_eq!(result.trace_key_to_terminal(&[3]), Some(vec![5]));
+        // Key 5 found in proof => None
+        assert_eq!(result.trace_key_to_terminal(&[5]), None);
+        // Key 8 > 5, goes right into Hash => terminal is key 5
+        assert_eq!(result.trace_key_to_terminal(&[8]), Some(vec![5]));
+    }
+
     // ─── BranchQueryResult ────────────────────────────────────────────
 
     #[test]
@@ -406,6 +462,34 @@ mod branch_tests {
             returned_depth: 1,
             branch_root_hash: dummy_hash(99),
         };
+        assert_eq!(result.trace_key_to_terminal(&[8]), Some(vec![5]));
+    }
+
+    #[test]
+    fn branch_trace_with_kv_value_hash_feature_type_with_child_hash_node() {
+        use crate::TreeFeatureType;
+
+        let proof = vec![
+            Op::Push(Node::Hash(dummy_hash(1))),
+            Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                vec![5],
+                vec![50],
+                dummy_hash(10),
+                TreeFeatureType::BasicMerkNode,
+                dummy_hash(11),
+            )),
+            Op::Parent,
+            Op::Push(Node::Hash(dummy_hash(2))),
+            Op::Child,
+        ];
+        let result = BranchQueryResult {
+            proof,
+            branch_root_key: vec![5],
+            returned_depth: 1,
+            branch_root_hash: dummy_hash(99),
+        };
+        assert_eq!(result.trace_key_to_terminal(&[3]), Some(vec![5]));
+        assert_eq!(result.trace_key_to_terminal(&[5]), None);
         assert_eq!(result.trace_key_to_terminal(&[8]), Some(vec![5]));
     }
 

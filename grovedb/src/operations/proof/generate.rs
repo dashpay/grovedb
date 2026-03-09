@@ -11,7 +11,7 @@ use grovedb_costs::{
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merk::{
     proofs::{encode_into, query::QueryItem, Node, Op},
-    tree::value_hash,
+    tree::{combine_hash, value_hash},
     Merk, ProofWithoutEncodingResult, TreeFeatureType,
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
@@ -468,13 +468,77 @@ impl GroveDb {
                                 .wrap_with_cost(cost);
                             }
 
-                            Ok(Element::Tree(..))
-                            | Ok(Element::SumTree(..))
-                            | Ok(Element::BigSumTree(..))
-                            | Ok(Element::CountTree(..))
-                            | Ok(Element::ProvableCountTree(..))
-                            | Ok(Element::CountSumTree(..))
-                            | Ok(Element::ProvableCountSumTree(..))
+                            Ok(Element::Tree(Some(_), _))
+                            | Ok(Element::SumTree(Some(_), ..))
+                            | Ok(Element::BigSumTree(Some(_), ..))
+                            | Ok(Element::CountTree(Some(_), ..))
+                            | Ok(Element::ProvableCountTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountSumTree(Some(_), ..))
+                                if !done_with_results =>
+                            {
+                                // Non-empty tree without subquery: inject child
+                                // root hash so the verifier can check
+                                // combine_hash(H(value), child_root) == value_hash
+                                #[cfg(feature = "proof_debug")]
+                                {
+                                    println!(
+                                        "found non-empty tree {}, no subquery — injecting child hash",
+                                        hex_to_ascii(key),
+                                    );
+                                }
+                                let mut child_path = path.clone();
+                                child_path.push(key.as_slice());
+                                let child_merk = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_transactional_merk_at_path(
+                                        child_path.as_slice().into(),
+                                        &tx,
+                                        None,
+                                        grove_version
+                                    )
+                                );
+                                let child_root_hash =
+                                    child_merk.root_hash().unwrap_add_cost(&mut cost);
+
+                                // Extract value_hash and feature_type from current node.
+                                // Clone key/value before mutating node.
+                                let key_owned = key.to_owned();
+                                let value_owned = value.to_owned();
+                                let (vh, ft) = match node {
+                                    Node::KVValueHashFeatureType(_, _, vh, ft) => (*vh, *ft),
+                                    Node::KVValueHash(_, _, vh) => {
+                                        (*vh, TreeFeatureType::BasicMerkNode)
+                                    }
+                                    _ => {
+                                        let element_vh =
+                                            value_hash(&value_owned).unwrap_add_cost(&mut cost);
+                                        let vh = combine_hash(&element_vh, &child_root_hash)
+                                            .unwrap_add_cost(&mut cost);
+                                        (vh, TreeFeatureType::BasicMerkNode)
+                                    }
+                                };
+                                *node = Node::KVValueHashFeatureTypeWithChildHash(
+                                    key_owned,
+                                    value_owned,
+                                    vh,
+                                    ft,
+                                    child_root_hash,
+                                );
+
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+                            // Empty trees / non-Merk tree types without subquery
+                            Ok(Element::Tree(None, _))
+                            | Ok(Element::SumTree(None, ..))
+                            | Ok(Element::BigSumTree(None, ..))
+                            | Ok(Element::CountTree(None, ..))
+                            | Ok(Element::ProvableCountTree(None, ..))
+                            | Ok(Element::CountSumTree(None, ..))
+                            | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -1165,13 +1229,67 @@ impl GroveDb {
                                 has_a_result_at_level |= true;
                             }
 
-                            Ok(Element::Tree(..))
-                            | Ok(Element::SumTree(..))
-                            | Ok(Element::BigSumTree(..))
-                            | Ok(Element::CountTree(..))
-                            | Ok(Element::ProvableCountTree(..))
-                            | Ok(Element::CountSumTree(..))
-                            | Ok(Element::ProvableCountSumTree(..))
+                            Ok(Element::Tree(Some(_), _))
+                            | Ok(Element::SumTree(Some(_), ..))
+                            | Ok(Element::BigSumTree(Some(_), ..))
+                            | Ok(Element::CountTree(Some(_), ..))
+                            | Ok(Element::ProvableCountTree(Some(_), ..))
+                            | Ok(Element::CountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountSumTree(Some(_), ..))
+                                if !done_with_results =>
+                            {
+                                // Non-empty tree without subquery: inject child
+                                // root hash for combine_hash verification
+                                let mut child_path = path.clone();
+                                child_path.push(key.as_slice());
+                                let child_merk = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_transactional_merk_at_path(
+                                        child_path.as_slice().into(),
+                                        &tx,
+                                        None,
+                                        grove_version
+                                    )
+                                );
+                                let child_root_hash =
+                                    child_merk.root_hash().unwrap_add_cost(&mut cost);
+
+                                let key_owned = key.to_owned();
+                                let value_owned = value.to_owned();
+                                let (vh, ft) = match node {
+                                    Node::KVValueHashFeatureType(_, _, vh, ft) => (*vh, *ft),
+                                    Node::KVValueHash(_, _, vh) => {
+                                        (*vh, TreeFeatureType::BasicMerkNode)
+                                    }
+                                    _ => {
+                                        let element_vh =
+                                            value_hash(&value_owned).unwrap_add_cost(&mut cost);
+                                        let vh = combine_hash(&element_vh, &child_root_hash)
+                                            .unwrap_add_cost(&mut cost);
+                                        (vh, TreeFeatureType::BasicMerkNode)
+                                    }
+                                };
+                                *node = Node::KVValueHashFeatureTypeWithChildHash(
+                                    key_owned,
+                                    value_owned,
+                                    vh,
+                                    ft,
+                                    child_root_hash,
+                                );
+
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+                            // Empty trees and CommitmentTree without subquery
+                            Ok(Element::Tree(None, _))
+                            | Ok(Element::SumTree(None, ..))
+                            | Ok(Element::BigSumTree(None, ..))
+                            | Ok(Element::CountTree(None, ..))
+                            | Ok(Element::ProvableCountTree(None, ..))
+                            | Ok(Element::CountSumTree(None, ..))
+                            | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {

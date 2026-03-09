@@ -658,6 +658,27 @@ impl GroveDb {
                             }
                         }
 
+                        // For non-empty Merk trees without a subquery (no
+                        // lower layer proof), the prover must use
+                        // KVValueHashFeatureTypeWithChildHash so the merk
+                        // verifier can confirm combine_hash(H(value),
+                        // child_hash) == value_hash. If child_hash_verified is
+                        // false, an attacker may have downgraded the node type
+                        // to hide child hash verification.
+                        // Non-Merk trees (MmrTree, BulkAppendTree, etc.) are
+                        // excluded — they use different proof structures.
+                        if element.is_non_empty_merk_tree() && !proved_key_value.child_hash_verified
+                        {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "V1 non-empty tree at key {} without subquery must use \
+                                     KVValueHashFeatureTypeWithChildHash proof node",
+                                    hex::encode(key),
+                                ),
+                            ));
+                        }
+
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                 path.iter().map(|p| p.to_vec()).collect(),
@@ -1595,6 +1616,27 @@ impl GroveDb {
                             }
                         }
 
+                        // For non-empty Merk trees without a subquery (no
+                        // lower layer proof), the prover must use
+                        // KVValueHashFeatureTypeWithChildHash so the merk
+                        // verifier can confirm combine_hash(H(value),
+                        // child_hash) == value_hash. If child_hash_verified is
+                        // false, an attacker may have downgraded the node type
+                        // to hide child hash verification.
+                        // Non-Merk trees (MmrTree, BulkAppendTree, etc.) are
+                        // excluded — they use different proof structures.
+                        if element.is_non_empty_merk_tree() && !proved_key_value.child_hash_verified
+                        {
+                            return Err(Error::InvalidProof(
+                                query.clone(),
+                                format!(
+                                    "non-empty tree at key {} without subquery must use \
+                                     KVValueHashFeatureTypeWithChildHash proof node",
+                                    hex::encode(key),
+                                ),
+                            ));
+                        }
+
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                 path.iter().map(|p| p.to_vec()).collect(),
@@ -2211,6 +2253,29 @@ impl GroveDb {
             )
         })?;
 
+        // For KVValueHashFeatureTypeWithChildHash nodes, verify that
+        // combine_hash(H(value), child_hash) == value_hash. Without this
+        // check an attacker could modify the value bytes while keeping
+        // the value_hash unchanged.
+        if let Node::KVValueHashFeatureTypeWithChildHash(_, _, node_value_hash, _, child_hash) =
+            &tree.node
+        {
+            let element_vh = value_hash(&value).value().to_owned();
+            let computed_vh = combine_hash(&element_vh, child_hash).value().to_owned();
+            if computed_vh != *node_value_hash {
+                return Err(Error::InvalidProof(
+                    PathQuery::new_unsized(Vec::new(), Query::default()),
+                    format!(
+                        "trunk/branch proof value/child hash mismatch at key {}: \
+                         combine_hash(H(value), child_hash) = {} but value_hash = {}",
+                        hex::encode(&key),
+                        hex::encode(computed_vh),
+                        hex::encode(node_value_hash),
+                    ),
+                ));
+            }
+        }
+
         let element = Element::deserialize(&value, grove_version)?;
         elements.insert(key.clone(), element);
 
@@ -2226,7 +2291,10 @@ impl GroveDb {
             // Extract count from TreeFeatureType if available
             // Note: KVHashCount is not included as it never reaches this code path
             let count = match &tree.node {
-                Node::KVValueHashFeatureType(_, _, _, feature_type) => feature_type.count(),
+                Node::KVValueHashFeatureType(_, _, _, feature_type)
+                | Node::KVValueHashFeatureTypeWithChildHash(_, _, _, feature_type, _) => {
+                    feature_type.count()
+                }
                 Node::KVCount(_, _, count) => Some(*count),
                 Node::KVRefValueHashCount(_, _, _, count) => Some(*count),
                 _ => None,
@@ -2276,6 +2344,7 @@ impl GroveDb {
             Node::KV(key, value)
             | Node::KVValueHash(key, value, ..)
             | Node::KVValueHashFeatureType(key, value, ..)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)
             | Node::KVRefValueHash(key, value, ..)
             | Node::KVRefValueHashCount(key, value, ..) => Some((key.clone(), value.clone())),
