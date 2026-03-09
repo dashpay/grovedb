@@ -632,6 +632,32 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
+                        // For empty trees in the result set (no lower layer
+                        // proof), verify that the value_hash matches
+                        // combine_hash(H(value), NULL_HASH). Without this
+                        // check, an attacker could swap tree types (e.g.
+                        // SumTree→Tree) in KVValueHash nodes without breaking
+                        // the merk proof, since the value bytes are not part of
+                        // the KVValueHash tree hash computation.
+                        if element.is_any_tree() && !element.is_non_empty_tree() {
+                            let expected_value_hash =
+                                combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
+                                    .value()
+                                    .to_owned();
+                            if hash != &expected_value_hash {
+                                return Err(Error::InvalidProof(
+                                    query.clone(),
+                                    format!(
+                                        "V1 empty tree value hash mismatch at key {}: \
+                                         expected {}, got {}",
+                                        hex::encode(key),
+                                        hex::encode(hash),
+                                        hex::encode(expected_value_hash)
+                                    ),
+                                ));
+                            }
+                        }
+
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                 path.iter().map(|p| p.to_vec()).collect(),
@@ -1543,6 +1569,32 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
+                        // For empty trees in the result set (no lower layer
+                        // proof), verify that the value_hash matches
+                        // combine_hash(H(value), NULL_HASH). Without this
+                        // check, an attacker could swap tree types (e.g.
+                        // SumTree→Tree) in KVValueHash nodes without breaking
+                        // the merk proof, since the value bytes are not part of
+                        // the KVValueHash tree hash computation.
+                        if element.is_any_tree() && !element.is_non_empty_tree() {
+                            let expected_value_hash =
+                                combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
+                                    .value()
+                                    .to_owned();
+                            if hash != &expected_value_hash {
+                                return Err(Error::InvalidProof(
+                                    query.clone(),
+                                    format!(
+                                        "empty tree value hash mismatch at key {}: expected \
+                                         {}, got {}",
+                                        hex::encode(key),
+                                        hex::encode(hash),
+                                        hex::encode(expected_value_hash)
+                                    ),
+                                ));
+                            }
+                        }
+
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                 path.iter().map(|p| p.to_vec()).collect(),

@@ -6231,4 +6231,189 @@ mod tests {
              combine_hash, so changing the value changes the root hash"
         );
     }
+
+    // =========================================================================
+    // Empty tree type swap detection test
+    //
+    // In KVValueHash nodes, the value bytes are NOT part of the hash
+    // computation. An attacker could swap the serialized Element from one tree
+    // type to another (e.g., SumTree→Tree) without changing the merk hash.
+    // For non-empty trees with lower layers, combine_hash catches this.
+    // For empty trees in the result set, the GroveDB verifier now checks
+    // combine_hash(H(value_bytes), NULL_HASH) == proof_hash.
+    // =========================================================================
+
+    /// Swap the value bytes of a KVValueHash node (tag 0x04) in raw merk proof
+    /// bytes, keeping the same key and value_hash but replacing the serialized
+    /// Element with a different tree type.
+    fn tamper_kvvaluehash_value(
+        merk_proof: &mut Vec<u8>,
+        target_key: &[u8],
+        real_element_bytes: &[u8],
+        fake_element_bytes: &[u8],
+    ) -> bool {
+        let mut i = 0;
+        while i < merk_proof.len() {
+            if merk_proof[i] == 0x04 {
+                // KVValueHash: [0x04, key_len, key, value_len_u16, value, hash_32]
+                if i + 1 >= merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_len = merk_proof[i + 1] as usize;
+                let key_start = i + 2;
+                let key_end = key_start + key_len;
+                if key_end + 2 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let key_bytes = &merk_proof[key_start..key_end];
+                if key_bytes != target_key {
+                    i += 1;
+                    continue;
+                }
+                let value_len =
+                    u16::from_be_bytes([merk_proof[key_end], merk_proof[key_end + 1]]) as usize;
+                let value_start = key_end + 2;
+                let value_end = value_start + value_len;
+                if value_end + 32 > merk_proof.len() {
+                    i += 1;
+                    continue;
+                }
+                let value_bytes = &merk_proof[value_start..value_end];
+                if value_bytes != real_element_bytes {
+                    i += 1;
+                    continue;
+                }
+                // Extract the existing 32-byte hash
+                let hash_bytes: Vec<u8> = merk_proof[value_end..value_end + 32].to_vec();
+
+                // Build replacement: same tag, key, new value, same hash
+                let mut replacement = vec![0x04, key_len as u8];
+                replacement.extend_from_slice(target_key);
+                replacement.extend_from_slice(&(fake_element_bytes.len() as u16).to_be_bytes());
+                replacement.extend_from_slice(fake_element_bytes);
+                replacement.extend_from_slice(&hash_bytes);
+
+                let old_len = value_end + 32 - i;
+                merk_proof.splice(i..i + old_len, replacement);
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    #[test]
+    fn empty_tree_type_swap_is_detected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an empty SumTree under TEST_LEAF
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"empty_sum",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert empty sum tree");
+
+        // Query that includes empty trees in the result
+        let mut query = Query::new();
+        query.insert_key(b"empty_sum".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should generate proof");
+
+        // Sanity check: valid proof works
+        let valid_result = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: true,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        );
+        assert!(valid_result.is_ok(), "valid proof should verify");
+
+        // Get the serialized bytes for both tree types
+        let real_element_bytes = Element::empty_sum_tree()
+            .serialize(grove_version)
+            .expect("serialize");
+        let fake_element_bytes = Element::empty_tree()
+            .serialize(grove_version)
+            .expect("serialize");
+
+        // Decode, tamper the KVValueHash node's value bytes, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+
+        let tampered = match grovedb_proof {
+            GroveDBProof::V0(ref mut v0) => {
+                let leaf_layer = v0.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                tamper_kvvaluehash_value(
+                    &mut leaf_layer.merk_proof,
+                    b"empty_sum",
+                    &real_element_bytes,
+                    &fake_element_bytes,
+                )
+            }
+            GroveDBProof::V1(ref mut v1) => {
+                let leaf_layer = v1.root_layer.lower_layers.get_mut(TEST_LEAF).unwrap();
+                match leaf_layer.merk_proof {
+                    crate::operations::proof::ProofBytes::Merk(ref mut bytes) => {
+                        tamper_kvvaluehash_value(
+                            bytes,
+                            b"empty_sum",
+                            &real_element_bytes,
+                            &fake_element_bytes,
+                        )
+                    }
+                    _ => false,
+                }
+            }
+        };
+        assert!(
+            tampered,
+            "should have found and tampered the KVValueHash node"
+        );
+
+        let tampered_proof_bytes =
+            bincode::encode_to_vec(&grovedb_proof, config).expect("re-encode");
+
+        // The tampered proof should be rejected: the combine_hash check for
+        // empty trees verifies that H(value_bytes) is consistent with the
+        // proof's value_hash.
+        let result = GroveDb::verify_query_with_options(
+            &tampered_proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: true,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        );
+        assert!(
+            result.is_err(),
+            "empty tree type swap should be detected via combine_hash check"
+        );
+        let err = format!("{:?}", result.unwrap_err());
+        assert!(
+            err.contains("empty tree value hash mismatch"),
+            "error should mention empty tree value hash mismatch, got: {}",
+            err
+        );
+    }
 }
