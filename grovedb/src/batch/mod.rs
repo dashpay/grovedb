@@ -3957,6 +3957,21 @@ impl GroveDb {
             add_on_operations(&total_current_costs, &left_over_operations)
         );
 
+        // Validate the add-on operations for consistency. The callback is
+        // caller-provided, so the returned operations could contain duplicates,
+        // internal-only ops, or inserts under paths being deleted. Apply the
+        // same consistency gate used for the initial batch.
+        if check_batch_operation_consistency && !new_operations.is_empty() {
+            let consistency_result =
+                QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
+            if !consistency_result.is_empty() {
+                return Err(Error::InvalidBatchOperation(
+                    "add-on operations from callback fail consistency checks",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
         // we are trying to finalize
         batch_apply_options.batch_pause_height = None;
 
