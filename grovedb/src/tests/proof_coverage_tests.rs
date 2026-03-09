@@ -7487,6 +7487,573 @@ mod tests {
         );
     }
 
+    // =========================================================================
+    // V0 vs V1 version-gating tests for KVValueHashFeatureTypeWithChildHash
+    //
+    // V0 proofs (GROVE_V2) must NOT contain KVValueHashFeatureTypeWithChildHash
+    // nodes.  V1 proofs (GROVE_V3/latest) MUST contain them for non-empty Merk
+    // trees without subqueries.
+    // =========================================================================
+
+    #[test]
+    fn v0_proof_non_empty_tree_verifies_without_child_hash() {
+        // V0 proofs (GROVE_V2) should prove and verify non-empty trees
+        // without subqueries using standard proof nodes (no child hash
+        // injection). This is the basic round-trip test.
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert subtree");
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"child",
+            Element::new_item(b"data".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child");
+
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove V0");
+
+        // Confirm it produces a V0 proof
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+        assert!(
+            matches!(grovedb_proof, GroveDBProof::V0(_)),
+            "GROVE_V2 should produce a V0 proof"
+        );
+
+        // Verifies correctly
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("V0 proof should verify without child hash nodes");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn v0_proof_non_empty_sum_tree_without_subquery() {
+        // V0 proof with a non-empty SumTree queried without subquery should
+        // work without KVValueHashFeatureTypeWithChildHash.
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+        db.insert(
+            [b"root"].as_ref(),
+            b"sumtree",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+        db.insert(
+            [b"root".as_slice(), b"sumtree".as_slice()].as_ref(),
+            b"val",
+            Element::new_sum_item(42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum item");
+
+        let mut query = Query::new();
+        query.insert_key(b"sumtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove V0 sum tree");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("V0 non-empty SumTree should verify without child hash");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn v0_proof_non_empty_count_tree_without_subquery() {
+        // V0 proof with a non-empty CountTree queried without subquery.
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+        db.insert(
+            [b"root"].as_ref(),
+            b"cnttree",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        db.insert(
+            [b"root".as_slice(), b"cnttree".as_slice()].as_ref(),
+            b"item",
+            Element::new_item(b"val".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        let mut query = Query::new();
+        query.insert_key(b"cnttree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove V0 count tree");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("V0 non-empty CountTree should verify without child hash");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn v0_proof_multiple_non_empty_tree_types_without_subquery() {
+        // V0 proof with a mix of Tree, SumTree, and Item at the same level,
+        // queried with a range-all query.  All should verify without child
+        // hash injection.
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        // Non-empty regular Tree
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_a",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert tree_a");
+        db.insert(
+            [b"root".as_slice(), b"tree_a".as_slice()].as_ref(),
+            b"child",
+            Element::new_item(b"x".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child in tree_a");
+
+        // Non-empty SumTree
+        db.insert(
+            [b"root"].as_ref(),
+            b"tree_b",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert tree_b");
+        db.insert(
+            [b"root".as_slice(), b"tree_b".as_slice()].as_ref(),
+            b"sum",
+            Element::new_sum_item(10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum item");
+
+        // Plain Item (not a tree)
+        db.insert(
+            [b"root"].as_ref(),
+            b"item_c",
+            Element::new_item(b"plain".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item_c");
+
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove V0 mixed trees");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        )
+        .expect("V0 mixed tree proof should verify");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(results.len(), 3, "should return tree_a, tree_b, item_c");
+    }
+
+    #[test]
+    fn v0_proof_non_empty_tree_with_subquery_still_descends() {
+        // When a V0 proof has a subquery for a non-empty tree, it should
+        // descend normally (the version gating only affects trees WITHOUT
+        // subqueries).
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert subtree");
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_a",
+            Element::new_item(b"val_a".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item_a");
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item_b",
+            Element::new_item(b"val_b".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item_b");
+
+        // Query with subquery that descends into subtree
+        let mut inner_query = Query::new();
+        inner_query.insert_all();
+
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        query.set_subquery(inner_query);
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove V0 with subquery");
+
+        let (root_hash, results) = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+        .expect("V0 subquery proof should verify");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert_eq!(
+            results.len(),
+            2,
+            "should return item_a and item_b from subquery"
+        );
+    }
+
+    #[test]
+    fn v1_non_empty_tree_downgrade_rejected_but_v0_accepts_same_node_type() {
+        // The V1 verifier rejects non-empty tree proof nodes that lack child
+        // hash (tested by non_empty_merk_tree_rejects_downgraded_proof_node).
+        // Here we confirm the V0 verifier accepts the same standard node type
+        // (KVValueHashFeatureType without child hash) for non-empty trees.
+        let grove_version = &GROVE_V2;
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert subtree");
+        // Make subtree non-empty
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item",
+            Element::new_item(b"val".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove V0");
+
+        // V0 verifier should accept without child_hash_verified check
+        let result = GroveDb::verify_query_with_options(
+            &proof_bytes,
+            &path_query,
+            VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: true,
+            },
+            grove_version,
+        );
+        assert!(
+            result.is_ok(),
+            "V0 verifier should accept non-empty tree without child hash, got: {:?}",
+            result.err()
+        );
+        let (_, results) = result.unwrap();
+        assert_eq!(results.len(), 1);
+
+        // The element should still be the correct Tree type
+        let (_, _, element) = &results[0];
+        assert!(
+            element.as_ref().unwrap().is_any_tree(),
+            "result should be a tree element"
+        );
+    }
+
+    #[test]
+    fn v0_and_v1_proofs_produce_same_result_for_non_empty_tree() {
+        // Both V0 and V1 proofs should produce the same query result for
+        // a non-empty tree without subquery — just via different proof
+        // mechanisms (V1 includes child hash, V0 does not).
+        let grove_version_v0 = &GROVE_V2;
+        let grove_version_v1 = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // Use v0 version for inserts (v1 is superset-compatible)
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version_v0,
+        )
+        .unwrap()
+        .expect("insert root");
+        db.insert(
+            [b"root"].as_ref(),
+            b"subtree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version_v0,
+        )
+        .unwrap()
+        .expect("insert subtree");
+        db.insert(
+            [b"root".as_slice(), b"subtree".as_slice()].as_ref(),
+            b"item",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version_v0,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        let mut query = Query::new();
+        query.insert_key(b"subtree".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"root".to_vec()], query);
+
+        let verify_opts = VerifyOptions {
+            absence_proofs_for_non_existing_searched_keys: false,
+            verify_proof_succinctness: false,
+            include_empty_trees_in_result: true,
+        };
+
+        // V0 proof
+        let v0_proof = db
+            .prove_query(&path_query, None, grove_version_v0)
+            .unwrap()
+            .expect("prove V0");
+        let (v0_root, v0_results) = GroveDb::verify_query_with_options(
+            &v0_proof,
+            &path_query,
+            verify_opts.clone(),
+            grove_version_v0,
+        )
+        .expect("verify V0");
+
+        // V1 proof
+        let v1_proof = db
+            .prove_query(&path_query, None, grove_version_v1)
+            .unwrap()
+            .expect("prove V1");
+        let (v1_root, v1_results) = GroveDb::verify_query_with_options(
+            &v1_proof,
+            &path_query,
+            verify_opts,
+            grove_version_v1,
+        )
+        .expect("verify V1");
+
+        // Same root hash and same results
+        assert_eq!(
+            v0_root, v1_root,
+            "V0 and V1 should produce the same root hash"
+        );
+        assert_eq!(v0_results.len(), v1_results.len(), "same number of results");
+        assert_eq!(v0_results.len(), 1);
+
+        // Both should return the same element
+        let (v0_path, v0_key, v0_elem) = &v0_results[0];
+        let (v1_path, v1_key, v1_elem) = &v1_results[0];
+        assert_eq!(v0_path, v1_path);
+        assert_eq!(v0_key, v1_key);
+        assert_eq!(v0_elem, v1_elem);
+    }
+
     /// Upgrade a KV node (tag 0x01) to KVValueHashFeatureTypeWithChildHash
     /// (tag 0x1c) in raw merk proof bytes. This is used to test that the
     /// merk verifier rejects item elements in such nodes.
