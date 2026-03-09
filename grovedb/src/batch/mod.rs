@@ -52,8 +52,8 @@ use grovedb_costs::{
 use grovedb_merk::{
     element::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
-        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
-        tree_type::ElementTreeTypeExtensions,
+        exists::ElementExistsInStorageExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
     tree::{
         kv::ValueDefinedCostType::{LayeredValueDefinedCost, SpecializedValueDefinedCost},
@@ -1814,6 +1814,32 @@ where
 
                     match &element {
                         Element::Reference(path_reference, element_max_reference_hop, _) => {
+                            // Check existence for InsertIfNotExists on references
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert reference that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
                                 element
@@ -1870,6 +1896,32 @@ where
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                            // Check existence for InsertIfNotExists on subtrees
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert subtree that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
                             let merk_feature_type = cost_return_on_error_into!(
                                 &mut cost,
                                 element
