@@ -13,7 +13,7 @@ pub enum GroveOp {
     Patch { element: Element, change_in_bytes: i32 },
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
-    DeleteTree(TreeType, IsSubtreeNonEmpty),                          // Agac tipine gore parametrelenmis
+    DeleteTree(TreeType, SubelementsDeletionBehavior),  // Per-op deletion policy
 
     // Merk olmayan agac ekleme islemleri (kullaniciya yonelik):
     CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },

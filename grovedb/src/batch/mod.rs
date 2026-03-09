@@ -95,7 +95,11 @@ use crate::{
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum SubelementsDeletionBehavior {
     /// Do not check whether the subtree is empty before deleting.
-    /// The tree and all its children will be removed unconditionally.
+    /// The tree element is removed from the parent Merk unconditionally.
+    /// Any children that still exist will be left as orphaned data on disk
+    /// — callers typically use this when they have already ensured the
+    /// subtree is empty (e.g. the parent cleaned up children first) and
+    /// want to avoid the cost of a redundant emptiness check.
     DontCheck,
     /// Check emptiness. If the subtree is non-empty, return
     /// `Error::DeletingNonEmptyTree`.
@@ -3516,10 +3520,24 @@ impl GroveDb {
                         } else {
                             // Standard Merk trees: use is_empty_tree_except to
                             // account for other delete ops in the same batch.
+                            //
+                            // Exclude DeleteTree ops with Skip policy — those
+                            // might not execute if their target is non-empty,
+                            // so we cannot assume they will delete their key.
                             let batch_deleted_keys = ops
                                 .iter()
                                 .filter_map(|other_op| match &other_op.op {
-                                    GroveOp::Delete | GroveOp::DeleteTree(..) => {
+                                    GroveOp::Delete => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => {
+                                        None
+                                    }
+                                    GroveOp::DeleteTree(..) => {
                                         if other_op.path.to_path() == child_path {
                                             Some(other_op.key.as_ref()?.as_slice().to_vec())
                                         } else {
@@ -3868,10 +3886,22 @@ impl GroveDb {
                             );
                             element.non_merk_entry_count().unwrap_or(0) == 0
                         } else {
+                            // Exclude DeleteTree ops with Skip policy — those
+                            // might not execute if their target is non-empty.
                             let batch_deleted_keys = ops
                                 .iter()
                                 .filter_map(|other_op| match &other_op.op {
-                                    GroveOp::Delete | GroveOp::DeleteTree(..) => {
+                                    GroveOp::Delete => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => {
+                                        None
+                                    }
+                                    GroveOp::DeleteTree(..) => {
                                         if other_op.path.to_path() == child_path {
                                             Some(other_op.key.as_ref()?.as_slice().to_vec())
                                         } else {

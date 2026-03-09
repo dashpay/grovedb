@@ -13,7 +13,7 @@ pub enum GroveOp {
     Patch { element: Element, change_in_bytes: i32 },
     RefreshReference { reference_path_type, max_reference_hop, flags, trust_refresh_reference },
     Delete,
-    DeleteTree(TreeType, IsSubtreeNonEmpty),                          // Tham số hóa theo kiểu cây
+    DeleteTree(TreeType, SubelementsDeletionBehavior),  // Per-op deletion policy
 
     // Thao tác thêm cho cây không phải Merk (dành cho người dùng):
     CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },

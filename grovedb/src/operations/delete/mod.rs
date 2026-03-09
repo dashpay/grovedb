@@ -680,11 +680,14 @@ impl GroveDb {
                         Ok(None)
                     }
                 } else if is_empty {
+                    // Emptiness was already verified above — use DontCheck
+                    // to avoid a redundant re-check when the batch processes
+                    // this op.
                     Ok(Some(QualifiedGroveDbOp::delete_tree_op(
                         path.to_vec(),
                         key.to_vec(),
                         tree_type,
-                        SubelementsDeletionBehavior::Error,
+                        SubelementsDeletionBehavior::DontCheck,
                     )))
                 } else {
                     Err(Error::NotSupported(
