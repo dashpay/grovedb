@@ -214,9 +214,41 @@ impl RocksDbStorage {
             .map_ok(|operation_cost| (db_batch, operation_cost))
     }
 
-    /// Continues the write batch, returning pending costs
+    /// Continues the write batch, returning pending costs.
+    ///
     /// Pending costs are costs that should only be applied after successful
     /// write of the write batch.
+    ///
+    /// # Delete cost computation when `cost_info` is `None`
+    ///
+    /// When a delete operation lacks pre-computed `cost_info`, the freed-bytes
+    /// cost is estimated by reading the current value from **committed**
+    /// database state (`self.db.get()`), not from the in-flight batch or
+    /// transaction. This is a known TOCTOU-style limitation in cost
+    /// accounting only -- it does **not** affect data integrity.
+    ///
+    /// In practice this is acceptable because:
+    ///
+    /// 1. The main tree-node delete path (Merk commit) **always** provides
+    ///    `Some(cost_info)` via `KeyUpdates::deleted_keys`, so the fallback
+    ///    never runs for the performance-critical and cost-sensitive path.
+    ///
+    /// 2. The `None` fallback is only reached by cleanup/utility operations:
+    ///    - `Merk::clear()` and `PrefixedRocksDbTransactionContext::clear()`
+    ///      (subtree deletion)
+    ///    - `Merk::delete_meta()` (metadata cleanup)
+    ///    - `Merk::set_base_root_key(None)` (root key removal)
+    ///    - `GroveDb::delete_aux()` when the caller omits cost info
+    ///    These operations intentionally trade cost precision for simplicity.
+    ///
+    /// 3. The `StorageBatch` put-wins semantics (see [`StorageBatch::delete`])
+    ///    prevents the worst-case scenario where a same-batch put+delete for
+    ///    the same key would make the committed-state read completely stale.
+    ///
+    /// 4. If the key was inserted within the current (uncommitted) transaction
+    ///    but is not yet committed, `self.db.get()` returns `None` / the old
+    ///    committed value, causing freed bytes to be **underestimated** -- a
+    ///    safe direction for cost accounting.
     pub fn continue_write_batch(
         &self,
         db_batch: &mut WriteBatchWithTransaction<true>,
@@ -312,7 +344,8 @@ impl RocksDbStorage {
                 AbstractBatchOperation::Delete { key, cost_info } => {
                     db_batch.delete(&key);
 
-                    // TODO: fix not atomic freed size computation
+                    // Non-atomic freed-size fallback: reads committed state.
+                    // See method-level doc comment for rationale.
 
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
@@ -329,7 +362,6 @@ impl RocksDbStorage {
                         .unwrap_or(0);
                         cost.storage_loaded_bytes += value_len as u64;
                         let key_len = key.len() as u32;
-                        // todo: improve deletion
                         pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
                             key_len
                                 + value_len
@@ -341,7 +373,8 @@ impl RocksDbStorage {
                 AbstractBatchOperation::DeleteAux { key, cost_info } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
 
-                    // TODO: fix not atomic freed size computation
+                    // Non-atomic freed-size fallback: reads committed state.
+                    // See method-level doc comment for rationale.
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
                         pending_costs.storage_cost.removed_bytes +=
@@ -357,7 +390,6 @@ impl RocksDbStorage {
                         cost.storage_loaded_bytes += value_len as u64;
 
                         let key_len = key.len() as u32;
-                        // todo: improve deletion
                         pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
                             key_len
                                 + value_len
@@ -369,7 +401,8 @@ impl RocksDbStorage {
                 AbstractBatchOperation::DeleteRoot { key, cost_info } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
 
-                    // TODO: fix not atomic freed size computation
+                    // Non-atomic freed-size fallback: reads committed state.
+                    // See method-level doc comment for rationale.
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
                         pending_costs.storage_cost.removed_bytes +=
@@ -387,7 +420,6 @@ impl RocksDbStorage {
                         cost.storage_loaded_bytes += value_len as u64;
 
                         let key_len = key.len() as u32;
-                        // todo: improve deletion
                         pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
                             key_len
                                 + value_len
@@ -399,7 +431,8 @@ impl RocksDbStorage {
                 AbstractBatchOperation::DeleteMeta { key, cost_info } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
 
-                    // TODO: fix not atomic freed size computation
+                    // Non-atomic freed-size fallback: reads committed state.
+                    // See method-level doc comment for rationale.
                     if let Some(key_value_removed_bytes) = cost_info {
                         cost.seek_count += 1;
                         pending_costs.storage_cost.removed_bytes +=
@@ -417,7 +450,6 @@ impl RocksDbStorage {
                         cost.storage_loaded_bytes += value_len as u64;
 
                         let key_len = key.len() as u32;
-                        // todo: improve deletion
                         pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
                             key_len
                                 + value_len

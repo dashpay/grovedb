@@ -554,20 +554,25 @@ where
         res
     }
 
-    /// Sets the tree's top node (base) key
+    /// Sets the tree's top node (base) key.
+    ///
     /// The base root key should only be used if the Merk tree is independent
-    /// Meaning that it doesn't have a parent Merk
+    /// (i.e., it does not have a parent Merk).
+    ///
+    /// When clearing the root key (\`key\` is \`None\`), the delete is issued
+    /// with \`cost_info: None\` so freed-bytes cost is estimated from
+    /// committed DB state. This is acceptable because root-key storage is
+    /// treated as free in the default configuration
+    /// (\`base_root_storage_is_free: true\`).
     pub fn set_base_root_key(&mut self, key: Option<Vec<u8>>) -> CostResult<(), Error> {
         if let Some(key) = key {
             self.storage
                 .put_root(ROOT_KEY_KEY, key.as_slice(), None)
-                .map_err(Error::StorageError) // todo: maybe
-                                              // change None?
+                .map_err(Error::StorageError)
         } else {
             self.storage
                 .delete_root(ROOT_KEY_KEY, None)
-                .map_err(Error::StorageError) // todo: maybe
-                                              // change None?
+                .map_err(Error::StorageError)
         }
     }
 
