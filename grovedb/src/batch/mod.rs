@@ -3545,6 +3545,15 @@ impl GroveDb {
         // but the child subtree's storage (and any nested subtrees) remains.
         // We use find_subtrees to recursively discover all nested subtrees
         // and clear their storage, matching the non-batch delete behavior.
+        //
+        // NOTE: find_subtrees reads from the committed transaction state
+        // (without the pending storage_batch), so any subtrees *inserted*
+        // by this same batch are invisible to it.  This is safe because
+        // verify_consistency_of_operations (enabled by default) rejects
+        // batches that insert under a path being deleted.  If the caller
+        // disables the consistency check, inserts under deleted paths can
+        // cause orphaned storage prefixes.  See the doc comment on
+        // BatchApplyOptions::disable_operation_consistency_check.
         for child_path in &merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
             let subtrees_paths = cost_return_on_error!(
@@ -3924,6 +3933,15 @@ impl GroveDb {
 
         // Clean up storage for deleted standard Merk subtrees (same as
         // apply_batch_with_element_flags_update).
+        //
+        // NOTE: find_subtrees reads from the committed transaction state
+        // (without the pending storage_batch), so any subtrees *inserted*
+        // by this same batch are invisible to it.  This is safe because
+        // verify_consistency_of_operations (enabled by default) rejects
+        // batches that insert under a path being deleted.  If the caller
+        // disables the consistency check, inserts under deleted paths can
+        // cause orphaned storage prefixes.  See the doc comment on
+        // BatchApplyOptions::disable_operation_consistency_check.
         for child_path in &merk_delete_paths {
             let child_subtree_path: SubtreePath<Vec<u8>> = child_path.as_slice().into();
             let subtrees_paths = cost_return_on_error!(
