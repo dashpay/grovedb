@@ -56,7 +56,8 @@ impl Child {
             Node::KV(key, _) | Node::KVValueHash(key, ..) => {
                 (key.as_slice(), AggregateData::NoAggregateData)
             }
-            Node::KVValueHashFeatureType(key, _, _, feature_type) => {
+            Node::KVValueHashFeatureType(key, _, _, feature_type)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, _, _, feature_type, _) => {
                 (key.as_slice(), (*feature_type).into())
             }
             Node::KVCount(key, _, count) => (key.as_slice(), AggregateData::ProvableCount(*count)),
@@ -398,7 +399,10 @@ impl Tree {
     #[cfg(feature = "minimal")]
     pub(crate) fn aggregate_data(&self) -> Result<AggregateData, Error> {
         match &self.node {
-            Node::KVValueHashFeatureType(.., feature_type) => Ok((*feature_type).into()),
+            Node::KVValueHashFeatureType(.., feature_type)
+            | Node::KVValueHashFeatureTypeWithChildHash(.., feature_type, _) => {
+                Ok((*feature_type).into())
+            }
             Node::KVCount(_, _, count) => Ok(AggregateData::ProvableCount(*count)),
             Node::KV(..) | Node::KVValueHash(..) => Ok(AggregateData::NoAggregateData),
             _ => Err(Error::InvalidProofError(
@@ -600,6 +604,7 @@ where
                 if let Node::KV(key, _)
                 | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
+                | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
                 | Node::KVRefValueHash(key, ..)
                 | Node::KVCount(key, ..)
                 | Node::KVRefValueHashCount(key, ..)
@@ -637,6 +642,7 @@ where
                 if let Node::KV(key, _)
                 | Node::KVValueHash(key, ..)
                 | Node::KVValueHashFeatureType(key, ..)
+                | Node::KVValueHashFeatureTypeWithChildHash(key, ..)
                 | Node::KVRefValueHash(key, ..)
                 | Node::KVCount(key, ..)
                 | Node::KVRefValueHashCount(key, ..)

@@ -519,6 +519,36 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
             )
         }
+        Node::KVValueHashFeatureTypeWithChildHash(key, value, hash, feature_type, _child_hash) => {
+            let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
+            let node_feature_type = match feature_type {
+                TreeFeatureType::BasicMerkNode => grovedbg_types::TreeFeatureType::BasicMerkNode,
+                TreeFeatureType::SummedMerkNode(sum) => {
+                    grovedbg_types::TreeFeatureType::SummedMerkNode(sum)
+                }
+                TreeFeatureType::BigSummedMerkNode(sum) => {
+                    grovedbg_types::TreeFeatureType::BigSummedMerkNode(sum)
+                }
+                TreeFeatureType::CountedMerkNode(count) => {
+                    grovedbg_types::TreeFeatureType::CountedMerkNode(count)
+                }
+                TreeFeatureType::CountedSummedMerkNode(count, sum) => {
+                    grovedbg_types::TreeFeatureType::CountedSummedMerkNode(count, sum)
+                }
+                TreeFeatureType::ProvableCountedMerkNode(count) => {
+                    grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count)
+                }
+                TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
+                    grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+                }
+            };
+            MerkProofNode::KVValueHashFeatureType(
+                key,
+                element_to_grovedbg(element),
+                hash,
+                node_feature_type,
+            )
+        }
     })
 }
 

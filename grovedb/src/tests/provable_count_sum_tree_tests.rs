@@ -36,12 +36,26 @@ mod tests {
                 _,
                 _,
                 TreeFeatureType::ProvableCountedMerkNode(count),
+            )
+            | Node::KVValueHashFeatureTypeWithChildHash(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedMerkNode(count),
+                _,
             ) => Some(*count),
             Node::KVValueHashFeatureType(
                 _,
                 _,
                 _,
                 TreeFeatureType::ProvableCountedSummedMerkNode(count, _),
+            )
+            | Node::KVValueHashFeatureTypeWithChildHash(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedSummedMerkNode(count, _),
+                _,
             ) => Some(*count),
             _ => None,
         }
