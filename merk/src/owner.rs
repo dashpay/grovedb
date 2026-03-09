@@ -64,18 +64,29 @@ impl<T> Owner<T> {
     }
 
     /// Takes temporary ownership of the contained value by passing it to `f`.
-    /// The function must return a result of the same type (the same value, or a
-    /// new value to take its place).
+    /// The closure must return `Ok(T)` on success or `Err((T, E))` on failure.
     ///
-    /// # Warning
+    /// In both cases the `Owner` retains a valid value afterward -- on error,
+    /// the value bundled in the `Err` variant is restored, so the `Owner` is
+    /// **never** left in a poisoned state.
     ///
-    /// If `f` returns `Err`, the contained value has been consumed and the
-    /// `Owner` is left in a poisoned state (`inner = None`). Any subsequent
-    /// access (deref, `own`, `own_return`, etc.) will panic. Callers **must**
-    /// not use the `Owner` after `own_result` returns an error.
+    /// # Example
+    /// ```
+    /// # use grovedb_merk::owner::Owner;
+    /// let mut owner = Owner::new(42);
+    /// let result = owner.own_result(|v| {
+    ///     if v > 100 {
+    ///         Ok(v + 1)
+    ///     } else {
+    ///         Err((v, "too small"))   // value is returned alongside the error
+    ///     }
+    /// });
+    /// assert!(result.is_err());
+    /// assert_eq!(*owner, 42); // Owner still holds the original value
+    /// ```
     pub fn own_result<F, E>(&mut self, f: F) -> Result<(), E>
     where
-        F: FnOnce(T) -> Result<T, E>,
+        F: FnOnce(T) -> Result<T, (T, E)>,
     {
         let old_value = unwrap(self.inner.take());
         match f(old_value) {
@@ -83,7 +94,10 @@ impl<T> Owner<T> {
                 self.inner = Some(new_value);
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err((restored_value, e)) => {
+                self.inner = Some(restored_value);
+                Err(e)
+            }
         }
     }
 
@@ -112,8 +126,8 @@ fn unwrap<T>(option: Option<T>) -> T {
         Some(value) => value,
         None => panic!(
             "Owner is in a poisoned state (inner value is None). \
-             This can happen if `own_result` was called and the closure returned Err, \
-             consuming the value. The Owner must not be used after such an error."
+             This should never happen since `own_result` now requires \
+             closures to return the value on error."
         ),
     }
 }
@@ -125,17 +139,29 @@ mod tests {
     #[test]
     fn test_own_result_success_preserves_value() {
         let mut owner = Owner::new(42);
-        let result = owner.own_result(|v| Ok::<_, ()>(v + 1));
+        let result = owner.own_result(|v| Ok::<_, (i32, ())>(v + 1));
         assert!(result.is_ok());
         assert_eq!(*owner, 43);
     }
 
     #[test]
-    #[should_panic(expected = "Owner is in a poisoned state")]
-    fn test_own_result_error_poisons_owner() {
+    fn test_own_result_error_restores_value() {
         let mut owner = Owner::new(42);
-        let _ = owner.own_result(|_v| Err::<i32, &str>("fail"));
-        // Accessing the poisoned Owner should panic with a clear message
-        let _ = *owner;
+        let result = owner.own_result(|v| Err::<i32, (i32, &str)>((v, "fail")));
+        assert!(result.is_err());
+        // Owner still holds the original value -- no poisoning
+        assert_eq!(*owner, 42);
+    }
+
+    #[test]
+    fn test_own_result_error_restores_modified_value() {
+        let mut owner = Owner::new(42);
+        let result = owner.own_result(|v| {
+            let modified = v + 10;
+            Err::<i32, (i32, &str)>((modified, "fail"))
+        });
+        assert!(result.is_err());
+        // Owner holds the value returned in the Err variant
+        assert_eq!(*owner, 52);
     }
 }

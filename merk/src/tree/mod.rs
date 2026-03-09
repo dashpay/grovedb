@@ -755,7 +755,7 @@ impl TreeNode {
     /// Returns an error if there is already a child on the given side,
     /// indicating a corrupted tree state.
     #[inline]
-    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Result<Self, Error> {
+    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Result<Self, (Self, Error)> {
         debug_assert_ne!(
             Some(self.key()),
             maybe_child.as_ref().map(|c| c.key()),
@@ -765,11 +765,14 @@ impl TreeNode {
         let slot = self.slot_mut(left);
 
         if slot.is_some() {
-            return Err(Error::CorruptedState(if left {
-                "Tried to attach to left tree slot, but it is already Some"
-            } else {
-                "Tried to attach to right tree slot, but it is already Some"
-            }));
+            return Err((
+                self,
+                Error::CorruptedState(if left {
+                    "Tried to attach to left tree slot, but it is already Some"
+                } else {
+                    "Tried to attach to right tree slot, but it is already Some"
+                }),
+            ));
         }
         *slot = Link::maybe_from_modified_tree(maybe_child);
 
@@ -833,7 +836,7 @@ impl TreeNode {
         F: FnOnce(Option<Self>) -> Option<Self>,
     {
         let (tree, maybe_child) = self.detach(left);
-        tree.attach(left, f(maybe_child))
+        tree.attach(left, f(maybe_child)).map_err(|(_tree, e)| e)
     }
 
     /// Like `walk`, but returns an error if there is no child on the given
@@ -844,7 +847,7 @@ impl TreeNode {
         F: FnOnce(Self) -> Option<Self>,
     {
         let (tree, child) = self.detach_expect(left)?;
-        tree.attach(left, f(child))
+        tree.attach(left, f(child)).map_err(|(_tree, e)| e)
     }
 
     /// Returns a mutable reference to the child slot for the given side.
@@ -885,7 +888,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-    ) -> CostResult<Self, Error> {
+    ) -> CostContext<Result<Self, (Self, Error)>> {
         let mut cost = OperationCost::default();
 
         self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
@@ -895,15 +898,14 @@ impl TreeNode {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
-            cost_return_on_error_no_add!(
-                cost,
-                self.just_in_time_tree_node_value_update(
-                    old_specialized_cost,
-                    get_temp_new_value_with_old_flags,
-                    update_tree_value_based_on_costs,
-                    section_removal_bytes
-                )
-            );
+            if let Err(e) = self.just_in_time_tree_node_value_update(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ) {
+                return Err((self, e)).wrap_with_cost(cost);
+            }
         }
 
         self.inner.kv = self.inner.kv.update_hashes().unwrap_add_cost(&mut cost);
@@ -939,7 +941,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-    ) -> CostResult<Self, Error> {
+    ) -> CostContext<Result<Self, (Self, Error)>> {
         let mut cost = OperationCost::default();
         self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
             value,
@@ -951,15 +953,14 @@ impl TreeNode {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
-            cost_return_on_error_no_add!(
-                cost,
-                self.just_in_time_tree_node_value_update(
-                    old_specialized_cost,
-                    get_temp_new_value_with_old_flags,
-                    update_tree_value_based_on_costs,
-                    section_removal_bytes
-                )
-            );
+            if let Err(e) = self.just_in_time_tree_node_value_update(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ) {
+                return Err((self, e)).wrap_with_cost(cost);
+            }
         }
 
         self.inner.kv = self.inner.kv.update_hashes().unwrap_add_cost(&mut cost);
@@ -995,7 +996,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-    ) -> CostResult<Self, Error> {
+    ) -> CostContext<Result<Self, (Self, Error)>> {
         let mut cost = OperationCost::default();
 
         self.inner.kv = self.inner.kv.put_value_no_update_of_hashes(value);
@@ -1005,15 +1006,14 @@ impl TreeNode {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
-            cost_return_on_error_no_add!(
-                cost,
-                self.just_in_time_tree_node_value_update(
-                    old_specialized_cost,
-                    get_temp_new_value_with_old_flags,
-                    update_tree_value_based_on_costs,
-                    section_removal_bytes
-                )
-            );
+            if let Err(e) = self.just_in_time_tree_node_value_update(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ) {
+                return Err((self, e)).wrap_with_cost(cost);
+            }
         }
 
         self.inner.kv = self
@@ -1054,7 +1054,7 @@ impl TreeNode {
             (StorageRemovedBytes, StorageRemovedBytes),
             Error,
         >,
-    ) -> CostResult<Self, Error> {
+    ) -> CostContext<Result<Self, (Self, Error)>> {
         let mut cost = OperationCost::default();
 
         self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
@@ -1067,15 +1067,14 @@ impl TreeNode {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
-            cost_return_on_error_no_add!(
-                cost,
-                self.just_in_time_tree_node_value_update(
-                    old_specialized_cost,
-                    get_temp_new_value_with_old_flags,
-                    update_tree_value_based_on_costs,
-                    section_removal_bytes
-                )
-            );
+            if let Err(e) = self.just_in_time_tree_node_value_update(
+                old_specialized_cost,
+                get_temp_new_value_with_old_flags,
+                update_tree_value_based_on_costs,
+                section_removal_bytes,
+            ) {
+                return Err((self, e)).wrap_with_cost(cost);
+            }
         }
 
         self.inner.kv = self
