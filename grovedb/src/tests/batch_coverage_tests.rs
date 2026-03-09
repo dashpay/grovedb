@@ -3098,4 +3098,232 @@ mod tests {
             "deleted element should not exist"
         );
     }
+
+    // ===================================================================
+    // InsertIfNotExists: Tree and Reference existence checks
+    // ===================================================================
+
+    #[test]
+    fn test_batch_insert_if_not_exists_tree_errors_when_exists() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item under TEST_LEAF to prove it has data
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"child",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child");
+
+        // insert_if_not_exists_op (error_if_exists: true) on an existing tree
+        // must return an error, not silently overwrite.
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![],
+            TEST_LEAF.to_vec(),
+            Element::empty_tree(),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "insert_if_not_exists_op should error when tree already exists"
+        );
+
+        // The original tree and its child should still be intact
+        let child = db
+            .get([TEST_LEAF].as_ref(), b"child", None, grove_version)
+            .unwrap()
+            .expect("child should still exist");
+        assert_eq!(
+            child,
+            Element::new_item(b"original".to_vec()),
+            "child data should be unchanged"
+        );
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_or_skip_tree_skips_when_exists() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item under TEST_LEAF to prove it has data
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"child",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child");
+
+        // insert_if_not_exists_or_skip_op (error_if_exists: false) on an
+        // existing tree should silently skip.
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![],
+            TEST_LEAF.to_vec(),
+            Element::empty_tree(),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch should succeed (skip mode)");
+
+        // The original tree and its child should still be intact
+        let child = db
+            .get([TEST_LEAF].as_ref(), b"child", None, grove_version)
+            .unwrap()
+            .expect("child should still exist");
+        assert_eq!(
+            child,
+            Element::new_item(b"original".to_vec()),
+            "child data should be unchanged"
+        );
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_tree_succeeds_for_new_key() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // InsertIfNotExists for a key that doesn't exist should succeed
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![],
+            b"new_tree".to_vec(),
+            Element::empty_tree(),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch should succeed for new key");
+
+        // Verify the new tree exists
+        db.get(EMPTY_PATH, b"new_tree", None, grove_version)
+            .unwrap()
+            .expect("new tree should exist");
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_reference_errors_when_exists() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item under TEST_LEAF
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert target");
+
+        // Insert a reference
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"ref_key",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"target".to_vec(),
+            ])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert reference");
+
+        // insert_if_not_exists_op (error_if_exists: true) must error
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"ref_key".to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"nonexistent".to_vec(),
+            ])),
+        )];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "insert_if_not_exists_op should error when reference already exists"
+        );
+
+        // The original reference should still resolve to "target"
+        let resolved = db
+            .get([TEST_LEAF].as_ref(), b"ref_key", None, grove_version)
+            .unwrap()
+            .expect("ref_key should still exist and resolve");
+        assert_eq!(
+            resolved,
+            Element::new_item(b"value".to_vec()),
+            "reference should still resolve to original target"
+        );
+    }
+
+    #[test]
+    fn test_batch_insert_if_not_exists_or_skip_reference_skips_when_exists() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert an item under TEST_LEAF
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert target");
+
+        // Insert a reference
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"ref_key",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"target".to_vec(),
+            ])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert reference");
+
+        // insert_if_not_exists_or_skip_op (error_if_exists: false) should skip
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_or_skip_op(
+            vec![TEST_LEAF.to_vec()],
+            b"ref_key".to_vec(),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                TEST_LEAF.to_vec(),
+                b"nonexistent".to_vec(),
+            ])),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch should succeed (skip mode)");
+
+        // The original reference should still resolve to "target"
+        let resolved = db
+            .get([TEST_LEAF].as_ref(), b"ref_key", None, grove_version)
+            .unwrap()
+            .expect("ref_key should still exist and resolve");
+        assert_eq!(
+            resolved,
+            Element::new_item(b"value".to_vec()),
+            "reference should still resolve to original target"
+        );
+    }
 }
