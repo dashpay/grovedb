@@ -50,13 +50,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
+          # cargo-llvm-cov uses target/llvm-cov-target/ instead of target/
+          workspaces: ". -> target/llvm-cov-target"
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@cargo-nextest
       - name: Run tests (shard ${{ matrix.partition }}/3)
-        env:
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: sccache
         run: >
           cargo llvm-cov nextest
           --workspace
