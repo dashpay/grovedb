@@ -45,6 +45,23 @@ pub struct BatchApplyOptions {
     /// replay scenario). In all other cases, leave this set to `false` to
     /// catch accidental conflicts early.
     ///
+    /// # Warning -- potential storage leak on insert-under-delete
+    ///
+    /// When set to `true`, the consistency check that rejects inserts below
+    /// deleted paths is also skipped. If a batch both inserts a subtree and
+    /// deletes an ancestor of that subtree, the post-`apply_body` cleanup
+    /// uses [`GroveDb::find_subtrees`](crate::GroveDb::find_subtrees) to
+    /// discover nested subtrees for storage removal. However,
+    /// `find_subtrees` reads from the committed transaction state (without
+    /// the pending `StorageBatch`), so subtrees created by the same batch
+    /// are invisible to it. This means the newly-inserted subtree's storage
+    /// prefix will not be cleaned up, resulting in orphaned data in the
+    /// underlying store.
+    ///
+    /// With the consistency check enabled (the default), such batches are
+    /// rejected before `apply_body` runs, so this stale-state window is
+    /// never reachable.
+    ///
     /// # Emptiness check limitation
     ///
     /// The pre-deletion emptiness check for `DeleteTree` ops uses

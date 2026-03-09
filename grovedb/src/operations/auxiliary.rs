@@ -133,6 +133,21 @@ impl GroveDb {
     /// Finds keys which are trees for a given subtree recursively.
     /// One element means a key of a `merk`, n > 1 elements mean relative path
     /// for a deeply nested subtree.
+    ///
+    /// # Storage batch visibility
+    ///
+    /// This method reads directly from the transaction (passing `None` for
+    /// the storage batch parameter), so it only sees data that has been
+    /// **committed** to the transaction. Any writes staged in a pending
+    /// `StorageBatch` (e.g., from `apply_body` during batch processing)
+    /// are invisible.
+    ///
+    /// In practice this is safe because the batch consistency check
+    /// ([`crate::batch::QualifiedGroveDbOp::verify_consistency_of_operations`])
+    /// rejects batches that insert subtrees under paths being deleted.
+    /// The stale-state window only matters if the consistency check is
+    /// bypassed via
+    /// [`BatchApplyOptions::disable_operation_consistency_check`](crate::batch::BatchApplyOptions::disable_operation_consistency_check).
     pub fn find_subtrees<B: AsRef<[u8]>>(
         &self,
         path: &SubtreePath<B>,
