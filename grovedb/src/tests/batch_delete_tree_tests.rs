@@ -710,6 +710,71 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_delete_all_children_plus_delete_tree_skip() {
+        // Delete ALL children explicitly + DeleteTree(Skip) on parent.
+        // The emptiness check runs and sees the tree as empty (all children
+        // are in the batch delete set via is_empty_tree_except), so the
+        // deletion proceeds normally — Skip never triggers.
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert parent");
+
+        db.insert(
+            [b"parent".as_ref()].as_ref(),
+            b"child1",
+            Element::new_item(b"v1".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child1");
+
+        db.insert(
+            [b"parent".as_ref()].as_ref(),
+            b"child2",
+            Element::new_item(b"v2".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert child2");
+
+        let ops = vec![
+            QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"child1".to_vec()),
+            QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"child2".to_vec()),
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![],
+                b"parent".to_vec(),
+                TreeType::NormalTree,
+                SubelementsDeletionBehavior::Skip,
+            ),
+        ];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("delete all children + Skip parent should succeed (tree is empty)");
+
+        assert!(
+            db.get(EMPTY_PATH, b"parent", None, grove_version)
+                .unwrap()
+                .is_err(),
+            "parent should have been deleted since tree was effectively empty"
+        );
+    }
+
+    #[test]
     fn test_batch_delete_tree_with_partial_child_delete_still_non_empty() {
         // When only some children are deleted in the same batch, the tree
         // should still be considered non-empty and the delete should fail.
