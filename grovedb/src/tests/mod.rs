@@ -7,6 +7,7 @@ mod query_tests;
 mod sum_tree_tests;
 
 mod batch_coverage_tests;
+mod batch_delete_tree_tests;
 mod batch_rejection_tests;
 mod batch_unit_tests;
 mod bulk_append_tree_tests;
