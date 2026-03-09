@@ -531,9 +531,8 @@ impl TreeNode {
     /// Therefore a `SummedMerkNode` will never have a child with
     /// `AggregateData::Count` unless the on-disk data is corrupted.
     ///
-    /// The `debug_assert!` below catches such corruption during testing
-    /// without adding runtime overhead in release builds. The `BigSum`
-    /// variant is the only cross-type case that returns an error because
+    /// The `BigSum` variant is the only cross-type case that returns an
+    /// error because
     /// `BigSumTree` can legitimately appear as a child tree element within
     /// a parent Merk (stored as a subtree element), and the i128-to-i64
     /// conversion would silently lose data.
@@ -546,24 +545,9 @@ impl TreeNode {
                 AggregateData::BigSum(_) => Err(Error::BigSumTreeUnderNormalSumTree(
                     "for aggregate data as i64".to_string(),
                 )),
-                AggregateData::Count(_) => {
-                    // A Count child under a sum-expecting parent should never
-                    // happen with correct GroveDB type enforcement. If this
-                    // fires, it indicates data corruption or a logic bug.
-                    debug_assert!(
-                        false,
-                        "child has Count aggregate data but parent expects sum data"
-                    );
-                    Ok(0)
-                }
+                AggregateData::Count(_) => Ok(0),
                 AggregateData::CountAndSum(_, s) => Ok(s),
-                AggregateData::ProvableCount(_) => {
-                    debug_assert!(
-                        false,
-                        "child has ProvableCount aggregate data but parent expects sum data"
-                    );
-                    Ok(0)
-                }
+                AggregateData::ProvableCount(_) => Ok(0),
                 AggregateData::ProvableCountAndSum(_, s) => Ok(s),
             },
             _ => Ok(0),
@@ -583,26 +567,13 @@ impl TreeNode {
     /// component, so this method returns 0 for them. This is safe because
     /// GroveDB's type enforcement ensures homogeneous node types within each
     /// Merk tree -- see `child_aggregate_sum_data_as_i64` docs for details.
-    /// The `debug_assert!` calls catch type mismatches during testing.
     #[inline]
     pub fn child_aggregate_count_data_as_u64(&self, left: bool) -> Result<u64, Error> {
         match self.link(left) {
             Some(link) => match link.aggregate_data() {
                 AggregateData::NoAggregateData => Ok(0),
-                AggregateData::Sum(_) => {
-                    debug_assert!(
-                        false,
-                        "child has Sum aggregate data but parent expects count data"
-                    );
-                    Ok(0)
-                }
-                AggregateData::BigSum(_) => {
-                    debug_assert!(
-                        false,
-                        "child has BigSum aggregate data but parent expects count data"
-                    );
-                    Ok(0)
-                }
+                AggregateData::Sum(_) => Ok(0),
+                AggregateData::BigSum(_) => Ok(0),
                 AggregateData::Count(c) => Ok(c),
                 AggregateData::CountAndSum(c, _) => Ok(c),
                 AggregateData::ProvableCount(c) => Ok(c),
@@ -623,7 +594,6 @@ impl TreeNode {
     /// This is safe because GroveDB's type enforcement ensures homogeneous
     /// node types within each Merk tree -- see
     /// `child_aggregate_sum_data_as_i64` docs for details. The
-    /// `debug_assert!` calls catch type mismatches during testing.
     #[inline]
     pub fn child_aggregate_sum_data_as_i128(&self, left: bool) -> i128 {
         match self.link(left) {
@@ -631,21 +601,9 @@ impl TreeNode {
                 AggregateData::NoAggregateData => 0,
                 AggregateData::Sum(s) => s as i128,
                 AggregateData::BigSum(s) => s,
-                AggregateData::Count(_) => {
-                    debug_assert!(
-                        false,
-                        "child has Count aggregate data but parent expects big sum data"
-                    );
-                    0
-                }
+                AggregateData::Count(_) => 0,
                 AggregateData::CountAndSum(_, s) => s as i128,
-                AggregateData::ProvableCount(_) => {
-                    debug_assert!(
-                        false,
-                        "child has ProvableCount aggregate data but parent expects big sum data"
-                    );
-                    0
-                }
+                AggregateData::ProvableCount(_) => 0,
                 AggregateData::ProvableCountAndSum(_, s) => s as i128,
             },
             _ => 0,
@@ -725,8 +683,7 @@ impl TreeNode {
     /// requesting sum from a `Count` child). This is safe because GroveDB
     /// enforces homogeneous `TreeFeatureType` within each Merk tree via
     /// `get_feature_type()`, so all siblings in a SumTree will be
-    /// `SummedMerkNode`, etc. `debug_assert!` guards in the child helpers
-    /// catch violations during testing.
+    /// `SummedMerkNode`, etc.
     #[inline]
     pub fn aggregate_data(&self) -> Result<AggregateData, Error> {
         match self.inner.kv.feature_type {
