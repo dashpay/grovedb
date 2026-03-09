@@ -44,6 +44,16 @@ pub struct BatchApplyOptions {
     /// intentionally relies on last-op-wins semantics (e.g., an idempotent
     /// replay scenario). In all other cases, leave this set to `false` to
     /// catch accidental conflicts early.
+    ///
+    /// # Emptiness check limitation
+    ///
+    /// The pre-deletion emptiness check for `DeleteTree` ops uses
+    /// `is_empty_tree_except` which only accounts for Delete/DeleteTree ops
+    /// in the same batch -- it does not consider Insert ops that would add
+    /// new keys to the subtree. With the consistency check enabled (default),
+    /// such conflicting batches are rejected before the emptiness check runs.
+    /// When this flag is `true`, the caller must ensure no batch contains
+    /// both inserts into a subtree and a `DeleteTree` of that subtree.
     pub disable_operation_consistency_check: bool,
     /// Base root storage is free
     pub base_root_storage_is_free: bool,
