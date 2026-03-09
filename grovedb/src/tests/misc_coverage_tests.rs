@@ -1082,8 +1082,6 @@ fn proved_path_key_value_from_proved_key_value() {
         key: b"mykey".to_vec(),
         value: vec![1, 2, 3],
         proof: [42u8; 32],
-        value_hash_is_computed: true,
-        is_reference_result: false,
     };
     let result = ProvedPathKeyValue::from_proved_key_value(path.clone(), pkv);
     assert_eq!(result.path, path);
@@ -1100,15 +1098,11 @@ fn proved_path_key_values_from_multiple() {
             key: b"a".to_vec(),
             value: vec![10],
             proof: [0; 32],
-            value_hash_is_computed: true,
-            is_reference_result: false,
         },
         ProvedKeyValue {
             key: b"b".to_vec(),
             value: vec![20],
             proof: [1; 32],
-            value_hash_is_computed: true,
-            is_reference_result: false,
         },
     ];
     let results = ProvedPathKeyValue::from_proved_key_values(path.clone(), pkvs);

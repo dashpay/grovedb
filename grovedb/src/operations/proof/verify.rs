@@ -616,20 +616,6 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
-                        // Security: if the value_hash was not computed by the
-                        // verifier (KVValueHash node), only tree elements may
-                        // skip validation. For items, recompute and verify the
-                        // value_hash to prevent KV→KVValueHash substitution.
-                        if element.is_any_item()
-                            && !proved_key_value.value_hash_is_computed
-                            && !proved_key_value.is_reference_result
-                            && value_hash(value_bytes).value() != hash
-                        {
-                            return Err(Error::InvalidProof(
-                                query.clone(),
-                                format!("item value hash mismatch at key {}", hex::encode(key)),
-                            ));
-                        }
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                 path.iter().map(|p| p.to_vec()).collect(),
@@ -1529,20 +1515,6 @@ impl GroveDb {
                             && (options.include_empty_trees_in_result
                                 || !matches!(element, Element::Tree(None, _)))
                     {
-                        // Security: if the value_hash was not computed by the
-                        // verifier (KVValueHash node), only tree elements may
-                        // skip validation. For items, recompute and verify the
-                        // value_hash to prevent KV→KVValueHash substitution.
-                        if element.is_any_item()
-                            && !proved_key_value.value_hash_is_computed
-                            && !proved_key_value.is_reference_result
-                            && value_hash(value_bytes).value() != hash
-                        {
-                            return Err(Error::InvalidProof(
-                                query.clone(),
-                                format!("item value hash mismatch at key {}", hex::encode(key)),
-                            ));
-                        }
                         let path_key_optional_value =
                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                 path.iter().map(|p| p.to_vec()).collect(),
