@@ -343,6 +343,318 @@ mod tests {
     }
 
     // =========================================================================
+    // Deserialization depth limit tests
+    //
+    // These tests verify that deeply nested proof payloads are rejected
+    // during bincode deserialization itself (before verification runs),
+    // preventing stack overflow from maliciously crafted proofs.
+    // =========================================================================
+
+    /// Helper: build a bincode-encoded V0 proof with `depth` levels of nesting.
+    fn build_nested_v0_proof_bytes(depth: usize) -> Vec<u8> {
+        use bincode::Encode;
+
+        // Build innermost layer first, then wrap it
+        let mut layer = MerkOnlyLayerProof {
+            merk_proof: vec![],
+            lower_layers: BTreeMap::new(),
+        };
+        for _ in 0..depth {
+            let mut lower_layers = BTreeMap::new();
+            lower_layers.insert(vec![0u8], layer);
+            layer = MerkOnlyLayerProof {
+                merk_proof: vec![],
+                lower_layers,
+            };
+        }
+        let proof = crate::operations::proof::GroveDBProofV0 {
+            root_layer: layer,
+            prove_options: ProveOptions::default(),
+        };
+        let full_proof = crate::operations::proof::GroveDBProof::V0(proof);
+        let config = bincode::config::standard().with_big_endian();
+        bincode::encode_to_vec(&full_proof, config).expect("encoding should succeed")
+    }
+
+    /// Helper: build a bincode-encoded V1 proof with `depth` levels of nesting.
+    fn build_nested_v1_proof_bytes(depth: usize) -> Vec<u8> {
+        use bincode::Encode;
+
+        let mut layer = LayerProof {
+            merk_proof: ProofBytes::Merk(vec![]),
+            lower_layers: BTreeMap::new(),
+        };
+        for _ in 0..depth {
+            let mut lower_layers = BTreeMap::new();
+            lower_layers.insert(vec![0u8], layer);
+            layer = LayerProof {
+                merk_proof: ProofBytes::Merk(vec![]),
+                lower_layers,
+            };
+        }
+        let proof = crate::operations::proof::GroveDBProofV1 {
+            root_layer: layer,
+            prove_options: ProveOptions::default(),
+        };
+        let full_proof = crate::operations::proof::GroveDBProof::V1(proof);
+        let config = bincode::config::standard().with_big_endian();
+        bincode::encode_to_vec(&full_proof, config).expect("encoding should succeed")
+    }
+
+    #[test]
+    fn deserialization_rejects_v0_proof_exceeding_depth_limit() {
+        let grove_version = GroveVersion::latest();
+        let path_query = make_simple_path_query();
+
+        // Build a proof nested deeper than MAX_PROOF_DEPTH
+        let proof_bytes = build_nested_v0_proof_bytes(MAX_PROOF_DEPTH + 10);
+
+        let result = GroveDb::verify_query(&proof_bytes, &path_query, grove_version);
+        let err =
+            result.expect_err("deserialization should reject proof nested beyond MAX_PROOF_DEPTH");
+        let err_string = format!("{}", err);
+        assert!(
+            err_string.contains("nesting depth exceeded"),
+            "error should mention nesting depth, got: {}",
+            err_string
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_v1_proof_exceeding_depth_limit() {
+        let grove_version = GroveVersion::latest();
+        let path_query = make_simple_path_query();
+
+        let proof_bytes = build_nested_v1_proof_bytes(MAX_PROOF_DEPTH + 10);
+
+        let result = GroveDb::verify_query(&proof_bytes, &path_query, grove_version);
+        let err =
+            result.expect_err("deserialization should reject proof nested beyond MAX_PROOF_DEPTH");
+        let err_string = format!("{}", err);
+        assert!(
+            err_string.contains("nesting depth exceeded"),
+            "error should mention nesting depth, got: {}",
+            err_string
+        );
+    }
+
+    #[test]
+    fn deserialization_accepts_v0_proof_at_valid_depth() {
+        // A proof nested at exactly MAX_PROOF_DEPTH should deserialize OK
+        // (verification will fail for other reasons, but not depth).
+        let grove_version = GroveVersion::latest();
+        let path_query = make_simple_path_query();
+
+        let proof_bytes = build_nested_v0_proof_bytes(MAX_PROOF_DEPTH);
+
+        let result = GroveDb::verify_query(&proof_bytes, &path_query, grove_version);
+        // Should fail, but NOT due to nesting depth
+        if let Err(err) = result {
+            let err_string = format!("{}", err);
+            assert!(
+                !err_string.contains("nesting depth exceeded"),
+                "proof at MAX_PROOF_DEPTH should not fail depth check, got: {}",
+                err_string
+            );
+        }
+    }
+
+    #[test]
+    fn deserialization_accepts_v1_proof_at_valid_depth() {
+        let grove_version = GroveVersion::latest();
+        let path_query = make_simple_path_query();
+
+        let proof_bytes = build_nested_v1_proof_bytes(MAX_PROOF_DEPTH);
+
+        let result = GroveDb::verify_query(&proof_bytes, &path_query, grove_version);
+        if let Err(err) = result {
+            let err_string = format!("{}", err);
+            assert!(
+                !err_string.contains("nesting depth exceeded"),
+                "proof at MAX_PROOF_DEPTH should not fail depth check, got: {}",
+                err_string
+            );
+        }
+    }
+
+    // =========================================================================
+    // "Too many children" tests: verify that a single layer with more
+    // children than MAX_PROOF_DEPTH is rejected during deserialization.
+    // =========================================================================
+
+    /// Helper: build a V0 proof where the root layer has `num_children`
+    /// direct children (flat, not nested).
+    fn build_wide_v0_proof_bytes(num_children: usize) -> Vec<u8> {
+        use bincode::Encode;
+
+        let mut lower_layers = BTreeMap::new();
+        for i in 0..num_children {
+            lower_layers.insert(
+                (i as u32).to_be_bytes().to_vec(),
+                MerkOnlyLayerProof {
+                    merk_proof: vec![],
+                    lower_layers: BTreeMap::new(),
+                },
+            );
+        }
+        let root_layer = MerkOnlyLayerProof {
+            merk_proof: vec![],
+            lower_layers,
+        };
+        let proof = crate::operations::proof::GroveDBProofV0 {
+            root_layer,
+            prove_options: ProveOptions::default(),
+        };
+        let full_proof = crate::operations::proof::GroveDBProof::V0(proof);
+        let config = bincode::config::standard().with_big_endian();
+        bincode::encode_to_vec(&full_proof, config).expect("encoding should succeed")
+    }
+
+    /// Helper: build a V1 proof where the root layer has `num_children`
+    /// direct children (flat, not nested).
+    fn build_wide_v1_proof_bytes(num_children: usize) -> Vec<u8> {
+        use bincode::Encode;
+
+        let mut lower_layers = BTreeMap::new();
+        for i in 0..num_children {
+            lower_layers.insert(
+                (i as u32).to_be_bytes().to_vec(),
+                LayerProof {
+                    merk_proof: ProofBytes::Merk(vec![]),
+                    lower_layers: BTreeMap::new(),
+                },
+            );
+        }
+        let root_layer = LayerProof {
+            merk_proof: ProofBytes::Merk(vec![]),
+            lower_layers,
+        };
+        let proof = crate::operations::proof::GroveDBProofV1 {
+            root_layer,
+            prove_options: ProveOptions::default(),
+        };
+        let full_proof = crate::operations::proof::GroveDBProof::V1(proof);
+        let config = bincode::config::standard().with_big_endian();
+        bincode::encode_to_vec(&full_proof, config).expect("encoding should succeed")
+    }
+
+    #[test]
+    fn deserialization_rejects_v0_proof_with_too_many_children() {
+        let grove_version = GroveVersion::latest();
+        let path_query = make_simple_path_query();
+
+        let proof_bytes = build_wide_v0_proof_bytes(MAX_PROOF_DEPTH + 1);
+
+        let result = GroveDb::verify_query(&proof_bytes, &path_query, grove_version);
+        let err = result.expect_err("should reject proof with too many children per layer");
+        let err_string = format!("{}", err);
+        assert!(
+            err_string.contains("too many children"),
+            "error should mention too many children, got: {}",
+            err_string
+        );
+    }
+
+    #[test]
+    fn deserialization_rejects_v1_proof_with_too_many_children() {
+        let grove_version = GroveVersion::latest();
+        let path_query = make_simple_path_query();
+
+        let proof_bytes = build_wide_v1_proof_bytes(MAX_PROOF_DEPTH + 1);
+
+        let result = GroveDb::verify_query(&proof_bytes, &path_query, grove_version);
+        let err = result.expect_err("should reject proof with too many children per layer");
+        let err_string = format!("{}", err);
+        assert!(
+            err_string.contains("too many children"),
+            "error should mention too many children, got: {}",
+            err_string
+        );
+    }
+
+    // =========================================================================
+    // BorrowDecode path tests: exercise the borrow_decode_with_depth methods.
+    // =========================================================================
+
+    /// Helper: assert that borrow_decode_from_slice fails with an error
+    /// containing the given substring. Uses match instead of expect_err
+    /// because GroveDBProof does not implement Debug.
+    fn assert_borrow_decode_err(proof_bytes: &[u8], expected_substr: &str) {
+        let config = bincode::config::standard().with_big_endian();
+        let result = bincode::borrow_decode_from_slice::<crate::operations::proof::GroveDBProof, _>(
+            proof_bytes,
+            config,
+        );
+        match result {
+            Ok(_) => panic!(
+                "borrow_decode should have failed with error containing '{}'",
+                expected_substr
+            ),
+            Err(err) => {
+                let err_string = format!("{}", err);
+                assert!(
+                    err_string.contains(expected_substr),
+                    "error should contain '{}', got: {}",
+                    expected_substr,
+                    err_string
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn borrow_decode_rejects_v0_proof_exceeding_depth_limit() {
+        let proof_bytes = build_nested_v0_proof_bytes(MAX_PROOF_DEPTH + 10);
+        assert_borrow_decode_err(&proof_bytes, "nesting depth exceeded");
+    }
+
+    #[test]
+    fn borrow_decode_rejects_v1_proof_exceeding_depth_limit() {
+        let proof_bytes = build_nested_v1_proof_bytes(MAX_PROOF_DEPTH + 10);
+        assert_borrow_decode_err(&proof_bytes, "nesting depth exceeded");
+    }
+
+    #[test]
+    fn borrow_decode_accepts_v0_proof_at_valid_depth() {
+        let proof_bytes = build_nested_v0_proof_bytes(5);
+        let config = bincode::config::standard().with_big_endian();
+        let result = bincode::borrow_decode_from_slice::<crate::operations::proof::GroveDBProof, _>(
+            &proof_bytes,
+            config,
+        );
+        assert!(
+            result.is_ok(),
+            "borrow_decode should accept proof at small depth"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_accepts_v1_proof_at_valid_depth() {
+        let proof_bytes = build_nested_v1_proof_bytes(5);
+        let config = bincode::config::standard().with_big_endian();
+        let result = bincode::borrow_decode_from_slice::<crate::operations::proof::GroveDBProof, _>(
+            &proof_bytes,
+            config,
+        );
+        assert!(
+            result.is_ok(),
+            "borrow_decode should accept proof at small depth"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_rejects_v0_proof_with_too_many_children() {
+        let proof_bytes = build_wide_v0_proof_bytes(MAX_PROOF_DEPTH + 1);
+        assert_borrow_decode_err(&proof_bytes, "too many children");
+    }
+
+    #[test]
+    fn borrow_decode_rejects_v1_proof_with_too_many_children() {
+        let proof_bytes = build_wide_v1_proof_bytes(MAX_PROOF_DEPTH + 1);
+        assert_borrow_decode_err(&proof_bytes, "too many children");
+    }
+
+    // =========================================================================
     // Boundary tests: verify that depth exactly at the limit is accepted
     // and depth one past the limit is rejected.
     // =========================================================================
