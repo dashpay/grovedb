@@ -66,9 +66,13 @@ impl<T> Owner<T> {
     /// Takes temporary ownership of the contained value by passing it to `f`.
     /// The closure must return `Ok(T)` on success or `Err((T, E))` on failure.
     ///
-    /// In both cases the `Owner` retains a valid value afterward -- on error,
-    /// the value bundled in the `Err` variant is restored, so the `Owner` is
-    /// **never** left in a poisoned state.
+    /// **Error-safe:** In both `Ok` and `Err` paths the `Owner` retains a valid
+    /// value afterward -- on error, the value bundled in the `Err` variant is
+    /// restored.
+    ///
+    /// **Not unwind-safe:** If the closure panics, `Owner` will be left in a
+    /// poisoned state (inner = None) because the value was moved out before
+    /// the call and restoration happens only on normal return.
     ///
     /// # Example
     /// ```
@@ -126,8 +130,8 @@ fn unwrap<T>(option: Option<T>) -> T {
         Some(value) => value,
         None => panic!(
             "Owner is in a poisoned state (inner value is None). \
-             This should never happen since `own_result` now requires \
-             closures to return the value on error."
+             This can happen if a closure passed to `own_result` panicked \
+             before returning Ok/Err."
         ),
     }
 }
