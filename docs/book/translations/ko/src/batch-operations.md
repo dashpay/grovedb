@@ -51,17 +51,6 @@ pub enum SubelementsDeletionBehavior {
 }
 ```
 
-| Variant | Tree state | Emptiness check | Deletes tree | Storage cleanup |
-|---|---|---|---|---|
-| `DontCheckWithNoCleanup` | empty | No | Yes | No |
-| `DontCheckWithNoCleanup` | non-empty | No | Yes | No |
-| `DeleteChildren` | empty | No | Yes | Yes |
-| `DeleteChildren` | non-empty | No | Yes | Yes |
-| `Error` | empty | Yes | Yes | Yes |
-| `Error` | non-empty | Yes | No (returns error) | No |
-| `Skip` | empty | Yes | Yes | Yes |
-| `Skip` | non-empty | Yes | No (silently skips) | No |
-
 각 연산은 경로를 포함하는 `QualifiedGroveDbOp`으로 래핑됩니다:
 
 ```rust
