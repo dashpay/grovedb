@@ -4,13 +4,13 @@
 mod tests {
     use blake3::Hasher;
     use grovedb_merk::proofs::{
-        branch::depth::calculate_max_tree_depth_from_count, Decoder, Node, Op,
+        branch::depth::calculate_max_tree_depth_from_count, encode_into, Decoder, Node, Op,
     };
     use grovedb_version::version::GroveVersion;
     use rand::{rngs::StdRng, RngExt, SeedableRng};
 
     use crate::{
-        operations::proof::GroveDBProof,
+        operations::proof::{GroveDBProof, ProofBytes},
         query::PathTrunkChunkQuery,
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,
@@ -105,7 +105,7 @@ mod tests {
 
         // Verify chunk_depths is calculated correctly
         // tree_depth=9 with max_depth=4 should give [3, 3, 3]
-        // (100 elements: N(9)=88 ≤ 100 < 143=N(10), so max height = 9)
+        // (100 elements: N(9)=88 <= 100 < 143=N(10), so max height = 9)
         assert_eq!(
             result.max_tree_depth, 9,
             "tree depth should be 9 for 100 elements"
@@ -141,9 +141,8 @@ mod tests {
             );
         }
 
-        // Verify that the lowest layer proof only contains KV and Hash nodes
-        // (not KVValueHashFeatureType, KVValueHash, etc.)
-        // This confirms that create_chunk uses correct node types for GroveDB elements
+        // Verify that the proof is V1 and the lowest layer proof contains
+        // only KV and Hash nodes (correct node types for GroveDB elements)
         let config = bincode::config::standard()
             .with_big_endian()
             .with_no_limit();
@@ -151,19 +150,27 @@ mod tests {
             .expect("should decode proof")
             .0;
 
-        let GroveDBProof::V0(proof_v0) = decoded_proof else {
-            panic!("expected V0 proof");
+        let GroveDBProof::V1(proof_v1) = decoded_proof else {
+            panic!("expected V1 proof from latest version");
         };
 
         // Get the lowest layer proof (the count_sum_tree merk proof)
-        let lowest_layer = proof_v0
+        let lowest_layer = proof_v1
             .root_layer
             .lower_layers
             .get(b"count_sum_tree".as_slice())
             .expect("should have count_sum_tree layer");
 
+        let merk_bytes = match &lowest_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes,
+            other => panic!(
+                "expected Merk proof bytes, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        };
+
         // Decode and check the merk proof ops
-        let ops: Vec<Op> = Decoder::new(&lowest_layer.merk_proof)
+        let ops: Vec<Op> = Decoder::new(merk_bytes)
             .collect::<Result<Vec<_>, _>>()
             .expect("should decode merk proof");
 
@@ -424,7 +431,7 @@ mod tests {
         let (root_hash, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
             .expect("verify should succeed on empty tree proof");
 
-        // Root hash should be valid (non-zero — the root merk has the tree key)
+        // Root hash should be valid (non-zero -- the root merk has the tree key)
         assert_ne!(root_hash, [0u8; 32], "root hash should not be all zeros");
 
         // Result should be empty
@@ -497,29 +504,331 @@ mod tests {
         let (decoded_proof, _): (GroveDBProof, _) =
             bincode::decode_from_slice(&proof, config).expect("decode proof");
 
-        let GroveDBProof::V0(mut proof_v0) = decoded_proof else {
-            panic!("expected V0 proof");
+        let GroveDBProof::V1(mut proof_v1) = decoded_proof else {
+            panic!("expected V1 proof from latest version");
         };
 
         // The target layer is the lower_layers entry for key "cst"
-        let target_layer = proof_v0
+        let target_layer = proof_v1
             .root_layer
             .lower_layers
             .get_mut(b"cst".as_slice())
             .expect("should have cst layer");
-        target_layer
-            .merk_proof
-            .extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        match &mut target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]),
+            _ => panic!("expected Merk proof bytes"),
+        }
 
         // Re-encode the tampered proof
         let tampered_proof =
-            bincode::encode_to_vec(&GroveDBProof::V0(proof_v0), config).expect("re-encode");
+            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("re-encode");
 
         // Verification should fail due to trailing bytes
         let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
         assert!(
             result.is_err(),
             "trunk proof with trailing bytes in target layer should be rejected"
+        );
+    }
+
+    /// V1 basic test: verify that the proof is V1 format with ProofBytes::Merk
+    /// and that it verifies correctly with a non-empty tree.
+    #[test]
+    fn test_trunk_proof_v1_basic() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(42);
+
+        // Insert CountSumTree with 50 items
+        db.insert(
+            EMPTY_PATH,
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert cst");
+
+        for i in 0u32..50 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                &[b"cst"],
+                &key,
+                Element::new_sum_item(rng.random_range(0..=5)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item");
+        }
+
+        let query = PathTrunkChunkQuery::new(vec![b"cst".to_vec()], 3);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove trunk chunk");
+
+        // Verify the proof succeeds
+        let (root_hash, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("V1 trunk proof should verify");
+
+        assert_ne!(root_hash, [0u8; 32]);
+        assert!(!result.elements.is_empty());
+
+        // Confirm proof is V1 with ProofBytes::Merk at every layer
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let decoded: GroveDBProof = bincode::decode_from_slice(&proof, config)
+            .expect("decode proof")
+            .0;
+
+        let GroveDBProof::V1(proof_v1) = &decoded else {
+            panic!("expected V1 proof");
+        };
+
+        // Root layer should be ProofBytes::Merk
+        assert!(
+            matches!(&proof_v1.root_layer.merk_proof, ProofBytes::Merk(_)),
+            "root layer should use ProofBytes::Merk"
+        );
+
+        // Lower layer (cst) should also be ProofBytes::Merk
+        let cst_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        assert!(
+            matches!(&cst_layer.merk_proof, ProofBytes::Merk(_)),
+            "cst layer should use ProofBytes::Merk"
+        );
+    }
+
+    /// Security test: V1 trunk proof verification must reject forged count==0
+    /// element bytes even when the original value_hash is preserved.
+    ///
+    /// The attack vector: In KVValueHash proof nodes, the value_hash is stored
+    /// separately from the value bytes. An attacker can replace the value bytes
+    /// (changing a CountSumTree with count=100 to an empty one with count=0)
+    /// while keeping the original value_hash. In V0, the count==0 fast-path
+    /// skips the combine_hash verification, so this forgery goes undetected.
+    /// V1 must always run the combine_hash check and catch this.
+    #[test]
+    fn test_trunk_proof_v1_rejects_forged_count_zero() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(77777);
+
+        // Insert a non-empty CountSumTree with 100 items
+        db.insert(
+            EMPTY_PATH,
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert cst");
+
+        for i in 0u32..100 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                &[b"cst"],
+                &key,
+                Element::new_sum_item(rng.random_range(1..=10)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item");
+        }
+
+        let query = PathTrunkChunkQuery::new(vec![b"cst".to_vec()], 4);
+
+        // Generate a valid V1 proof
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove trunk chunk");
+
+        // Sanity: valid proof verifies
+        let (original_root_hash, original_result) =
+            GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+                .expect("valid V1 proof should verify");
+        assert!(!original_result.elements.is_empty());
+
+        // Decode the V1 proof
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let decoded: GroveDBProof = bincode::decode_from_slice(&proof, config)
+            .expect("decode proof")
+            .0;
+
+        let GroveDBProof::V1(mut proof_v1) = decoded else {
+            panic!("expected V1 proof");
+        };
+
+        // Tamper: find the KVValueHash node for "cst" in the root layer's merk proof
+        // and replace the value bytes with an empty CountSumTree element while keeping
+        // the original value_hash intact.
+        let root_merk_bytes = match &proof_v1.root_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk proof bytes"),
+        };
+
+        // Decode merk proof ops
+        let ops: Vec<Op> = Decoder::new(&root_merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode merk ops");
+
+        // Serialize the forged element (empty CountSumTree with count=0)
+        let forged_element = Element::empty_count_sum_tree();
+        let forged_value_bytes = forged_element
+            .serialize(grove_version)
+            .expect("serialize forged element");
+
+        // Find and replace the value bytes for the "cst" key
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut found_target = false;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KVValueHash(key, _value, value_hash)) if key == b"cst" => {
+                    // Replace value bytes with empty-count-tree bytes,
+                    // but keep the original value_hash
+                    tampered_ops.push(Op::Push(Node::KVValueHash(
+                        key.clone(),
+                        forged_value_bytes.clone(),
+                        *value_hash,
+                    )));
+                    found_target = true;
+                }
+                Op::Push(Node::KVValueHashFeatureType(key, _value, value_hash, feature_type))
+                    if key == b"cst" =>
+                {
+                    tampered_ops.push(Op::Push(Node::KVValueHashFeatureType(
+                        key.clone(),
+                        forged_value_bytes.clone(),
+                        *value_hash,
+                        feature_type.clone(),
+                    )));
+                    found_target = true;
+                }
+                Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                    key,
+                    _value,
+                    value_hash,
+                    feature_type,
+                    child_hash,
+                )) if key == b"cst" => {
+                    tampered_ops.push(Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                        key.clone(),
+                        forged_value_bytes.clone(),
+                        *value_hash,
+                        feature_type.clone(),
+                        *child_hash,
+                    )));
+                    found_target = true;
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+
+        assert!(
+            found_target,
+            "should have found and tampered with the 'cst' node in the merk proof"
+        );
+
+        // Re-encode the tampered ops
+        let mut tampered_merk_bytes = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk_bytes);
+
+        // Put tampered bytes back into the proof
+        proof_v1.root_layer.merk_proof = ProofBytes::Merk(tampered_merk_bytes);
+
+        // Re-encode the full proof
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("re-encode");
+
+        // V1 verification should FAIL because the combine_hash check will detect
+        // the mismatch between the forged value bytes and the original value_hash
+        let v1_result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(
+            v1_result.is_err(),
+            "V1 should reject forged count==0 element: the combine_hash(value_hash(forged_bytes), \
+             NULL_HASH) will not match the original value_hash in the KVValueHash node. \
+             Got: {:?}",
+            v1_result
+        );
+
+        // Now demonstrate the V0 vulnerability: decode the same tampered proof,
+        // convert it to a V0 format, and show that V0 verifier incorrectly
+        // accepts it because it skips combine_hash when count==0.
+        //
+        // Re-decode the tampered V1 proof
+        let decoded_tampered: GroveDBProof = bincode::decode_from_slice(&tampered_proof, config)
+            .expect("decode tampered proof")
+            .0;
+        let GroveDBProof::V1(tampered_v1) = decoded_tampered else {
+            panic!("expected V1 proof");
+        };
+
+        // Convert V1 LayerProof to V0 MerkOnlyLayerProof
+        fn layer_proof_to_merk_only(
+            layer: &crate::operations::proof::LayerProof,
+        ) -> crate::operations::proof::MerkOnlyLayerProof {
+            let merk_bytes = match &layer.merk_proof {
+                ProofBytes::Merk(bytes) => bytes.clone(),
+                _ => panic!("expected Merk bytes"),
+            };
+            let mut lower = std::collections::BTreeMap::new();
+            for (k, v) in &layer.lower_layers {
+                lower.insert(k.clone(), layer_proof_to_merk_only(v));
+            }
+            crate::operations::proof::MerkOnlyLayerProof {
+                merk_proof: merk_bytes,
+                lower_layers: lower,
+            }
+        }
+
+        let v0_proof = GroveDBProof::V0(crate::operations::proof::GroveDBProofV0 {
+            root_layer: layer_proof_to_merk_only(&tampered_v1.root_layer),
+            prove_options: tampered_v1.prove_options,
+        });
+
+        let v0_proof_bytes = bincode::encode_to_vec(&v0_proof, config).expect("encode V0 proof");
+
+        // V0 verification passes despite the forgery -- this is the vulnerability
+        let v0_result = GroveDb::verify_trunk_chunk_proof(&v0_proof_bytes, &query, grove_version);
+        assert!(
+            v0_result.is_ok(),
+            "V0 should (incorrectly) accept the forged count==0 proof due to the fast-path \
+             bypass. This demonstrates the vulnerability that V1 fixes. Got error: {:?}",
+            v0_result.err()
+        );
+
+        // Verify that V0 returns an empty result (the forgery made it think the
+        // tree is empty) while the original had 100 elements
+        let (v0_root_hash, v0_trunk_result) = v0_result.unwrap();
+        assert_eq!(
+            v0_root_hash, original_root_hash,
+            "V0 root hash should still match (the root merk proof is valid)"
+        );
+        assert!(
+            v0_trunk_result.elements.is_empty(),
+            "V0 should return empty elements because count==0 fast-path was taken"
         );
     }
 }
