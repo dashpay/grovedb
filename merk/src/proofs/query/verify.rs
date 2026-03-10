@@ -12,6 +12,14 @@ use crate::{
     CryptoHash as MerkHash, CryptoHash,
 };
 
+/// The latest proof version.
+/// - V0 (0): lenient — permits item elements in KVValueHash nodes
+///   (backwards compatibility with older proofs)
+/// - V1 (1): strict — rejects item elements in KVValueHash /
+///   KVValueHashFeatureType / KVValueHashFeatureTypeWithChildHash nodes
+///   to prevent KV-to-KVValueHash proof forgery
+pub const PROOF_VERSION_LATEST: u16 = 1;
+
 /// Verify proof against expected hash
 #[cfg(feature = "minimal")]
 #[deprecated]
@@ -75,11 +83,19 @@ impl Default for VerifyOptions {
 pub trait QueryProofVerify {
     /// Verifies the encoded proof with the given query, returning the root
     /// hash and verification result.
+    ///
+    /// `proof_version` controls which security checks are applied:
+    /// - V0 (0): lenient — permits item elements in KVValueHash nodes
+    ///   (backwards compatibility with older proofs)
+    /// - V1+ (≥1): strict — rejects item elements in KVValueHash /
+    ///   KVValueHashFeatureType / KVValueHashFeatureTypeWithChildHash nodes
+    ///   to prevent KV-to-KVValueHash proof forgery
     fn execute_proof(
         &self,
         bytes: &[u8],
         limit: Option<u16>,
         left_to_right: bool,
+        proof_version: u16,
     ) -> CostResult<(MerkHash, ProofVerificationResult), Error>;
 
     /// Verifies the encoded proof with the given query and expected hash.
@@ -109,6 +125,7 @@ impl QueryProofVerify for Query {
         bytes: &[u8],
         limit: Option<u16>,
         left_to_right: bool,
+        proof_version: u16,
     ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
         #[cfg(feature = "proof_debug")]
         {
@@ -338,15 +355,19 @@ impl QueryProofVerify for Query {
                     // elements to prevent KV→KVValueHash forgery where an
                     // attacker substitutes a KV node with KVValueHash to inject
                     // a fake value while keeping the original hash.
-                    let element_type = ElementType::from_serialized_value(value).map_err(|e| {
-                        Error::InvalidProofError(format!(
-                            "cannot determine element type in KVValueHash node: {e}"
-                        ))
-                    })?;
-                    if element_type.has_simple_value_hash() {
-                        return Err(Error::InvalidProofError(
-                            "KVValueHash node must not contain an item element".to_string(),
-                        ));
+                    // Skipped for V0 backwards compatibility.
+                    if proof_version >= 1 {
+                        let element_type =
+                            ElementType::from_serialized_value(value).map_err(|e| {
+                                Error::InvalidProofError(format!(
+                                    "cannot determine element type in KVValueHash node: {e}"
+                                ))
+                            })?;
+                        if element_type.has_simple_value_hash() {
+                            return Err(Error::InvalidProofError(
+                                "KVValueHash node must not contain an item element".to_string(),
+                            ));
+                        }
                     }
                     execute_node(key, Some(value), *value_hash, false)?;
                 }
@@ -384,16 +405,21 @@ impl QueryProofVerify for Query {
                         println!("Processing KVValueHashFeatureType node");
                     }
                     // Same check as KVValueHash — reject item elements.
-                    let element_type = ElementType::from_serialized_value(value).map_err(|e| {
-                        Error::InvalidProofError(format!(
-                            "cannot determine element type in KVValueHashFeatureType node: {e}"
-                        ))
-                    })?;
-                    if element_type.has_simple_value_hash() {
-                        return Err(Error::InvalidProofError(
-                            "KVValueHashFeatureType node must not contain an item element"
-                                .to_string(),
-                        ));
+                    // Skipped for V0 backwards compatibility.
+                    if proof_version >= 1 {
+                        let element_type =
+                            ElementType::from_serialized_value(value).map_err(|e| {
+                                Error::InvalidProofError(format!(
+                                    "cannot determine element type in KVValueHashFeatureType \
+                                     node: {e}"
+                                ))
+                            })?;
+                        if element_type.has_simple_value_hash() {
+                            return Err(Error::InvalidProofError(
+                                "KVValueHashFeatureType node must not contain an item element"
+                                    .to_string(),
+                            ));
+                        }
                     }
                     execute_node(key, Some(value), *value_hash, false)?;
                 }
@@ -415,19 +441,23 @@ impl QueryProofVerify for Query {
                     {
                         println!("Processing KVValueHashFeatureTypeWithChildHash node");
                     }
-                    // Same element-type check as KVValueHashFeatureType
-                    let element_type = ElementType::from_serialized_value(value).map_err(|e| {
-                        Error::InvalidProofError(format!(
-                            "cannot determine element type in \
-                                 KVValueHashFeatureTypeWithChildHash node: {e}"
-                        ))
-                    })?;
-                    if element_type.has_simple_value_hash() {
-                        return Err(Error::InvalidProofError(
-                            "KVValueHashFeatureTypeWithChildHash node must not contain \
-                             an item element"
-                                .to_string(),
-                        ));
+                    // Same element-type check as KVValueHashFeatureType.
+                    // Skipped for V0 backwards compatibility.
+                    if proof_version >= 1 {
+                        let element_type =
+                            ElementType::from_serialized_value(value).map_err(|e| {
+                                Error::InvalidProofError(format!(
+                                    "cannot determine element type in \
+                                     KVValueHashFeatureTypeWithChildHash node: {e}"
+                                ))
+                            })?;
+                        if element_type.has_simple_value_hash() {
+                            return Err(Error::InvalidProofError(
+                                "KVValueHashFeatureTypeWithChildHash node must not contain \
+                                 an item element"
+                                    .to_string(),
+                            ));
+                        }
                     }
                     // Verify value integrity: combine_hash(H(value), child_hash) must
                     // equal the provided value_hash. This prevents an attacker from
@@ -519,7 +549,7 @@ impl QueryProofVerify for Query {
         left_to_right: bool,
         expected_hash: MerkHash,
     ) -> CostResult<ProofVerificationResult, Error> {
-        self.execute_proof(bytes, limit, left_to_right)
+        self.execute_proof(bytes, limit, left_to_right, PROOF_VERSION_LATEST)
             .map_ok(|(root_hash, verification_result)| {
                 if root_hash == expected_hash {
                     Ok(verification_result)
