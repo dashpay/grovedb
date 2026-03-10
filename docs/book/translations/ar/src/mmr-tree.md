@@ -207,6 +207,17 @@ mmr_size = 2 * leaf_count - popcount(leaf_count)
 حيث `popcount` هو عدد البتات 1 (أي عدد القمم). كل
 عقدة داخلية تدمج شجرتين فرعيتين، مما يُقلّل عدد العقد بواحد لكل دمج.
 
+الحساب العكسي — عدد الأوراق من mmr_size — يستخدم مواقع القمم:
+
+```rust
+fn mmr_size_to_leaf_count(mmr_size: u64) -> u64 {
+    // Each peak at height h contains 2^h leaves
+    get_peaks(mmr_size).iter()
+        .map(|&peak_pos| 1u64 << pos_height_in_tree(peak_pos))
+        .sum()
+}
+```
+
 | mmr_size | leaf_count | القمم |
 |----------|-----------|-------|
 | 0 | 0 | (فارغ) |
@@ -284,11 +295,19 @@ fn blake3_merge(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 }
 ```
 
+> **ملاحظة حول PartialEq:** يُنفّذ `MmrNode` سمة `PartialEq` بمقارنة **حقل التجزئة فقط**،
+> وليس القيمة. هذا ضروري للتحقق من البراهين: يُقارن مُحقّق ckb جذراً مُعاد بناؤه (value = None)
+> مع الجذر المتوقع. لو قارن PartialEq حقل القيمة، لفشلت براهين MMR ذات الورقة الواحدة دائماً
+> لأن الورقة تحتوي `value: Some(...)` بينما إعادة بناء الجذر تُنتج `value: None`.
+
 **صيغة الترميز التسلسلي:**
 ```text
 Internal: [0x00] [hash: 32 bytes]                                = 33 bytes
 Leaf:     [0x01] [hash: 32 bytes] [value_len: 4 BE] [value...]   = 37 + len bytes
 ```
+
+بايت العلامة يُميّز العقد الداخلية عن الأوراق. عملية إلغاء الترميز تتحقق من
+الطول الدقيق — لا يُسمح ببايتات إضافية.
 
 ## بنية التخزين
 
@@ -302,8 +321,16 @@ Leaf:     [0x01] [hash: 32 bytes] [value_len: 4 BE] [value...]   = 37 + len byte
 key = 'm' || position_as_be_u64    (9 bytes: prefix + u64 BE)
 ```
 
+إذاً الموقع 42 يُخزَّن بالمفتاح `[0x6D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+0x00, 0x2A]`.
+
+البحث عن الورقة *i* يتطلب حساب موقع MMR أولاً:
+`pos = leaf_index_to_pos(i)`، ثم قراءة مفتاح البيانات `m{pos}`.
+
 **ذاكرة مؤقتة للكتابة الفورية:** أثناء الإلحاق، يجب أن تكون العقد المكتوبة حديثاً
-قابلة للقراءة فوراً لعمليات الدمج التالية في نفس الدفع.
+قابلة للقراءة فوراً لعمليات الدمج التالية في نفس الدفع. لأن تخزين GroveDB
+المُعاملاتي يؤجل الكتابات إلى دفعة (لا تكون مرئية للقراءات حتى الإيداع)، يلف
+مُحوّل `MmrStore` سياق التخزين بذاكرة مؤقتة `HashMap` في الذاكرة:
 
 ```mermaid
 graph LR
@@ -318,6 +345,9 @@ graph LR
 
     style store fill:#fef9e7,stroke:#f39c12,stroke-width:2px
 ```
+
+هذا يضمن أنه عند إلحاق leaf₃ يُفعّل تتالي دمج (إنشاء عقد داخلية في المواقع 5 و6)،
+تكون node₅ متاحة فوراً عند حساب node₆، حتى لو لم تُودع node₅ في RocksDB بعد.
 
 **انتشار تجزئة الجذر إلى جذر حالة GroveDB:**
 
@@ -348,6 +378,8 @@ db.mmr_tree_leaf_count(path, key, tx, version)
 
 ### تدفق الإلحاق
 
+عملية الإلحاق هي الأكثر تعقيداً، تُنفّذ 8 خطوات:
+
 ```mermaid
 graph TD
     subgraph append["mmr_tree_append(path, key, value, tx)"]
@@ -366,6 +398,21 @@ graph TD
     style append fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
     style A6 fill:#d4e6f1,stroke:#2980b9,stroke-width:2px
 ```
+
+الخطوة 4 قد تكتب عقدة واحدة (ورقة فقط) أو 1 + N عقدة (ورقة + N عقد دمج داخلية).
+الخطوة 5 تستدعي `mmr.commit()` التي تُفرّغ MemStore الخاص بـ ckb إلى MmrStore.
+الخطوة 7 تستدعي `insert_subtree` مع جذر MMR الجديد كتجزئة ابن
+(عبر `subtree_root_hash`)، بما أن MmrTree ليس لها Merk ابن.
+
+### عمليات القراءة
+
+`mmr_tree_root_hash` تحسب الجذر من بيانات MMR في التخزين.
+`mmr_tree_leaf_count` تشتق عدد الأوراق من `mmr_size` في العنصر.
+لا حاجة للوصول إلى تخزين البيانات.
+
+`mmr_tree_get_value` تحسب `pos = leaf_index_to_pos(leaf_index)`، تقرأ
+مُدخل تخزين البيانات الوحيد عند `m{pos}`، تُلغي ترميز `MmrNode`، وتُعيد
+`node.value`.
 
 ## العمليات الدفعية
 
@@ -397,10 +444,42 @@ graph TD
     style body fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
 ```
 
+مثال: دفعة بـ 3 عمليات إلحاق لنفس MMR:
+```rust
+vec![
+    QualifiedGroveDbOp { path: p, key: k, op: MmrTreeAppend { value: v1 } },
+    QualifiedGroveDbOp { path: p, key: k, op: MmrTreeAppend { value: v2 } },
+    QualifiedGroveDbOp { path: p, key: k, op: MmrTreeAppend { value: v3 } },
+]
+```
+
+المعالجة المسبقة تُحمّل MMR مرة واحدة، تدفع v1 وv2 وv3 (مُنشئة جميع العقد
+الوسيطة)، تحفظ كل شيء في تخزين البيانات، ثم تُصدر `ReplaceNonMerkTreeRoot`
+واحدة مع `mmr_root` و`mmr_size` النهائيين. آلية الدفعات القياسية تتولى
+الباقي.
+
 ## توليد البراهين
 
 براهين MMR هي **براهين V1** — تستخدم متغير `ProofBytes::MMR` في بنية
-البراهين المتعددة الطبقات (انظر §9.6).
+البراهين المتعددة الطبقات (انظر §9.6). يُثبت البرهان أن قيم أوراق محددة
+موجودة في مواقع محددة داخل MMR، وأن تجزئاتها متسقة مع `mmr_root`
+المُخزَّن في العنصر الأب.
+
+### ترميز الاستعلام
+
+مفاتيح الاستعلام تُرمّز المواقع كـ **بايتات u64 بترتيب الطرف الأكبر (big-endian)**. هذا يحافظ
+على ترتيب الفرز المعجمي (لأن ترميز BE رتيب)، مما يسمح لجميع متغيرات
+`QueryItem` القياسية بالعمل:
+
+```text
+QueryItem::Key([0,0,0,0,0,0,0,5])            → leaf index 5
+QueryItem::RangeInclusive([..2]..=[..7])      → leaf indices [2, 3, 4, 5, 6, 7]
+QueryItem::RangeFrom([..10]..)                → leaf indices [10, 11, ..., N-1]
+QueryItem::RangeFull                          → all leaves [0..leaf_count)
+```
+
+حد أمان قدره **10,000,000 فهرس** يمنع استنفاد الذاكرة من
+استعلامات النطاق غير المحدودة. MMR فارغ (صفر أوراق) يُعيد برهاناً فارغاً.
 
 ### بنية MmrTreeProof
 
@@ -412,9 +491,73 @@ struct MmrTreeProof {
 }
 ```
 
+تحتوي `proof_items` على المجموعة الدنيا من التجزئات اللازمة لإعادة بناء
+المسارات من الأوراق المُثبتة وصولاً إلى جذر MMR. هذه هي العقد الشقيقة
+في كل مستوى وتجزئات القمم غير المشاركة.
+
+### تدفق التوليد
+
+```mermaid
+graph TD
+    subgraph gen["generate_mmr_layer_proof"]
+        G1["1. Get subquery items<br/>from PathQuery"]
+        G2["2. Decode BE u64 keys<br/>→ leaf indices"]
+        G3["3. Open data storage<br/>at subtree path"]
+        G4["4. Load all MMR nodes<br/>into read-only MemNodeStore"]
+        G5["5. Call ckb gen_proof(positions)<br/>→ MerkleProof"]
+        G6["6. Read each proved leaf's<br/>full value from storage"]
+        G7["7. Extract proof_items<br/>as [u8; 32] hashes"]
+        G8["8. Encode MmrTreeProof<br/>→ ProofBytes::MMR(bytes)"]
+
+        G1 --> G2 --> G3 --> G4 --> G5 --> G6 --> G7 --> G8
+    end
+
+    style gen fill:#fef9e7,stroke:#f39c12,stroke-width:2px
+```
+
+الخطوة 4 تستخدم `MemNodeStore` — وهي BTreeMap للقراءة فقط تُحمّل مسبقاً جميع عقد
+MMR من تخزين البيانات. مُولّد براهين ckb يحتاج وصولاً عشوائياً، لذا يجب أن تكون جميع
+العقد في الذاكرة.
+
+الخطوة 5 هي حيث تقوم مكتبة ckb بالعمل الثقيل: بمعرفة حجم MMR والمواقع
+المراد إثباتها، تُحدّد تجزئات الأشقاء والقمم المطلوبة.
+
+### مثال عملي
+
+**إثبات الورقة 2 في MMR من 5 أوراق (mmr_size = 8):**
+
+```text
+MMR structure:
+pos:         6         7
+           /   \
+         2       5
+        / \     / \
+       0   1   3   4
+
+Leaf index 2 → MMR position 3
+
+To verify leaf at position 3:
+  1. Hash the claimed value: leaf_hash = blake3(value)
+  2. Sibling at position 4:  node₅ = blake3(leaf_hash || proof[pos 4])
+  3. Sibling at position 2:  node₆ = blake3(proof[pos 2] || node₅)
+  4. Peak at position 7:     root  = bag(node₆, proof[pos 7])
+  5. Compare: root == expected mmr_root ✓
+
+proof_items = [hash(pos 4), hash(pos 2), hash(pos 7)]
+leaves = [(2, original_value_bytes)]
+```
+
+حجم البرهان في هذا المثال هو: 3 تجزئات (96 بايت) + قيمة ورقة واحدة +
+بيانات وصفية. بشكل عام، إثبات K ورقة من MMR بـ N ورقة يتطلب
+O(K * log N) تجزئة شقيقة.
+
 ## التحقق من البراهين
 
-التحقق هو عملية **صافية** — لا يتطلب أي وصول لقاعدة البيانات.
+التحقق هو عملية **صافية** — لا يتطلب أي وصول لقاعدة البيانات. يحتاج المُحقّق
+فقط إلى بايتات البرهان وتجزئة جذر MMR المتوقعة (التي يستخرجها من
+العنصر الأب المُثبت في طبقة Merk أعلاه).
+
+### خطوات التحقق
 
 ```mermaid
 graph TD
@@ -437,7 +580,13 @@ graph TD
     style FAIL fill:#fadbd8,stroke:#e74c3c,stroke-width:2px
 ```
 
+دالة `MerkleProof::verify` من ckb تُعيد بناء الجذر من الأوراق
+وعناصر البرهان، ثم تُقارنه (باستخدام `PartialEq`، التي تتحقق من التجزئة فقط)
+مع الجذر المتوقع.
+
 ### سلسلة الثقة
+
+السلسلة الكاملة من جذر حالة GroveDB إلى قيمة ورقة مُتحقق منها:
 
 ```text
 GroveDB state_root (known/trusted)
@@ -457,6 +606,21 @@ GroveDB state_root (known/trusted)
     └─ Result: leaf₂ = [verified value bytes]
 ```
 
+### خصائص الأمان
+
+- **التحقق المتقاطع من mmr_size:** يجب أن يتطابق `mmr_size` في البرهان مع
+  `mmr_size` في العنصر. عدم التطابق يشير إلى أن البرهان وُلّد ضد
+  حالة مختلفة ويُرفض.
+- **حد حجم Bincode:** تستخدم عملية إلغاء الترميز حداً قدره 100 ميغابايت لمنع
+  ترويسات الطول المُصنّعة من التسبب في تخصيصات ضخمة.
+- **حساب الحدود:** كل ورقة مُثبتة تُنقص حد الاستعلام الإجمالي بـ
+  1 باستخدام `saturating_sub` لمنع التجاوز السفلي.
+- **إرجاع تجزئة الابن:** يُعيد المُحقّق تجزئة جذر MMR المحسوبة كتجزئة
+  ابن لحساب combine_hash في الطبقة الأب.
+- **رفض V0:** محاولة استعلام فرعي في MmrTree مع براهين V0
+  تُعيد `Error::NotSupported`. فقط براهين V1 يمكنها النزول إلى أشجار
+  غير Merk.
+
 ## تتبع التكاليف
 
 | العملية | استدعاءات التجزئة | عمليات التخزين |
@@ -466,9 +630,39 @@ GroveDB state_root (known/trusted)
 | الحصول على قيمة | 0 | قراءة عنصر + قراءة بيانات واحدة |
 | عدد الأوراق | 0 | قراءة عنصر واحد |
 
-**تحليل مُطفأ:** على N إلحاق، إجمالي التجزئات هو ≈ 2N.
+صيغة عدد التجزئات `1 + trailing_ones(N)` تُعطي العدد الدقيق لاستدعاءات Blake3:
+1 لتجزئة الورقة، بالإضافة إلى تجزئة دمج واحدة لكل مستوى تتالي.
+
+**تحليل مُطفأ:** على N إلحاق، إجمالي عدد التجزئات هو:
+
+```text
+Σ (1 + trailing_ones(i)) for i = 0..N-1
+= N + Σ trailing_ones(i) for i = 0..N-1
+= N + (N - popcount(N))
+≈ 2N
+```
+
 التكلفة المُطفأة لكل إلحاق هي تقريباً **استدعاءان لتجزئة Blake3** —
-ثابتة ومستقلة عن حجم الشجرة.
+ثابتة ومستقلة عن حجم الشجرة. قارن هذا مع أشجار Merk AVL حيث
+يتطلب كل إدراج O(log N) تجزئة للمسار بالإضافة إلى تجزئات الدوران المحتملة.
+
+**تكلفة التخزين:** كل إلحاق يكتب عقدة ورقية واحدة (37 + value_len بايت) بالإضافة
+إلى 0 إلى log₂(N) عقدة داخلية (33 بايت لكل منها). الكتابة المُطفأة للتخزين لكل
+إلحاق هي تقريباً 33 + 37 + value_len بايت ≈ 70 + value_len بايت.
+
+## ملفات التنفيذ
+
+| File | Purpose |
+|------|---------|
+| `grovedb-mmr/src/node.rs` | `MmrNode` struct, Blake3 merge, serialization |
+| `grovedb-mmr/src/grove_mmr.rs` | `GroveMmr` wrapper around ckb MMR |
+| `grovedb-mmr/src/util.rs` | `mmr_node_key`, `hash_count_for_push`, `mmr_size_to_leaf_count` |
+| `grovedb-mmr/src/proof.rs` | `MmrTreeProof` generation and verification |
+| `grovedb-mmr/src/dense_merkle.rs` | Dense Merkle tree roots (used by BulkAppendTree) |
+| `grovedb/src/operations/mmr_tree.rs` | GroveDB operations + `MmrStore` adapter + batch preprocessing |
+| `grovedb/src/operations/proof/generate.rs` | V1 proof generation: `generate_mmr_layer_proof`, `query_items_to_leaf_indices` |
+| `grovedb/src/operations/proof/verify.rs` | V1 proof verification: `verify_mmr_lower_layer` |
+| `grovedb/src/tests/mmr_tree_tests.rs` | 28 integration tests |
 
 ## مقارنة مع البنى الموثّقة الأخرى
 
