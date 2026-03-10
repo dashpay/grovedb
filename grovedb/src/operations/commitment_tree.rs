@@ -265,7 +265,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(ct_path, tx.as_ref())
+            .get_transactional_storage_context(ct_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let ct = cost_return_on_error!(
@@ -320,7 +320,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(ct_path, tx.as_ref())
+            .get_transactional_storage_context(ct_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let ct = cost_return_on_error!(

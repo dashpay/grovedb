@@ -1346,7 +1346,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(storage_path, tx)
+            .get_transactional_storage_context(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         // Generate the MMR proof using MmrStore for correct key format
@@ -1426,7 +1426,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(storage_path, tx)
+            .get_transactional_storage_context(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         // Create BulkAppendTree from state with embedded storage
@@ -1498,7 +1498,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(storage_path, tx)
+            .get_transactional_storage_context(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         let sinsemilla_root = match storage_ctx.get(COMMITMENT_TREE_DATA_KEY).value {
@@ -1590,7 +1590,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(storage_path, tx)
+            .get_transactional_storage_context(storage_path, None, tx)
             .unwrap_add_cost(&mut cost);
 
         // Create dense tree with embedded storage

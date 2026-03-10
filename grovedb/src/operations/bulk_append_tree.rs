@@ -201,7 +201,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(subtree_path, tx.as_ref())
+            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
@@ -281,7 +281,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(subtree_path, tx.as_ref())
+            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
@@ -334,7 +334,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(subtree_path, tx.as_ref())
+            .get_transactional_storage_context(subtree_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let tree = cost_return_on_error_no_add!(
