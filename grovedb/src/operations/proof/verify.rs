@@ -450,7 +450,7 @@ impl GroveDb {
                 merk_proof_bytes,
                 *limit_left,
                 internal_query.left_to_right,
-                false,
+                1, // V1 proof: strict mode rejects items in value hash nodes
             )
             .unwrap()
             .map_err(|e| {
@@ -1394,7 +1394,7 @@ impl GroveDb {
                 &layer_proof.merk_proof,
                 *limit_left,
                 internal_query.left_to_right,
-                true, // V0 proofs: allow items in value hash nodes for backwards compatibility
+                0, // V0 proofs: allow items in value hash nodes for backwards compatibility
             )
             .unwrap()
             .map_err(|e| {
@@ -1983,7 +1983,7 @@ impl GroveDb {
                     &current_layer.merk_proof,
                     None,
                     true,
-                    true, // V0 proof: allow items in value hash nodes
+                    0, // V0 proof: allow items in value hash nodes
                 )
                 .unwrap()
                 .map_err(|e| {

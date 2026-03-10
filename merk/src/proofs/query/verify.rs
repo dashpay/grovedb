@@ -76,17 +76,18 @@ pub trait QueryProofVerify {
     /// Verifies the encoded proof with the given query, returning the root
     /// hash and verification result.
     ///
-    /// When `allow_items_in_value_hash_nodes` is `true`, the verifier permits
-    /// item elements inside KVValueHash / KVValueHashFeatureType /
-    /// KVValueHashFeatureTypeWithChildHash nodes. This is needed for
-    /// backwards-compatible V0 proof verification; V1 proofs should always
-    /// pass `false` to enforce the KV-to-KVValueHash forgery protection.
+    /// `proof_version` controls which security checks are applied:
+    /// - V0 (0): lenient — permits item elements in KVValueHash nodes
+    ///   (backwards compatibility with older proofs)
+    /// - V1+ (≥1): strict — rejects item elements in KVValueHash /
+    ///   KVValueHashFeatureType / KVValueHashFeatureTypeWithChildHash nodes
+    ///   to prevent KV-to-KVValueHash proof forgery
     fn execute_proof(
         &self,
         bytes: &[u8],
         limit: Option<u16>,
         left_to_right: bool,
-        allow_items_in_value_hash_nodes: bool,
+        proof_version: u16,
     ) -> CostResult<(MerkHash, ProofVerificationResult), Error>;
 
     /// Verifies the encoded proof with the given query and expected hash.
@@ -116,7 +117,7 @@ impl QueryProofVerify for Query {
         bytes: &[u8],
         limit: Option<u16>,
         left_to_right: bool,
-        allow_items_in_value_hash_nodes: bool,
+        proof_version: u16,
     ) -> CostResult<(MerkHash, ProofVerificationResult), Error> {
         #[cfg(feature = "proof_debug")]
         {
@@ -347,7 +348,7 @@ impl QueryProofVerify for Query {
                     // attacker substitutes a KV node with KVValueHash to inject
                     // a fake value while keeping the original hash.
                     // Skipped for V0 backwards compatibility.
-                    if !allow_items_in_value_hash_nodes {
+                    if proof_version >= 1 {
                         let element_type =
                             ElementType::from_serialized_value(value).map_err(|e| {
                                 Error::InvalidProofError(format!(
@@ -397,7 +398,7 @@ impl QueryProofVerify for Query {
                     }
                     // Same check as KVValueHash — reject item elements.
                     // Skipped for V0 backwards compatibility.
-                    if !allow_items_in_value_hash_nodes {
+                    if proof_version >= 1 {
                         let element_type =
                             ElementType::from_serialized_value(value).map_err(|e| {
                                 Error::InvalidProofError(format!(
@@ -434,7 +435,7 @@ impl QueryProofVerify for Query {
                     }
                     // Same element-type check as KVValueHashFeatureType.
                     // Skipped for V0 backwards compatibility.
-                    if !allow_items_in_value_hash_nodes {
+                    if proof_version >= 1 {
                         let element_type =
                             ElementType::from_serialized_value(value).map_err(|e| {
                                 Error::InvalidProofError(format!(
@@ -540,7 +541,7 @@ impl QueryProofVerify for Query {
         left_to_right: bool,
         expected_hash: MerkHash,
     ) -> CostResult<ProofVerificationResult, Error> {
-        self.execute_proof(bytes, limit, left_to_right, false)
+        self.execute_proof(bytes, limit, left_to_right, 1)
             .map_ok(|(root_hash, verification_result)| {
                 if root_hash == expected_hash {
                     Ok(verification_result)
