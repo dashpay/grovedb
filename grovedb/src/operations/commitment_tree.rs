@@ -80,8 +80,13 @@ impl GroveDb {
     /// Insert a note commitment into a CommitmentTree subtree using raw payload
     /// bytes.
     ///
-    /// This is the raw write operation used by batch preprocessing. The payload
-    /// is validated against `DashMemo`'s expected size by `append_raw`.
+    /// This is the raw write operation used by the direct (non-batch) API and
+    /// by `apply_operations_without_batching`. Batch preprocessing does NOT
+    /// call this function — it performs its own inline processing using a
+    /// shared `StorageBatch` (see `preprocess_commitment_tree_ops`).
+    ///
+    /// The payload is validated against `DashMemo`'s expected size by
+    /// `append_raw`.
     pub(crate) fn commitment_tree_insert_raw<'b, B, P>(
         &self,
         path: P,
