@@ -370,7 +370,8 @@ fn proof_to_grovedbg(proof: GroveDBProof) -> Result<grovedbg_types::Proof, crate
         }),
         GroveDBProof::V1(p) => Ok(grovedbg_types::Proof {
             root_layer: v1_proof_layer_to_grovedbg(p.root_layer)?,
-            prove_options: prove_options_to_grovedbg(p.prove_options),
+            // V1 proofs no longer embed ProveOptions; use default for debugger
+            prove_options: prove_options_to_grovedbg(ProveOptions::default()),
         }),
     }
 }
