@@ -831,4 +831,474 @@ mod tests {
             "V0 should return empty elements because count==0 fast-path was taken"
         );
     }
+
+    /// V1 trunk proof with a multi-level path exercises the combine_hash
+    /// verification loop across multiple layers.
+    #[test]
+    fn test_trunk_proof_v1_multi_level_path() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(55555);
+
+        // Create a 2-level path: root -> subtree -> count_sum_tree
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert cst");
+
+        for i in 0u32..50 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                [b"root".as_slice(), b"cst"].as_ref(),
+                &key,
+                Element::new_sum_item(rng.random_range(1..=10)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item");
+        }
+
+        let query = PathTrunkChunkQuery::new(vec![b"root".to_vec(), b"cst".to_vec()], 3);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove trunk chunk");
+
+        let (root_hash, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("V1 multi-level trunk proof should verify");
+
+        assert_ne!(root_hash, [0u8; 32]);
+        assert!(!result.elements.is_empty());
+        assert!(!result.leaf_keys.is_empty());
+
+        // Confirm it's V1
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let decoded: GroveDBProof = bincode::decode_from_slice(&proof, config)
+            .expect("decode proof")
+            .0;
+        assert!(matches!(decoded, GroveDBProof::V1(_)));
+    }
+
+    /// V1 verification rejects a proof whose target layer has trailing bytes.
+    #[test]
+    fn test_trunk_proof_v1_rejects_trailing_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(88888);
+
+        db.insert(
+            EMPTY_PATH,
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert cst");
+
+        for i in 0u32..30 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                &[b"cst"],
+                &key,
+                Element::new_sum_item(rng.random_range(1..=5)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item");
+        }
+
+        let query = PathTrunkChunkQuery::new(vec![b"cst".to_vec()], 3);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Sanity: valid proof verifies
+        GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("valid proof should verify");
+
+        // Decode, tamper target layer with trailing bytes, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let decoded: GroveDBProof = bincode::decode_from_slice(&proof, config)
+            .expect("decode proof")
+            .0;
+
+        let GroveDBProof::V1(mut proof_v1) = decoded else {
+            panic!("expected V1 proof");
+        };
+
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .expect("should have cst layer");
+        match &mut target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.extend_from_slice(&[0xDE, 0xAD]),
+            _ => panic!("expected Merk"),
+        }
+
+        let tampered =
+            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("re-encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "V1 trunk proof with trailing bytes should be rejected"
+        );
+    }
+
+    /// V1 verification rejects a proof targeting a non-count-tree element.
+    #[test]
+    fn test_trunk_proof_v1_rejects_non_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // Insert a plain Tree (not CountTree/CountSumTree)
+        db.insert(
+            EMPTY_PATH,
+            b"plain",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert plain tree");
+
+        db.insert(
+            [b"plain"].as_ref(),
+            b"item",
+            Element::new_item(b"data".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        let query = PathTrunkChunkQuery::new(vec![b"plain".to_vec()], 3);
+        let result = db.prove_trunk_chunk(&query, grove_version).unwrap();
+
+        // Proving or verifying should fail because plain Tree has no count
+        // Either the prover rejects it or the verifier sees no count
+        if let Ok(proof) = result {
+            let verify_result = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version);
+            assert!(
+                verify_result.is_err(),
+                "trunk proof for non-count tree should fail verification"
+            );
+        }
+        // If prove itself failed, that's also acceptable
+    }
+
+    /// V1 trunk proof with an empty multi-level path exercises the count==0
+    /// path with the combine_hash check across multiple layers.
+    #[test]
+    fn test_trunk_proof_v1_empty_tree_multi_level() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"empty_cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert empty_cst");
+
+        let query = PathTrunkChunkQuery::new(vec![b"root".to_vec(), b"empty_cst".to_vec()], 3);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove empty tree multi-level");
+
+        let (root_hash, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("V1 empty tree multi-level should verify");
+
+        assert_ne!(root_hash, [0u8; 32]);
+        assert!(result.elements.is_empty());
+        assert!(result.leaf_keys.is_empty());
+        assert!(result.chunk_depths.is_empty());
+        assert_eq!(result.max_tree_depth, 0);
+    }
+
+    /// V1 trunk proof with different count tree types: CountTree and
+    /// ProvableCountSumTree.
+    #[test]
+    fn test_trunk_proof_v1_count_tree_types() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(33333);
+
+        // CountTree
+        db.insert(
+            EMPTY_PATH,
+            b"ct",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count_tree");
+
+        for i in 0u32..20 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                &[b"ct"],
+                &key,
+                Element::new_item(vec![i as u8; 8]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item into count_tree");
+        }
+
+        let query_ct = PathTrunkChunkQuery::new(vec![b"ct".to_vec()], 3);
+        let proof_ct = db
+            .prove_trunk_chunk(&query_ct, grove_version)
+            .unwrap()
+            .expect("prove count_tree");
+
+        let (hash_ct, result_ct) =
+            GroveDb::verify_trunk_chunk_proof(&proof_ct, &query_ct, grove_version)
+                .expect("verify count_tree");
+        assert_ne!(hash_ct, [0u8; 32]);
+        assert!(!result_ct.elements.is_empty());
+
+        // ProvableCountSumTree
+        db.insert(
+            EMPTY_PATH,
+            b"pcst",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert provable_count_sum_tree");
+
+        for i in 0u32..20 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                &[b"pcst"],
+                &key,
+                Element::new_sum_item(rng.random_range(1..=10)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item into pcst");
+        }
+
+        let query_pcst = PathTrunkChunkQuery::new(vec![b"pcst".to_vec()], 3);
+        let proof_pcst = db
+            .prove_trunk_chunk(&query_pcst, grove_version)
+            .unwrap()
+            .expect("prove provable_count_sum_tree");
+
+        let (hash_pcst, result_pcst) =
+            GroveDb::verify_trunk_chunk_proof(&proof_pcst, &query_pcst, grove_version)
+                .expect("verify provable_count_sum_tree");
+        assert_ne!(hash_pcst, [0u8; 32]);
+        assert!(!result_pcst.elements.is_empty());
+    }
+
+    /// V1 forged count on a multi-level path must be rejected: the combine_hash
+    /// loop catches the mismatch at the correct layer.
+    #[test]
+    fn test_trunk_proof_v1_rejects_forged_count_multi_level() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let mut rng = StdRng::seed_from_u64(66666);
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert cst");
+
+        for i in 0u32..50 {
+            let key_num: u8 = rng.random_range(0..=10);
+            let mut key = vec![key_num];
+            key.extend_from_slice(&i.to_be_bytes());
+            db.insert(
+                [b"root".as_slice(), b"cst"].as_ref(),
+                &key,
+                Element::new_sum_item(rng.random_range(1..=10)),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum_item");
+        }
+
+        let query = PathTrunkChunkQuery::new(vec![b"root".to_vec(), b"cst".to_vec()], 3);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Verify original works
+        GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version).expect("valid proof");
+
+        // Decode and tamper: find "cst" node in second layer, replace value bytes
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let decoded: GroveDBProof = bincode::decode_from_slice(&proof, config)
+            .expect("decode")
+            .0;
+
+        let GroveDBProof::V1(mut proof_v1) = decoded else {
+            panic!("expected V1");
+        };
+
+        // The "cst" key is in the root layer's lower_layers -> "root" lower layer
+        let root_lower = proof_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"root".as_slice())
+            .expect("should have root lower layer");
+
+        // The root_lower's merk proof contains the KVValueHash for "cst"
+        let merk_bytes = match &root_lower.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        let forged_element = Element::empty_count_sum_tree();
+        let forged_bytes = forged_element
+            .serialize(grove_version)
+            .expect("serialize forged");
+
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut found = false;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KVValueHash(key, _value, vh)) if key == b"cst" => {
+                    tampered_ops.push(Op::Push(Node::KVValueHash(
+                        key.clone(),
+                        forged_bytes.clone(),
+                        *vh,
+                    )));
+                    found = true;
+                }
+                Op::Push(Node::KVValueHashFeatureType(key, _value, vh, ft)) if key == b"cst" => {
+                    tampered_ops.push(Op::Push(Node::KVValueHashFeatureType(
+                        key.clone(),
+                        forged_bytes.clone(),
+                        *vh,
+                        ft.clone(),
+                    )));
+                    found = true;
+                }
+                Op::Push(Node::KVValueHashFeatureTypeWithChildHash(key, _value, vh, ft, ch))
+                    if key == b"cst" =>
+                {
+                    tampered_ops.push(Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                        key.clone(),
+                        forged_bytes.clone(),
+                        *vh,
+                        ft.clone(),
+                        *ch,
+                    )));
+                    found = true;
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+        assert!(found, "should have found cst node");
+
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+        root_lower.merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "V1 should reject forged count==0 on multi-level path, got: {:?}",
+            result
+        );
+    }
 }
