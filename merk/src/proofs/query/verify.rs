@@ -400,6 +400,15 @@ impl QueryProofVerify for Query {
                     execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
                 }
                 Node::KVValueHashFeatureType(key, value, value_hash, _feature_type) => {
+                    // SECURITY NOTE: _feature_type is intentionally unused.
+                    // It carries aggregate metadata (e.g. SummedMerkNode(sum),
+                    // CountedMerkNode(count)) but is NOT included in the hash
+                    // for non-provable types — so an attacker could substitute
+                    // one non-provable type for another. This is harmless:
+                    // the canonical tree type and aggregate values are embedded
+                    // in the Element bytes (`value`), which ARE hash-verified.
+                    // Callers receive the deserialized Element, never the
+                    // feature_type. See also: audit finding 2, finding 8.
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVValueHashFeatureType node");
@@ -437,6 +446,10 @@ impl QueryProofVerify for Query {
                     _feature_type,
                     child_hash,
                 ) => {
+                    // SECURITY NOTE: _feature_type is intentionally unused.
+                    // Same rationale as KVValueHashFeatureType above: the
+                    // canonical type lives in the hash-verified Element bytes,
+                    // not in this proof metadata field.
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVValueHashFeatureTypeWithChildHash node");
