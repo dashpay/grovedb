@@ -164,6 +164,136 @@ Encodé comme opérations de preuve :
 | 8 | Push(Hash(frank_node_hash)) | Empiler le hachage de frank |
 | 9 | Child | frank devient enfant droit de dave |
 
+## Types de noeuds de preuve par type d'arbre
+
+Chaque type d'arbre dans GroveDB utilise un ensemble specifique de types de noeuds de preuve
+selon le **role** du noeud dans la preuve. Il existe quatre roles :
+
+| Role | Description |
+|------|-------------|
+| **Interroge** | Le noeud correspond a la requete — cle + valeur completes revelees |
+| **Sur le chemin** | Le noeud est un ancetre des noeuds interroges — seul le kv_hash est necessaire |
+| **Frontiere** | Adjacent a une cle manquante — prouve l'absence |
+| **Distant** | Un sous-arbre frere hors du chemin de preuve — seul le node_hash est necessaire |
+
+### Arbres reguliers (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Ces cinq types d'arbres utilisent des types de noeuds de preuve identiques et la meme
+fonction de hachage : `compute_hash` (= `node_hash(kv_hash, left, right)`). Il n'y a
+**aucune difference** dans la facon dont ils sont prouves au niveau merk.
+
+Chaque noeud merk porte un `feature_type` en interne (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), mais
+celui-ci n'est **pas inclus dans le hachage** et **pas inclus dans la preuve**. Les
+donnees d'agregation (somme, comptage) pour ces types d'arbres resident dans les
+octets serialises de l'Element **parent**, qui sont verifies par hachage via la
+preuve de l'arbre parent :
+
+| Type d'arbre | Element stocke | feature_type Merk (non hache) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **D'ou vient la somme/le comptage ?** Lorsqu'un verificateur traite une preuve
+> pour `[root, my_sum_tree]`, la preuve de l'arbre parent inclut un noeud
+> `KVValueHash` pour la cle `my_sum_tree`. Le champ `value` contient
+> l'`Element::SumTree(root_key, 42, flags)` serialise. Puisque cette valeur est
+> verifiee par hachage (son hachage est engage dans la racine Merkle parente), la
+> somme `42` est fiable. Le feature_type au niveau merk est sans importance.
+
+| Role | Type de noeud V0 | Type de noeud V1 | Fonction de hachage |
+|------|-------------|-------------|---------------|
+| Element interroge | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Arbre non-vide interroge (sans sous-requete) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Arbre vide interroge | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Reference interrogee | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| Sur le chemin | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Frontiere | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distant | `Hash` | `Hash` | Utilise directement |
+
+> **Les arbres non-vides AVEC une sous-requete** descendent dans la couche enfant — le noeud
+> d'arbre apparait comme `KVValueHash` dans la preuve de la couche parente et la couche
+> enfant possede sa propre preuve.
+
+> **Pourquoi `KVValueHash` pour les sous-arbres ?** Le value_hash d'un sous-arbre est
+> `combine_hash(H(element_bytes), child_root_hash)` — le verificateur ne peut pas
+> le recalculer a partir des seuls octets de l'element (il aurait besoin du hachage racine
+> enfant). Le prouveur fournit donc le value_hash pre-calcule.
+>
+> **Pourquoi `KV` pour les elements ?** Le value_hash d'un element est simplement `H(value)`,
+> que le verificateur peut recalculer. Utiliser `KV` est a l'epreuve de la falsification : si
+> le prouveur modifie la valeur, le hachage ne correspondra pas.
+
+**Amelioration V1 — `KVValueHashFeatureTypeWithChildHash` :** Dans les preuves V1, lorsqu'un
+arbre non-vide interroge n'a pas de sous-requete (la requete s'arrete a cet arbre — l'element
+arbre lui-meme est le resultat), la couche GroveDB met a niveau le noeud merk en
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)`. Cela permet au verificateur de verifier `combine_hash(H(value), child_hash)
+== value_hash`, empechant un attaquant d'echanger les octets de l'element tout en
+reutilisant le value_hash original. Les arbres vides ne sont pas mis a niveau car ils n'ont
+pas de merk enfant pour fournir un hachage racine.
+
+> **Note de securite sur feature_type :** Pour les arbres reguliers (non prouvables), le
+> champ `feature_type` dans `KVValueHashFeatureType` et
+> `KVValueHashFeatureTypeWithChildHash` est decode mais **non utilise** pour le
+> calcul de hachage ni renvoye aux appelants. Le type d'arbre canonique reside dans les
+> octets de l'Element verifies par hachage. Ce champ n'a d'importance que pour ProvableCountTree
+> (voir ci-dessous), ou il porte le comptage necessaire pour `node_hash_with_count`.
+
+### ProvableCountTree et ProvableCountSumTree
+
+Ces types d'arbres utilisent `node_hash_with_count(kv_hash, left, right, count)` au lieu
+de `node_hash`. Le **comptage** est inclus dans le hachage, donc le verificateur a besoin
+du comptage de chaque noeud pour recalculer la racine Merkle.
+
+| Role | Type de noeud V0 | Type de noeud V1 | Fonction de hachage |
+|------|-------------|-------------|---------------|
+| Element interroge | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Arbre non-vide interroge (sans sous-requete) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Arbre vide interroge | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Reference interrogee | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| Sur le chemin | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Frontiere | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distant | `Hash` | `Hash` | Utilise directement |
+
+> **Les arbres non-vides AVEC une sous-requete** descendent dans la couche enfant, comme
+> les arbres reguliers.
+
+> **Pourquoi chaque noeud porte-t-il un comptage ?** Parce que `node_hash_with_count` est
+> utilise au lieu de `node_hash`. Sans le comptage, le verificateur ne peut reconstruire
+> aucun hachage intermediaire sur le chemin vers la racine — meme pour les noeuds non interroges.
+
+**Amelioration V1 :** Identique aux arbres reguliers — les arbres non-vides interroges sans
+sous-requete sont mis a niveau vers `KVValueHashFeatureTypeWithChildHash` pour la
+verification de `combine_hash`.
+
+> **Note sur ProvableCountSumTree :** Seul le **comptage** est inclus dans le hachage. La
+> somme est portee dans le feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) mais n'est **pas hachee**. Comme les types d'arbres reguliers ci-dessus, la valeur
+> canonique de la somme reside dans les octets serialises de l'Element parent (par ex.
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), qui sont
+> verifies par hachage dans la preuve de l'arbre parent.
+
+### Resume : matrice type de noeud → type d'arbre
+
+| Type de noeud | Arbres reguliers | Arbres ProvableCount |
+|-----------|:------------:|:-------------------:|
+| `KV` | Elements interroges | — |
+| `KVCount` | — | Elements interroges |
+| `KVValueHash` | Sous-arbres interroges | — |
+| `KVValueHashFeatureType` | — | Sous-arbres interroges |
+| `KVRefValueHash` | References interrogees | — |
+| `KVRefValueHashCount` | — | References interrogees |
+| `KVHash` | Sur le chemin | — |
+| `KVHashCount` | — | Sur le chemin |
+| `KVDigest` | Frontiere/absence | — |
+| `KVDigestCount` | — | Frontiere/absence |
+| `Hash` | Freres distants | Freres distants |
+| `KVValueHashFeatureTypeWithChildHash` | — | Arbres non-vides sans sous-requete |
+
 ## Génération de preuves multi-couches
 
 Comme GroveDB est un arbre d'arbres, les preuves s'étendent sur plusieurs couches. Chaque couche prouve

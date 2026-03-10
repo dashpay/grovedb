@@ -164,6 +164,136 @@ Encoded as proof ops:
 | 8 | Push(Hash(frank_node_hash)) | Push frank hash |
 | 9 | Child | frank becomes right child of dave |
 
+## Proof Node Types by Tree Type
+
+Each tree type in GroveDB uses a specific set of proof node types depending on
+the **role** of the node in the proof. There are four roles:
+
+| Role | Description |
+|------|-------------|
+| **Queried** | The node matches the query — full key + value revealed |
+| **On-path** | The node is an ancestor of queried nodes — only kv_hash needed |
+| **Boundary** | Adjacent to a missing key — proves absence |
+| **Distant** | A sibling subtree not on the proof path — only node_hash needed |
+
+### Regular Trees (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+All five of these tree types use identical proof node types and the same hash
+function: `compute_hash` (= `node_hash(kv_hash, left, right)`). There is **no
+difference** in how they are proved at the merk level.
+
+Each merk node carries a `feature_type` internally (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), but
+this is **not included in the hash** and **not included in the proof**. The
+aggregate data (sum, count) for these tree types lives in the **parent**
+Element's serialized bytes, which are hash-verified through the parent tree's
+proof:
+
+| Tree type | Element stores | Merk feature_type (not hashed) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **Where does the sum/count come from?** When a verifier processes a proof
+> for `[root, my_sum_tree]`, the parent tree's proof includes a
+> `KVValueHash` node for key `my_sum_tree`. The `value` field contains the
+> serialized `Element::SumTree(root_key, 42, flags)`. Since this value is
+> hash-verified (its hash is committed to the parent Merkle root), the
+> sum `42` is trustworthy. The merk-level feature_type is irrelevant.
+
+| Role | V0 Node Type | V1 Node Type | Hash function |
+|------|-------------|-------------|---------------|
+| Queried item | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Queried non-empty tree (no subquery) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Queried empty tree | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Queried reference | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| On-path | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Boundary | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distant | `Hash` | `Hash` | Used directly |
+
+> **Non-empty trees WITH a subquery** descend into the child layer — the tree
+> node appears as `KVValueHash` in the parent layer proof and the child layer
+> has its own proof.
+
+> **Why `KVValueHash` for subtrees?** A subtree's value_hash is
+> `combine_hash(H(element_bytes), child_root_hash)` — the verifier cannot
+> recompute this from the element bytes alone (it would need the child root
+> hash). So the prover provides the pre-computed value_hash.
+>
+> **Why `KV` for items?** An item's value_hash is simply `H(value)`, which the
+> verifier can recompute. Using `KV` is tamper-proof: if the prover changes the
+> value, the hash won't match.
+
+**V1 enhancement — `KVValueHashFeatureTypeWithChildHash`:** In V1 proofs, when a
+queried non-empty tree has no subquery (the query stops at this tree — the tree
+element itself is the result), the GroveDB layer upgrades the merk node to
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)`. This lets the verifier check `combine_hash(H(value), child_hash)
+== value_hash`, preventing an attacker from swapping the element bytes while
+reusing the original value_hash. Empty trees are not upgraded because they have
+no child merk to provide a root hash.
+
+> **Security note on feature_type:** For regular (non-provable) trees, the
+> `feature_type` field in `KVValueHashFeatureType` and
+> `KVValueHashFeatureTypeWithChildHash` is decoded but **not used** for hash
+> computation or returned to callers. The canonical tree type lives in the
+> hash-verified Element bytes. This field only matters for ProvableCountTree
+> (see below), where it carries the count needed for `node_hash_with_count`.
+
+### ProvableCountTree and ProvableCountSumTree
+
+These tree types use `node_hash_with_count(kv_hash, left, right, count)` instead
+of `node_hash`. The **count** is included in the hash, so the verifier needs
+the count for every node to recompute the Merkle root.
+
+| Role | V0 Node Type | V1 Node Type | Hash function |
+|------|-------------|-------------|---------------|
+| Queried item | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Queried non-empty tree (no subquery) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Queried empty tree | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Queried reference | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| On-path | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Boundary | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distant | `Hash` | `Hash` | Used directly |
+
+> **Non-empty trees WITH a subquery** descend into the child layer, same as
+> regular trees.
+
+> **Why does every node carry a count?** Because `node_hash_with_count` is used
+> instead of `node_hash`. Without the count, the verifier cannot reconstruct
+> any intermediate hash on the path to the root — even for non-queried nodes.
+
+**V1 enhancement:** Same as regular trees — queried non-empty trees without
+subqueries get upgraded to `KVValueHashFeatureTypeWithChildHash` for
+`combine_hash` verification.
+
+> **ProvableCountSumTree note:** Only the **count** is included in the hash. The
+> sum is carried in the feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) but is **not hashed**. Like the regular tree types above, the canonical
+> sum value lives in the parent Element's serialized bytes (e.g.
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), which are
+> hash-verified in the parent tree's proof.
+
+### Summary: Node Type → Tree Type Matrix
+
+| Node Type | Regular Trees | ProvableCount Trees |
+|-----------|:------------:|:-------------------:|
+| `KV` | Queried items | — |
+| `KVCount` | — | Queried items |
+| `KVValueHash` | Queried subtrees | — |
+| `KVValueHashFeatureType` | — | Queried subtrees |
+| `KVRefValueHash` | Queried references | — |
+| `KVRefValueHashCount` | — | Queried references |
+| `KVHash` | On-path | — |
+| `KVHashCount` | — | On-path |
+| `KVDigest` | Boundary/absence | — |
+| `KVDigestCount` | — | Boundary/absence |
+| `Hash` | Distant siblings | Distant siblings |
+| `KVValueHashFeatureTypeWithChildHash` | — | Non-empty trees without subquery |
+
 ## Multi-Layer Proof Generation
 
 Since GroveDB is a tree of trees, proofs span multiple layers. Each layer proves
