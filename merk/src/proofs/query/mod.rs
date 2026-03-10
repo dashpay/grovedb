@@ -21,7 +21,7 @@ pub use map::{Map, MapBuilder};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify::{
     ProofVerificationResult, ProvedKeyOptionalValue, ProvedKeyValue, QueryProofVerify,
-    VerifyOptions,
+    VerifyOptions, PROOF_VERSION_LATEST,
 };
 #[cfg(feature = "minimal")]
 use {super::Op, std::collections::LinkedList};

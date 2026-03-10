@@ -12,6 +12,14 @@ use crate::{
     CryptoHash as MerkHash, CryptoHash,
 };
 
+/// The latest proof version.
+/// - V0 (0): lenient — permits item elements in KVValueHash nodes
+///   (backwards compatibility with older proofs)
+/// - V1 (1): strict — rejects item elements in KVValueHash /
+///   KVValueHashFeatureType / KVValueHashFeatureTypeWithChildHash nodes
+///   to prevent KV-to-KVValueHash proof forgery
+pub const PROOF_VERSION_LATEST: u16 = 1;
+
 /// Verify proof against expected hash
 #[cfg(feature = "minimal")]
 #[deprecated]
@@ -541,7 +549,7 @@ impl QueryProofVerify for Query {
         left_to_right: bool,
         expected_hash: MerkHash,
     ) -> CostResult<ProofVerificationResult, Error> {
-        self.execute_proof(bytes, limit, left_to_right, 1)
+        self.execute_proof(bytes, limit, left_to_right, PROOF_VERSION_LATEST)
             .map_ok(|(root_hash, verification_result)| {
                 if root_hash == expected_hash {
                     Ok(verification_result)
