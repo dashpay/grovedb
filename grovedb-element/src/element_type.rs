@@ -145,22 +145,27 @@ impl ElementType {
     ///
     /// All use `node_hash(kv_hash, left, right)` — feature_type is NOT hashed.
     ///
-    /// | Role          | Node type       |
-    /// |---------------|-----------------|
-    /// | Queried item  | `Kv`            |
-    /// | Queried tree  | `KvValueHash`   |
-    /// | Queried ref   | `KvRefValueHash`|
+    /// | Role                               | Node type (V0)  | Node type (V1)                       |
+    /// |------------------------------------|-----------------|--------------------------------------|
+    /// | Queried item                       | `Kv`            | `Kv`                                 |
+    /// | Queried non-empty tree (no subqry) | `KvValueHash`   | `KvValueHashFeatureTypeWithChildHash`|
+    /// | Queried empty tree                 | `KvValueHash`   | `KvValueHash`                        |
+    /// | Queried ref                        | `KvRefValueHash`| `KvRefValueHash`                     |
+    ///
+    /// Note: non-empty trees WITH a subquery descend into the child layer;
+    /// the tree node appears as `KvValueHash` in the parent layer proof.
     ///
     /// ## ProvableCountTree / ProvableCountSumTree
     ///
     /// Use `node_hash_with_count(kv_hash, left, right, count)` — the count
     /// IS included in the hash, so every proof node must carry it.
     ///
-    /// | Role          | Node type                |
-    /// |---------------|--------------------------|
-    /// | Queried item  | `KvCount`                |
-    /// | Queried tree  | `KvValueHashFeatureType` |
-    /// | Queried ref   | `KvRefValueHashCount`    |
+    /// | Role                               | Node type (V0)           | Node type (V1)                       |
+    /// |------------------------------------|--------------------------|--------------------------------------|
+    /// | Queried item                       | `KvCount`                | `KvCount`                            |
+    /// | Queried non-empty tree (no subqry) | `KvValueHashFeatureType` | `KvValueHashFeatureTypeWithChildHash`|
+    /// | Queried empty tree                 | `KvValueHashFeatureType` | `KvValueHashFeatureType`             |
+    /// | Queried ref                        | `KvRefValueHashCount`    | `KvRefValueHashCount`                |
     ///
     /// Non-queried and boundary nodes are handled separately in the merk
     /// proof generation code (`KVHash`/`KVHashCount`, `KVDigest`/`KVDigestCount`).
