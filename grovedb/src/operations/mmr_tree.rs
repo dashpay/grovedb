@@ -110,7 +110,13 @@ impl GroveDb {
         #[allow(clippy::drop_non_drop)]
         drop(storage_ctx);
 
-        // Commit data writes to the transaction
+        // Commit data writes to the transaction.
+        // Note: this commits subtree data before the parent element update
+        // below. If the parent Merk update fails, the subtree data is orphaned
+        // in the transaction. This is the same pattern as other direct GroveDB
+        // operations — the caller is expected to rollback the tx on error.
+        // The batch path (preprocess_mmr_tree_ops) avoids this by using a
+        // shared StorageBatch that commits atomically with all other ops.
         cost_return_on_error!(
             &mut cost,
             self.db
