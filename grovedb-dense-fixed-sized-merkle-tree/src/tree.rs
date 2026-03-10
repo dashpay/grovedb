@@ -143,10 +143,13 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
             // succeeds, which needs a storage fault (get fails on a key that was
             // just written). Not reachable with any StorageContext implementation.
             Err(e) => {
-                // Roll back count so the tree state remains consistent.
-                // Note: the value remains in the store; the caller is
-                // responsible for store-level cleanup if needed.
+                // Roll back count and cache so the tree state remains
+                // consistent. The value remains in the store; the caller
+                // is responsible for store-level cleanup if needed.
                 self.count -= 1;
+                if let Some(slot) = self.cache.get_mut(position as usize) {
+                    *slot = None;
+                }
                 Err(e).wrap_with_cost(cost)
             }
         }
@@ -174,6 +177,9 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
             Ok(root_hash) => Ok(Some((root_hash, position))).wrap_with_cost(cost),
             Err(e) => {
                 self.count -= 1;
+                if let Some(slot) = self.cache.get_mut(position as usize) {
+                    *slot = None;
+                }
                 Err(e).wrap_with_cost(cost)
             }
         }
@@ -264,6 +270,12 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// subsequent reads (e.g., during root hash computation) can be served
     /// from memory even when the storage context defers writes.
     fn put_value(&mut self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
+        debug_assert!(
+            (position as usize) < self.cache.len(),
+            "put_value called with position {} >= cache capacity {}",
+            position,
+            self.cache.len()
+        );
         let mut cost = OperationCost::default();
         let key = position_key(position);
         let result = self

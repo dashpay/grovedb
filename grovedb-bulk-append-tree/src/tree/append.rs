@@ -146,15 +146,25 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
             let mut mmr =
                 MMR::new_with_overlay(mmr_size, &mmr_store, std::mem::take(&mut self.mmr_overlay));
-            mmr.push(leaf)
-                .unwrap()
-                .map_err(|e| BulkAppendError::MmrError(format!("MMR push failed: {}", e)))?;
 
-            let root_node = mmr
-                .get_root()
-                .unwrap()
-                .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
-            let root = root_node.hash();
+            let push_result = mmr.push(leaf).unwrap();
+            if let Err(e) = push_result {
+                // Restore overlay before returning error
+                self.mmr_overlay = mmr.batch.take_overlay();
+                return Err(BulkAppendError::MmrError(format!("MMR push failed: {}", e)));
+            }
+
+            let root_result = mmr.get_root().unwrap();
+            let root = match root_result {
+                Ok(node) => node.hash(),
+                Err(e) => {
+                    self.mmr_overlay = mmr.batch.take_overlay();
+                    return Err(BulkAppendError::MmrError(format!(
+                        "MMR get_root failed: {}",
+                        e
+                    )));
+                }
+            };
 
             // Take overlay back instead of committing
             self.mmr_overlay = mmr.batch.take_overlay();
@@ -188,6 +198,10 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Call this at the end of a session to persist all MMR nodes that were
     /// buffered during compaction cycles. This is a no-op if no compactions
     /// occurred.
+    ///
+    /// Cost tracking is intentionally omitted at this boundary:
+    /// BulkAppendTree returns plain `Result`, not `CostResult`. Storage
+    /// I/O costs are captured by the caller's `commit_multi_context_batch`.
     pub fn commit_mmr(&mut self) -> Result<(), BulkAppendError> {
         if self.mmr_overlay.is_empty() {
             return Ok(());
