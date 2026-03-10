@@ -316,6 +316,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
+        storage_batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -406,10 +407,13 @@ impl GroveDb {
             // tree's write-through cache provides read-after-write
             // visibility for values written during this session, so we
             // don't need immediate context.
-            let data_batch = StorageBatch::new();
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path.clone(), Some(&data_batch), transaction)
+                .get_transactional_storage_context(
+                    st_path.clone(),
+                    Some(storage_batch),
+                    transaction,
+                )
                 .unwrap_add_cost(&mut cost);
 
             let mut tree = cost_return_on_error_no_add!(
@@ -431,17 +435,8 @@ impl GroveDb {
 
             let new_count = tree.count();
 
-            // Drop tree (and its embedded storage context) before committing
+            // Drop tree (and its embedded storage context)
             drop(tree);
-
-            // Commit the data batch to the transaction so writes are
-            // visible to subsequent operations in the pipeline
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_multi_context_batch(data_batch, Some(transaction))
-                    .map_err(Into::into)
-            );
 
             // Key is restored for downstream (from_ops, execute_ops_on_path)
             let replacement = QualifiedGroveDbOp {

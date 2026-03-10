@@ -409,6 +409,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
+        storage_batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -487,10 +488,9 @@ impl GroveDb {
             let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
             let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
-            let data_batch = StorageBatch::new();
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(ct_path, Some(&data_batch), transaction)
+                .get_transactional_storage_context(ct_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             // Open composite CommitmentTree
@@ -524,14 +524,6 @@ impl GroveDb {
 
             // Drop ct (and its storage context)
             drop(ct);
-
-            // Commit data batch to make writes visible in the transaction
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_multi_context_batch(data_batch, Some(transaction))
-                    .map_err(Into::into)
-            );
 
             // Create a ReplaceNonMerkTreeRoot
             // Key is restored for downstream (from_ops, execute_ops_on_path)

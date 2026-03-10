@@ -347,6 +347,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
+        storage_batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -422,10 +423,9 @@ impl GroveDb {
             // Use transactional storage context. The MMRBatch overlay
             // provides read-after-write for newly pushed values, and root
             // is computed before commit, so immediate context is not needed.
-            let data_batch = StorageBatch::new();
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path, Some(&data_batch), transaction)
+                .get_transactional_storage_context(st_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             let store = MmrStore::new(&storage_ctx);
@@ -461,14 +461,6 @@ impl GroveDb {
 
             #[allow(clippy::drop_non_drop)]
             drop(storage_ctx);
-
-            // Commit data writes to the transaction
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_multi_context_batch(data_batch, Some(transaction))
-                    .map_err(Into::into)
-            );
 
             // Create a ReplaceNonMerkTreeRoot — MMR root flows as child hash
             // Key is restored for downstream (from_ops, execute_ops_on_path)

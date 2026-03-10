@@ -434,6 +434,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
+        storage_batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -507,10 +508,9 @@ impl GroveDb {
             let st_path_refs: Vec<&[u8]> = st_path_vec.iter().map(|v| v.as_slice()).collect();
             let st_path = SubtreePath::from(st_path_refs.as_slice());
 
-            let data_batch = StorageBatch::new();
             let storage_ctx = self
                 .db
-                .get_transactional_storage_context(st_path, Some(&data_batch), transaction)
+                .get_transactional_storage_context(st_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             // Load tree with embedded storage
@@ -541,14 +541,6 @@ impl GroveDb {
 
             // Drop tree (and its embedded storage context)
             drop(tree);
-
-            // Commit data batch to make writes visible in the transaction
-            cost_return_on_error!(
-                &mut cost,
-                self.db
-                    .commit_multi_context_batch(data_batch, Some(transaction))
-                    .map_err(Into::into)
-            );
 
             // Create replacement op
             // Key is restored for downstream (from_ops, execute_ops_on_path)

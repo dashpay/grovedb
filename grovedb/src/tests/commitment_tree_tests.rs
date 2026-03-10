@@ -2070,3 +2070,429 @@ fn test_verify_grovedb_commitment_tree_empty() {
         issues
     );
 }
+
+// ===========================================================================
+// Batch discard / transaction rollback tests
+// ===========================================================================
+
+/// A batch with commitment tree inserts succeeds, then a later op in the
+/// batch fails. The entire batch must be discarded — count and anchor
+/// should remain at pre-batch values.
+#[test]
+fn test_commitment_batch_discarded_on_later_op_failure() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Pre-insert an item so insert_if_not_exists will fail
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Capture anchor before batch
+    let anchor_before = db
+        .commitment_tree_anchor([b"parent"].as_ref(), b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor before");
+
+    // Batch: commitment insert + conflicting insert
+    let ops = vec![
+        QualifiedGroveDbOp::commitment_tree_insert_op_typed(
+            vec![b"parent".to_vec(), b"pool".to_vec()],
+            test_cmx(1),
+            test_rho(1),
+            &test_ciphertext(1),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    // Use an external (borrowed) transaction to verify no preprocessing data
+    // leaks into it when the batch fails.
+    let tx = db.start_transaction();
+    let result = db.apply_batch(ops, None, Some(&tx), grove_version).unwrap();
+    assert!(result.is_err(), "batch should fail due to duplicate key");
+
+    // Count must remain 0 inside the transaction
+    let count_in_tx = db
+        .commitment_tree_count([b"parent"].as_ref(), b"pool", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(
+        count_in_tx, 0,
+        "count should be 0 inside tx after batch discard"
+    );
+
+    // Anchor must not change inside the transaction
+    let anchor_in_tx = db
+        .commitment_tree_anchor([b"parent"].as_ref(), b"pool", Some(&tx), grove_version)
+        .unwrap()
+        .expect("anchor in tx");
+    assert_eq!(
+        anchor_before, anchor_in_tx,
+        "anchor should not change inside tx after batch discard"
+    );
+
+    // Also verify outside the transaction
+    let count = db
+        .commitment_tree_count([b"parent"].as_ref(), b"pool", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(count, 0, "count should be 0 after batch discard");
+
+    let anchor_after = db
+        .commitment_tree_anchor([b"parent"].as_ref(), b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor after");
+    assert_eq!(
+        anchor_before, anchor_after,
+        "anchor should not change after batch discard"
+    );
+
+    db.rollback_transaction(&tx).expect("rollback");
+}
+
+/// Commitment tree inserts inside a transaction, then the transaction is
+/// rolled back. Verifies count and anchor revert.
+#[test]
+fn test_commitment_transaction_rollback_reverts_inserts() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    // Insert one value outside the transaction
+    db.commitment_tree_insert(
+        EMPTY_PATH,
+        b"pool",
+        test_cmx(1),
+        test_rho(1),
+        test_ciphertext(1),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert 1");
+
+    let count_before = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count before");
+    assert_eq!(count_before, 1);
+
+    let anchor_before = db
+        .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor before");
+
+    // Start transaction and insert more
+    let tx = db.start_transaction();
+
+    for i in 2u8..5 {
+        db.commitment_tree_insert(
+            EMPTY_PATH,
+            b"pool",
+            test_cmx(i),
+            test_rho(i),
+            test_ciphertext(i),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert in tx");
+    }
+
+    // Rollback
+    db.rollback_transaction(&tx).expect("rollback");
+
+    let count_after = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(count_after, 1, "count should revert after rollback");
+
+    let anchor_after = db
+        .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor after rollback");
+    assert_eq!(
+        anchor_before, anchor_after,
+        "anchor should revert after rollback"
+    );
+}
+
+/// Batch with multiple commitment tree inserts in a transaction, then
+/// the transaction is dropped. Verifies the state fully reverts.
+#[test]
+fn test_commitment_batch_in_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    let tx = db.start_transaction();
+
+    let ops: Vec<QualifiedGroveDbOp> = (1u8..4)
+        .map(|i| {
+            QualifiedGroveDbOp::commitment_tree_insert_op_typed(
+                vec![b"pool".to_vec()],
+                test_cmx(i),
+                test_rho(i),
+                &test_ciphertext(i),
+            )
+        })
+        .collect();
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch in tx");
+
+    // Visible inside tx
+    let count_in_tx = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(count_in_tx, 3);
+
+    // Drop transaction (implicit rollback)
+    drop(tx);
+
+    let count_after = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count after drop");
+    assert_eq!(
+        count_after, 0,
+        "commitment tree should be empty after tx drop"
+    );
+}
+
+/// After a failed batch, a subsequent successful batch on the same
+/// commitment tree should work correctly — no stale frontier/cache/overlay.
+#[test]
+fn test_commitment_successful_batch_after_failed_batch() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Use an external transaction — the failing batch must not leak
+    // preprocessing data into the tx.
+    let tx = db.start_transaction();
+
+    // First batch: commitment insert + conflicting insert → fails
+    let ops_fail = vec![
+        QualifiedGroveDbOp::commitment_tree_insert_op_typed(
+            vec![b"parent".to_vec(), b"pool".to_vec()],
+            test_cmx(1),
+            test_rho(1),
+            &test_ciphertext(1),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    let result = db
+        .apply_batch(ops_fail, None, Some(&tx), grove_version)
+        .unwrap();
+    assert!(result.is_err(), "first batch should fail");
+
+    // Tx should be clean — no preprocessing data leaked
+    let count_after_fail = db
+        .commitment_tree_count([b"parent"].as_ref(), b"pool", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count after fail");
+    assert_eq!(
+        count_after_fail, 0,
+        "count in tx should be 0 after failed batch"
+    );
+
+    // Second batch: commitment insert only → should succeed in the same tx
+    let ops_ok = vec![QualifiedGroveDbOp::commitment_tree_insert_op_typed(
+        vec![b"parent".to_vec(), b"pool".to_vec()],
+        test_cmx(2),
+        test_rho(2),
+        &test_ciphertext(2),
+    )];
+
+    db.apply_batch(ops_ok, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("second batch should succeed");
+
+    // Commit the transaction
+    db.commit_transaction(tx)
+        .unwrap()
+        .expect("commit transaction");
+
+    let count = db
+        .commitment_tree_count([b"parent"].as_ref(), b"pool", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(count, 1, "only the second batch's insert should be present");
+
+    // Anchor should reflect only cmx(2), not cmx(1)
+    let anchor = db
+        .commitment_tree_anchor([b"parent"].as_ref(), b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor");
+    let expected = expected_root(&[test_cmx(2)]);
+    assert_eq!(
+        anchor.to_bytes(),
+        expected,
+        "anchor should reflect only the successful batch"
+    );
+}
+
+/// Commitment tree inserts that trigger BulkAppendTree compaction within
+/// a transaction, then the transaction is rolled back. Verifies that both
+/// the dense buffer, MMR chunks, and Sinsemilla frontier fully revert.
+#[test]
+fn test_commitment_compaction_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Use small chunk_power=2 so compaction triggers after 4 appends
+    let small_chunk_power: u8 = 2;
+    let epoch_size = 1u64 << (small_chunk_power as u64); // 4
+
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(small_chunk_power).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert commitment tree");
+
+    let tx = db.start_transaction();
+
+    // Insert enough to trigger compaction: epoch_size = 4
+    for i in 1u8..=(epoch_size as u8 + 1) {
+        db.commitment_tree_insert(
+            EMPTY_PATH,
+            b"pool",
+            test_cmx(i),
+            test_rho(i),
+            test_ciphertext(i),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert in tx");
+    }
+
+    let count_in_tx = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(count_in_tx, epoch_size + 1);
+
+    // Rollback
+    db.rollback_transaction(&tx).expect("rollback");
+
+    let count_after = db
+        .commitment_tree_count(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(
+        count_after, 0,
+        "count should be 0 after compaction + rollback"
+    );
+
+    let anchor_after = db
+        .commitment_tree_anchor(EMPTY_PATH, b"pool", None, grove_version)
+        .unwrap()
+        .expect("anchor after rollback");
+    // Empty tree anchor
+    let empty_anchor = expected_root(&[]);
+    assert_eq!(
+        anchor_after.to_bytes(),
+        empty_anchor,
+        "anchor should revert to empty tree after compaction + rollback"
+    );
+}
