@@ -49,6 +49,8 @@ pub struct DenseFixedSizedMerkleTree<S> {
     /// Write-through cache: holds values written in this session.
     /// Indexed by position. `None` means the value has not been written
     /// in this session (fall back to storage).
+    /// Only compiled when storage-dependent operations are available.
+    #[cfg(feature = "storage")]
     cache: Vec<Option<Vec<u8>>>,
 }
 

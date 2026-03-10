@@ -212,9 +212,15 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             &mmr_store,
             std::mem::take(&mut self.mmr_overlay),
         );
-        mmr.commit()
-            .unwrap()
-            .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
+        if let Err(e) = mmr.commit().unwrap() {
+            // Restore overlay before returning error so retries/get_mmr_root
+            // still see the staged nodes.
+            self.mmr_overlay = mmr.batch.take_overlay();
+            return Err(BulkAppendError::MmrError(format!(
+                "MMR commit failed: {}",
+                e
+            )));
+        }
         Ok(())
     }
 }
