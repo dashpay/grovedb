@@ -364,7 +364,13 @@ where
             // we set the new root node of the merk tree
             self.tree.set(maybe_tree);
             // commit changes to db
-            self.commit(key_updates, aux, options, old_specialized_cost)
+            self.commit(
+                key_updates,
+                aux,
+                options,
+                old_specialized_cost,
+                grove_version,
+            )
         })
     }
 }
