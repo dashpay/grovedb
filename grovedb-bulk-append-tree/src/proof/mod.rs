@@ -14,7 +14,7 @@ use bincode::{Decode, Encode};
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merkle_mountain_range::MmrTreeProof;
 #[cfg(feature = "storage")]
-use grovedb_merkle_mountain_range::{MMRStoreReadOps, MmrKeySize, MmrNode, MmrStore};
+use grovedb_merkle_mountain_range::{MmrKeySize, MmrNode, MmrStore, MMR};
 use grovedb_query::{Query, QueryItem};
 #[cfg(feature = "storage")]
 use grovedb_storage::StorageContext;
@@ -239,8 +239,9 @@ impl BulkAppendTreeProof {
             let chunk_indices: Vec<u64> = chunk_indices_set.into_iter().collect();
 
             let mmr_store = MmrStore::with_key_size(&tree.dense_tree.storage, MmrKeySize::U32);
+            let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, tree.mmr_overlay.clone());
             let get_node = |pos: u64| -> grovedb_merkle_mountain_range::Result<Option<MmrNode>> {
-                (&mmr_store).element_at_position(pos).unwrap() // unwrap CostResult
+                mmr.batch.element_at_position(pos).unwrap() // unwrap CostResult
             };
 
             MmrTreeProof::generate(mmr_size, &chunk_indices, get_node).map_err(|e| {

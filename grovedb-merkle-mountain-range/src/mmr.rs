@@ -42,6 +42,18 @@ impl<S> MMR<S> {
         }
     }
 
+    /// Create an MMR with a pre-populated overlay.
+    ///
+    /// The overlay contains nodes from previous push operations that have
+    /// not yet been committed to storage. This allows an MMR instance to
+    /// read nodes pushed by a previous instance without a storage round-trip.
+    pub fn new_with_overlay(mmr_size: u64, store: S, overlay: Vec<(u64, Vec<MmrNode>)>) -> Self {
+        MMR {
+            mmr_size,
+            batch: MMRBatch::with_overlay(store, overlay),
+        }
+    }
+
     /// Returns `true` if the MMR contains no elements.
     pub fn is_empty(&self) -> bool {
         self.mmr_size == 0

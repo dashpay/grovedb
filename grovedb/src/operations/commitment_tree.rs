@@ -80,8 +80,13 @@ impl GroveDb {
     /// Insert a note commitment into a CommitmentTree subtree using raw payload
     /// bytes.
     ///
-    /// This is the raw write operation used by batch preprocessing. The payload
-    /// is validated against `DashMemo`'s expected size by `append_raw`.
+    /// This is the raw write operation used by the direct (non-batch) API and
+    /// by `apply_operations_without_batching`. Batch preprocessing does NOT
+    /// call this function — it performs its own inline processing using a
+    /// shared `StorageBatch` (see `preprocess_commitment_tree_ops`).
+    ///
+    /// The payload is validated against `DashMemo`'s expected size by
+    /// `append_raw`.
     pub(crate) fn commitment_tree_insert_raw<'b, B, P>(
         &self,
         path: P,
@@ -116,14 +121,16 @@ impl GroveDb {
             }
         };
 
-        // 2. Build subtree path and open storage context
+        // 2. Build subtree path and open transactional storage (write-through
+        //    cache + MMR overlay provide read-after-write visibility)
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
+        let data_batch = StorageBatch::new();
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(ct_path, tx.as_ref())
+            .get_transactional_storage_context(ct_path, Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         // 3. Open composite CommitmentTree and append (uses default DashMemo for
@@ -156,8 +163,25 @@ impl GroveDb {
             &bulk_state_root,
         );
 
+        // Flush MMR overlay to storage (through the batch)
+        cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
+
         // Drop ct (and its storage context) before opening merk
         drop(ct);
+
+        // Commit data batch to make writes visible in the transaction.
+        // Note: this commits subtree data before the parent element update
+        // below. If the parent Merk update fails, the subtree data is orphaned
+        // in the transaction. This is the same pattern as other direct GroveDB
+        // operations — the caller is expected to rollback the tx on error.
+        // The batch path (preprocess_commitment_tree_ops) avoids this by using
+        // a shared StorageBatch that commits atomically with all other ops.
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .map_err(Into::into)
+        );
 
         // 5. Update element in parent Merk
         let batch = StorageBatch::new();
@@ -252,7 +276,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(ct_path, tx.as_ref())
+            .get_transactional_storage_context(ct_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let ct = cost_return_on_error!(
@@ -307,7 +331,7 @@ impl GroveDb {
 
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(ct_path, tx.as_ref())
+            .get_transactional_storage_context(ct_path, None, tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let ct = cost_return_on_error!(
@@ -396,6 +420,7 @@ impl GroveDb {
         &self,
         ops: Vec<QualifiedGroveDbOp>,
         transaction: &Transaction,
+        storage_batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
         let mut cost = OperationCost::default();
@@ -467,7 +492,8 @@ impl GroveDb {
                 }
             };
 
-            // Build subtree path and open single storage context
+            // Build subtree path and open transactional storage (write-through
+            // cache + MMR overlay provide read-after-write visibility)
             let mut ct_path_vec = path_vec.clone();
             ct_path_vec.push(key_bytes.clone());
             let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
@@ -475,7 +501,7 @@ impl GroveDb {
 
             let storage_ctx = self
                 .db
-                .get_immediate_storage_context(ct_path, transaction)
+                .get_transactional_storage_context(ct_path, Some(storage_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             // Open composite CommitmentTree
@@ -503,6 +529,9 @@ impl GroveDb {
                 ct.compute_current_state_root().map_err(map_ct_err)
             );
             let current_total_count = ct.total_count();
+
+            // Flush MMR overlay to storage (through the batch)
+            cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
 
             // Drop ct (and its storage context)
             drop(ct);

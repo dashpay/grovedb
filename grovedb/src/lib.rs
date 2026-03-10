@@ -1194,3 +1194,30 @@ impl GroveDb {
         }
     }
 }
+
+/// Test-only helpers for verifying internal storage state.
+#[cfg(all(test, feature = "minimal"))]
+impl GroveDb {
+    /// Read a raw key from a subtree's transactional storage context.
+    ///
+    /// This bypasses all element-level checks (count, type) and reads directly
+    /// from the subtree's storage. Used in tests to verify that no data leaked
+    /// into the transaction after a failed batch.
+    pub(crate) fn raw_subtree_get<'b, B: AsRef<[u8]> + 'b>(
+        &self,
+        path: SubtreePath<'b, B>,
+        key: &[u8],
+        transaction: &Transaction,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let storage_ctx = self
+            .db
+            .get_transactional_storage_context(path, None, transaction)
+            .value;
+
+        let result = storage_ctx.get(key).value;
+        match result {
+            Ok(opt) => Ok(opt.map(|v| v.to_vec())),
+            Err(e) => Err(e.into()),
+        }
+    }
+}

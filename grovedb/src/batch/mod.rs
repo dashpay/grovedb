@@ -3437,28 +3437,28 @@ impl GroveDb {
         // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // Preprocess MmrTreeAppend ops: execute MMR operations
         // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // Preprocess BulkAppend ops: execute bulk append operations
         // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_bulk_append_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // Preprocess DenseTreeInsert ops: execute dense tree operations
         // then convert to ReplaceTreeRootKey ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_dense_tree_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // Collect paths of subtrees being deleted, separated by type.
@@ -3806,25 +3806,25 @@ impl GroveDb {
         // Preprocess CommitmentTreeInsert ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_commitment_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // Preprocess MmrTreeAppend ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_mmr_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // Preprocess BulkAppend ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_bulk_append_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_bulk_append_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // Preprocess DenseTreeInsert ops
         let ops = cost_return_on_error!(
             &mut cost,
-            self.preprocess_dense_tree_ops(ops, tx.as_ref(), grove_version)
+            self.preprocess_dense_tree_ops(ops, tx.as_ref(), &storage_batch, grove_version)
         );
 
         // See comment in apply_batch_with_element_flags_update for why

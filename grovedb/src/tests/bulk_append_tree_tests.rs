@@ -1713,3 +1713,415 @@ fn test_bulk_batch_with_non_bulk_element() {
         result
     );
 }
+
+// ===========================================================================
+// Batch discard / transaction rollback tests
+// ===========================================================================
+
+/// A batch with bulk appends succeeds, then a later op in the batch fails.
+/// The entire batch must be discarded — the bulk count should remain at its
+/// pre-batch value.
+#[test]
+fn test_bulk_batch_discarded_on_later_op_failure() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+
+    // Pre-insert an item so insert_if_not_exists will fail
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Batch: bulk append (should succeed internally) + conflicting insert
+    let ops = vec![
+        QualifiedGroveDbOp::bulk_append_op(
+            vec![b"parent".to_vec(), b"bulk".to_vec()],
+            b"note_data".to_vec(),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    // Use an external (borrowed) transaction to verify no preprocessing data
+    // leaks into it when the batch fails.
+    let tx = db.start_transaction();
+    let result = db.apply_batch(ops, None, Some(&tx), grove_version).unwrap();
+    assert!(result.is_err(), "batch should fail due to duplicate key");
+
+    // Bulk count must remain 0 inside the transaction
+    let count_in_tx = db
+        .bulk_count([b"parent"].as_ref(), b"bulk", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(
+        count_in_tx, 0,
+        "bulk count should be 0 inside tx after batch discard"
+    );
+
+    // Verify no raw subtree data leaked into the transaction. The bulk append
+    // tree's dense buffer uses 2-byte position keys; position 0 → [0, 0].
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"bulk".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw bulk subtree storage at position 0 should be empty inside tx after batch discard"
+    );
+
+    // Also verify outside the transaction
+    let count = db
+        .bulk_count([b"parent"].as_ref(), b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(count, 0, "bulk count should be 0 after batch discard");
+
+    db.rollback_transaction(&tx).expect("rollback");
+}
+
+/// Bulk appends that trigger compaction, then a later op fails. Verifies
+/// both the dense tree buffer and the MMR state are discarded.
+#[test]
+fn test_bulk_batch_discarded_after_compaction() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    // chunk_power=2 → capacity=3, epoch_size=4 → compaction on 4th append
+    db.insert(
+        [b"parent"].as_ref(),
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Build a batch with enough appends to trigger compaction (4 appends for
+    // chunk_power=2), followed by a conflicting insert to fail the batch
+    let mut ops: Vec<QualifiedGroveDbOp> = (0..TEST_CHUNK_SIZE as u8)
+        .map(|i| {
+            QualifiedGroveDbOp::bulk_append_op(vec![b"parent".to_vec(), b"bulk".to_vec()], vec![i])
+        })
+        .collect();
+    ops.push(QualifiedGroveDbOp::insert_if_not_exists_op(
+        vec![b"parent".to_vec()],
+        b"existing".to_vec(),
+        Element::new_item(b"conflict".to_vec()),
+    ));
+
+    // Use an external (borrowed) transaction to verify no preprocessing data
+    // leaks into it when the batch fails — even after compaction.
+    let tx = db.start_transaction();
+    let result = db.apply_batch(ops, None, Some(&tx), grove_version).unwrap();
+    assert!(
+        result.is_err(),
+        "batch should fail after compaction + conflict"
+    );
+
+    // Bulk count must be 0 inside the transaction
+    let count_in_tx = db
+        .bulk_count([b"parent"].as_ref(), b"bulk", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(
+        count_in_tx, 0,
+        "bulk count should be 0 inside tx after batch discard (even after compaction)"
+    );
+
+    // Verify no raw subtree data leaked — check both dense buffer (position 0)
+    // and MMR data (MSB-tagged position 0) since compaction was triggered.
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"bulk".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_dense_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw dense get should not error");
+    assert!(
+        raw_dense_pos0.is_none(),
+        "raw dense buffer at position 0 should be empty inside tx after compaction discard"
+    );
+    // BulkAppendTree compaction uses MmrKeySize::U32 (4-byte tagged keys),
+    // not U64 (8-byte). Position 0 with U32 tag: 0x8000_0000.
+    let mmr_key_pos0 = 0x8000_0000u32.to_be_bytes();
+    let raw_mmr_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &mmr_key_pos0, &tx)
+        .expect("raw mmr get should not error");
+    assert!(
+        raw_mmr_pos0.is_none(),
+        "raw MMR data at position 0 should be empty inside tx after compaction discard"
+    );
+
+    // Also verify outside the transaction
+    let count = db
+        .bulk_count([b"parent"].as_ref(), b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(
+        count, 0,
+        "bulk count should be 0 after batch discard (even after compaction)"
+    );
+
+    db.rollback_transaction(&tx).expect("rollback");
+}
+
+/// Bulk appends inside a transaction, then the transaction is rolled back.
+/// Verifies the count reverts to pre-transaction value.
+#[test]
+fn test_bulk_transaction_rollback_reverts_appends() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+
+    // Insert one value outside the transaction
+    db.bulk_append(EMPTY_PATH, b"bulk", b"v0".to_vec(), None, grove_version)
+        .unwrap()
+        .expect("append v0");
+
+    let count_before = db
+        .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count before");
+    assert_eq!(count_before, 1);
+
+    // Start transaction and append more (enough to trigger compaction)
+    let tx = db.start_transaction();
+
+    for i in 1..(TEST_CHUNK_SIZE as u8 + 2) {
+        db.bulk_append(EMPTY_PATH, b"bulk", vec![i], Some(&tx), grove_version)
+            .unwrap()
+            .expect("append in tx");
+    }
+
+    // Rollback
+    db.rollback_transaction(&tx).expect("rollback");
+
+    // Count should revert to 1
+    let count_after = db
+        .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(count_after, 1, "bulk count should revert after rollback");
+}
+
+/// After a failed batch, a subsequent successful batch on the same bulk
+/// append tree should work correctly — no stale cache/overlay state leaks.
+#[test]
+fn test_bulk_successful_batch_after_failed_batch() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Use an external transaction — the failing batch must not leak
+    // preprocessing data into the tx.
+    let tx = db.start_transaction();
+
+    // First batch: bulk append + conflicting insert → fails
+    let ops_fail = vec![
+        QualifiedGroveDbOp::bulk_append_op(
+            vec![b"parent".to_vec(), b"bulk".to_vec()],
+            b"ghost".to_vec(),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    let result = db
+        .apply_batch(ops_fail, None, Some(&tx), grove_version)
+        .unwrap();
+    assert!(result.is_err(), "first batch should fail");
+
+    // Tx should be clean — no preprocessing data leaked
+    let count_after_fail = db
+        .bulk_count([b"parent"].as_ref(), b"bulk", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count after fail");
+    assert_eq!(
+        count_after_fail, 0,
+        "bulk count in tx should be 0 after failed batch"
+    );
+
+    // Verify no raw subtree data leaked into the transaction
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"bulk".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw bulk subtree storage at position 0 should be empty inside tx after failed batch"
+    );
+
+    // Second batch: bulk append only → should succeed in the same tx
+    let ops_ok = vec![QualifiedGroveDbOp::bulk_append_op(
+        vec![b"parent".to_vec(), b"bulk".to_vec()],
+        b"real".to_vec(),
+    )];
+
+    db.apply_batch(ops_ok, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("second batch should succeed");
+
+    // Commit the transaction
+    db.commit_transaction(tx)
+        .unwrap()
+        .expect("commit transaction");
+
+    let count = db
+        .bulk_count([b"parent"].as_ref(), b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(count, 1, "only the second batch's value should be present");
+}
+
+/// Multiple compaction cycles via batch + transaction, then rollback.
+/// Verifies the tree fully reverts even when multiple chunks were created.
+#[test]
+fn test_bulk_batch_multi_compaction_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"bulk",
+        Element::empty_bulk_append_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert bulk tree");
+
+    let tx = db.start_transaction();
+
+    // Append enough to trigger 2 full compaction cycles + partial buffer
+    // chunk_power=2: epoch_size=4, so 9 appends = 2 compactions + 1 buffered
+    let total_appends = TEST_CHUNK_SIZE * 2 + 1;
+    let ops: Vec<QualifiedGroveDbOp> = (0..total_appends as u8)
+        .map(|i| QualifiedGroveDbOp::bulk_append_op(vec![b"bulk".to_vec()], vec![i]))
+        .collect();
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch in tx");
+
+    let count_in_tx = db
+        .bulk_count(EMPTY_PATH, b"bulk", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(count_in_tx, total_appends as u64);
+
+    // Drop transaction
+    drop(tx);
+
+    let count_after = db
+        .bulk_count(EMPTY_PATH, b"bulk", None, grove_version)
+        .unwrap()
+        .expect("count after drop");
+    assert_eq!(
+        count_after, 0,
+        "bulk tree should be empty after multi-compaction tx rollback"
+    );
+}
