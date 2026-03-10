@@ -3821,7 +3821,7 @@ fn test_5_item_tree_tampering_detected_with_elements() {
     query2.insert_key(vec![1]);
 
     let (tampered_root, _tampered_result) = query2
-        .execute_proof(tampered.as_slice(), None, true)
+        .execute_proof(tampered.as_slice(), None, true, false)
         .unwrap()
         .expect("execute_proof failed");
 
@@ -3994,7 +3994,7 @@ fn test_5_item_tree_tampering_detected_raw_values() {
     query2.insert_key(vec![1]);
 
     let (tampered_root, _tampered_result) = query2
-        .execute_proof(tampered.as_slice(), None, true)
+        .execute_proof(tampered.as_slice(), None, true, false)
         .unwrap()
         .expect("execute_proof failed");
 
@@ -4123,7 +4123,7 @@ fn test_tampering_detected_invalid_discriminant() {
 
     // Use execute_proof to get the computed root
     let (tampered_root, _tampered_result) = query2
-        .execute_proof(tampered.as_slice(), None, true)
+        .execute_proof(tampered.as_slice(), None, true, false)
         .unwrap()
         .expect("execute_proof failed");
 
@@ -4241,7 +4241,7 @@ fn test_kvvaluehash_still_used_for_tree_discriminants() {
         query2.insert_key(key.clone());
     }
     let result = query2
-        .execute_proof(tampered.as_slice(), None, true)
+        .execute_proof(tampered.as_slice(), None, true, false)
         .unwrap();
 
     assert!(
@@ -4295,7 +4295,9 @@ fn test_execute_proof_rejects_trailing_bytes() {
     // Append trailing garbage bytes
     bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
-    let result = query.execute_proof(bytes.as_slice(), None, true).unwrap();
+    let result = query
+        .execute_proof(bytes.as_slice(), None, true, false)
+        .unwrap();
 
     assert!(
         result.is_err(),
