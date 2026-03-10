@@ -95,6 +95,7 @@ jobs:
   test:
     name: Test (${{ matrix.partition }}/3)
     needs: build-tests
+    if: needs.build-tests.result == 'success'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -131,8 +132,8 @@ jobs:
 
   coverage-report:
     name: Coverage Report
-    needs: test
-    if: always()
+    needs: [build-tests, test]
+    if: always() && needs.build-tests.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
