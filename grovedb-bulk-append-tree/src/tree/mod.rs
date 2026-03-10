@@ -21,6 +21,7 @@ pub use fetch::{BufferQueryResult, ChunkQueryResult};
 mod tests;
 
 use grovedb_dense_fixed_sized_merkle_tree::DenseFixedSizedMerkleTree;
+use grovedb_merkle_mountain_range::MmrNode;
 
 #[cfg(feature = "storage")]
 use crate::BulkAppendError;
@@ -69,6 +70,11 @@ pub struct BulkAppendTree<S> {
     /// the MMR size and dense tree state.
     pub total_count: u64,
     pub dense_tree: DenseFixedSizedMerkleTree<S>,
+    /// MMR node overlay: holds nodes pushed during this session that have
+    /// not yet been committed to storage. Persists across MMR instance
+    /// lifetimes (compaction cycles) so that reads can find recently-pushed
+    /// nodes without a storage round-trip.
+    pub(crate) mmr_overlay: Vec<(u64, Vec<MmrNode>)>,
 }
 
 impl<S> BulkAppendTree<S> {

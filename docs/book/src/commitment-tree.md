@@ -330,8 +330,10 @@ db.commitment_tree_count(path, key, tx, version)
 
 The typed `commitment_tree_insert` accepts a `TransmittedNoteCiphertext<M>` and
 serializes it internally. The raw `commitment_tree_insert_raw` (pub(crate))
-accepts `Vec<u8>` and is used by batch preprocessing where payloads are already
-serialized.
+accepts `Vec<u8>` and is used by the direct (non-batch) API and
+`apply_operations_without_batching`. Batch preprocessing performs its own
+inline processing using a shared `StorageBatch` and does not call
+`commitment_tree_insert_raw`.
 
 ### commitment_tree_insert
 

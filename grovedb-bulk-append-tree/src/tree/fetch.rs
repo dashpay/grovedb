@@ -1,7 +1,7 @@
 //! Read operations for BulkAppendTree.
 
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
-use grovedb_merkle_mountain_range::{leaf_to_pos, MMRStoreReadOps, MmrKeySize, MmrStore, MMR};
+use grovedb_merkle_mountain_range::{leaf_to_pos, MmrKeySize, MmrStore, MMR};
 use grovedb_query::Query;
 use grovedb_storage::StorageContext;
 
@@ -69,13 +69,18 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     ///
     /// This reads from the **chunk MMR**, which stores immutable epoch blobs.
     /// Returns `None` if the chunk hasn't been completed yet.
+    ///
+    /// Uses the MMR overlay to find nodes that were pushed during this session
+    /// but not yet committed to storage.
     pub fn get_chunk_value(&self, chunk_index: u64) -> Result<Option<Vec<u8>>, BulkAppendError> {
         if chunk_index >= self.chunk_count() {
             return Ok(None);
         }
         let mmr_pos = leaf_to_pos(chunk_index);
         let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
-        let node = (&mmr_store)
+        let mmr = MMR::new_with_overlay(self.mmr_size(), &mmr_store, self.mmr_overlay.clone());
+        let node = mmr
+            .batch
             .element_at_position(mmr_pos)
             .unwrap()
             .map_err(|e| {
@@ -130,7 +135,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             (Vec::new(), [0u8; 32])
         } else {
             let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
-            let mmr = MMR::new(mmr_size, &mmr_store);
+            let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, self.mmr_overlay.clone());
 
             let positions: Vec<u64> = chunk_indices.iter().map(|&idx| leaf_to_pos(idx)).collect();
             let proof = mmr.gen_proof(positions).unwrap().map_err(|e| {

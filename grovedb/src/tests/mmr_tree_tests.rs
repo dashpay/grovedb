@@ -1672,3 +1672,322 @@ fn test_verify_grovedb_mmr_tree_empty() {
         issues
     );
 }
+
+// ===========================================================================
+// Batch discard / transaction rollback tests
+// ===========================================================================
+
+/// A batch with MMR tree appends succeeds, then a later op in the batch
+/// fails. The entire batch must be discarded — the MMR leaf count should
+/// remain at its pre-batch value.
+#[test]
+fn test_mmr_batch_discarded_on_later_op_failure() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Pre-insert an item so insert_if_not_exists will fail
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Batch: mmr append (should succeed internally) + conflicting insert
+    let ops = vec![
+        QualifiedGroveDbOp::mmr_tree_append_op(
+            vec![b"parent".to_vec(), b"mmr".to_vec()],
+            b"leaf_data".to_vec(),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    // Use an external (borrowed) transaction to verify no preprocessing data
+    // leaks into it when the batch fails.
+    let tx = db.start_transaction();
+    let result = db.apply_batch(ops, None, Some(&tx), grove_version).unwrap();
+    assert!(result.is_err(), "batch should fail due to duplicate key");
+
+    // MMR leaf count must remain 0 inside the transaction
+    let leaf_count_in_tx = db
+        .mmr_tree_leaf_count([b"parent"].as_ref(), b"mmr", Some(&tx), grove_version)
+        .unwrap()
+        .expect("leaf count in tx");
+    assert_eq!(
+        leaf_count_in_tx, 0,
+        "mmr leaf count should be 0 inside tx after batch discard"
+    );
+
+    // Verify no raw subtree data leaked into the transaction. MMR stores nodes
+    // at 8-byte MSB-tagged position keys; position 0 → 0x80_00_00_00_00_00_00_00.
+    let mmr_key_pos0 = 0x8000_0000_0000_0000u64.to_be_bytes();
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"mmr".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &mmr_key_pos0, &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw MMR subtree storage at position 0 should be empty inside tx after batch discard"
+    );
+
+    // Also verify outside the transaction
+    let leaf_count = db
+        .mmr_tree_leaf_count([b"parent"].as_ref(), b"mmr", None, grove_version)
+        .unwrap()
+        .expect("leaf count");
+    assert_eq!(
+        leaf_count, 0,
+        "mmr leaf count should be 0 after batch discard"
+    );
+
+    db.rollback_transaction(&tx).expect("rollback");
+}
+
+/// MMR tree appends inside a transaction, then the transaction is rolled
+/// back. Verifies the leaf count reverts.
+#[test]
+fn test_mmr_transaction_rollback_reverts_appends() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    // Append one value outside the transaction
+    db.mmr_tree_append(EMPTY_PATH, b"mmr", b"leaf_0".to_vec(), None, grove_version)
+        .unwrap()
+        .expect("append leaf_0");
+
+    let count_before = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"mmr", None, grove_version)
+        .unwrap()
+        .expect("count before");
+    assert_eq!(count_before, 1);
+
+    // Start transaction and append more
+    let tx = db.start_transaction();
+
+    for i in 1u8..4 {
+        db.mmr_tree_append(
+            EMPTY_PATH,
+            b"mmr",
+            format!("leaf_{}", i).into_bytes(),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("append in tx");
+    }
+
+    let count_in_tx = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"mmr", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(count_in_tx, 4, "should see 4 leaves inside transaction");
+
+    // Rollback
+    db.rollback_transaction(&tx).expect("rollback");
+
+    let count_after = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"mmr", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(
+        count_after, 1,
+        "mmr leaf count should revert after rollback"
+    );
+}
+
+/// Batch with multiple MMR appends in a transaction, then transaction is
+/// dropped. Verifies the leaf count reverts.
+#[test]
+fn test_mmr_batch_in_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    let tx = db.start_transaction();
+
+    let ops: Vec<QualifiedGroveDbOp> = (0u8..5)
+        .map(|i| {
+            QualifiedGroveDbOp::mmr_tree_append_op(
+                vec![b"mmr".to_vec()],
+                format!("leaf_{}", i).into_bytes(),
+            )
+        })
+        .collect();
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch in tx");
+
+    let count_in_tx = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"mmr", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(count_in_tx, 5);
+
+    // Drop transaction (implicit rollback)
+    drop(tx);
+
+    let count_after = db
+        .mmr_tree_leaf_count(EMPTY_PATH, b"mmr", None, grove_version)
+        .unwrap()
+        .expect("count after drop");
+    assert_eq!(count_after, 0, "mmr should be empty after tx drop");
+}
+
+/// After a failed batch, a subsequent successful batch on the same MMR
+/// tree should work correctly — no stale overlay state leaks.
+#[test]
+fn test_mmr_successful_batch_after_failed_batch() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"mmr",
+        Element::empty_mmr_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert mmr tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Use an external transaction — the failing batch must not leak
+    // preprocessing data into the tx.
+    let tx = db.start_transaction();
+
+    // First batch: mmr append + conflicting insert → fails
+    let ops_fail = vec![
+        QualifiedGroveDbOp::mmr_tree_append_op(
+            vec![b"parent".to_vec(), b"mmr".to_vec()],
+            b"ghost_leaf".to_vec(),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    let result = db
+        .apply_batch(ops_fail, None, Some(&tx), grove_version)
+        .unwrap();
+    assert!(result.is_err(), "first batch should fail");
+
+    // Tx should be clean — no preprocessing data leaked
+    let count_after_fail = db
+        .mmr_tree_leaf_count([b"parent"].as_ref(), b"mmr", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count after fail");
+    assert_eq!(
+        count_after_fail, 0,
+        "mmr leaf count in tx should be 0 after failed batch"
+    );
+
+    // Verify no raw subtree data leaked into the transaction
+    let mmr_key_pos0 = 0x8000_0000_0000_0000u64.to_be_bytes();
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"mmr".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &mmr_key_pos0, &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw MMR subtree storage at position 0 should be empty inside tx after failed batch"
+    );
+
+    // Second batch: mmr append only → should succeed in the same tx
+    let ops_ok = vec![QualifiedGroveDbOp::mmr_tree_append_op(
+        vec![b"parent".to_vec(), b"mmr".to_vec()],
+        b"real_leaf".to_vec(),
+    )];
+
+    db.apply_batch(ops_ok, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("second batch should succeed");
+
+    // Commit the transaction
+    db.commit_transaction(tx)
+        .unwrap()
+        .expect("commit transaction");
+
+    let count = db
+        .mmr_tree_leaf_count([b"parent"].as_ref(), b"mmr", None, grove_version)
+        .unwrap()
+        .expect("leaf count");
+    assert_eq!(count, 1, "only the second batch's leaf should be present");
+}

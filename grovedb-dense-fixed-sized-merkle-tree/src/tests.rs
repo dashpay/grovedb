@@ -681,8 +681,14 @@ fn test_get_store_inconsistency_errors() {
 
 #[test]
 fn test_proof_generate_store_failure() {
-    let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new()).expect("height 3");
-    tree.insert(b"val").unwrap().expect("insert should succeed");
+    // Use from_state (not insert) so the write-through cache is empty.
+    // Then corrupt the store to simulate missing data.
+    let store = MemStorageContext::new();
+    store
+        .data
+        .borrow_mut()
+        .insert(position_key(0).to_vec(), b"val".to_vec());
+    let tree = DenseFixedSizedMerkleTree::from_state(3, 1, store).expect("from_state");
 
     // Corrupt the store by removing the value
     tree.storage

@@ -44,12 +44,23 @@ pub enum NonMerkTreeMeta {
 
 ```rust
 pub enum SubelementsDeletionBehavior {
-    DontCheck,       // Skip emptiness check; caller guarantees tree is empty
+    DontCheckWithNoCleanup, // Skip emptiness check AND post-apply cleanup; caller guarantees tree is empty
     Error,           // Return Error::DeletingNonEmptyTree if non-empty
-    DeleteChildren,  // Check, and recursively delete children if non-empty
+    DeleteChildren,         // Skip emptiness check, but perform post-apply storage cleanup
     Skip,            // Check, and silently skip deletion if non-empty
 }
 ```
+
+| Variant | Tree state | Emptiness check | Deletes tree | Storage cleanup |
+|---|---|---|---|---|
+| `DontCheckWithNoCleanup` | empty | No | Yes | No |
+| `DontCheckWithNoCleanup` | non-empty | No | Yes | No |
+| `DeleteChildren` | empty | No | Yes | Yes |
+| `DeleteChildren` | non-empty | No | Yes | Yes |
+| `Error` | empty | Yes | Yes | Yes |
+| `Error` | non-empty | Yes | No (returns error) | No |
+| `Skip` | empty | Yes | Yes | Yes |
+| `Skip` | non-empty | Yes | No (silently skips) | No |
 
 Chaque opération est enveloppée dans un `QualifiedGroveDbOp` qui inclut le chemin :
 

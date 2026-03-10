@@ -2185,3 +2185,328 @@ fn test_is_empty_tree_dense_tree_subtree() {
         .expect("is_empty_tree should succeed for non-empty dense tree");
     assert!(!is_empty, "non-empty dense tree should report as not empty");
 }
+
+// ===========================================================================
+// Batch discard / transaction rollback tests
+// ===========================================================================
+
+/// A batch with dense tree inserts succeeds, then a later op in the batch
+/// fails. The entire batch must be discarded — the dense tree count should
+/// remain at its pre-batch value.
+#[test]
+fn test_dense_batch_discarded_on_later_op_failure() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    // Create a parent tree with a dense tree and a regular item inside it
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"dense",
+        Element::empty_dense_tree(4),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Pre-insert an item so insert_if_not_exists will fail
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Batch: dense insert (should succeed internally) + insert_if_not_exists
+    // on an existing key (will fail, discarding the entire batch)
+    let ops = vec![
+        QualifiedGroveDbOp::dense_tree_insert_op(
+            vec![b"parent".to_vec(), b"dense".to_vec()],
+            b"value_a".to_vec(),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    // Use an external (borrowed) transaction to verify no preprocessing data
+    // leaks into it when the batch fails.
+    let tx = db.start_transaction();
+    let result = db.apply_batch(ops, None, Some(&tx), grove_version).unwrap();
+    assert!(result.is_err(), "batch should fail due to duplicate key");
+
+    // Dense tree count must remain 0 inside the transaction — no preprocessing
+    // data should have leaked into it.
+    let count_in_tx = db
+        .dense_tree_count([b"parent"].as_ref(), b"dense", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(
+        count_in_tx, 0,
+        "dense tree count should be 0 inside tx after batch discard"
+    );
+
+    // Verify no raw subtree data leaked into the transaction. The count check
+    // above only reads the parent element; this reads the actual subtree storage.
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"dense".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw subtree storage at position 0 should be empty inside tx after batch discard"
+    );
+
+    // Also verify outside the transaction
+    let count = db
+        .dense_tree_count([b"parent"].as_ref(), b"dense", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(count, 0, "dense tree count should be 0 after batch discard");
+
+    db.rollback_transaction(&tx).expect("rollback");
+}
+
+/// Dense tree inserts inside a transaction, then the transaction is rolled
+/// back. Verifies the count reverts to pre-transaction value.
+#[test]
+fn test_dense_transaction_rollback_reverts_inserts() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(4),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    // Insert one value outside the transaction
+    db.dense_tree_insert(EMPTY_PATH, b"dense", b"v0".to_vec(), None, grove_version)
+        .unwrap()
+        .expect("insert v0");
+
+    let count_before = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count before");
+    assert_eq!(count_before, 1);
+
+    // Start transaction and insert more values
+    let tx = db.start_transaction();
+
+    for i in 1u8..4 {
+        db.dense_tree_insert(
+            EMPTY_PATH,
+            b"dense",
+            format!("v{}", i).into_bytes(),
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert in tx");
+    }
+
+    // Verify count is updated inside tx
+    let count_in_tx = db
+        .dense_tree_count(EMPTY_PATH, b"dense", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(count_in_tx, 4, "should see 4 values inside transaction");
+
+    // Rollback
+    db.rollback_transaction(&tx).expect("rollback");
+
+    // Count should revert to 1
+    let count_after = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count after rollback");
+    assert_eq!(
+        count_after, 1,
+        "dense tree count should revert after rollback"
+    );
+}
+
+/// Batch with multiple dense tree inserts is applied in a transaction, then
+/// the transaction is rolled back. Verifies both the element metadata and
+/// the stored values revert.
+#[test]
+fn test_dense_batch_in_transaction_rollback() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"dense",
+        Element::empty_dense_tree(4),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    let tx = db.start_transaction();
+
+    let ops: Vec<QualifiedGroveDbOp> = (0u8..3)
+        .map(|i| {
+            QualifiedGroveDbOp::dense_tree_insert_op(
+                vec![b"dense".to_vec()],
+                format!("val_{}", i).into_bytes(),
+            )
+        })
+        .collect();
+
+    db.apply_batch(ops, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("batch in tx");
+
+    // Visible inside tx
+    let count_in_tx = db
+        .dense_tree_count(EMPTY_PATH, b"dense", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count in tx");
+    assert_eq!(count_in_tx, 3);
+
+    // Drop transaction (implicit rollback)
+    drop(tx);
+
+    // Count should be 0 outside tx
+    let count_after = db
+        .dense_tree_count(EMPTY_PATH, b"dense", None, grove_version)
+        .unwrap()
+        .expect("count after drop");
+    assert_eq!(count_after, 0, "dense tree should be empty after tx drop");
+}
+
+/// After a failed batch, a subsequent successful batch on the same dense
+/// tree should work correctly — verifying no stale cache state leaks.
+#[test]
+fn test_dense_successful_batch_after_failed_batch() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"dense",
+        Element::empty_dense_tree(4),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert dense tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"existing",
+        Element::new_item(b"old".to_vec()),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert existing item");
+
+    // Use an external transaction — the failing batch must not leak
+    // preprocessing data into the tx, and a subsequent success batch in the
+    // same tx must work cleanly.
+    let tx = db.start_transaction();
+
+    // First batch: dense insert + conflicting insert → fails
+    let ops_fail = vec![
+        QualifiedGroveDbOp::dense_tree_insert_op(
+            vec![b"parent".to_vec(), b"dense".to_vec()],
+            b"ghost_value".to_vec(),
+        ),
+        QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![b"parent".to_vec()],
+            b"existing".to_vec(),
+            Element::new_item(b"conflict".to_vec()),
+        ),
+    ];
+
+    let result = db
+        .apply_batch(ops_fail, None, Some(&tx), grove_version)
+        .unwrap();
+    assert!(result.is_err(), "first batch should fail");
+
+    // Tx should be clean — no preprocessing data leaked
+    let count_after_fail = db
+        .dense_tree_count([b"parent"].as_ref(), b"dense", Some(&tx), grove_version)
+        .unwrap()
+        .expect("count after fail");
+    assert_eq!(
+        count_after_fail, 0,
+        "dense tree count in tx should be 0 after failed batch"
+    );
+
+    // Verify no raw subtree data leaked into the transaction
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"dense".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw subtree storage at position 0 should be empty inside tx after failed batch"
+    );
+
+    // Second batch: dense insert only → should succeed in the same tx
+    let ops_ok = vec![QualifiedGroveDbOp::dense_tree_insert_op(
+        vec![b"parent".to_vec(), b"dense".to_vec()],
+        b"real_value".to_vec(),
+    )];
+
+    db.apply_batch(ops_ok, None, Some(&tx), grove_version)
+        .unwrap()
+        .expect("second batch should succeed");
+
+    // Commit the transaction
+    db.commit_transaction(tx)
+        .unwrap()
+        .expect("commit transaction");
+
+    let count = db
+        .dense_tree_count([b"parent"].as_ref(), b"dense", None, grove_version)
+        .unwrap()
+        .expect("count");
+    assert_eq!(count, 1, "only the second batch's value should be present");
+}
