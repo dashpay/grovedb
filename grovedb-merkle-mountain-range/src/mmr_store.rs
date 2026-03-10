@@ -22,6 +22,26 @@ impl<Store> MMRBatch<Store> {
         }
     }
 
+    /// Create a batch with pre-populated overlay data.
+    ///
+    /// Used to restore an overlay from a previous session (e.g., across
+    /// multiple compaction cycles in BulkAppendTree) so that reads can
+    /// find nodes that were pushed but not yet committed to storage.
+    pub(crate) fn with_overlay(store: Store, overlay: Vec<(u64, Vec<MmrNode>)>) -> Self {
+        MMRBatch {
+            memory_batch: overlay,
+            store,
+        }
+    }
+
+    /// Extract the in-memory overlay data, leaving the batch empty.
+    ///
+    /// Used to persist the overlay across MMR instance lifetimes without
+    /// committing to storage.
+    pub fn take_overlay(&mut self) -> Vec<(u64, Vec<MmrNode>)> {
+        std::mem::take(&mut self.memory_batch)
+    }
+
     /// Buffer a contiguous run of elements starting at `pos`.
     ///
     /// Entries must be appended with monotonically increasing positions

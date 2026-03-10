@@ -33,6 +33,11 @@ pub fn position_key(pos: u16) -> [u8; 2] {
 ///
 /// Storage is embedded directly on the struct (like Merk).
 ///
+/// A write-through cache (`cache`) holds values written during this session.
+/// Reads check the cache first, falling back to storage. This enables use
+/// with transactional storage contexts where writes are deferred to a batch
+/// and not yet visible through reads.
+///
 /// Note: root hash computation is O(n) per insert where n = count, since no
 /// intermediate hashes are cached. Suitable for small trees (epoch sizes
 /// typically 16-256).
@@ -41,6 +46,10 @@ pub struct DenseFixedSizedMerkleTree<S> {
     count: u16,
     /// The underlying storage context.
     pub storage: S,
+    /// Write-through cache: holds values written in this session.
+    /// Indexed by position. `None` means the value has not been written
+    /// in this session (fall back to storage).
+    cache: Vec<Option<Vec<u8>>>,
 }
 
 // ── Pure accessors (no storage bounds needed) ─────────────────────────
@@ -77,14 +86,20 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
     /// Height must be between 1 and 16 inclusive.
     pub fn new(height: u8, storage: S) -> Result<Self, DenseMerkleError> {
         validate_height(height)?;
+        let capacity = Self::capacity_for_height(height);
         Ok(Self {
             height,
             count: 0,
             storage,
+            cache: vec![None; capacity as usize],
         })
     }
 
     /// Reconstitute a tree from stored state.
+    ///
+    /// The cache starts empty — pre-existing values are loaded from storage
+    /// on demand. Only values written via [`insert`] or [`try_insert`] in
+    /// this session are cached.
     pub fn from_state(height: u8, count: u16, storage: S) -> Result<Self, DenseMerkleError> {
         validate_height(height)?;
         let capacity = Self::capacity_for_height(height);
@@ -98,6 +113,7 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
             height,
             count,
             storage,
+            cache: vec![None; capacity as usize],
         })
     }
 
@@ -204,16 +220,31 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
 
     /// Reset the tree to empty state.
     ///
-    /// Sets count to 0. Old values remain in the underlying storage (they
-    /// will be overwritten on the next cycle).
+    /// Sets count to 0 and clears the write-through cache. Old values
+    /// remain in the underlying storage (they will be overwritten on the
+    /// next cycle).
     pub fn reset(&mut self) {
         self.count = 0;
+        self.cache.fill(None);
     }
 
     // ── Internal storage helpers ──────────────────────────────────────
 
-    /// Read a value by position from storage.
+    /// Read a value by position, checking the write-through cache first.
+    ///
+    /// Cache hits return deterministic costs (seek_count=1,
+    /// storage_loaded_bytes=len) matching the MMRBatch pattern, so fee
+    /// estimates are consistent regardless of cache state.
     pub(crate) fn get_value(&self, position: u16) -> CostResult<Option<Vec<u8>>, DenseMerkleError> {
+        // Check write-through cache first
+        if let Some(Some(cached)) = self.cache.get(position as usize) {
+            return Ok(Some(cached.clone())).wrap_with_cost(OperationCost {
+                seek_count: 1,
+                storage_loaded_bytes: cached.len() as u64,
+                ..Default::default()
+            });
+        }
+        // Fall back to storage
         let mut cost = OperationCost::default();
         let key = position_key(position);
         let result = self.storage.get(key).unwrap_add_cost(&mut cost);
@@ -227,8 +258,12 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
         }
     }
 
-    /// Write a value by position to storage.
-    fn put_value(&self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
+    /// Write a value by position to storage and cache.
+    ///
+    /// On success, the value is stored in the write-through cache so that
+    /// subsequent reads (e.g., during root hash computation) can be served
+    /// from memory even when the storage context defers writes.
+    fn put_value(&mut self, position: u16, value: &[u8]) -> CostResult<(), DenseMerkleError> {
         let mut cost = OperationCost::default();
         let key = position_key(position);
         let result = self
@@ -236,7 +271,13 @@ impl<'db, S: StorageContext<'db>> DenseFixedSizedMerkleTree<S> {
             .put(key, value, None, None)
             .unwrap_add_cost(&mut cost);
         match result {
-            Ok(()) => Ok(()).wrap_with_cost(cost),
+            Ok(()) => {
+                // Cache on successful write
+                if let Some(slot) = self.cache.get_mut(position as usize) {
+                    *slot = Some(value.to_vec());
+                }
+                Ok(()).wrap_with_cost(cost)
+            }
             Err(e) => Err(DenseMerkleError::StoreError(format!(
                 "put at pos {}: {}",
                 position, e

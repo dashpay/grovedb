@@ -69,10 +69,13 @@ impl GroveDb {
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
-        // 3. Open storage, create store adapter, push value
+        // 3. Open storage, create store adapter, push value.
+        // Uses transactional context — the MMRBatch overlay provides
+        // read-after-write, and root is computed before commit.
+        let data_batch = StorageBatch::new();
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(subtree_path.clone(), tx.as_ref())
+            .get_transactional_storage_context(subtree_path.clone(), Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let store = MmrStore::new(&storage_ctx);
@@ -106,6 +109,14 @@ impl GroveDb {
 
         #[allow(clippy::drop_non_drop)]
         drop(storage_ctx);
+
+        // Commit data writes to the transaction
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .map_err(Into::into)
+        );
 
         // 4. Open parent Merk and update the MmrTree element
         let batch = StorageBatch::new();
@@ -408,10 +419,13 @@ impl GroveDb {
             let st_path_refs: Vec<&[u8]> = st_path_vec.iter().map(|v| v.as_slice()).collect();
             let st_path = SubtreePath::from(st_path_refs.as_slice());
 
-            // Open immediate storage context (consistent with other preprocessors)
+            // Use transactional storage context. The MMRBatch overlay
+            // provides read-after-write for newly pushed values, and root
+            // is computed before commit, so immediate context is not needed.
+            let data_batch = StorageBatch::new();
             let storage_ctx = self
                 .db
-                .get_immediate_storage_context(st_path, transaction)
+                .get_transactional_storage_context(st_path, Some(&data_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             let store = MmrStore::new(&storage_ctx);
@@ -447,6 +461,14 @@ impl GroveDb {
 
             #[allow(clippy::drop_non_drop)]
             drop(storage_ctx);
+
+            // Commit data writes to the transaction
+            cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .commit_multi_context_batch(data_batch, Some(transaction))
+                    .map_err(Into::into)
+            );
 
             // Create a ReplaceNonMerkTreeRoot — MMR root flows as child hash
             // Key is restored for downstream (from_ops, execute_ops_on_path)

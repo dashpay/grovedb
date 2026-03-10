@@ -19,6 +19,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         Ok(Self {
             total_count: 0,
             dense_tree,
+            mmr_overlay: Vec::new(),
         })
     }
 
@@ -42,6 +43,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         Ok(Self {
             total_count,
             dense_tree,
+            mmr_overlay: Vec::new(),
         })
     }
 
@@ -136,24 +138,26 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
         let leaf_count = mmr_size_to_leaf_count(mmr_size);
         hash_count += hash_count_for_push(leaf_count);
 
-        // Create MmrStore on the fly from the dense tree's storage
+        // Create MmrStore on the fly from the dense tree's storage.
+        // Use the overlay from previous compactions so cross-compaction
+        // reads work without a storage round-trip. After push+get_root,
+        // take the overlay back (don't commit — that happens at session end).
         let mmr_root = {
             let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
-            let mut mmr = MMR::new(mmr_size, &mmr_store);
+            let mut mmr =
+                MMR::new_with_overlay(mmr_size, &mmr_store, std::mem::take(&mut self.mmr_overlay));
             mmr.push(leaf)
                 .unwrap()
                 .map_err(|e| BulkAppendError::MmrError(format!("MMR push failed: {}", e)))?;
 
-            // Get root BEFORE commit — data is still in the MMRBatch overlay
             let root_node = mmr
                 .get_root()
                 .unwrap()
                 .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
             let root = root_node.hash();
 
-            mmr.commit()
-                .unwrap()
-                .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
+            // Take overlay back instead of committing
+            self.mmr_overlay = mmr.batch.take_overlay();
 
             root
         };
@@ -171,11 +175,32 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             return Ok([0u8; 32]);
         }
         let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
-        let mmr = MMR::new(mmr_size, &mmr_store);
+        let mmr = MMR::new_with_overlay(mmr_size, &mmr_store, self.mmr_overlay.clone());
         let root_node = mmr
             .get_root()
             .unwrap()
             .map_err(|e| BulkAppendError::MmrError(format!("MMR get_root failed: {}", e)))?;
         Ok(root_node.hash())
+    }
+
+    /// Flush the MMR overlay to storage.
+    ///
+    /// Call this at the end of a session to persist all MMR nodes that were
+    /// buffered during compaction cycles. This is a no-op if no compactions
+    /// occurred.
+    pub fn commit_mmr(&mut self) -> Result<(), BulkAppendError> {
+        if self.mmr_overlay.is_empty() {
+            return Ok(());
+        }
+        let mmr_store = MmrStore::with_key_size(&self.dense_tree.storage, MmrKeySize::U32);
+        let mut mmr = MMR::new_with_overlay(
+            self.mmr_size(),
+            &mmr_store,
+            std::mem::take(&mut self.mmr_overlay),
+        );
+        mmr.commit()
+            .unwrap()
+            .map_err(|e| BulkAppendError::MmrError(format!("MMR commit failed: {}", e)))?;
+        Ok(())
     }
 }

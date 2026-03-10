@@ -67,10 +67,13 @@ impl GroveDb {
         let subtree_path_refs: Vec<&[u8]> = subtree_path_vec.iter().map(|v| v.as_slice()).collect();
         let subtree_path = SubtreePath::from(subtree_path_refs.as_slice());
 
-        // 3. Open storage, create tree with embedded storage, insert
+        // 3. Open storage, create tree with embedded storage, insert.
+        // Uses transactional context — the dense tree's write-through cache
+        // provides read-after-write visibility for root hash computation.
+        let data_batch = StorageBatch::new();
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(subtree_path.clone(), tx.as_ref())
+            .get_transactional_storage_context(subtree_path.clone(), Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         let mut tree = cost_return_on_error_no_add!(
@@ -87,8 +90,16 @@ impl GroveDb {
 
         let new_count = tree.count();
 
-        // Drop tree (and its embedded storage context) before opening merk
+        // Drop tree (and its embedded storage context) before committing
         drop(tree);
+
+        // Commit data writes to the transaction
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .map_err(Into::into)
+        );
 
         // 4. Update element and propagate
         let batch = StorageBatch::new();
@@ -391,10 +402,14 @@ impl GroveDb {
             let st_path_refs: Vec<&[u8]> = st_path_vec.iter().map(|v| v.as_slice()).collect();
             let st_path = SubtreePath::from(st_path_refs.as_slice());
 
-            // Use immediate storage for read-after-write visibility
+            // Use transactional storage context with a batch. The dense
+            // tree's write-through cache provides read-after-write
+            // visibility for values written during this session, so we
+            // don't need immediate context.
+            let data_batch = StorageBatch::new();
             let storage_ctx = self
                 .db
-                .get_immediate_storage_context(st_path.clone(), transaction)
+                .get_transactional_storage_context(st_path.clone(), Some(&data_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             let mut tree = cost_return_on_error_no_add!(
@@ -416,8 +431,17 @@ impl GroveDb {
 
             let new_count = tree.count();
 
-            // Drop tree (and its embedded storage context)
+            // Drop tree (and its embedded storage context) before committing
             drop(tree);
+
+            // Commit the data batch to the transaction so writes are
+            // visible to subsequent operations in the pipeline
+            cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .commit_multi_context_batch(data_batch, Some(transaction))
+                    .map_err(Into::into)
+            );
 
             // Key is restored for downstream (from_ops, execute_ops_on_path)
             let replacement = QualifiedGroveDbOp {

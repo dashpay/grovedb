@@ -366,6 +366,16 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
 
     // ── BulkAppendTree delegates ──────────────────────────────────────
 
+    /// Flush the MMR overlay to storage.
+    ///
+    /// Delegates to [`BulkAppendTree::commit_mmr`]. Call this at the end of a
+    /// session to persist MMR nodes buffered during compaction cycles.
+    pub fn commit_mmr(&mut self) -> Result<(), CommitmentTreeError> {
+        self.bulk_tree
+            .commit_mmr()
+            .map_err(|e| CommitmentTreeError::InvalidData(format!("MMR commit: {}", e)))
+    }
+
     /// Get the total count of items appended (from the BulkAppendTree).
     pub fn total_count(&self) -> u64 {
         self.bulk_tree.total_count

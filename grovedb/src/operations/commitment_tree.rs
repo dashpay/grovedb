@@ -116,14 +116,16 @@ impl GroveDb {
             }
         };
 
-        // 2. Build subtree path and open storage context
+        // 2. Build subtree path and open transactional storage (write-through
+        //    cache + MMR overlay provide read-after-write visibility)
         let ct_path_vec = self.build_ct_path(&path, key);
         let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
         let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
+        let data_batch = StorageBatch::new();
         let storage_ctx = self
             .db
-            .get_immediate_storage_context(ct_path, tx.as_ref())
+            .get_transactional_storage_context(ct_path, Some(&data_batch), tx.as_ref())
             .unwrap_add_cost(&mut cost);
 
         // 3. Open composite CommitmentTree and append (uses default DashMemo for
@@ -156,8 +158,19 @@ impl GroveDb {
             &bulk_state_root,
         );
 
+        // Flush MMR overlay to storage (through the batch)
+        cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
+
         // Drop ct (and its storage context) before opening merk
         drop(ct);
+
+        // Commit data batch to make writes visible in the transaction
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(data_batch, Some(tx.as_ref()))
+                .map_err(Into::into)
+        );
 
         // 5. Update element in parent Merk
         let batch = StorageBatch::new();
@@ -467,15 +480,17 @@ impl GroveDb {
                 }
             };
 
-            // Build subtree path and open single storage context
+            // Build subtree path and open transactional storage (write-through
+            // cache + MMR overlay provide read-after-write visibility)
             let mut ct_path_vec = path_vec.clone();
             ct_path_vec.push(key_bytes.clone());
             let ct_path_refs: Vec<&[u8]> = ct_path_vec.iter().map(|v| v.as_slice()).collect();
             let ct_path = SubtreePath::from(ct_path_refs.as_slice());
 
+            let data_batch = StorageBatch::new();
             let storage_ctx = self
                 .db
-                .get_immediate_storage_context(ct_path, transaction)
+                .get_transactional_storage_context(ct_path, Some(&data_batch), transaction)
                 .unwrap_add_cost(&mut cost);
 
             // Open composite CommitmentTree
@@ -504,8 +519,19 @@ impl GroveDb {
             );
             let current_total_count = ct.total_count();
 
+            // Flush MMR overlay to storage (through the batch)
+            cost_return_on_error_no_add!(cost, ct.commit_mmr().map_err(map_ct_err));
+
             // Drop ct (and its storage context)
             drop(ct);
+
+            // Commit data batch to make writes visible in the transaction
+            cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .commit_multi_context_batch(data_batch, Some(transaction))
+                    .map_err(Into::into)
+            );
 
             // Create a ReplaceNonMerkTreeRoot
             // Key is restored for downstream (from_ops, execute_ops_on_path)
