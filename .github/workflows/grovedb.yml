@@ -62,10 +62,39 @@ jobs:
             echo "needs-tests=${{ steps.filter.outputs.any-code }}" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
-    name: Test (${{ matrix.partition }}/3)
+  build-tests:
+    name: Build Tests
     needs: detect-changes
     if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/llvm-cov-target"
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-nextest
+      - name: Build and archive tests
+        run: >
+          cargo llvm-cov nextest-archive
+          --workspace
+          --all-features
+          --archive-file tests.tar.zst
+      - name: Upload test archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: tests.tar.zst
+
+  test:
+    name: Test (${{ matrix.partition }}/3)
+    needs: build-tests
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -78,22 +107,58 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: "false"
-          # cargo-llvm-cov uses target/llvm-cov-target/ instead of target/
-          workspaces: ". -> target/llvm-cov-target"
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@cargo-nextest
+      - name: Download test archive
+        uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
       - name: Run tests (shard ${{ matrix.partition }}/3)
         run: >
           cargo llvm-cov nextest
+          --no-report
           --workspace
           --all-features
+          --archive-file tests.tar.zst
           --partition count:${{ matrix.partition }}/3
+      - name: Upload profraw data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profraw-${{ matrix.partition }}
+          path: target/llvm-cov-target/
+          include-hidden-files: true
+
+  coverage-report:
+    name: Coverage Report
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-nextest
+      - name: Download test archive
+        uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+      - name: Download profraw data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: profraw-*
+          path: target/llvm-cov-target/
+          merge-multiple: true
+      - name: Generate coverage report
+        run: >
+          cargo llvm-cov report
+          --nextest-archive-file tests.tar.zst
           --lcov --output-path lcov.info
       - name: Upload coverage
-        if: always()
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
