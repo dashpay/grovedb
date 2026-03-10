@@ -1748,6 +1748,19 @@ fn test_mmr_batch_discarded_on_later_op_failure() {
         "mmr leaf count should be 0 inside tx after batch discard"
     );
 
+    // Verify no raw subtree data leaked into the transaction. MMR stores nodes
+    // at 8-byte MSB-tagged position keys; position 0 → 0x80_00_00_00_00_00_00_00.
+    let mmr_key_pos0 = 0x8000_0000_0000_0000u64.to_be_bytes();
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"mmr".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &mmr_key_pos0, &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw MMR subtree storage at position 0 should be empty inside tx after batch discard"
+    );
+
     // Also verify outside the transaction
     let leaf_count = db
         .mmr_tree_leaf_count([b"parent"].as_ref(), b"mmr", None, grove_version)
@@ -1943,6 +1956,18 @@ fn test_mmr_successful_batch_after_failed_batch() {
     assert_eq!(
         count_after_fail, 0,
         "mmr leaf count in tx should be 0 after failed batch"
+    );
+
+    // Verify no raw subtree data leaked into the transaction
+    let mmr_key_pos0 = 0x8000_0000_0000_0000u64.to_be_bytes();
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"mmr".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &mmr_key_pos0, &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw MMR subtree storage at position 0 should be empty inside tx after failed batch"
     );
 
     // Second batch: mmr append only → should succeed in the same tx

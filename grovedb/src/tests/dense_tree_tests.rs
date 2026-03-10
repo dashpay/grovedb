@@ -2264,6 +2264,19 @@ fn test_dense_batch_discarded_on_later_op_failure() {
         "dense tree count should be 0 inside tx after batch discard"
     );
 
+    // Verify no raw subtree data leaked into the transaction. The count check
+    // above only reads the parent element; this reads the actual subtree storage.
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"dense".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw subtree storage at position 0 should be empty inside tx after batch discard"
+    );
+
     // Also verify outside the transaction
     let count = db
         .dense_tree_count([b"parent"].as_ref(), b"dense", None, grove_version)
@@ -2462,6 +2475,18 @@ fn test_dense_successful_batch_after_failed_batch() {
     assert_eq!(
         count_after_fail, 0,
         "dense tree count in tx should be 0 after failed batch"
+    );
+
+    // Verify no raw subtree data leaked into the transaction
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"dense".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw subtree storage at position 0 should be empty inside tx after failed batch"
     );
 
     // Second batch: dense insert only → should succeed in the same tx

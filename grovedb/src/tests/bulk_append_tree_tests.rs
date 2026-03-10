@@ -1789,6 +1789,19 @@ fn test_bulk_batch_discarded_on_later_op_failure() {
         "bulk count should be 0 inside tx after batch discard"
     );
 
+    // Verify no raw subtree data leaked into the transaction. The bulk append
+    // tree's dense buffer uses 2-byte position keys; position 0 → [0, 0].
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"bulk".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw bulk subtree storage at position 0 should be empty inside tx after batch discard"
+    );
+
     // Also verify outside the transaction
     let count = db
         .bulk_count([b"parent"].as_ref(), b"bulk", None, grove_version)
@@ -1870,6 +1883,27 @@ fn test_bulk_batch_discarded_after_compaction() {
     assert_eq!(
         count_in_tx, 0,
         "bulk count should be 0 inside tx after batch discard (even after compaction)"
+    );
+
+    // Verify no raw subtree data leaked — check both dense buffer (position 0)
+    // and MMR data (MSB-tagged position 0) since compaction was triggered.
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"bulk".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_dense_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw dense get should not error");
+    assert!(
+        raw_dense_pos0.is_none(),
+        "raw dense buffer at position 0 should be empty inside tx after compaction discard"
+    );
+    let mmr_key_pos0 = 0x8000_0000_0000_0000u64.to_be_bytes();
+    let raw_mmr_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &mmr_key_pos0, &tx)
+        .expect("raw mmr get should not error");
+    assert!(
+        raw_mmr_pos0.is_none(),
+        "raw MMR data at position 0 should be empty inside tx after compaction discard"
     );
 
     // Also verify outside the transaction
@@ -2004,6 +2038,18 @@ fn test_bulk_successful_batch_after_failed_batch() {
     assert_eq!(
         count_after_fail, 0,
         "bulk count in tx should be 0 after failed batch"
+    );
+
+    // Verify no raw subtree data leaked into the transaction
+    use grovedb_dense_fixed_sized_merkle_tree::position_key;
+    let subtree_path: Vec<Vec<u8>> = vec![b"parent".to_vec(), b"bulk".to_vec()];
+    let subtree_refs: Vec<&[u8]> = subtree_path.iter().map(|v| v.as_slice()).collect();
+    let raw_pos0 = db
+        .raw_subtree_get(subtree_refs.as_slice().into(), &position_key(0), &tx)
+        .expect("raw get should not error");
+    assert!(
+        raw_pos0.is_none(),
+        "raw bulk subtree storage at position 0 should be empty inside tx after failed batch"
     );
 
     // Second batch: bulk append only → should succeed in the same tx
