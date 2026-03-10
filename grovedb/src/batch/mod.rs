@@ -94,18 +94,20 @@ use crate::{
 /// `deleting_non_empty_trees_returns_error` flags on `BatchApplyOptions`.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum SubelementsDeletionBehavior {
-    /// Do not check whether the subtree is empty before deleting.
-    /// The tree element is removed from the parent Merk unconditionally.
-    /// Any children that still exist will be left as orphaned data on disk
-    /// — callers typically use this when they have already ensured the
-    /// subtree is empty (e.g. the parent cleaned up children first) and
-    /// want to avoid the cost of a redundant emptiness check.
-    DontCheck,
+    /// Do not check whether the subtree is empty before deleting, and skip
+    /// post-apply storage cleanup. The tree element is removed from the
+    /// parent Merk unconditionally but no child subtree storage is cleared.
+    /// Callers use this when they have already ensured the subtree is empty
+    /// and want to avoid the I/O cost of both the emptiness check and the
+    /// cleanup phase.
+    DontCheckWithNoCleanup,
     /// Check emptiness. If the subtree is non-empty, return
     /// `Error::DeletingNonEmptyTree`.
     Error,
-    /// Check emptiness. If the subtree is non-empty, recursively delete
-    /// all children before deleting the tree itself.
+    /// Do not check whether the subtree is empty before deleting, but
+    /// still perform post-apply storage cleanup to remove the child
+    /// subtree's storage (and any nested subtrees). Use this when the
+    /// subtree may contain children that should be recursively cleaned up.
     DeleteChildren,
     /// Check emptiness. If the subtree is non-empty, silently skip this
     /// `DeleteTree` operation (no error, no deletion).
@@ -3084,17 +3086,16 @@ impl GroveDb {
                             .ok_or(Error::InvalidBatchOperation("delete op is missing a key"))
                     );
                     // Map the per-op enum to the lower-level DeleteOptions.
-                    // DontCheck and DeleteChildren both set
+                    // DontCheckWithNoCleanup and DeleteChildren both set
                     // allow_deleting_non_empty_trees = true because the
                     // single-op `delete()` already performs recursive child
-                    // subtree cleanup when that flag is true — the two
-                    // behaviors converge at this layer.  Skip maps to
+                    // subtree cleanup when that flag is true.  Skip maps to
                     // allow=false + error=false, which makes `delete()`
                     // silently return Ok(false) for non-empty trees.
                     let delete_options = DeleteOptions {
                         allow_deleting_non_empty_trees: matches!(
                             subelements_deletion_behavior,
-                            SubelementsDeletionBehavior::DontCheck
+                            SubelementsDeletionBehavior::DontCheckWithNoCleanup
                                 | SubelementsDeletionBehavior::DeleteChildren
                         ),
                         deleting_non_empty_trees_returns_error: matches!(
@@ -3491,12 +3492,16 @@ impl GroveDb {
 
                 // Per-op emptiness check based on the SubelementsDeletionBehavior policy.
                 match subelements_deletion_behavior {
-                    SubelementsDeletionBehavior::DontCheck => {
-                        // No check — unconditionally allow the delete.
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
+                        // No emptiness check and no post-apply storage cleanup.
+                        // The caller guarantees the subtree is already empty.
+                        continue;
                     }
-                    SubelementsDeletionBehavior::Error
-                    | SubelementsDeletionBehavior::DeleteChildren
-                    | SubelementsDeletionBehavior::Skip => {
+                    SubelementsDeletionBehavior::DeleteChildren => {
+                        // No emptiness check, but still perform post-apply
+                        // storage cleanup to remove child subtree storage.
+                    }
+                    SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
                         let is_empty = if tree_type.uses_non_merk_data_storage() {
                             // Non-Merk trees: check element-level entry count.
                             let parent_path_vec = op.path.to_path();
@@ -3583,15 +3588,12 @@ impl GroveDb {
                                     ))
                                     .wrap_with_cost(cost);
                                 }
-                                SubelementsDeletionBehavior::DeleteChildren => {
-                                    // Proceed — children will be cleaned up
-                                    // in the storage cleanup phase below.
-                                }
                                 SubelementsDeletionBehavior::Skip => {
                                     skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
-                                SubelementsDeletionBehavior::DontCheck => unreachable!(),
+                                SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
                             }
                         }
                     }
@@ -3844,12 +3846,16 @@ impl GroveDb {
                 child_path.push(key.as_slice().to_vec());
 
                 match subelements_deletion_behavior {
-                    SubelementsDeletionBehavior::DontCheck => {
-                        // No check — unconditionally allow the delete.
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
+                        // No emptiness check and no post-apply storage cleanup.
+                        // The caller guarantees the subtree is already empty.
+                        continue;
                     }
-                    SubelementsDeletionBehavior::Error
-                    | SubelementsDeletionBehavior::DeleteChildren
-                    | SubelementsDeletionBehavior::Skip => {
+                    SubelementsDeletionBehavior::DeleteChildren => {
+                        // No emptiness check, but still perform post-apply
+                        // storage cleanup to remove child subtree storage.
+                    }
+                    SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
                         let is_empty = if tree_type.uses_non_merk_data_storage() {
                             let parent_path_vec = op.path.to_path();
                             let parent_path: SubtreePath<Vec<u8>> =
@@ -3931,14 +3937,12 @@ impl GroveDb {
                                     ))
                                     .wrap_with_cost(cost);
                                 }
-                                SubelementsDeletionBehavior::DeleteChildren => {
-                                    // Proceed — children will be cleaned up.
-                                }
                                 SubelementsDeletionBehavior::Skip => {
                                     skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
-                                SubelementsDeletionBehavior::DontCheck => unreachable!(),
+                                SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
                             }
                         }
                     }
@@ -5576,13 +5580,14 @@ mod tests {
         .unwrap()
         .expect("insert commitment tree data");
 
-        // Delete it via batch.  The tree is non-empty (has one entry),
-        // so we pass SubelementsDeletionBehavior::DontCheck to skip the emptiness check.
+        // Delete it via batch.  The tree is non-empty (has one entry).
+        // Use DeleteChildren to skip the emptiness check but still perform
+        // post-apply storage cleanup.
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"ct".to_vec(),
             grovedb_merk::tree_type::TreeType::CommitmentTree(4),
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DeleteChildren,
         )];
 
         let batch_options = Some(BatchApplyOptions::default());
@@ -5662,13 +5667,13 @@ mod tests {
                 .expect("append mmr value");
         }
 
-        // The tree is non-empty (has 3 entries), so we pass
-        // SubelementsDeletionBehavior::DontCheck to skip the emptiness check.
+        // The tree is non-empty (has 3 entries). Use DeleteChildren to skip
+        // the emptiness check but still perform post-apply storage cleanup.
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"mmr".to_vec(),
             grovedb_merk::tree_type::TreeType::MmrTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DeleteChildren,
         )];
 
         let batch_options = Some(BatchApplyOptions::default());
@@ -5739,13 +5744,13 @@ mod tests {
                 .expect("insert dense tree value");
         }
 
-        // The tree is non-empty (has 3 entries), so we pass
-        // SubelementsDeletionBehavior::DontCheck to skip the emptiness check.
+        // The tree is non-empty (has 3 entries). Use DeleteChildren to skip
+        // the emptiness check but still perform post-apply storage cleanup.
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"dense".to_vec(),
             grovedb_merk::tree_type::TreeType::DenseAppendOnlyFixedSizeTree(3),
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DeleteChildren,
         )];
 
         let batch_options = Some(BatchApplyOptions::default());

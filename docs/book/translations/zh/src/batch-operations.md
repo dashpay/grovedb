@@ -44,9 +44,9 @@ pub enum NonMerkTreeMeta {
 
 ```rust
 pub enum SubelementsDeletionBehavior {
-    DontCheck,       // Skip emptiness check; caller guarantees tree is empty
+    DontCheckWithNoCleanup, // Skip emptiness check AND post-apply cleanup; caller guarantees tree is empty
     Error,           // Return Error::DeletingNonEmptyTree if non-empty
-    DeleteChildren,  // Check, and recursively delete children if non-empty
+    DeleteChildren,         // Skip emptiness check, but perform post-apply storage cleanup
     Skip,            // Check, and silently skip deletion if non-empty
 }
 ```

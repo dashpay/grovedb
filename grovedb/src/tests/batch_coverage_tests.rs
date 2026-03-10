@@ -195,12 +195,12 @@ mod tests {
         .unwrap()
         .expect("insert child item");
 
-        // Delete non-empty tree with SubelementsDeletionBehavior::DontCheck
+        // Delete non-empty tree with SubelementsDeletionBehavior::DontCheckWithNoCleanup
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"tree_with_items".to_vec(),
             TreeType::NormalTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DontCheckWithNoCleanup,
         )];
 
         let options = Some(BatchApplyOptions {

@@ -117,7 +117,7 @@ mod tests {
             vec![],
             b"parent_tree".to_vec(),
             TreeType::NormalTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DontCheckWithNoCleanup,
         )];
 
         let batch_options = Some(BatchApplyOptions {
@@ -222,12 +222,13 @@ mod tests {
         .unwrap()
         .expect("insert item into inner tree");
 
-        // Step 2: Delete the outer tree via batch (with DontCheck for non-empty subtrees)
+        // Step 2: Delete the outer tree via batch (with DeleteChildren since
+        // the tree is non-empty and we want storage cleanup)
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"outer".to_vec(),
             TreeType::NormalTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DeleteChildren,
         )];
 
         let batch_options = Some(BatchApplyOptions {
@@ -348,12 +349,13 @@ mod tests {
             .expect("verify item exists");
         assert_eq!(val, Element::new_item(b"data".to_vec()));
 
-        // Delete the parent tree via batch
+        // Delete the parent tree via batch (with DeleteChildren since the
+        // tree is non-empty and we want storage cleanup)
         let delete_ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"parent".to_vec(),
             TreeType::NormalTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DeleteChildren,
         )];
 
         let batch_options = Some(BatchApplyOptions {
@@ -646,10 +648,10 @@ mod tests {
 
     #[test]
     fn test_batch_delete_all_children_plus_delete_tree_dont_check() {
-        // Delete ALL children explicitly + DeleteTree(DontCheck) on parent.
-        // DontCheck skips the emptiness check entirely, so it succeeds
+        // Delete ALL children explicitly + DeleteTree(DontCheckWithNoCleanup) on parent.
+        // DontCheckWithNoCleanup skips the emptiness check entirely, so it succeeds
         // regardless. This is the typical pattern: caller cleans up children
-        // first, then uses DontCheck to avoid a redundant emptiness check.
+        // first, then uses DontCheckWithNoCleanup to avoid a redundant emptiness check.
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -693,13 +695,13 @@ mod tests {
                 vec![],
                 b"parent".to_vec(),
                 TreeType::NormalTree,
-                SubelementsDeletionBehavior::DontCheck,
+                SubelementsDeletionBehavior::DontCheckWithNoCleanup,
             ),
         ];
 
         db.apply_batch(ops, None, None, grove_version)
             .unwrap()
-            .expect("delete all children + DontCheck parent should succeed");
+            .expect("delete all children + DontCheckWithNoCleanup parent should succeed");
 
         assert!(
             db.get(EMPTY_PATH, b"parent", None, grove_version)
@@ -776,8 +778,8 @@ mod tests {
 
     #[test]
     fn test_batch_delete_some_children_plus_delete_tree_dont_check() {
-        // Delete SOME children + DeleteTree(DontCheck) on parent.
-        // DontCheck skips the emptiness check, but apply_body rejects
+        // Delete SOME children + DeleteTree(DontCheckWithNoCleanup) on parent.
+        // DontCheckWithNoCleanup skips the emptiness check, but apply_body rejects
         // the combination because child ops produce a new root key for
         // a tree that is being deleted.
         let grove_version = GroveVersion::latest();
@@ -816,14 +818,14 @@ mod tests {
         .unwrap()
         .expect("insert child2");
 
-        // Delete only child1, DontCheck on parent
+        // Delete only child1, DontCheckWithNoCleanup on parent
         let ops = vec![
             QualifiedGroveDbOp::delete_op(vec![b"parent".to_vec()], b"child1".to_vec()),
             QualifiedGroveDbOp::delete_tree_op(
                 vec![],
                 b"parent".to_vec(),
                 TreeType::NormalTree,
-                SubelementsDeletionBehavior::DontCheck,
+                SubelementsDeletionBehavior::DontCheckWithNoCleanup,
             ),
         ];
 
@@ -1184,7 +1186,7 @@ mod tests {
             vec![],
             b"outer".to_vec(),
             TreeType::NormalTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DeleteChildren,
         )];
 
         let batch_options = Some(BatchApplyOptions {
@@ -1398,12 +1400,13 @@ mod tests {
         .unwrap()
         .expect("insert deep item");
 
-        // Delete the top-level tree
+        // Delete the top-level tree (with DeleteChildren since the tree is
+        // non-empty and we want storage cleanup of nested subtrees)
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"l1".to_vec(),
             TreeType::NormalTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DeleteChildren,
         )];
 
         let batch_options = Some(BatchApplyOptions {
@@ -1620,7 +1623,7 @@ mod tests {
 
     #[test]
     fn test_without_batching_delete_tree_dont_check() {
-        // Exercise the non-batch fallback path for DeleteTree with DontCheck.
+        // Exercise the non-batch fallback path for DeleteTree with DontCheckWithNoCleanup.
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();
 
@@ -1650,12 +1653,12 @@ mod tests {
             vec![],
             b"nb_tree".to_vec(),
             TreeType::NormalTree,
-            SubelementsDeletionBehavior::DontCheck,
+            SubelementsDeletionBehavior::DontCheckWithNoCleanup,
         )];
 
         db.apply_operations_without_batching(ops, None, None, grove_version)
             .unwrap()
-            .expect("non-batch DontCheck should succeed");
+            .expect("non-batch DontCheckWithNoCleanup should succeed");
 
         assert!(
             db.get(EMPTY_PATH, b"nb_tree", None, grove_version)
