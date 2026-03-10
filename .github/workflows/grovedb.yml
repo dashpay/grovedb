@@ -62,8 +62,38 @@ jobs:
             echo "needs-tests=${{ steps.filter.outputs.any-code }}" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
-    name: Test (${{ matrix.partition }}/3)
+  # Fast path: run all tests on self-hosted Mac runner (no sharding needed)
+  test-mac:
+    name: Test (macOS)
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: [self-hosted, macOS, ARM64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-nextest
+      - name: Run all tests
+        run: >
+          cargo llvm-cov nextest
+          --workspace
+          --all-features
+          --lcov --output-path lcov.info
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # Fallback: if Mac runner doesn't pick up the job within 15s, run sharded on Ubuntu
+  test-ubuntu:
+    name: Test Ubuntu (${{ matrix.partition }}/3)
     needs: detect-changes
     if: needs.detect-changes.outputs.needs-tests == 'true'
     runs-on: ubuntu-latest
@@ -72,20 +102,41 @@ jobs:
       matrix:
         partition: [1, 2, 3]
     steps:
+      - name: Wait and check if Mac runner is available
+        id: check-mac
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 15
+          MAC_STATUS=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs \
+            --jq '.jobs[] | select(.name == "Test (macOS)") | .status' 2>/dev/null || echo "unknown")
+          echo "mac-status=$MAC_STATUS" >> "$GITHUB_OUTPUT"
+          if [ "$MAC_STATUS" = "in_progress" ]; then
+            echo "Mac runner picked up the job — skipping Ubuntu fallback"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Mac runner not available (status: $MAC_STATUS) — running on Ubuntu"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.check-mac.outputs.skip == 'false'
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.check-mac.outputs.skip == 'false'
         with:
           components: llvm-tools
       - uses: Swatinem/rust-cache@v2
+        if: steps.check-mac.outputs.skip == 'false'
         with:
           cache-on-failure: "false"
-          # cargo-llvm-cov uses target/llvm-cov-target/ instead of target/
           workspaces: ". -> target/llvm-cov-target"
       - uses: taiki-e/install-action@cargo-llvm-cov
+        if: steps.check-mac.outputs.skip == 'false'
       - uses: taiki-e/install-action@cargo-nextest
+        if: steps.check-mac.outputs.skip == 'false'
       - name: Run tests (shard ${{ matrix.partition }}/3)
+        if: steps.check-mac.outputs.skip == 'false'
         run: >
           cargo llvm-cov nextest
           --workspace
@@ -93,7 +144,7 @@ jobs:
           --partition count:${{ matrix.partition }}/3
           --lcov --output-path lcov.info
       - name: Upload coverage
-        if: always()
+        if: always() && steps.check-mac.outputs.skip == 'false'
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
