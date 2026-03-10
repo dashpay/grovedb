@@ -1,3 +1,4 @@
+// CI: trigger test pipeline for workflow validation
 //! GroveDB is a database that enables cryptographic proofs for complex queries.
 //!
 //! # Examples
