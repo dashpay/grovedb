@@ -164,6 +164,135 @@ Als Beweis-Ops kodiert:
 | 8 | Push(Hash(frank_node_hash)) | Frank-Hash legen |
 | 9 | Child | Frank wird rechtes Kind von Dave |
 
+## Beweis-Knotentypen nach Baumtyp
+
+Jeder Baumtyp in GroveDB verwendet eine bestimmte Menge von Beweis-Knotentypen, abhängig
+von der **Rolle** des Knotens im Beweis. Es gibt vier Rollen:
+
+| Rolle | Beschreibung |
+|-------|-------------|
+| **Abgefragt** | Der Knoten entspricht der Abfrage — vollständiger Schlüssel + Wert offengelegt |
+| **Auf dem Pfad** | Der Knoten ist ein Vorfahre abgefragter Knoten — nur kv_hash benötigt |
+| **Grenzknoten** | Benachbart zu einem fehlenden Schlüssel — beweist Abwesenheit |
+| **Entfernt** | Ein Geschwister-Teilbaum nicht auf dem Beweispfad — nur node_hash benötigt |
+
+### Reguläre Bäume (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Alle fünf dieser Baumtypen verwenden identische Beweis-Knotentypen und dieselbe Hash-
+Funktion: `compute_hash` (= `node_hash(kv_hash, left, right)`). Es gibt **keinen
+Unterschied** darin, wie sie auf der Merk-Ebene bewiesen werden.
+
+Jeder Merk-Knoten trägt intern einen `feature_type` (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), aber
+dieser ist **nicht im Hash enthalten** und **nicht im Beweis enthalten**. Die
+aggregierten Daten (Summe, Zähler) für diese Baumtypen befinden sich in den serialisierten
+Bytes des **Eltern**-Elements, die durch den Beweis des Elternbaums hash-verifiziert werden:
+
+| Baumtyp | Element speichert | Merk feature_type (nicht gehasht) |
+|---------|------------------|----------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **Woher kommt die Summe/der Zähler?** Wenn ein Verifizierer einen Beweis
+> für `[root, my_sum_tree]` verarbeitet, enthält der Beweis des Elternbaums einen
+> `KVValueHash`-Knoten für den Schlüssel `my_sum_tree`. Das `value`-Feld enthält den
+> serialisierten `Element::SumTree(root_key, 42, flags)`. Da dieser Wert
+> hash-verifiziert ist (sein Hash ist in den Eltern-Merkle-Root eingebunden),
+> ist die Summe `42` vertrauenswürdig. Der feature_type auf Merk-Ebene ist irrelevant.
+
+| Rolle | V0-Knotentyp | V1-Knotentyp | Hash-Funktion |
+|-------|-------------|-------------|--------------|
+| Abgefragtes Element | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Abgefragter nicht-leerer Baum (ohne Unterabfrage) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Abgefragter leerer Baum | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Abgefragte Referenz | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| Auf dem Pfad | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Grenzknoten | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Entfernt | `Hash` | `Hash` | Direkt verwendet |
+
+> **Nicht-leere Bäume MIT Unterabfrage** steigen in die Kind-Schicht ab — der Baumknoten
+> erscheint als `KVValueHash` im Beweis der Elternschicht und die Kind-Schicht
+> hat ihren eigenen Beweis.
+
+> **Warum `KVValueHash` für Teilbäume?** Der value_hash eines Teilbaums ist
+> `combine_hash(H(element_bytes), child_root_hash)` — der Verifizierer kann dies nicht
+> allein aus den Element-Bytes neu berechnen (er bräuchte den Kind-Wurzel-Hash). Daher
+> liefert der Beweisersteller den vorberechneten value_hash.
+>
+> **Warum `KV` für Elemente?** Der value_hash eines Elements ist einfach `H(value)`, den der
+> Verifizierer neu berechnen kann. Die Verwendung von `KV` ist manipulationssicher: Wenn der
+> Beweisersteller den Wert ändert, stimmt der Hash nicht überein.
+
+**V1-Erweiterung — `KVValueHashFeatureTypeWithChildHash`:** In V1-Beweisen wird,
+wenn ein abgefragter nicht-leerer Baum keine Unterabfrage hat (die Abfrage endet bei diesem
+Baum — das Baum-Element selbst ist das Ergebnis), der Merk-Knoten von der GroveDB-
+Schicht auf `KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)` aufgewertet. Dies ermöglicht dem Verifizierer die Prüfung
+`combine_hash(H(value), child_hash) == value_hash`, was verhindert, dass ein Angreifer die
+Element-Bytes austauscht und dabei den ursprünglichen value_hash wiederverwendet. Leere Bäume
+werden nicht aufgewertet, da sie keinen Kind-Merk haben, der einen Wurzel-Hash liefern könnte.
+
+> **Sicherheitshinweis zu feature_type:** Für reguläre (nicht-beweisbare) Bäume wird das
+> `feature_type`-Feld in `KVValueHashFeatureType` und
+> `KVValueHashFeatureTypeWithChildHash` dekodiert, aber **nicht** für die
+> Hash-Berechnung verwendet oder an Aufrufer zurückgegeben. Der kanonische Baumtyp befindet sich
+> in den hash-verifizierten Element-Bytes. Dieses Feld ist nur für ProvableCountTree
+> relevant (siehe unten), wo es den für `node_hash_with_count` benötigten Zähler trägt.
+
+### ProvableCountTree und ProvableCountSumTree
+
+Diese Baumtypen verwenden `node_hash_with_count(kv_hash, left, right, count)` anstelle
+von `node_hash`. Der **Zähler** ist im Hash enthalten, sodass der Verifizierer den
+Zähler für jeden Knoten benötigt, um den Merkle-Root neu zu berechnen.
+
+| Rolle | V0-Knotentyp | V1-Knotentyp | Hash-Funktion |
+|-------|-------------|-------------|--------------|
+| Abgefragtes Element | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Abgefragter nicht-leerer Baum (ohne Unterabfrage) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Abgefragter leerer Baum | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Abgefragte Referenz | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| Auf dem Pfad | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Grenzknoten | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Entfernt | `Hash` | `Hash` | Direkt verwendet |
+
+> **Nicht-leere Bäume MIT Unterabfrage** steigen in die Kind-Schicht ab, genau wie
+> reguläre Bäume.
+
+> **Warum trägt jeder Knoten einen Zähler?** Weil `node_hash_with_count` anstelle
+> von `node_hash` verwendet wird. Ohne den Zähler kann der Verifizierer keinen
+> Zwischen-Hash auf dem Pfad zur Wurzel rekonstruieren — selbst für nicht-abgefragte Knoten.
+
+**V1-Erweiterung:** Wie bei regulären Bäumen — abgefragte nicht-leere Bäume ohne
+Unterabfragen werden auf `KVValueHashFeatureTypeWithChildHash` aufgewertet, um die
+`combine_hash`-Verifikation zu ermöglichen.
+
+> **Hinweis zu ProvableCountSumTree:** Nur der **Zähler** ist im Hash enthalten. Die
+> Summe wird im feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) mitgeführt, ist aber **nicht gehasht**. Wie bei den regulären Baumtypen oben
+> befindet sich der kanonische Summenwert in den serialisierten Bytes des Eltern-Elements
+> (z.B. `Element::ProvableCountSumTree(root_key, count, sum, flags)`), die im
+> Beweis des Elternbaums hash-verifiziert werden.
+
+### Zusammenfassung: Knotentyp-zu-Baumtyp-Matrix
+
+| Knotentyp | Reguläre Bäume | ProvableCount-Bäume |
+|-----------|:-------------:|:-------------------:|
+| `KV` | Abgefragte Elemente | — |
+| `KVCount` | — | Abgefragte Elemente |
+| `KVValueHash` | Abgefragte Teilbäume | — |
+| `KVValueHashFeatureType` | — | Abgefragte Teilbäume |
+| `KVRefValueHash` | Abgefragte Referenzen | — |
+| `KVRefValueHashCount` | — | Abgefragte Referenzen |
+| `KVHash` | Auf dem Pfad | — |
+| `KVHashCount` | — | Auf dem Pfad |
+| `KVDigest` | Grenz-/Abwesenheit | — |
+| `KVDigestCount` | — | Grenz-/Abwesenheit |
+| `Hash` | Entfernte Geschwister | Entfernte Geschwister |
+| `KVValueHashFeatureTypeWithChildHash` | — | Nicht-leere Bäume ohne Unterabfrage |
+
 ## Mehrschicht-Beweiserzeugung
 
 Da GroveDB ein Baum von Bäumen ist, erstrecken sich Beweise über mehrere Schichten. Jede Schicht beweist

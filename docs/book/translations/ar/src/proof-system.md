@@ -163,6 +163,134 @@ graph TD
 | 8 | Push(Hash(frank_node_hash)) | ادفع تجزئة فرانك |
 | 9 | Child | فرانك يصبح ابناً أيمن لديف |
 
+## أنواع عقد البرهان حسب نوع الشجرة
+
+كل نوع شجرة في GroveDB يستخدم مجموعة محددة من أنواع عقد البرهان بناءً على
+**دور** العقدة في البرهان. هناك أربعة أدوار:
+
+| الدور | الوصف |
+|-------|-------|
+| **مُستعلَمة** | العقدة تطابق الاستعلام — المفتاح والقيمة الكاملان مكشوفان |
+| **على المسار** | العقدة سلف للعقد المُستعلَمة — فقط kv_hash مطلوب |
+| **حدّية** | مجاورة لمفتاح مفقود — تُثبت الغياب |
+| **بعيدة** | شجرة فرعية شقيقة ليست على مسار البرهان — فقط node_hash مطلوب |
+
+### الأشجار العادية (Tree، SumTree، BigSumTree، CountTree، CountSumTree)
+
+جميع هذه الأنواع الخمسة من الأشجار تستخدم أنواع عقد برهان متطابقة ونفس دالة
+التجزئة: `compute_hash` (= `node_hash(kv_hash, left, right)`). **لا يوجد فرق**
+في كيفية إثباتها على مستوى merk.
+
+كل عقدة merk تحمل `feature_type` داخلياً (BasicMerkNode،
+SummedMerkNode، BigSummedMerkNode، CountedMerkNode، CountedSummedMerkNode)، لكن
+هذا **غير مُدرج في التجزئة** و**غير مُدرج في البرهان**. البيانات
+التجميعية (المجموع، العدد) لهذه الأنواع من الأشجار تعيش في بايتات
+Element **الأب** المُرمَّزة، والتي يتم التحقق من تجزئتها عبر برهان الشجرة الأب:
+
+| نوع الشجرة | ما يُخزّنه Element | feature_type في Merk (غير مُجزَّأ) |
+|------------|-------------------|----------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **من أين يأتي المجموع/العدد؟** عندما يعالج المُحقّق برهاناً
+> لـ `[root, my_sum_tree]`، برهان الشجرة الأب يتضمن عقدة
+> `KVValueHash` للمفتاح `my_sum_tree`. حقل `value` يحتوي على
+> `Element::SumTree(root_key, 42, flags)` المُرمَّز. بما أن هذه القيمة
+> مُتحقق من تجزئتها (تجزئتها ملتزمة بجذر ميركل الأب)، فإن
+> المجموع `42` موثوق. الـ feature_type على مستوى merk غير ذي صلة.
+
+| الدور | نوع العقدة V0 | نوع العقدة V1 | دالة التجزئة |
+|-------|--------------|--------------|-------------|
+| عنصر مُستعلَم | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| شجرة غير فارغة مُستعلَمة (بدون استعلام فرعي) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| شجرة فارغة مُستعلَمة | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| مرجع مُستعلَم | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| على المسار | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| حدّية | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| بعيدة | `Hash` | `Hash` | تُستخدم مباشرة |
+
+> **الأشجار غير الفارغة مع استعلام فرعي** تنزل إلى طبقة الابن — عقدة الشجرة
+> تظهر كـ `KVValueHash` في برهان الطبقة الأب وطبقة الابن لها برهانها الخاص.
+
+> **لماذا `KVValueHash` للأشجار الفرعية؟** value_hash للشجرة الفرعية هو
+> `combine_hash(H(element_bytes), child_root_hash)` — المُحقّق لا يمكنه
+> إعادة حسابه من بايتات element وحدها (سيحتاج إلى تجزئة جذر الابن). لذا
+> يوفر المُثبِت value_hash المحسوب مسبقاً.
+>
+> **لماذا `KV` للعناصر؟** value_hash للعنصر هو ببساطة `H(value)`، والذي يمكن
+> للمُحقّق إعادة حسابه. استخدام `KV` آمن ضد التلاعب: إذا غيّر المُثبِت
+> القيمة، فلن تتطابق التجزئة.
+
+**تحسين V1 — `KVValueHashFeatureTypeWithChildHash`:** في براهين V1، عندما تكون
+الشجرة غير الفارغة المُستعلَمة بدون استعلام فرعي (الاستعلام يتوقف عند هذه الشجرة —
+عنصر الشجرة نفسه هو النتيجة)، تقوم طبقة GroveDB بترقية عقدة merk إلى
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)`. هذا يسمح للمُحقّق بفحص `combine_hash(H(value), child_hash)
+== value_hash`، مما يمنع المهاجم من تبديل بايتات element مع إعادة استخدام
+value_hash الأصلي. الأشجار الفارغة لا تُرقّى لأنها لا تملك merk ابن
+لتوفير تجزئة جذر.
+
+> **ملاحظة أمنية حول feature_type:** للأشجار العادية (غير القابلة للإثبات)، حقل
+> `feature_type` في `KVValueHashFeatureType` و
+> `KVValueHashFeatureTypeWithChildHash` يتم فك ترميزه لكنه **لا يُستخدم** لحساب
+> التجزئة أو يُعاد للمستدعين. نوع الشجرة الأصلي موجود في بايتات Element
+> المُتحقق من تجزئتها. هذا الحقل مهم فقط لـ ProvableCountTree
+> (انظر أدناه)، حيث يحمل العدد المطلوب لـ `node_hash_with_count`.
+
+### ProvableCountTree وProvableCountSumTree
+
+هذه الأنواع من الأشجار تستخدم `node_hash_with_count(kv_hash, left, right, count)` بدلاً
+من `node_hash`. **العدد** مُدرج في التجزئة، لذا يحتاج المُحقّق
+إلى العدد لكل عقدة لإعادة حساب جذر ميركل.
+
+| الدور | نوع العقدة V0 | نوع العقدة V1 | دالة التجزئة |
+|-------|--------------|--------------|-------------|
+| عنصر مُستعلَم | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| شجرة غير فارغة مُستعلَمة (بدون استعلام فرعي) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| شجرة فارغة مُستعلَمة | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| مرجع مُستعلَم | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| على المسار | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| حدّية | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| بعيدة | `Hash` | `Hash` | تُستخدم مباشرة |
+
+> **الأشجار غير الفارغة مع استعلام فرعي** تنزل إلى طبقة الابن، كما في
+> الأشجار العادية.
+
+> **لماذا تحمل كل عقدة عدداً؟** لأن `node_hash_with_count` تُستخدم بدلاً
+> من `node_hash`. بدون العدد، لا يمكن للمُحقّق إعادة بناء أي تجزئة وسيطة
+> على المسار إلى الجذر — حتى للعقد غير المُستعلَمة.
+
+**تحسين V1:** نفس الأشجار العادية — الأشجار غير الفارغة المُستعلَمة بدون
+استعلامات فرعية تُرقّى إلى `KVValueHashFeatureTypeWithChildHash` للتحقق
+من `combine_hash`.
+
+> **ملاحظة حول ProvableCountSumTree:** فقط **العدد** مُدرج في التجزئة. المجموع
+> محمول في feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) لكنه **غير مُجزَّأ**. كما في أنواع الأشجار العادية أعلاه، قيمة
+> المجموع الأصلية موجودة في بايتات Element الأب المُرمَّزة (مثلاً
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`)، والتي يتم
+> التحقق من تجزئتها في برهان الشجرة الأب.
+
+### ملخص: مصفوفة نوع العقدة → نوع الشجرة
+
+| نوع العقدة | الأشجار العادية | أشجار ProvableCount |
+|-----------|:--------------:|:------------------:|
+| `KV` | عناصر مُستعلَمة | — |
+| `KVCount` | — | عناصر مُستعلَمة |
+| `KVValueHash` | أشجار فرعية مُستعلَمة | — |
+| `KVValueHashFeatureType` | — | أشجار فرعية مُستعلَمة |
+| `KVRefValueHash` | مراجع مُستعلَمة | — |
+| `KVRefValueHashCount` | — | مراجع مُستعلَمة |
+| `KVHash` | على المسار | — |
+| `KVHashCount` | — | على المسار |
+| `KVDigest` | حدّية/غياب | — |
+| `KVDigestCount` | — | حدّية/غياب |
+| `Hash` | أشقاء بعيدون | أشقاء بعيدون |
+| `KVValueHashFeatureTypeWithChildHash` | — | أشجار غير فارغة بدون استعلام فرعي |
+
 ## توليد البراهين متعددة الطبقات
 
 بما أن GroveDB هو شجرة من الأشجار، فالبراهين تمتد عبر طبقات متعددة. كل طبقة تُثبت

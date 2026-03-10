@@ -164,6 +164,135 @@ Di-encode sebagai operasi proof:
 | 8 | Push(Hash(frank_node_hash)) | Dorong hash frank |
 | 9 | Child | frank menjadi anak kanan dave |
 
+## Tipe Node Proof berdasarkan Tipe Pohon
+
+Setiap tipe pohon di GroveDB menggunakan sekumpulan tipe node proof tertentu tergantung
+pada **peran** node dalam proof. Ada empat peran:
+
+| Peran | Deskripsi |
+|------|-------------|
+| **Di-query** | Node cocok dengan query — key + value lengkap diungkap |
+| **Di jalur** | Node adalah ancestor dari node yang di-query — hanya kv_hash yang diperlukan |
+| **Batas** | Berdekatan dengan key yang hilang — membuktikan ketiadaan |
+| **Jauh** | Subtree saudara yang tidak di jalur proof — hanya node_hash yang diperlukan |
+
+### Pohon Reguler (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Kelima tipe pohon ini menggunakan tipe node proof yang identik dan fungsi hash yang
+sama: `compute_hash` (= `node_hash(kv_hash, left, right)`). **Tidak ada
+perbedaan** dalam cara mereka dibuktikan di tingkat merk.
+
+Setiap node merk membawa `feature_type` secara internal (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), tetapi
+ini **tidak disertakan dalam hash** dan **tidak disertakan dalam proof**. Data
+agregat (sum, count) untuk tipe pohon ini berada di byte terserialisasi Element
+**induk**, yang diverifikasi hash-nya melalui proof pohon induk:
+
+| Tipe pohon | Element menyimpan | feature_type Merk (tidak di-hash) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **Dari mana sum/count berasal?** Ketika verifier memproses proof
+> untuk `[root, my_sum_tree]`, proof pohon induk menyertakan node
+> `KVValueHash` untuk key `my_sum_tree`. Field `value` berisi
+> `Element::SumTree(root_key, 42, flags)` yang terserialisasi. Karena value ini
+> diverifikasi hash-nya (hash-nya di-commit ke root Merkle induk), sum
+> `42` dapat dipercaya. feature_type di tingkat merk tidak relevan.
+
+| Peran | Tipe Node V0 | Tipe Node V1 | Fungsi hash |
+|------|-------------|-------------|---------------|
+| Item yang di-query | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Pohon non-kosong yang di-query (tanpa subquery) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Pohon kosong yang di-query | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Referensi yang di-query | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| Di jalur | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Batas | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Jauh | `Hash` | `Hash` | Digunakan langsung |
+
+> **Pohon non-kosong DENGAN subquery** turun ke lapisan anak — node
+> pohon muncul sebagai `KVValueHash` di proof lapisan induk dan lapisan
+> anak memiliki proof-nya sendiri.
+
+> **Mengapa `KVValueHash` untuk subtree?** value_hash subtree adalah
+> `combine_hash(H(element_bytes), child_root_hash)` — verifier tidak dapat
+> menghitung ulang ini dari byte element saja (ia memerlukan hash root
+> anak). Jadi prover menyediakan value_hash yang sudah dihitung.
+>
+> **Mengapa `KV` untuk item?** value_hash item hanyalah `H(value)`, yang
+> dapat dihitung ulang oleh verifier. Menggunakan `KV` tahan terhadap manipulasi: jika
+> prover mengubah value, hash tidak akan cocok.
+
+**Peningkatan V1 — `KVValueHashFeatureTypeWithChildHash`:** Dalam proof V1, ketika
+pohon non-kosong yang di-query tidak memiliki subquery (query berhenti di pohon ini —
+element pohon itu sendiri adalah hasilnya), lapisan GroveDB meng-upgrade node merk menjadi
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)`. Ini memungkinkan verifier memeriksa `combine_hash(H(value), child_hash)
+== value_hash`, mencegah penyerang menukar byte element sambil
+menggunakan kembali value_hash asli. Pohon kosong tidak di-upgrade karena mereka tidak
+memiliki merk anak untuk menyediakan hash root.
+
+> **Catatan keamanan tentang feature_type:** Untuk pohon reguler (non-provable), field
+> `feature_type` dalam `KVValueHashFeatureType` dan
+> `KVValueHashFeatureTypeWithChildHash` didekode tetapi **tidak digunakan** untuk
+> komputasi hash atau dikembalikan ke pemanggil. Tipe pohon kanonik berada di byte
+> Element yang diverifikasi hash-nya. Field ini hanya penting untuk ProvableCountTree
+> (lihat di bawah), di mana ia membawa count yang diperlukan untuk `node_hash_with_count`.
+
+### ProvableCountTree dan ProvableCountSumTree
+
+Tipe pohon ini menggunakan `node_hash_with_count(kv_hash, left, right, count)` alih-alih
+`node_hash`. **Count** disertakan dalam hash, jadi verifier memerlukan
+count untuk setiap node guna menghitung ulang root Merkle.
+
+| Peran | Tipe Node V0 | Tipe Node V1 | Fungsi hash |
+|------|-------------|-------------|---------------|
+| Item yang di-query | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Pohon non-kosong yang di-query (tanpa subquery) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Pohon kosong yang di-query | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Referensi yang di-query | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| Di jalur | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Batas | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Jauh | `Hash` | `Hash` | Digunakan langsung |
+
+> **Pohon non-kosong DENGAN subquery** turun ke lapisan anak, sama seperti
+> pohon reguler.
+
+> **Mengapa setiap node membawa count?** Karena `node_hash_with_count` digunakan
+> alih-alih `node_hash`. Tanpa count, verifier tidak dapat merekonstruksi
+> hash perantara mana pun di jalur menuju root — bahkan untuk node yang tidak di-query.
+
+**Peningkatan V1:** Sama seperti pohon reguler — pohon non-kosong yang di-query tanpa
+subquery di-upgrade ke `KVValueHashFeatureTypeWithChildHash` untuk
+verifikasi `combine_hash`.
+
+> **Catatan ProvableCountSumTree:** Hanya **count** yang disertakan dalam hash. Sum
+> dibawa dalam feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) tetapi **tidak di-hash**. Seperti tipe pohon reguler di atas, nilai
+> sum kanonik berada di byte terserialisasi Element induk (misalnya
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), yang
+> diverifikasi hash-nya dalam proof pohon induk.
+
+### Ringkasan: Matriks Tipe Node → Tipe Pohon
+
+| Tipe Node | Pohon Reguler | Pohon ProvableCount |
+|-----------|:------------:|:-------------------:|
+| `KV` | Item yang di-query | — |
+| `KVCount` | — | Item yang di-query |
+| `KVValueHash` | Subtree yang di-query | — |
+| `KVValueHashFeatureType` | — | Subtree yang di-query |
+| `KVRefValueHash` | Referensi yang di-query | — |
+| `KVRefValueHashCount` | — | Referensi yang di-query |
+| `KVHash` | Di jalur | — |
+| `KVHashCount` | — | Di jalur |
+| `KVDigest` | Batas/ketiadaan | — |
+| `KVDigestCount` | — | Batas/ketiadaan |
+| `Hash` | Saudara jauh | Saudara jauh |
+| `KVValueHashFeatureTypeWithChildHash` | — | Pohon non-kosong tanpa subquery |
+
 ## Generasi Proof Multi-Lapisan
 
 Karena GroveDB adalah pohon dari pohon-pohon, proof mencakup beberapa lapisan. Setiap lapisan membuktikan

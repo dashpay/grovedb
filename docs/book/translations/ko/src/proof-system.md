@@ -160,6 +160,92 @@ graph TD
 | 8 | Push(Hash(frank_node_hash)) | frank 해시 푸시 |
 | 9 | Child | frank가 dave의 오른쪽 자식이 됨 |
 
+## 트리 타입별 증명 노드 타입
+
+GroveDB의 각 트리 타입은 증명에서 노드의 **역할**에 따라 특정 증명 노드 타입 집합을 사용합니다. 네 가지 역할이 있습니다:
+
+| 역할 | 설명 |
+|------|------|
+| **쿼리됨** | 노드가 쿼리와 일치 — 전체 키 + 값 공개 |
+| **경로에 있음** | 노드가 쿼리된 노드의 조상 — kv_hash만 필요 |
+| **경계** | 누락된 키에 인접 — 부재 증명 |
+| **먼** | 증명 경로에 없는 형제 서브트리 — node_hash만 필요 |
+
+### 일반 트리 (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+이 다섯 가지 트리 타입은 모두 동일한 증명 노드 타입과 동일한 해시 함수 `compute_hash` (= `node_hash(kv_hash, left, right)`)를 사용합니다. Merk 레벨에서 증명 방식에 **차이가 없습니다**.
+
+각 merk 노드는 내부적으로 `feature_type`(BasicMerkNode, SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode)을 가지지만, 이것은 **해시에 포함되지 않으며** **증명에도 포함되지 않습니다**. 이러한 트리 타입의 집계 데이터(합계, 카운트)는 **부모** Element의 직렬화된 바이트에 있으며, 부모 트리의 증명을 통해 해시 검증됩니다:
+
+| 트리 타입 | Element 저장 내용 | Merk feature_type (해시되지 않음) |
+|-----------|-----------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **합계/카운트는 어디서 오는가?** 검증자가 `[root, my_sum_tree]`에 대한 증명을 처리할 때, 부모 트리의 증명에는 키 `my_sum_tree`에 대한 `KVValueHash` 노드가 포함됩니다. `value` 필드는 직렬화된 `Element::SumTree(root_key, 42, flags)`를 담고 있습니다. 이 값은 해시 검증되므로(해시가 부모 머클 루트에 커밋됨), 합계 `42`는 신뢰할 수 있습니다. Merk 레벨의 feature_type은 무관합니다.
+
+| 역할 | V0 노드 타입 | V1 노드 타입 | 해시 함수 |
+|------|-------------|-------------|-----------|
+| 쿼리된 항목 | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| 쿼리된 비어있지 않은 트리 (서브쿼리 없음) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| 쿼리된 빈 트리 | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| 쿼리된 참조 | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| 경로에 있음 | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| 경계 | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| 먼 | `Hash` | `Hash` | 직접 사용 |
+
+> **서브쿼리가 있는 비어있지 않은 트리**는 자식 레이어로 하강합니다 — 트리 노드는 부모 레이어 증명에서 `KVValueHash`로 나타나며 자식 레이어는 자체 증명을 갖습니다.
+
+> **서브트리에 `KVValueHash`를 사용하는 이유는?** 서브트리의 value_hash는 `combine_hash(H(element_bytes), child_root_hash)`입니다 — 검증자는 엘리먼트 바이트만으로는 이를 재계산할 수 없습니다(자식 루트 해시가 필요합니다). 따라서 증명자가 미리 계산된 value_hash를 제공합니다.
+>
+> **항목에 `KV`를 사용하는 이유는?** 항목의 value_hash는 단순히 `H(value)`이며, 검증자가 재계산할 수 있습니다. `KV` 사용은 위변조 방지됩니다: 증명자가 값을 변경하면 해시가 일치하지 않습니다.
+
+**V1 개선 — `KVValueHashFeatureTypeWithChildHash`:** V1 증명에서, 서브쿼리가 없는 쿼리된 비어있지 않은 트리(쿼리가 이 트리에서 멈추는 경우 — 트리 엘리먼트 자체가 결과)의 경우, GroveDB 레이어는 merk 노드를 `KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type, child_hash)`로 업그레이드합니다. 이를 통해 검증자가 `combine_hash(H(value), child_hash) == value_hash`를 확인할 수 있으며, 공격자가 원래 value_hash를 재사용하면서 엘리먼트 바이트를 교체하는 것을 방지합니다. 빈 트리는 루트 해시를 제공할 자식 merk가 없으므로 업그레이드되지 않습니다.
+
+> **feature_type에 대한 보안 참고:** 일반(증명 불가) 트리의 경우, `KVValueHashFeatureType` 및 `KVValueHashFeatureTypeWithChildHash`의 `feature_type` 필드는 디코딩되지만 해시 계산에 **사용되지 않으며** 호출자에게 반환되지도 않습니다. 정규 트리 타입은 해시 검증된 Element 바이트에 있습니다. 이 필드는 ProvableCountTree(아래 참조)에서만 중요하며, 여기서 `node_hash_with_count`에 필요한 카운트를 전달합니다.
+
+### ProvableCountTree 및 ProvableCountSumTree
+
+이 트리 타입들은 `node_hash` 대신 `node_hash_with_count(kv_hash, left, right, count)`를 사용합니다. **카운트**가 해시에 포함되므로, 검증자는 머클 루트를 재계산하기 위해 모든 노드의 카운트가 필요합니다.
+
+| 역할 | V0 노드 타입 | V1 노드 타입 | 해시 함수 |
+|------|-------------|-------------|-----------|
+| 쿼리된 항목 | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| 쿼리된 비어있지 않은 트리 (서브쿼리 없음) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| 쿼리된 빈 트리 | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| 쿼리된 참조 | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| 경로에 있음 | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| 경계 | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| 먼 | `Hash` | `Hash` | 직접 사용 |
+
+> **서브쿼리가 있는 비어있지 않은 트리**는 일반 트리와 동일하게 자식 레이어로 하강합니다.
+
+> **모든 노드에 카운트가 있는 이유는?** `node_hash` 대신 `node_hash_with_count`가 사용되기 때문입니다. 카운트가 없으면 검증자는 루트로 가는 경로에서 어떤 중간 해시도 재구성할 수 없습니다 — 쿼리되지 않은 노드도 마찬가지입니다.
+
+**V1 개선:** 일반 트리와 동일합니다 — 서브쿼리가 없는 쿼리된 비어있지 않은 트리는 `combine_hash` 검증을 위해 `KVValueHashFeatureTypeWithChildHash`로 업그레이드됩니다.
+
+> **ProvableCountSumTree 참고:** **카운트**만 해시에 포함됩니다. 합계는 feature_type(`ProvableCountedSummedMerkNode(count, sum)`)에 전달되지만 **해시되지 않습니다**. 위의 일반 트리 타입과 마찬가지로, 정규 합계 값은 부모 Element의 직렬화된 바이트(예: `Element::ProvableCountSumTree(root_key, count, sum, flags)`)에 있으며, 부모 트리의 증명에서 해시 검증됩니다.
+
+### 요약: 노드 타입 → 트리 타입 매트릭스
+
+| 노드 타입 | 일반 트리 | ProvableCount 트리 |
+|-----------|:--------:|:-----------------:|
+| `KV` | 쿼리된 항목 | — |
+| `KVCount` | — | 쿼리된 항목 |
+| `KVValueHash` | 쿼리된 서브트리 | — |
+| `KVValueHashFeatureType` | — | 쿼리된 서브트리 |
+| `KVRefValueHash` | 쿼리된 참조 | — |
+| `KVRefValueHashCount` | — | 쿼리된 참조 |
+| `KVHash` | 경로에 있음 | — |
+| `KVHashCount` | — | 경로에 있음 |
+| `KVDigest` | 경계/부재 | — |
+| `KVDigestCount` | — | 경계/부재 |
+| `Hash` | 먼 형제 | 먼 형제 |
+| `KVValueHashFeatureTypeWithChildHash` | — | 서브쿼리 없는 비어있지 않은 트리 |
+
 ## 다중 레이어 증명 생성
 
 GroveDB는 트리의 트리이므로, 증명은 여러 레이어에 걸칩니다. 각 레이어는 하나의 Merk 트리의 관련 부분을 증명하며, 레이어들은 결합된 value_hash 메커니즘으로 연결됩니다:

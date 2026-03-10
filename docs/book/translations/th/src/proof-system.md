@@ -160,6 +160,134 @@ graph TD
 | 8 | Push(Hash(frank_node_hash)) | ดัน frank hash |
 | 9 | Child | frank กลายเป็นลูกขวาของ dave |
 
+## ประเภท Proof Node ตามประเภทต้นไม้
+
+ต้นไม้แต่ละประเภทใน GroveDB ใช้ชุด proof node ที่เฉพาะเจาะจง ขึ้นอยู่กับ
+**บทบาท** ของ node ใน proof มีสี่บทบาท:
+
+| บทบาท | คำอธิบาย |
+|------|-------------|
+| **Queried** | node ตรงกับ query — เปิดเผย key + value เต็ม |
+| **On-path** | node เป็นบรรพบุรุษของ node ที่ถูกสืบค้น — ต้องการเพียง kv_hash |
+| **Boundary** | อยู่ติดกับ key ที่หายไป — พิสูจน์การไม่มีอยู่ |
+| **Distant** | subtree พี่น้องที่ไม่อยู่บน proof path — ต้องการเพียง node_hash |
+
+### ต้นไม้ปกติ (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+ต้นไม้ทั้งห้าประเภทนี้ใช้ proof node ประเภทเดียวกันและฟังก์ชันแฮชเดียวกัน:
+`compute_hash` (= `node_hash(kv_hash, left, right)`) **ไม่มีความแตกต่าง**
+ในวิธีการพิสูจน์ที่ระดับ merk
+
+แต่ละ merk node มี `feature_type` ภายใน (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode) แต่
+สิ่งนี้**ไม่รวมอยู่ในแฮช**และ**ไม่รวมอยู่ใน proof** ข้อมูลรวม (sum, count)
+สำหรับต้นไม้ประเภทเหล่านี้อยู่ในไบต์ที่ serialize ของ Element **แม่** ซึ่งถูกตรวจสอบแฮช
+ผ่าน proof ของต้นไม้แม่:
+
+| ประเภทต้นไม้ | Element เก็บ | Merk feature_type (ไม่ถูกแฮช) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **sum/count มาจากไหน?** เมื่อผู้ตรวจสอบประมวลผล proof
+> สำหรับ `[root, my_sum_tree]` proof ของต้นไม้แม่จะมี
+> node `KVValueHash` สำหรับ key `my_sum_tree` ฟิลด์ `value` มี
+> `Element::SumTree(root_key, 42, flags)` ที่ serialize แล้ว เนื่องจากค่านี้
+> ถูกตรวจสอบแฮช (แฮชของมันถูกผูกพันกับ Merkle root ของแม่) ค่า sum `42`
+> จึงเชื่อถือได้ feature_type ระดับ merk ไม่เกี่ยวข้อง
+
+| บทบาท | ประเภท Node V0 | ประเภท Node V1 | ฟังก์ชันแฮช |
+|------|-------------|-------------|---------------|
+| รายการที่ถูกสืบค้น | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| ต้นไม้ที่ไม่ว่างที่ถูกสืบค้น (ไม่มี subquery) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| ต้นไม้ว่างที่ถูกสืบค้น | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| reference ที่ถูกสืบค้น | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| On-path | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Boundary | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distant | `Hash` | `Hash` | ใช้โดยตรง |
+
+> **ต้นไม้ที่ไม่ว่างที่มี subquery** จะลงไปยังชั้นลูก — node ต้นไม้ปรากฏเป็น
+> `KVValueHash` ใน proof ชั้นแม่ และชั้นลูกมี proof ของตัวเอง
+
+> **ทำไมใช้ `KVValueHash` สำหรับ subtree?** value_hash ของ subtree คือ
+> `combine_hash(H(element_bytes), child_root_hash)` — ผู้ตรวจสอบไม่สามารถ
+> คำนวณสิ่งนี้ใหม่จากไบต์ element อย่างเดียว (จะต้องการ child root
+> hash) ดังนั้น prover จึงให้ value_hash ที่คำนวณไว้แล้ว
+>
+> **ทำไมใช้ `KV` สำหรับรายการ?** value_hash ของรายการคือ `H(value)` ซึ่ง
+> ผู้ตรวจสอบคำนวณใหม่ได้ การใช้ `KV` ป้องกันการปลอมแปลง: ถ้า prover เปลี่ยน
+> ค่า แฮชจะไม่ตรงกัน
+
+**การปรับปรุง V1 — `KVValueHashFeatureTypeWithChildHash`:** ใน proof V1 เมื่อ
+ต้นไม้ที่ไม่ว่างที่ถูกสืบค้นไม่มี subquery (query หยุดที่ต้นไม้นี้ — element ต้นไม้
+เป็นผลลัพธ์) ชั้น GroveDB จะอัปเกรด merk node เป็น
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)` สิ่งนี้ให้ผู้ตรวจสอบตรวจสอบ `combine_hash(H(value), child_hash)
+== value_hash` ป้องกันผู้โจมตีจากการสลับไบต์ element ในขณะที่ใช้
+value_hash เดิมซ้ำ ต้นไม้ว่างจะไม่ถูกอัปเกรดเพราะไม่มี child merk
+ที่จะให้ root hash
+
+> **หมายเหตุด้านความปลอดภัยเกี่ยวกับ feature_type:** สำหรับต้นไม้ปกติ (ที่ไม่ใช่ provable)
+> ฟิลด์ `feature_type` ใน `KVValueHashFeatureType` และ
+> `KVValueHashFeatureTypeWithChildHash` ถูก decode แต่**ไม่ถูกใช้**สำหรับ
+> การคำนวณแฮชหรือส่งคืนให้ผู้เรียก ประเภทต้นไม้ที่เป็นทางการอยู่ในไบต์ Element
+> ที่ตรวจสอบแฮชแล้ว ฟิลด์นี้สำคัญเฉพาะสำหรับ ProvableCountTree
+> (ดูด้านล่าง) ที่มันบรรจุ count ที่ต้องการสำหรับ `node_hash_with_count`
+
+### ProvableCountTree และ ProvableCountSumTree
+
+ต้นไม้ประเภทเหล่านี้ใช้ `node_hash_with_count(kv_hash, left, right, count)` แทน
+`node_hash` **count** ถูกรวมอยู่ในแฮช ดังนั้นผู้ตรวจสอบต้องการ
+count สำหรับทุก node เพื่อคำนวณ Merkle root ใหม่
+
+| บทบาท | ประเภท Node V0 | ประเภท Node V1 | ฟังก์ชันแฮช |
+|------|-------------|-------------|---------------|
+| รายการที่ถูกสืบค้น | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| ต้นไม้ที่ไม่ว่างที่ถูกสืบค้น (ไม่มี subquery) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| ต้นไม้ว่างที่ถูกสืบค้น | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| reference ที่ถูกสืบค้น | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| On-path | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Boundary | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distant | `Hash` | `Hash` | ใช้โดยตรง |
+
+> **ต้นไม้ที่ไม่ว่างที่มี subquery** จะลงไปยังชั้นลูก เช่นเดียวกับ
+> ต้นไม้ปกติ
+
+> **ทำไมทุก node ต้องมี count?** เพราะใช้ `node_hash_with_count` แทน
+> `node_hash` หากไม่มี count ผู้ตรวจสอบไม่สามารถสร้าง
+> แฮชกลางใด ๆ บน path ไปยัง root ได้ — แม้แต่สำหรับ node ที่ไม่ถูกสืบค้น
+
+**การปรับปรุง V1:** เหมือนกับต้นไม้ปกติ — ต้นไม้ที่ไม่ว่างที่ถูกสืบค้นที่ไม่มี
+subquery จะถูกอัปเกรดเป็น `KVValueHashFeatureTypeWithChildHash` สำหรับ
+การตรวจสอบ `combine_hash`
+
+> **หมายเหตุ ProvableCountSumTree:** เฉพาะ **count** เท่านั้นที่รวมอยู่ในแฮช
+> sum ถูกบรรจุใน feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) แต่**ไม่ถูกแฮช** เช่นเดียวกับต้นไม้ปกติข้างต้น ค่า sum
+> ที่เป็นทางการอยู่ในไบต์ที่ serialize ของ Element แม่ (เช่น
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`) ซึ่งถูก
+> ตรวจสอบแฮชใน proof ของต้นไม้แม่
+
+### สรุป: เมทริกซ์ประเภท Node → ประเภทต้นไม้
+
+| ประเภท Node | ต้นไม้ปกติ | ProvableCount Trees |
+|-----------|:------------:|:-------------------:|
+| `KV` | รายการที่ถูกสืบค้น | — |
+| `KVCount` | — | รายการที่ถูกสืบค้น |
+| `KVValueHash` | subtree ที่ถูกสืบค้น | — |
+| `KVValueHashFeatureType` | — | subtree ที่ถูกสืบค้น |
+| `KVRefValueHash` | reference ที่ถูกสืบค้น | — |
+| `KVRefValueHashCount` | — | reference ที่ถูกสืบค้น |
+| `KVHash` | On-path | — |
+| `KVHashCount` | — | On-path |
+| `KVDigest` | Boundary/absence | — |
+| `KVDigestCount` | — | Boundary/absence |
+| `Hash` | sibling ที่ห่างไกล | sibling ที่ห่างไกล |
+| `KVValueHashFeatureTypeWithChildHash` | — | ต้นไม้ที่ไม่ว่างที่ไม่มี subquery |
+
 ## การสร้าง Proof หลายชั้น
 
 เนื่องจาก GroveDB เป็นต้นไม้ของต้นไม้ proof จึงครอบคลุมหลายชั้น (layer) แต่ละชั้นพิสูจน์ส่วนที่เกี่ยวข้องของ Merk tree หนึ่งต้น และชั้นต่าง ๆ ถูกเชื่อมกันด้วยกลไก combined value_hash:

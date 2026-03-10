@@ -164,6 +164,136 @@ Zakodovano jako operace dukazu:
 | 8 | Push(Hash(frank_node_hash)) | Vlozit hash frank |
 | 9 | Child | frank se stane pravym potomkem dave |
 
+## Typy uzlu dukazu podle typu stromu
+
+Kazdy typ stromu v GroveDB pouziva specifickou sadu typu uzlu dukazu v zavislosti
+na **roli** uzlu v dukazu. Existuji ctyri role:
+
+| Role | Popis |
+|------|-------|
+| **Dotazovany** | Uzel odpovida dotazu — odhalen uplny klic + hodnota |
+| **Na ceste** | Uzel je predkem dotazovanych uzlu — potreba pouze kv_hash |
+| **Hranicni** | Sousedi s chybejicim klicem — dokazuje neexistenci |
+| **Vzdáleny** | Sourozenecky podstrom mimo cestu dukazu — potreba pouze node_hash |
+
+### Bezne stromy (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Vsech pet techto typu stromu pouziva identicke typy uzlu dukazu a stejnou
+hashovaci funkci: `compute_hash` (= `node_hash(kv_hash, left, right)`). **Neni
+zadny rozdil** v tom, jak jsou dokazovany na urovni merk.
+
+Kazdy uzel merk nese `feature_type` interne (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), ale
+ten **neni zahrnut v hashi** a **neni zahrnut v dukazu**. Agregovana
+data (soucet, pocet) pro tyto typy stromu ziji v serializovanych bajtech
+**rodicovskeho** Elementu, ktere jsou overeny hashem prostrednictvim dukazu
+rodicovskeho stromu:
+
+| Typ stromu | Element uklada | feature_type v Merk (nehashovany) |
+|-----------|----------------|----------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **Odkud pochazi soucet/pocet?** Kdyz overovatel zpracovava dukaz
+> pro `[root, my_sum_tree]`, dukaz rodicovskeho stromu obsahuje uzel
+> `KVValueHash` pro klic `my_sum_tree`. Pole `value` obsahuje
+> serializovany `Element::SumTree(root_key, 42, flags)`. Protoze je tato hodnota
+> overena hashem (jeji hash je vlozen do rodicovskeho Merklova korene),
+> soucet `42` je duveryhod ny. feature_type na urovni merk je irelevantni.
+
+| Role | Typ uzlu V0 | Typ uzlu V1 | Hashovaci funkce |
+|------|------------|------------|-----------------|
+| Dotazovana polozka | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Dotazovany neprazdny strom (bez poddotazu) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Dotazovany prazdny strom | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Dotazovana reference | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| Na ceste | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Hranicni | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Vzdáleny | `Hash` | `Hash` | Pouzit primo |
+
+> **Neprazdne stromy S poddotazem** sestupuji do podrizene vrstvy — uzel stromu
+> se objevi jako `KVValueHash` v dukazu rodicovske vrstvy a podrizena vrstva
+> ma svuj vlastni dukaz.
+
+> **Proc `KVValueHash` pro podstromy?** value_hash podstromu je
+> `combine_hash(H(element_bytes), child_root_hash)` — overovatel to nemuze
+> prepocitat pouze z bajtu element (potreboval by korenovy hash potomka). Takze
+> dokazovatel poskytne predvypocteny value_hash.
+>
+> **Proc `KV` pro polozky?** value_hash polozky je jednoduche `H(value)`, ktere
+> overovatel muze prepocitat. Pouziti `KV` je odolne vuci manipulaci: pokud
+> dokazovatel zmeni hodnotu, hash nebude souhlasit.
+
+**Vylepseni V1 — `KVValueHashFeatureTypeWithChildHash`:** V dukazech V1, kdyz
+dotazovany neprazdny strom nema poddotaz (dotaz konci u tohoto stromu — prvek
+stromu samotny je vysledek), vrstva GroveDB upgraduje uzel merk na
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)`. To umoznuje overovateli zkontrolovat `combine_hash(H(value), child_hash)
+== value_hash`, cimz brani utocnikovi v zamene bajtu elementu pri
+znovupouziti puvodniho value_hash. Prazdne stromy nejsou upgradevany, protoze
+nemaji podrizeny merk, ktery by poskytl korenovy hash.
+
+> **Bezpecnostni poznamka k feature_type:** Pro bezne (nedokazatelne) stromy je
+> pole `feature_type` v `KVValueHashFeatureType` a
+> `KVValueHashFeatureTypeWithChildHash` dekodovano, ale **nepouzivano** pro vypocet
+> hashe ani vraceno volajicim. Kanonicky typ stromu je v bajtech Element
+> overenych hashem. Toto pole je dulezite pouze pro ProvableCountTree
+> (viz nize), kde nese pocet potrebny pro `node_hash_with_count`.
+
+### ProvableCountTree a ProvableCountSumTree
+
+Tyto typy stromu pouzivaji `node_hash_with_count(kv_hash, left, right, count)` misto
+`node_hash`. **Pocet** je zahrnut v hashi, takze overovatel potrebuje
+pocet pro kazdy uzel k prepocitani Merklova korene.
+
+| Role | Typ uzlu V0 | Typ uzlu V1 | Hashovaci funkce |
+|------|------------|------------|-----------------|
+| Dotazovana polozka | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Dotazovany neprazdny strom (bez poddotazu) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Dotazovany prazdny strom | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Dotazovana reference | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| Na ceste | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Hranicni | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Vzdáleny | `Hash` | `Hash` | Pouzit primo |
+
+> **Neprazdne stromy S poddotazem** sestupuji do podrizene vrstvy, stejne jako
+> bezne stromy.
+
+> **Proc kazdy uzel nese pocet?** Protoze se pouziva `node_hash_with_count` misto
+> `node_hash`. Bez poctu overovatel nemuze rekonstruovat zadny prubezny hash
+> na ceste ke koreni — ani pro nedotazovane uzly.
+
+**Vylepseni V1:** Stejne jako u beznych stromu — dotazovane neprazdne stromy bez
+poddotazu jsou upgradevany na `KVValueHashFeatureTypeWithChildHash` pro
+overeni `combine_hash`.
+
+> **Poznamka k ProvableCountSumTree:** Pouze **pocet** je zahrnut v hashi. Soucet
+> je prenaseny v feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`), ale **neni hashovany**. Stejne jako u beznych typu stromu vyse, kanonicka
+> hodnota souctu zije v serializovanych bajtech rodicovskeho Elementu (napr.
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), ktere jsou
+> overeny hashem v dukazu rodicovskeho stromu.
+
+### Souhrn: Matice typ uzlu → typ stromu
+
+| Typ uzlu | Bezne stromy | Stromy ProvableCount |
+|----------|:----------:|:-------------------:|
+| `KV` | Dotazovane polozky | — |
+| `KVCount` | — | Dotazovane polozky |
+| `KVValueHash` | Dotazovane podstromy | — |
+| `KVValueHashFeatureType` | — | Dotazovane podstromy |
+| `KVRefValueHash` | Dotazovane reference | — |
+| `KVRefValueHashCount` | — | Dotazovane reference |
+| `KVHash` | Na ceste | — |
+| `KVHashCount` | — | Na ceste |
+| `KVDigest` | Hranice/neexistence | — |
+| `KVDigestCount` | — | Hranice/neexistence |
+| `Hash` | Vzdáleni sourozenci | Vzdáleni sourozenci |
+| `KVValueHashFeatureTypeWithChildHash` | — | Neprazdne stromy bez poddotazu |
+
 ## Vicevrstvove generovani dukazu
 
 Protoze GroveDB je strom stromu, dukazy zahrnuji vice vrstev. Kazda vrstva

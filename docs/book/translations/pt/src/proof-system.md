@@ -164,6 +164,139 @@ Codificado como ops de prova:
 | 8 | Push(Hash(frank_node_hash)) | Empurrar hash de frank |
 | 9 | Child | frank se torna filho direito de dave |
 
+## Tipos de No de Prova por Tipo de Arvore
+
+Cada tipo de arvore no GroveDB usa um conjunto especifico de tipos de no de
+prova dependendo do **papel** do no na prova. Existem quatro papeis:
+
+| Papel | Descricao |
+|-------|-----------|
+| **Consultado** | O no corresponde a consulta — chave + valor completos revelados |
+| **No caminho** | O no e um ancestral dos nos consultados — apenas kv_hash necessario |
+| **Limite** | Adjacente a uma chave ausente — prova ausencia |
+| **Distante** | Uma subarvore irma fora do caminho da prova — apenas node_hash necessario |
+
+### Arvores Regulares (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Todos os cinco tipos de arvore usam tipos de no de prova identicos e a mesma
+funcao de hash: `compute_hash` (= `node_hash(kv_hash, left, right)`). **Nao ha
+diferenca** em como sao provadas no nivel merk.
+
+Cada no merk carrega internamente um `feature_type` (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode),
+mas isso **nao e incluido no hash** e **nao e incluido na prova**. Os dados
+agregados (soma, contagem) para esses tipos de arvore residem nos bytes
+serializados do Element **pai**, que sao verificados por hash atraves da
+prova da arvore pai:
+
+| Tipo de arvore | Element armazena | Merk feature_type (nao incluido no hash) |
+|---------------|-----------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **De onde vem a soma/contagem?** Quando um verificador processa uma prova
+> para `[root, my_sum_tree]`, a prova da arvore pai inclui um no
+> `KVValueHash` para a chave `my_sum_tree`. O campo `value` contem o
+> `Element::SumTree(root_key, 42, flags)` serializado. Como esse valor e
+> verificado por hash (seu hash e comprometido na raiz Merkle pai), a
+> soma `42` e confiavel. O feature_type no nivel merk e irrelevante.
+
+| Papel | Tipo de No V0 | Tipo de No V1 | Funcao de hash |
+|-------|-------------|-------------|---------------|
+| Item consultado | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Arvore nao vazia consultada (sem subquery) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Arvore vazia consultada | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Referencia consultada | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| No caminho | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Limite | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distante | `Hash` | `Hash` | Usado diretamente |
+
+> **Arvores nao vazias COM subquery** descem para a camada filha — o no da
+> arvore aparece como `KVValueHash` na prova da camada pai e a camada filha
+> tem sua propria prova.
+
+> **Por que `KVValueHash` para subarvores?** O value_hash de uma subarvore e
+> `combine_hash(H(element_bytes), child_root_hash)` — o verificador nao pode
+> recomputar isso apenas com os bytes do elemento (precisaria do hash raiz
+> filho). Portanto, o provador fornece o value_hash pre-computado.
+>
+> **Por que `KV` para itens?** O value_hash de um item e simplesmente
+> `H(value)`, que o verificador pode recomputar. Usar `KV` e a prova de
+> adulteracao: se o provador alterar o valor, o hash nao correspondera.
+
+**Melhoria V1 — `KVValueHashFeatureTypeWithChildHash`:** Em provas V1, quando
+uma arvore nao vazia consultada nao tem subquery (a consulta para nesta arvore
+— o elemento da arvore em si e o resultado), a camada GroveDB atualiza o no
+merk para `KVValueHashFeatureTypeWithChildHash(key, value, value_hash,
+feature_type, child_hash)`. Isso permite que o verificador verifique
+`combine_hash(H(value), child_hash) == value_hash`, impedindo que um atacante
+troque os bytes do elemento reutilizando o value_hash original. Arvores vazias
+nao sao atualizadas porque nao tem um merk filho para fornecer um hash raiz.
+
+> **Nota de seguranca sobre feature_type:** Para arvores regulares (nao
+> provaveis), o campo `feature_type` em `KVValueHashFeatureType` e
+> `KVValueHashFeatureTypeWithChildHash` e decodificado mas **nao usado** para
+> computacao de hash nem retornado aos chamadores. O tipo canonico da arvore
+> reside nos bytes do Element verificados por hash. Este campo so importa para
+> ProvableCountTree (veja abaixo), onde carrega a contagem necessaria para
+> `node_hash_with_count`.
+
+### ProvableCountTree e ProvableCountSumTree
+
+Esses tipos de arvore usam `node_hash_with_count(kv_hash, left, right, count)`
+em vez de `node_hash`. A **contagem** e incluida no hash, portanto o
+verificador precisa da contagem de cada no para recomputar a raiz Merkle.
+
+| Papel | Tipo de No V0 | Tipo de No V1 | Funcao de hash |
+|-------|-------------|-------------|---------------|
+| Item consultado | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Arvore nao vazia consultada (sem subquery) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Arvore vazia consultada | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Referencia consultada | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| No caminho | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Limite | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distante | `Hash` | `Hash` | Usado diretamente |
+
+> **Arvores nao vazias COM subquery** descem para a camada filha, assim como
+> as arvores regulares.
+
+> **Por que cada no carrega uma contagem?** Porque `node_hash_with_count` e
+> usado em vez de `node_hash`. Sem a contagem, o verificador nao pode
+> reconstruir nenhum hash intermediario no caminho ate a raiz — mesmo para nos
+> nao consultados.
+
+**Melhoria V1:** Igual as arvores regulares — arvores nao vazias consultadas
+sem subquery sao atualizadas para `KVValueHashFeatureTypeWithChildHash` para
+verificacao de `combine_hash`.
+
+> **Nota sobre ProvableCountSumTree:** Apenas a **contagem** e incluida no
+> hash. A soma e transportada no feature_type
+> (`ProvableCountedSummedMerkNode(count, sum)`) mas **nao e incluida no
+> hash**. Assim como os tipos de arvore regulares acima, o valor canonico da
+> soma reside nos bytes serializados do Element pai (por exemplo,
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), que sao
+> verificados por hash na prova da arvore pai.
+
+### Resumo: Matriz Tipo de No → Tipo de Arvore
+
+| Tipo de No | Arvores Regulares | Arvores ProvableCount |
+|-----------|:------------:|:-------------------:|
+| `KV` | Itens consultados | — |
+| `KVCount` | — | Itens consultados |
+| `KVValueHash` | Subarvores consultadas | — |
+| `KVValueHashFeatureType` | — | Subarvores consultadas |
+| `KVRefValueHash` | Referencias consultadas | — |
+| `KVRefValueHashCount` | — | Referencias consultadas |
+| `KVHash` | No caminho | — |
+| `KVHashCount` | — | No caminho |
+| `KVDigest` | Limite/ausencia | — |
+| `KVDigestCount` | — | Limite/ausencia |
+| `Hash` | Irmaos distantes | Irmaos distantes |
+| `KVValueHashFeatureTypeWithChildHash` | — | Arvores nao vazias sem subquery |
+
 ## Geracao de Provas Multicamada
 
 Como o GroveDB e uma arvore de arvores, as provas abrangem multiplas camadas. Cada camada
