@@ -1897,7 +1897,9 @@ fn test_bulk_batch_discarded_after_compaction() {
         raw_dense_pos0.is_none(),
         "raw dense buffer at position 0 should be empty inside tx after compaction discard"
     );
-    let mmr_key_pos0 = 0x8000_0000_0000_0000u64.to_be_bytes();
+    // BulkAppendTree compaction uses MmrKeySize::U32 (4-byte tagged keys),
+    // not U64 (8-byte). Position 0 with U32 tag: 0x8000_0000.
+    let mmr_key_pos0 = 0x8000_0000u32.to_be_bytes();
     let raw_mmr_pos0 = db
         .raw_subtree_get(subtree_refs.as_slice().into(), &mmr_key_pos0, &tx)
         .expect("raw mmr get should not error");
