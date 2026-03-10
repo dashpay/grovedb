@@ -5,7 +5,7 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     proofs::{
         execute,
-        query::{PathKey, QueryProofVerify, VerifyOptions},
+        query::{PathKey, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST},
         Decoder, Node, Op, Query,
     },
     tree::{combine_hash, value_hash, NULL_HASH},
@@ -446,7 +446,12 @@ impl GroveDb {
         };
 
         let (root_hash, merk_result) = level_query
-            .execute_proof(merk_proof_bytes, *limit_left, internal_query.left_to_right)
+            .execute_proof(
+                merk_proof_bytes,
+                *limit_left,
+                internal_query.left_to_right,
+                PROOF_VERSION_LATEST, // V1 proof: strict mode rejects items in value hash nodes
+            )
             .unwrap()
             .map_err(|e| {
                 Error::InvalidProof(
@@ -1389,6 +1394,7 @@ impl GroveDb {
                 &layer_proof.merk_proof,
                 *limit_left,
                 internal_query.left_to_right,
+                0, // V0 proofs: allow items in value hash nodes for backwards compatibility
             )
             .unwrap()
             .map_err(|e| {
@@ -1973,7 +1979,12 @@ impl GroveDb {
 
             // Execute the proof to verify and get the root hash
             let (layer_root_hash, result) = key_query
-                .execute_proof(&current_layer.merk_proof, None, true)
+                .execute_proof(
+                    &current_layer.merk_proof,
+                    None,
+                    true,
+                    0, // V0 proof: allow items in value hash nodes
+                )
                 .unwrap()
                 .map_err(|e| {
                     Error::InvalidProof(
