@@ -503,7 +503,7 @@ where
 
         // write to db
         let commit_result = self.storage.commit_batch(batch).map_err(StorageError);
-        if grove_version.merk_versions.commit.commit >= 1 {
+        if grove_version.merk_versions.batch.commit >= 1 {
             // V1+: preserve accumulated batch costs (seek counts, storage costs)
             commit_result.add_cost(cost)
         } else {

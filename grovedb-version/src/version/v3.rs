@@ -9,7 +9,7 @@ use crate::version::{
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
-    merk_versions::{MerkAverageCaseCostsVersions, MerkCommitVersions, MerkVersions},
+    merk_versions::{MerkAverageCaseCostsVersions, MerkBatchVersions, MerkVersions},
     GroveVersion,
 };
 
@@ -206,7 +206,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
         },
     },
     merk_versions: MerkVersions {
-        commit: MerkCommitVersions { commit: 1 }, // return accumulated batch costs
+        batch: MerkBatchVersions { commit: 1 }, // return accumulated batch costs
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 1,
             sum_tree_estimated_size: 1,

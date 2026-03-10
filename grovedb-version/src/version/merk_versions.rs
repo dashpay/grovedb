@@ -2,12 +2,12 @@ use versioned_feature_core::FeatureVersion;
 
 #[derive(Clone, Debug, Default)]
 pub struct MerkVersions {
-    pub commit: MerkCommitVersions,
+    pub batch: MerkBatchVersions,
     pub average_case_costs: MerkAverageCaseCostsVersions,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct MerkCommitVersions {
+pub struct MerkBatchVersions {
     /// Version 0: commit_batch discards accumulated batch costs (legacy bug)
     /// Version 1: commit_batch returns accumulated batch costs
     pub commit: FeatureVersion,
