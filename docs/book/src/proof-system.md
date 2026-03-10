@@ -178,9 +178,31 @@ the **role** of the node in the proof. There are four roles:
 
 ### Regular Trees (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
 
-These tree types use `compute_hash` (= `node_hash(kv_hash, left, right)`) for
-all nodes. The feature_type (BasicMerkNode, SummedMerkNode, etc.) is **not**
-included in the hash.
+All five of these tree types use identical proof node types and the same hash
+function: `compute_hash` (= `node_hash(kv_hash, left, right)`). There is **no
+difference** in how they are proved at the merk level.
+
+Each merk node carries a `feature_type` internally (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), but
+this is **not included in the hash** and **not included in the proof**. The
+aggregate data (sum, count) for these tree types lives in the **parent**
+Element's serialized bytes, which are hash-verified through the parent tree's
+proof:
+
+| Tree type | Element stores | Merk feature_type (not hashed) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **Where does the sum/count come from?** When a verifier processes a proof
+> for `[root, my_sum_tree]`, the parent tree's proof includes a
+> `KVValueHash` node for key `my_sum_tree`. The `value` field contains the
+> serialized `Element::SumTree(root_key, 42, flags)`. Since this value is
+> hash-verified (its hash is committed to the parent Merkle root), the
+> sum `42` is trustworthy. The merk-level feature_type is irrelevant.
 
 | Role | Node Type | Data | Hash function |
 |------|-----------|------|---------------|
@@ -239,9 +261,10 @@ verification.
 
 > **ProvableCountSumTree note:** Only the **count** is included in the hash. The
 > sum is carried in the feature_type (`ProvableCountedSummedMerkNode(count,
-> sum)`) but is **not hashed**. The sum is informational metadata at the merk
-> proof level; the canonical sum value lives in the parent `Element::CountSumTree`
-> bytes, which are hash-verified in the parent tree's proof.
+> sum)`) but is **not hashed**. Like the regular tree types above, the canonical
+> sum value lives in the parent Element's serialized bytes (e.g.
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), which are
+> hash-verified in the parent tree's proof.
 
 ### Summary: Node Type → Tree Type Matrix
 
