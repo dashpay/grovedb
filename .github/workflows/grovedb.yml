@@ -66,7 +66,10 @@ jobs:
   test-mac:
     name: Test (macOS)
     needs: detect-changes
-    if: needs.detect-changes.outputs.needs-tests == 'true'
+    if: >-
+      needs.detect-changes.outputs.needs-tests == 'true'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
