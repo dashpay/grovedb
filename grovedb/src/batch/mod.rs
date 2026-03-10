@@ -104,10 +104,9 @@ pub enum SubelementsDeletionBehavior {
     /// Check emptiness. If the subtree is non-empty, return
     /// `Error::DeletingNonEmptyTree`.
     Error,
-    /// Check emptiness. If the subtree is non-empty, still proceed with
-    /// the delete and perform post-apply storage cleanup to remove the
-    /// child subtree's storage (and any nested subtrees). If the subtree
-    /// is empty, skip cleanup (nothing to clean). Use this when the
+    /// Do not check whether the subtree is empty before deleting, but
+    /// still perform post-apply storage cleanup to remove the child
+    /// subtree's storage (and any nested subtrees). Use this when the
     /// subtree may contain children that should be recursively cleaned up.
     DeleteChildren,
     /// Check emptiness. If the subtree is non-empty, silently skip this
@@ -3492,119 +3491,119 @@ impl GroveDb {
                 child_path.push(key.as_slice().to_vec());
 
                 // Per-op emptiness check based on the SubelementsDeletionBehavior policy.
-                if matches!(
-                    subelements_deletion_behavior,
-                    SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                ) {
-                    // No emptiness check and no post-apply storage cleanup.
-                    // The caller guarantees the subtree is already empty.
-                    continue;
+                match subelements_deletion_behavior {
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
+                        // No emptiness check and no post-apply storage cleanup.
+                        // The caller guarantees the subtree is already empty.
+                        continue;
+                    }
+                    SubelementsDeletionBehavior::DeleteChildren => {
+                        // No emptiness check, but still perform post-apply
+                        // storage cleanup to remove child subtree storage.
+                    }
+                    SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
+                        let is_empty = if tree_type.uses_non_merk_data_storage() {
+                            // Non-Merk trees: check element-level entry count.
+                            let parent_path_vec = op.path.to_path();
+                            let parent_path: SubtreePath<Vec<u8>> =
+                                parent_path_vec.as_slice().into();
+                            let parent_storage = self
+                                .db
+                                .get_transactional_storage_context(
+                                    parent_path,
+                                    Some(&storage_batch),
+                                    tx.as_ref(),
+                                )
+                                .unwrap_add_cost(&mut cost);
+                            let element = cost_return_on_error!(
+                                &mut cost,
+                                Element::get_from_storage(
+                                    &parent_storage,
+                                    key.as_slice(),
+                                    grove_version,
+                                )
+                                .map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to get element for delete tree emptiness \
+                                         check: {e}"
+                                    ))
+                                })
+                            );
+                            element.non_merk_entry_count().unwrap_or(0) == 0
+                        } else {
+                            // Standard Merk trees: use is_empty_tree_except to
+                            // account for other delete ops in the same batch.
+                            //
+                            // Exclude DeleteTree ops with Skip policy — those
+                            // might not execute if their target is non-empty,
+                            // so we cannot assume they will delete their key.
+                            let batch_deleted_keys = ops
+                                .iter()
+                                .filter_map(|other_op| match &other_op.op {
+                                    GroveOp::Delete => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => {
+                                        None
+                                    }
+                                    GroveOp::DeleteTree(..) => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<Vec<u8>>>();
+                            let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
+                                batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+
+                            let child_merk = cost_return_on_error!(
+                                &mut cost,
+                                self.open_batch_transactional_merk_at_path(
+                                    &storage_batch,
+                                    child_path.as_slice().into(),
+                                    tx.as_ref(),
+                                    false,
+                                    grove_version,
+                                )
+                            );
+
+                            child_merk
+                                .is_empty_tree_except(batch_deleted_keys_refs)
+                                .unwrap_add_cost(&mut cost)
+                        };
+
+                        if !is_empty {
+                            match subelements_deletion_behavior {
+                                SubelementsDeletionBehavior::Error => {
+                                    return Err(Error::DeletingNonEmptyTree(
+                                        "trying to do a batch delete operation for a non \
+                                         empty tree, but options not allowing this",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                SubelementsDeletionBehavior::Skip => {
+                                    skipped_delete_paths.insert(child_path);
+                                    continue;
+                                }
+                                SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
+                            }
+                        }
+                    }
                 }
 
-                // All remaining variants need an emptiness check:
-                // - Error/Skip: to decide whether to block or skip the delete
-                // - DeleteChildren: to decide whether cleanup is needed
-                let is_empty = if tree_type.uses_non_merk_data_storage() {
-                    // Non-Merk trees: check element-level entry count.
-                    let parent_path_vec = op.path.to_path();
-                    let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
-                    let parent_storage = self
-                        .db
-                        .get_transactional_storage_context(
-                            parent_path,
-                            Some(&storage_batch),
-                            tx.as_ref(),
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    let element = cost_return_on_error!(
-                        &mut cost,
-                        Element::get_from_storage(&parent_storage, key.as_slice(), grove_version,)
-                            .map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to get element for delete tree emptiness \
-                                 check: {e}"
-                                ))
-                            })
-                    );
-                    element.non_merk_entry_count().unwrap_or(0) == 0
+                if tree_type.uses_non_merk_data_storage() {
+                    non_merk_delete_paths.push(child_path);
                 } else {
-                    // Standard Merk trees: use is_empty_tree_except to
-                    // account for other delete ops in the same batch.
-                    //
-                    // Exclude DeleteTree ops with Skip policy — those
-                    // might not execute if their target is non-empty,
-                    // so we cannot assume they will delete their key.
-                    let batch_deleted_keys = ops
-                        .iter()
-                        .filter_map(|other_op| match &other_op.op {
-                            GroveOp::Delete => {
-                                if other_op.path.to_path() == child_path {
-                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                } else {
-                                    None
-                                }
-                            }
-                            GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => None,
-                            GroveOp::DeleteTree(..) => {
-                                if other_op.path.to_path() == child_path {
-                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<Vec<u8>>>();
-                    let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
-                        batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
-
-                    let child_merk = cost_return_on_error!(
-                        &mut cost,
-                        self.open_batch_transactional_merk_at_path(
-                            &storage_batch,
-                            child_path.as_slice().into(),
-                            tx.as_ref(),
-                            false,
-                            grove_version,
-                        )
-                    );
-
-                    child_merk
-                        .is_empty_tree_except(batch_deleted_keys_refs)
-                        .unwrap_add_cost(&mut cost)
-                };
-
-                if !is_empty {
-                    match subelements_deletion_behavior {
-                        SubelementsDeletionBehavior::Error => {
-                            return Err(Error::DeletingNonEmptyTree(
-                                "trying to do a batch delete operation for a non \
-                                 empty tree, but options not allowing this",
-                            ))
-                            .wrap_with_cost(cost);
-                        }
-                        SubelementsDeletionBehavior::Skip => {
-                            skipped_delete_paths.insert(child_path);
-                            continue;
-                        }
-                        SubelementsDeletionBehavior::DeleteChildren => {
-                            // Non-empty: proceed with delete and add to
-                            // cleanup list below.
-                        }
-                        SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
-                            unreachable!()
-                        }
-                    }
-
-                    // Add non-empty tree to cleanup list
-                    if tree_type.uses_non_merk_data_storage() {
-                        non_merk_delete_paths.push(child_path);
-                    } else {
-                        merk_delete_paths.push(child_path);
-                    }
+                    merk_delete_paths.push(child_path);
                 }
-                // Empty trees: no cleanup needed, just let apply_body
-                // remove the element from the parent Merk.
             }
         }
 
@@ -3846,114 +3845,114 @@ impl GroveDb {
                 let mut child_path = op.path.to_path();
                 child_path.push(key.as_slice().to_vec());
 
-                if matches!(
-                    subelements_deletion_behavior,
-                    SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                ) {
-                    // No emptiness check and no post-apply storage cleanup.
-                    // The caller guarantees the subtree is already empty.
-                    continue;
+                match subelements_deletion_behavior {
+                    SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
+                        // No emptiness check and no post-apply storage cleanup.
+                        // The caller guarantees the subtree is already empty.
+                        continue;
+                    }
+                    SubelementsDeletionBehavior::DeleteChildren => {
+                        // No emptiness check, but still perform post-apply
+                        // storage cleanup to remove child subtree storage.
+                    }
+                    SubelementsDeletionBehavior::Error | SubelementsDeletionBehavior::Skip => {
+                        let is_empty = if tree_type.uses_non_merk_data_storage() {
+                            let parent_path_vec = op.path.to_path();
+                            let parent_path: SubtreePath<Vec<u8>> =
+                                parent_path_vec.as_slice().into();
+                            let parent_storage = self
+                                .db
+                                .get_transactional_storage_context(
+                                    parent_path,
+                                    Some(&storage_batch),
+                                    tx.as_ref(),
+                                )
+                                .unwrap_add_cost(&mut cost);
+                            let element = cost_return_on_error!(
+                                &mut cost,
+                                Element::get_from_storage(
+                                    &parent_storage,
+                                    key.as_slice(),
+                                    grove_version,
+                                )
+                                .map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "unable to get element for delete tree emptiness \
+                                         check: {e}"
+                                    ))
+                                })
+                            );
+                            element.non_merk_entry_count().unwrap_or(0) == 0
+                        } else {
+                            // Exclude DeleteTree ops with Skip policy — those
+                            // might not execute if their target is non-empty.
+                            let batch_deleted_keys = ops
+                                .iter()
+                                .filter_map(|other_op| match &other_op.op {
+                                    GroveOp::Delete => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => {
+                                        None
+                                    }
+                                    GroveOp::DeleteTree(..) => {
+                                        if other_op.path.to_path() == child_path {
+                                            Some(other_op.key.as_ref()?.as_slice().to_vec())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<Vec<u8>>>();
+                            let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
+                                batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
+
+                            let child_merk = cost_return_on_error!(
+                                &mut cost,
+                                self.open_batch_transactional_merk_at_path(
+                                    &storage_batch,
+                                    child_path.as_slice().into(),
+                                    tx.as_ref(),
+                                    false,
+                                    grove_version,
+                                )
+                            );
+
+                            child_merk
+                                .is_empty_tree_except(batch_deleted_keys_refs)
+                                .unwrap_add_cost(&mut cost)
+                        };
+
+                        if !is_empty {
+                            match subelements_deletion_behavior {
+                                SubelementsDeletionBehavior::Error => {
+                                    return Err(Error::DeletingNonEmptyTree(
+                                        "trying to do a batch delete operation for a non \
+                                         empty tree, but options not allowing this",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                SubelementsDeletionBehavior::Skip => {
+                                    skipped_delete_paths.insert(child_path);
+                                    continue;
+                                }
+                                SubelementsDeletionBehavior::DontCheckWithNoCleanup
+                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
+                            }
+                        }
+                    }
                 }
 
-                // All remaining variants need an emptiness check:
-                // - Error/Skip: to decide whether to block or skip the delete
-                // - DeleteChildren: to decide whether cleanup is needed
-                let is_empty = if tree_type.uses_non_merk_data_storage() {
-                    let parent_path_vec = op.path.to_path();
-                    let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
-                    let parent_storage = self
-                        .db
-                        .get_transactional_storage_context(
-                            parent_path,
-                            Some(&storage_batch),
-                            tx.as_ref(),
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    let element = cost_return_on_error!(
-                        &mut cost,
-                        Element::get_from_storage(&parent_storage, key.as_slice(), grove_version,)
-                            .map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to get element for delete tree emptiness \
-                                 check: {e}"
-                                ))
-                            })
-                    );
-                    element.non_merk_entry_count().unwrap_or(0) == 0
+                if tree_type.uses_non_merk_data_storage() {
+                    non_merk_delete_paths.push(child_path);
                 } else {
-                    // Exclude DeleteTree ops with Skip policy — those
-                    // might not execute if their target is non-empty.
-                    let batch_deleted_keys = ops
-                        .iter()
-                        .filter_map(|other_op| match &other_op.op {
-                            GroveOp::Delete => {
-                                if other_op.path.to_path() == child_path {
-                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                } else {
-                                    None
-                                }
-                            }
-                            GroveOp::DeleteTree(_, SubelementsDeletionBehavior::Skip) => None,
-                            GroveOp::DeleteTree(..) => {
-                                if other_op.path.to_path() == child_path {
-                                    Some(other_op.key.as_ref()?.as_slice().to_vec())
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<Vec<u8>>>();
-                    let batch_deleted_keys_refs: std::collections::BTreeSet<&[u8]> =
-                        batch_deleted_keys.iter().map(|k| k.as_slice()).collect();
-
-                    let child_merk = cost_return_on_error!(
-                        &mut cost,
-                        self.open_batch_transactional_merk_at_path(
-                            &storage_batch,
-                            child_path.as_slice().into(),
-                            tx.as_ref(),
-                            false,
-                            grove_version,
-                        )
-                    );
-
-                    child_merk
-                        .is_empty_tree_except(batch_deleted_keys_refs)
-                        .unwrap_add_cost(&mut cost)
-                };
-
-                if !is_empty {
-                    match subelements_deletion_behavior {
-                        SubelementsDeletionBehavior::Error => {
-                            return Err(Error::DeletingNonEmptyTree(
-                                "trying to do a batch delete operation for a non \
-                                 empty tree, but options not allowing this",
-                            ))
-                            .wrap_with_cost(cost);
-                        }
-                        SubelementsDeletionBehavior::Skip => {
-                            skipped_delete_paths.insert(child_path);
-                            continue;
-                        }
-                        SubelementsDeletionBehavior::DeleteChildren => {
-                            // Non-empty: proceed with delete and add to
-                            // cleanup list below.
-                        }
-                        SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
-                            unreachable!()
-                        }
-                    }
-
-                    // Add non-empty tree to cleanup list
-                    if tree_type.uses_non_merk_data_storage() {
-                        non_merk_delete_paths.push(child_path);
-                    } else {
-                        merk_delete_paths.push(child_path);
-                    }
+                    merk_delete_paths.push(child_path);
                 }
-                // Empty trees: no cleanup needed, just let apply_body
-                // remove the element from the parent Merk.
             }
         }
 

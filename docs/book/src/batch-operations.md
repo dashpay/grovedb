@@ -46,7 +46,7 @@ pub enum NonMerkTreeMeta {
 pub enum SubelementsDeletionBehavior {
     DontCheckWithNoCleanup, // Skip emptiness check AND post-apply cleanup; caller guarantees tree is empty
     Error,                  // Return Error::DeletingNonEmptyTree if non-empty
-    DeleteChildren,         // Check emptiness; if non-empty, delete and clean up children; if empty, just delete
+    DeleteChildren,         // Skip emptiness check, but perform post-apply storage cleanup
     Skip,                   // Check, and silently skip deletion if non-empty
 }
 ```
@@ -55,8 +55,8 @@ pub enum SubelementsDeletionBehavior {
 |---|---|---|---|---|
 | `DontCheckWithNoCleanup` | empty | No | Yes | No |
 | `DontCheckWithNoCleanup` | non-empty | No | Yes | No |
-| `DeleteChildren` | empty | Yes | Yes | No |
-| `DeleteChildren` | non-empty | Yes | Yes | Yes |
+| `DeleteChildren` | empty | No | Yes | Yes |
+| `DeleteChildren` | non-empty | No | Yes | Yes |
 | `Error` | empty | Yes | Yes | Yes |
 | `Error` | non-empty | Yes | No (returns error) | No |
 | `Skip` | empty | Yes | Yes | Yes |
