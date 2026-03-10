@@ -160,6 +160,137 @@ Ispat islemleri olarak kodlanmis hali:
 | 8 | Push(Hash(frank_dugum_hash)) | frank hash'ini it |
 | 9 | Child | frank dave'in sag cocugu olur |
 
+## Agac Tipine Gore Ispat Dugum Tipleri
+
+GroveDB'deki her agac tipi, dugumlerin ispattaki **rolune** bagli olarak belirli bir
+ispat dugum tipleri kumesi kullanir. Dort rol vardir:
+
+| Rol | Aciklama |
+|------|-------------|
+| **Queried** | Dugum sorguyla eslesir — tam anahtar + deger aciga cikarilir |
+| **On-path** | Dugum sorgulanan dugumlerin atasidir — yalnizca kv_hash gerekir |
+| **Boundary** | Eksik bir anahtara bitisiktir — yoklugu kanitlar |
+| **Distant** | Ispat yolunda olmayan kardes alt agac — yalnizca node_hash gerekir |
+
+### Normal Agaclar (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Bu bes agac tipinin tumunde ayni ispat dugum tipleri ve ayni hash fonksiyonu
+kullanilir: `compute_hash` (= `node_hash(kv_hash, left, right)`). Merk seviyesinde
+kanitlanma bicimlerinde **hicbir fark yoktur**.
+
+Her merk dugumu dahili olarak bir `feature_type` tasir (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), ancak
+bu **hash'e dahil edilmez** ve **ispata dahil edilmez**. Bu agac tipleri icin
+toplam veri (sum, count) **ust** Element'in seriestirilmis baytlarinda bulunur
+ve ust agacin ispati araciligiyla hash-dogrulanir:
+
+| Agac tipi | Element'in depoladigi | Merk feature_type (hash'lenmez) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **sum/count nereden gelir?** Dogrulayici `[root, my_sum_tree]` icin bir
+> ispati islerken, ust agacin ispati `my_sum_tree` anahtari icin bir
+> `KVValueHash` dugumu icerir. `value` alani seriestirilmis
+> `Element::SumTree(root_key, 42, flags)` icerir. Bu deger hash-dogrulandigi
+> icin (hash'i ust Merkle root'a baglanmistir), `42` sum degeri
+> guvenilirdir. Merk seviyesindeki feature_type onemli degildir.
+
+| Rol | V0 Dugum Tipi | V1 Dugum Tipi | Hash fonksiyonu |
+|------|-------------|-------------|---------------|
+| Sorgulanan oge | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Sorgulanan bos olmayan agac (subquery yok) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Sorgulanan bos agac | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Sorgulanan referans | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| On-path | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Boundary | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distant | `Hash` | `Hash` | Dogrudan kullanilir |
+
+> **subquery'li bos olmayan agaclar** cocuk katmana iner — agac dugumu
+> ust katman ispatinda `KVValueHash` olarak gorunur ve cocuk katmanin
+> kendi ispati vardir.
+
+> **Neden alt agaclar icin `KVValueHash`?** Bir alt agacin value_hash'i
+> `combine_hash(H(element_bytes), child_root_hash)` seklindedir — dogrulayici
+> bunu yalnizca element baytlarindan yeniden hesaplayamaz (child root
+> hash'e ihtiyaci olurdu). Bu yuzden saglayici onceden hesaplanmis value_hash'i
+> sunar.
+>
+> **Neden ogeler icin `KV`?** Bir ogenin value_hash'i basitce `H(value)` olup
+> dogrulayici bunu yeniden hesaplayabilir. `KV` kullanmak degistirilmeye karsi
+> guvenlidir: saglayici degeri degistirirse hash eslesmez.
+
+**V1 gelistirmesi — `KVValueHashFeatureTypeWithChildHash`:** V1 ispatlarinda,
+sorgulanan bos olmayan bir agacin subquery'si olmadiginda (sorgu bu agacta durur —
+agac elementinin kendisi sonuctur), GroveDB katmani merk dugumunu
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)` olarak yukseltir. Bu, dogrulayicinin `combine_hash(H(value), child_hash)
+== value_hash` kontrolu yapmasini saglar ve bir saldirganin orijinal value_hash'i
+yeniden kullanarak element baytlarini degistirmesini onler. Bos agaclar
+yukseltilmez cunku kok hash saglayacak bir cocuk merk'leri yoktur.
+
+> **feature_type hakkinda guvenlik notu:** Normal (provable olmayan) agaclar icin,
+> `KVValueHashFeatureType` ve `KVValueHashFeatureTypeWithChildHash` icindeki
+> `feature_type` alani decode edilir ancak hash hesaplamasinda veya cagiranlara
+> donuste **kullanilmaz**. Kanonik agac tipi hash-dogrulanmis Element
+> baytlarinda yasir. Bu alan yalnizca ProvableCountTree (asagiya bakin)
+> icin onemlidir; burada `node_hash_with_count` icin gereken count'u tasir.
+
+### ProvableCountTree ve ProvableCountSumTree
+
+Bu agac tipleri `node_hash` yerine `node_hash_with_count(kv_hash, left, right, count)`
+kullanir. **count** hash'e dahil edildigi icin, dogrulayicinin Merkle root'u
+yeniden hesaplamak icin her dugum icin count'a ihtiyaci vardir.
+
+| Rol | V0 Dugum Tipi | V1 Dugum Tipi | Hash fonksiyonu |
+|------|-------------|-------------|---------------|
+| Sorgulanan oge | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Sorgulanan bos olmayan agac (subquery yok) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Sorgulanan bos agac | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Sorgulanan referans | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| On-path | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Boundary | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distant | `Hash` | `Hash` | Dogrudan kullanilir |
+
+> **subquery'li bos olmayan agaclar** normal agaclarda oldugu gibi cocuk
+> katmana iner.
+
+> **Neden her dugum bir count tasir?** Cunku `node_hash` yerine
+> `node_hash_with_count` kullanilir. count olmadan, dogrulayici root'a giden
+> yoldaki hicbir ara hash'i yeniden olusturamaz — sorgulanmayan dugumler icin
+> bile.
+
+**V1 gelistirmesi:** Normal agaclarla ayni — subquery'siz sorgulanan bos olmayan
+agaclar, `combine_hash` dogrulamasi icin `KVValueHashFeatureTypeWithChildHash`
+olarak yukseltilir.
+
+> **ProvableCountSumTree notu:** Yalnizca **count** hash'e dahil edilir.
+> sum, feature_type icinde (`ProvableCountedSummedMerkNode(count,
+> sum)`) tasinir ancak **hash'lenmez**. Yukardaki normal agac tipleri gibi,
+> kanonik sum degeri ust Element'in seriestirilmis baytlarinda (ornegin
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`) yasir ve
+> ust agacin ispatinda hash-dogrulanir.
+
+### Ozet: Dugum Tipi → Agac Tipi Matrisi
+
+| Dugum Tipi | Normal Agaclar | ProvableCount Agaclari |
+|-----------|:------------:|:-------------------:|
+| `KV` | Sorgulanan ogeler | — |
+| `KVCount` | — | Sorgulanan ogeler |
+| `KVValueHash` | Sorgulanan alt agaclar | — |
+| `KVValueHashFeatureType` | — | Sorgulanan alt agaclar |
+| `KVRefValueHash` | Sorgulanan referanslar | — |
+| `KVRefValueHashCount` | — | Sorgulanan referanslar |
+| `KVHash` | On-path | — |
+| `KVHashCount` | — | On-path |
+| `KVDigest` | Boundary/absence | — |
+| `KVDigestCount` | — | Boundary/absence |
+| `Hash` | Uzak kardesler | Uzak kardesler |
+| `KVValueHashFeatureTypeWithChildHash` | — | subquery'siz bos olmayan agaclar |
+
 ## Cok Katmanli Ispat Uretimi
 
 GroveDB agaclar agaci oldugu icin, ispatlar birden fazla katmani kapsar. Her katman bir Merk agacinin ilgili bolumunu kanitlar ve katmanlar birlesik value_hash mekanizmasiyla birbirine baglanir:

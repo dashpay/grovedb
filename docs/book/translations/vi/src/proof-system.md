@@ -160,6 +160,134 @@ Mã hóa thành các thao tác proof:
 | 8 | Push(Hash(frank_node_hash)) | Đẩy hash frank |
 | 9 | Child | frank trở thành con phải của dave |
 
+## Các kiểu Proof Node theo kiểu cây
+
+Mỗi kiểu cây trong GroveDB sử dụng một tập hợp kiểu proof node cụ thể tùy thuộc
+vào **vai trò** của nút trong bằng chứng. Có bốn vai trò:
+
+| Vai trò | Mô tả |
+|------|-------------|
+| **Queried** | Nút khớp với truy vấn — tiết lộ đầy đủ key + value |
+| **On-path** | Nút là tổ tiên của các nút được truy vấn — chỉ cần kv_hash |
+| **Boundary** | Liền kề với khóa bị thiếu — chứng minh sự vắng mặt |
+| **Distant** | Cây con anh em không nằm trên đường dẫn bằng chứng — chỉ cần node_hash |
+
+### Cây thông thường (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Cả năm kiểu cây này đều sử dụng cùng kiểu proof node và cùng hàm băm:
+`compute_hash` (= `node_hash(kv_hash, left, right)`). **Không có sự khác biệt**
+nào trong cách chúng được chứng minh ở cấp độ merk.
+
+Mỗi nút merk mang một `feature_type` nội bộ (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), nhưng
+điều này **không được bao gồm trong hash** và **không được bao gồm trong bằng chứng**.
+Dữ liệu tổng hợp (sum, count) cho các kiểu cây này nằm trong byte serialize
+của Element **cha**, được xác minh hash thông qua bằng chứng cây cha:
+
+| Kiểu cây | Element lưu trữ | Merk feature_type (không được hash) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **sum/count đến từ đâu?** Khi bên xác minh xử lý bằng chứng cho
+> `[root, my_sum_tree]`, bằng chứng cây cha bao gồm nút
+> `KVValueHash` cho khóa `my_sum_tree`. Trường `value` chứa
+> `Element::SumTree(root_key, 42, flags)` đã serialize. Vì giá trị này
+> được xác minh hash (hash của nó được cam kết vào Merkle root cha),
+> giá trị sum `42` là đáng tin cậy. feature_type ở cấp merk không liên quan.
+
+| Vai trò | Kiểu Node V0 | Kiểu Node V1 | Hàm băm |
+|------|-------------|-------------|---------------|
+| Mục được truy vấn | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Cây không rỗng được truy vấn (không có subquery) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Cây rỗng được truy vấn | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Tham chiếu được truy vấn | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| On-path | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Boundary | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distant | `Hash` | `Hash` | Dùng trực tiếp |
+
+> **Cây không rỗng CÓ subquery** đi xuống tầng con — nút cây xuất hiện dưới
+> dạng `KVValueHash` trong bằng chứng tầng cha và tầng con có bằng chứng riêng.
+
+> **Tại sao dùng `KVValueHash` cho cây con?** value_hash của cây con là
+> `combine_hash(H(element_bytes), child_root_hash)` — bên xác minh không thể
+> tính lại điều này chỉ từ byte element (sẽ cần child root hash). Vì vậy
+> prover cung cấp value_hash đã tính trước.
+>
+> **Tại sao dùng `KV` cho mục?** value_hash của mục đơn giản là `H(value)`,
+> bên xác minh có thể tính lại được. Dùng `KV` chống giả mạo: nếu prover
+> thay đổi giá trị, hash sẽ không khớp.
+
+**Cải tiến V1 — `KVValueHashFeatureTypeWithChildHash`:** Trong bằng chứng V1, khi
+cây không rỗng được truy vấn không có subquery (truy vấn dừng tại cây này — chính
+element cây là kết quả), tầng GroveDB nâng cấp nút merk thành
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)`. Điều này cho phép bên xác minh kiểm tra `combine_hash(H(value), child_hash)
+== value_hash`, ngăn chặn kẻ tấn công hoán đổi byte element trong khi
+tái sử dụng value_hash gốc. Cây rỗng không được nâng cấp vì chúng không có
+merk con để cung cấp root hash.
+
+> **Ghi chú bảo mật về feature_type:** Đối với cây thông thường (không phải provable),
+> trường `feature_type` trong `KVValueHashFeatureType` và
+> `KVValueHashFeatureTypeWithChildHash` được decode nhưng **không được dùng** cho
+> tính toán hash hoặc trả về cho bên gọi. Kiểu cây chính thức nằm trong byte
+> Element đã xác minh hash. Trường này chỉ quan trọng với ProvableCountTree
+> (xem bên dưới), nơi nó mang count cần thiết cho `node_hash_with_count`.
+
+### ProvableCountTree và ProvableCountSumTree
+
+Các kiểu cây này sử dụng `node_hash_with_count(kv_hash, left, right, count)` thay
+vì `node_hash`. **count** được bao gồm trong hash, nên bên xác minh cần
+count cho mọi nút để tính lại Merkle root.
+
+| Vai trò | Kiểu Node V0 | Kiểu Node V1 | Hàm băm |
+|------|-------------|-------------|---------------|
+| Mục được truy vấn | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Cây không rỗng được truy vấn (không có subquery) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Cây rỗng được truy vấn | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Tham chiếu được truy vấn | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| On-path | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Boundary | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distant | `Hash` | `Hash` | Dùng trực tiếp |
+
+> **Cây không rỗng CÓ subquery** đi xuống tầng con, giống như cây
+> thông thường.
+
+> **Tại sao mọi nút đều mang count?** Vì sử dụng `node_hash_with_count` thay
+> vì `node_hash`. Không có count, bên xác minh không thể tái tạo bất kỳ hash
+> trung gian nào trên đường đến root — kể cả với nút không được truy vấn.
+
+**Cải tiến V1:** Giống cây thông thường — cây không rỗng được truy vấn không có
+subquery được nâng cấp thành `KVValueHashFeatureTypeWithChildHash` để
+xác minh `combine_hash`.
+
+> **Ghi chú ProvableCountSumTree:** Chỉ **count** được bao gồm trong hash.
+> sum được mang trong feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) nhưng **không được hash**. Giống các kiểu cây thông thường ở trên,
+> giá trị sum chính thức nằm trong byte serialize của Element cha (ví dụ
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), được
+> xác minh hash trong bằng chứng cây cha.
+
+### Tóm tắt: Ma trận kiểu Node -> Kiểu cây
+
+| Kiểu Node | Cây thông thường | ProvableCount Trees |
+|-----------|:------------:|:-------------------:|
+| `KV` | Mục được truy vấn | — |
+| `KVCount` | — | Mục được truy vấn |
+| `KVValueHash` | Cây con được truy vấn | — |
+| `KVValueHashFeatureType` | — | Cây con được truy vấn |
+| `KVRefValueHash` | Tham chiếu được truy vấn | — |
+| `KVRefValueHashCount` | — | Tham chiếu được truy vấn |
+| `KVHash` | On-path | — |
+| `KVHashCount` | — | On-path |
+| `KVDigest` | Boundary/absence | — |
+| `KVDigestCount` | — | Boundary/absence |
+| `Hash` | Anh em xa | Anh em xa |
+| `KVValueHashFeatureTypeWithChildHash` | — | Cây không rỗng không có subquery |
+
 ## Tạo bằng chứng đa tầng
 
 Vì GroveDB là cây chứa cây, bằng chứng trải rộng nhiều tầng. Mỗi tầng chứng minh phần liên quan của một cây Merk, và các tầng được kết nối bởi cơ chế combined value_hash:

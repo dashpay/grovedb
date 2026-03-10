@@ -160,6 +160,125 @@ graph TD
 | 8 | Push(Hash(frank_node_hash)) | 压入 frank 哈希 |
 | 9 | Child | frank 成为 dave 的右子节点 |
 
+## 按树类型划分的证明节点类型
+
+GroveDB 中的每种树类型根据节点在证明中的**角色**使用一组特定的证明节点类型。
+共有四种角色：
+
+| 角色 | 描述 |
+|------|-------------|
+| **Queried** | 节点匹配查询 — 完整揭示 key + value |
+| **On-path** | 节点是被查询节点的祖先 — 仅需要 kv_hash |
+| **Boundary** | 与缺失键相邻 — 证明不存在性 |
+| **Distant** | 不在证明路径上的兄弟子树 — 仅需要 node_hash |
+
+### 常规树 (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+这五种树类型使用完全相同的证明节点类型和相同的哈希函数：
+`compute_hash` (= `node_hash(kv_hash, left, right)`)。在 merk 层面的证明方式
+**没有任何区别**。
+
+每个 merk 节点内部携带一个 `feature_type`（BasicMerkNode、
+SummedMerkNode、BigSummedMerkNode、CountedMerkNode、CountedSummedMerkNode），
+但这**不包含在哈希中**且**不包含在证明中**。这些树类型的聚合数据（sum、count）
+存在于**父** Element 的序列化字节中，通过父树的证明进行哈希验证：
+
+| 树类型 | Element 存储内容 | Merk feature_type（不参与哈希） |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **sum/count 从何而来？** 当验证者处理 `[root, my_sum_tree]` 的证明时，
+> 父树的证明包含键 `my_sum_tree` 的 `KVValueHash` 节点。`value` 字段包含
+> 序列化的 `Element::SumTree(root_key, 42, flags)`。由于此值经过哈希验证
+>（其哈希已承诺至父 Merkle root），sum 值 `42` 是可信的。merk 层级的
+> feature_type 无关紧要。
+
+| 角色 | V0 节点类型 | V1 节点类型 | 哈希函数 |
+|------|-------------|-------------|---------------|
+| 被查询的项 | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| 被查询的非空树（无 subquery） | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| 被查询的空树 | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| 被查询的引用 | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| On-path | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Boundary | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distant | `Hash` | `Hash` | 直接使用 |
+
+> **有 subquery 的非空树**会下降到子层 — 树节点在父层证明中显示为
+> `KVValueHash`，子层有自己的证明。
+
+> **为什么子树使用 `KVValueHash`？** 子树的 value_hash 是
+> `combine_hash(H(element_bytes), child_root_hash)` — 验证者无法仅从
+> element 字节重新计算（需要 child root hash）。因此证明者提供预先计算的
+> value_hash。
+>
+> **为什么项使用 `KV`？** 项的 value_hash 就是 `H(value)`，验证者可以重新
+> 计算。使用 `KV` 是防篡改的：如果证明者更改了值，哈希将不匹配。
+
+**V1 增强 — `KVValueHashFeatureTypeWithChildHash`：** 在 V1 证明中，当被查询的
+非空树没有 subquery（查询在此树停止 — 树元素本身就是结果）时，GroveDB 层将
+merk 节点升级为 `KVValueHashFeatureTypeWithChildHash(key, value, value_hash,
+feature_type, child_hash)`。这使验证者可以检查 `combine_hash(H(value),
+child_hash) == value_hash`，防止攻击者在重用原始 value_hash 的同时替换
+element 字节。空树不会被升级，因为没有子 merk 提供 root hash。
+
+> **关于 feature_type 的安全说明：** 对于常规（非 provable）树，
+> `KVValueHashFeatureType` 和 `KVValueHashFeatureTypeWithChildHash` 中的
+> `feature_type` 字段会被解码但**不用于**哈希计算或返回给调用者。规范的
+> 树类型存在于经过哈希验证的 Element 字节中。此字段仅对 ProvableCountTree
+>（见下文）有意义，其中它携带 `node_hash_with_count` 所需的 count。
+
+### ProvableCountTree 和 ProvableCountSumTree
+
+这些树类型使用 `node_hash_with_count(kv_hash, left, right, count)` 替代
+`node_hash`。**count** 包含在哈希中，因此验证者需要每个节点的 count 才能
+重新计算 Merkle root。
+
+| 角色 | V0 节点类型 | V1 节点类型 | 哈希函数 |
+|------|-------------|-------------|---------------|
+| 被查询的项 | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| 被查询的非空树（无 subquery） | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| 被查询的空树 | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| 被查询的引用 | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| On-path | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Boundary | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distant | `Hash` | `Hash` | 直接使用 |
+
+> **有 subquery 的非空树**会下降到子层，与常规树相同。
+
+> **为什么每个节点都携带 count？** 因为使用了 `node_hash_with_count` 替代
+> `node_hash`。没有 count，验证者无法重构到 root 路径上的任何中间哈希
+> — 即使对于未查询的节点也是如此。
+
+**V1 增强：** 与常规树相同 — 被查询的无 subquery 非空树会被升级为
+`KVValueHashFeatureTypeWithChildHash` 以进行 `combine_hash` 验证。
+
+> **ProvableCountSumTree 说明：** 只有 **count** 包含在哈希中。sum 携带在
+> feature_type 中（`ProvableCountedSummedMerkNode(count, sum)`）但**不参与哈希**。
+> 与上述常规树类型一样，规范的 sum 值存在于父 Element 的序列化字节中
+>（如 `Element::ProvableCountSumTree(root_key, count, sum, flags)`），
+> 在父树的证明中经过哈希验证。
+
+### 总结：节点类型 -> 树类型矩阵
+
+| 节点类型 | 常规树 | ProvableCount 树 |
+|-----------|:------------:|:-------------------:|
+| `KV` | 被查询的项 | — |
+| `KVCount` | — | 被查询的项 |
+| `KVValueHash` | 被查询的子树 | — |
+| `KVValueHashFeatureType` | — | 被查询的子树 |
+| `KVRefValueHash` | 被查询的引用 | — |
+| `KVRefValueHashCount` | — | 被查询的引用 |
+| `KVHash` | On-path | — |
+| `KVHashCount` | — | On-path |
+| `KVDigest` | Boundary/absence | — |
+| `KVDigestCount` | — | Boundary/absence |
+| `Hash` | 远端兄弟 | 远端兄弟 |
+| `KVValueHashFeatureTypeWithChildHash` | — | 无 subquery 的非空树 |
+
 ## 多层证明生成
 
 由于 GroveDB 是树的树，证明跨越多个层。每一层证明一棵 Merk 树的相关部分，各层通过组合 value_hash 机制连接：

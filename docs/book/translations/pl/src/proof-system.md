@@ -164,6 +164,140 @@ Zakodowane jako operacje dowodu:
 | 8 | Push(Hash(frank_node_hash)) | Poloz hasz frank |
 | 9 | Child | frank staje sie prawym potomkiem dave |
 
+## Typy wezlow dowodowych wedlug typu drzewa
+
+Kazdy typ drzewa w GroveDB uzywa okreslonego zestawu typow wezlow dowodowych
+w zaleznosci od **roli** wezla w dowodzie. Istnieja cztery role:
+
+| Rola | Opis |
+|------|------|
+| **Odpytywany** | Wezel pasuje do zapytania — pelny klucz + wartosc ujawnione |
+| **Na sciezce** | Wezel jest przodkiem odpytywanych wezlow — potrzebny tylko kv_hash |
+| **Graniczny** | Sasiaduje z brakujacym kluczem — dowodzi nieobecnosci |
+| **Odlegly** | Poddrzewo rodzenstwa nie na sciezce dowodu — potrzebny tylko node_hash |
+
+### Zwykle drzewa (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Wszystkie piec typow drzew uzywa identycznych typow wezlow dowodowych i tej
+samej funkcji haszujacej: `compute_hash` (= `node_hash(kv_hash, left, right)`).
+**Nie ma roznicy** w sposobie ich dowodzenia na poziomie merk.
+
+Kazdy wezel merk wewnetrznie niesie `feature_type` (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode),
+ale jest on **nie wlaczony w hasz** i **nie wlaczony w dowod**. Dane
+zagregowane (suma, licznik) dla tych typow drzew znajduja sie w
+zserializowanych bajtach **nadrzednego** Element, ktore sa weryfikowane haszem
+przez dowod drzewa nadrzednego:
+
+| Typ drzewa | Element przechowuje | Merk feature_type (nie haszowany) |
+|-----------|---------------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **Skad pochodzi suma/licznik?** Gdy weryfikator przetwarza dowod dla
+> `[root, my_sum_tree]`, dowod drzewa nadrzednego zawiera wezel `KVValueHash`
+> dla klucza `my_sum_tree`. Pole `value` zawiera zserializowany
+> `Element::SumTree(root_key, 42, flags)`. Poniewaz ta wartosc jest
+> weryfikowana haszem (jej hasz jest zatwierdzony w nadrzednym korzeniu
+> Merkle), suma `42` jest wiarygodna. feature_type na poziomie merk jest
+> nieistotny.
+
+| Rola | Typ wezla V0 | Typ wezla V1 | Funkcja haszujaca |
+|------|-------------|-------------|---------------|
+| Odpytywany element | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Odpytywane niepuste drzewo (bez subquery) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Odpytywane puste drzewo | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Odpytywana referencja | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| Na sciezce | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Graniczny | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Odlegly | `Hash` | `Hash` | Uzywany bezposrednio |
+
+> **Niepuste drzewa Z subquery** schodza do warstwy potomnej — wezel drzewa
+> pojawia sie jako `KVValueHash` w dowodzie warstwy nadrzednej, a warstwa
+> potomna ma wlasny dowod.
+
+> **Dlaczego `KVValueHash` dla poddrzew?** value_hash poddrzewa to
+> `combine_hash(H(element_bytes), child_root_hash)` — weryfikator nie moze
+> tego przeliczyc z samych bajtow elementu (potrzebowalby hasza korzenia
+> potomnego). Dlatego dowodzacy dostarcza wstepnie obliczony value_hash.
+>
+> **Dlaczego `KV` dla elementow?** value_hash elementu to po prostu
+> `H(value)`, ktory weryfikator moze przeliczyc. Uzycie `KV` jest odporne na
+> manipulacje: jezeli dowodzacy zmieni wartosc, hasz nie bedzie pasowac.
+
+**Ulepszenie V1 — `KVValueHashFeatureTypeWithChildHash`:** W dowodach V1,
+gdy odpytywane niepuste drzewo nie ma subquery (zapytanie zatrzymuje sie na
+tym drzewie — element drzewa sam jest wynikiem), warstwa GroveDB uaktualnia
+wezel merk do `KVValueHashFeatureTypeWithChildHash(key, value, value_hash,
+feature_type, child_hash)`. Pozwala to weryfikatorowi sprawdzic
+`combine_hash(H(value), child_hash) == value_hash`, zapobiegajac podmianie
+bajtow elementu przez atakujacego przy ponownym uzyciu oryginalnego
+value_hash. Puste drzewa nie sa uaktualniane, poniewaz nie maja potomnego
+merk dostarczajacego hasz korzenia.
+
+> **Uwaga bezpieczenstwa dotyczaca feature_type:** Dla zwyklych (nie-provable)
+> drzew, pole `feature_type` w `KVValueHashFeatureType` i
+> `KVValueHashFeatureTypeWithChildHash` jest dekodowane, ale **nie uzywane**
+> do obliczania hasza ani zwracane do wywolujacych. Kanoniczny typ drzewa
+> znajduje sie w bajtach Element weryfikowanych haszem. To pole ma znaczenie
+> tylko dla ProvableCountTree (patrz ponizej), gdzie przenosi licznik
+> potrzebny do `node_hash_with_count`.
+
+### ProvableCountTree i ProvableCountSumTree
+
+Te typy drzew uzywaja `node_hash_with_count(kv_hash, left, right, count)`
+zamiast `node_hash`. **Licznik** jest wlaczony w hasz, wiec weryfikator
+potrzebuje licznika dla kazdego wezla, aby przeliczyc korzen Merkle.
+
+| Rola | Typ wezla V0 | Typ wezla V1 | Funkcja haszujaca |
+|------|-------------|-------------|---------------|
+| Odpytywany element | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Odpytywane niepuste drzewo (bez subquery) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Odpytywane puste drzewo | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Odpytywana referencja | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| Na sciezce | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Graniczny | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Odlegly | `Hash` | `Hash` | Uzywany bezposrednio |
+
+> **Niepuste drzewa Z subquery** schodza do warstwy potomnej, tak samo jak
+> zwykle drzewa.
+
+> **Dlaczego kazdy wezel niesie licznik?** Poniewaz uzywa sie
+> `node_hash_with_count` zamiast `node_hash`. Bez licznika weryfikator nie
+> moze odtworzyc zadnego posredniego hasza na sciezce do korzenia — nawet
+> dla nie-odpytywanych wezlow.
+
+**Ulepszenie V1:** Tak samo jak dla zwyklych drzew — odpytywane niepuste
+drzewa bez subquery sa uaktualniane do
+`KVValueHashFeatureTypeWithChildHash` w celu weryfikacji `combine_hash`.
+
+> **Uwaga o ProvableCountSumTree:** Tylko **licznik** jest wlaczony w hasz.
+> Suma jest przenoszona w feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`), ale **nie jest haszowana**. Podobnie jak powyzsze zwykle typy drzew,
+> kanoniczna wartosc sumy znajduje sie w zserializowanych bajtach nadrzednego
+> Element (np. `Element::ProvableCountSumTree(root_key, count, sum, flags)`),
+> ktore sa weryfikowane haszem w dowodzie drzewa nadrzednego.
+
+### Podsumowanie: Macierz typ wezla → typ drzewa
+
+| Typ wezla | Zwykle drzewa | Drzewa ProvableCount |
+|-----------|:------------:|:-------------------:|
+| `KV` | Odpytywane elementy | — |
+| `KVCount` | — | Odpytywane elementy |
+| `KVValueHash` | Odpytywane poddrzewa | — |
+| `KVValueHashFeatureType` | — | Odpytywane poddrzewa |
+| `KVRefValueHash` | Odpytywane referencje | — |
+| `KVRefValueHashCount` | — | Odpytywane referencje |
+| `KVHash` | Na sciezce | — |
+| `KVHashCount` | — | Na sciezce |
+| `KVDigest` | Granica/nieobecnosc | — |
+| `KVDigestCount` | — | Granica/nieobecnosc |
+| `Hash` | Odlegle rodzenstwo | Odlegle rodzenstwo |
+| `KVValueHashFeatureTypeWithChildHash` | — | Niepuste drzewa bez subquery |
+
 ## Generowanie dowodow wielowarstwowych
 
 Poniewaz GroveDB jest drzewem drzew, dowody obejmuja wiele warstw. Kazda warstwa

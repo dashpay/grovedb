@@ -164,6 +164,136 @@ Codificado como operaciones de prueba:
 | 8 | Push(Hash(frank_node_hash)) | Poner hash de frank |
 | 9 | Child | frank se convierte en hijo derecho de dave |
 
+## Tipos de Nodos de Prueba por Tipo de Árbol
+
+Cada tipo de árbol en GroveDB utiliza un conjunto específico de tipos de nodos de prueba
+dependiendo del **rol** del nodo en la prueba. Hay cuatro roles:
+
+| Rol | Descripción |
+|-----|-------------|
+| **Consultado** | El nodo coincide con la consulta — clave + valor completos revelados |
+| **En la ruta** | El nodo es un ancestro de nodos consultados — solo se necesita kv_hash |
+| **Frontera** | Adyacente a una clave faltante — prueba ausencia |
+| **Distante** | Un subárbol hermano que no está en la ruta de prueba — solo se necesita node_hash |
+
+### Árboles Regulares (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Los cinco tipos de árboles utilizan tipos de nodos de prueba idénticos y la misma
+función hash: `compute_hash` (= `node_hash(kv_hash, left, right)`). **No hay
+diferencia** en cómo se prueban a nivel de merk.
+
+Cada nodo merk lleva un `feature_type` internamente (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode), pero
+este **no se incluye en el hash** y **no se incluye en la prueba**. Los datos
+agregados (suma, conteo) para estos tipos de árboles residen en los bytes serializados
+del Element **padre**, los cuales se verifican por hash a través de la prueba del
+árbol padre:
+
+| Tipo de árbol | Element almacena | feature_type en Merk (no hasheado) |
+|--------------|-----------------|-----------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **¿De dónde viene la suma/conteo?** Cuando un verificador procesa una prueba
+> para `[root, my_sum_tree]`, la prueba del árbol padre incluye un nodo
+> `KVValueHash` para la clave `my_sum_tree`. El campo `value` contiene el
+> `Element::SumTree(root_key, 42, flags)` serializado. Como este valor está
+> verificado por hash (su hash está comprometido en la raíz Merkle del padre),
+> la suma `42` es confiable. El feature_type a nivel de merk es irrelevante.
+
+| Rol | Tipo de Nodo V0 | Tipo de Nodo V1 | Función hash |
+|-----|----------------|----------------|-------------|
+| Elemento consultado | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Árbol no vacío consultado (sin subconsulta) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Árbol vacío consultado | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Referencia consultada | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| En la ruta | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Frontera | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Distante | `Hash` | `Hash` | Usado directamente |
+
+> **Los árboles no vacíos CON subconsulta** descienden a la capa hija — el nodo
+> del árbol aparece como `KVValueHash` en la prueba de la capa padre y la capa hija
+> tiene su propia prueba.
+
+> **¿Por qué `KVValueHash` para subárboles?** El value_hash de un subárbol es
+> `combine_hash(H(element_bytes), child_root_hash)` — el verificador no puede
+> recalcularlo solo con los bytes del element (necesitaría el hash raíz hijo). Por eso
+> el probador proporciona el value_hash precalculado.
+>
+> **¿Por qué `KV` para elementos?** El value_hash de un elemento es simplemente `H(value)`,
+> que el verificador puede recalcular. Usar `KV` es a prueba de manipulación: si el
+> probador cambia el valor, el hash no coincidirá.
+
+**Mejora V1 — `KVValueHashFeatureTypeWithChildHash`:** En las pruebas V1, cuando un
+árbol no vacío consultado no tiene subconsulta (la consulta se detiene en este árbol —
+el elemento del árbol mismo es el resultado), la capa GroveDB actualiza el nodo merk a
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)`. Esto permite al verificador comprobar `combine_hash(H(value), child_hash)
+== value_hash`, previniendo que un atacante intercambie los bytes del element mientras
+reutiliza el value_hash original. Los árboles vacíos no se actualizan porque no tienen
+un merk hijo que proporcione un hash raíz.
+
+> **Nota de seguridad sobre feature_type:** Para árboles regulares (no probables), el
+> campo `feature_type` en `KVValueHashFeatureType` y
+> `KVValueHashFeatureTypeWithChildHash` se decodifica pero **no se usa** para el cálculo
+> del hash ni se devuelve a los llamadores. El tipo de árbol canónico reside en los bytes
+> de Element verificados por hash. Este campo solo importa para ProvableCountTree
+> (ver abajo), donde lleva el conteo necesario para `node_hash_with_count`.
+
+### ProvableCountTree y ProvableCountSumTree
+
+Estos tipos de árboles usan `node_hash_with_count(kv_hash, left, right, count)` en lugar
+de `node_hash`. El **conteo** se incluye en el hash, por lo que el verificador necesita
+el conteo de cada nodo para recalcular la raíz Merkle.
+
+| Rol | Tipo de Nodo V0 | Tipo de Nodo V1 | Función hash |
+|-----|----------------|----------------|-------------|
+| Elemento consultado | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Árbol no vacío consultado (sin subconsulta) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Árbol vacío consultado | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Referencia consultada | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| En la ruta | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Frontera | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Distante | `Hash` | `Hash` | Usado directamente |
+
+> **Los árboles no vacíos CON subconsulta** descienden a la capa hija, igual que los
+> árboles regulares.
+
+> **¿Por qué cada nodo lleva un conteo?** Porque se usa `node_hash_with_count` en lugar
+> de `node_hash`. Sin el conteo, el verificador no puede reconstruir ningún hash
+> intermedio en la ruta hacia la raíz — incluso para nodos no consultados.
+
+**Mejora V1:** Igual que los árboles regulares — los árboles no vacíos consultados sin
+subconsultas se actualizan a `KVValueHashFeatureTypeWithChildHash` para la
+verificación de `combine_hash`.
+
+> **Nota sobre ProvableCountSumTree:** Solo el **conteo** se incluye en el hash. La
+> suma se transporta en el feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`) pero **no se hashea**. Al igual que los tipos de árboles regulares anteriores, el
+> valor canónico de la suma reside en los bytes serializados del Element padre (ej.
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`), los cuales se
+> verifican por hash en la prueba del árbol padre.
+
+### Resumen: Matriz Tipo de Nodo a Tipo de Árbol
+
+| Tipo de Nodo | Árboles Regulares | Árboles ProvableCount |
+|-------------|:-----------------:|:---------------------:|
+| `KV` | Elementos consultados | — |
+| `KVCount` | — | Elementos consultados |
+| `KVValueHash` | Subárboles consultados | — |
+| `KVValueHashFeatureType` | — | Subárboles consultados |
+| `KVRefValueHash` | Referencias consultadas | — |
+| `KVRefValueHashCount` | — | Referencias consultadas |
+| `KVHash` | En la ruta | — |
+| `KVHashCount` | — | En la ruta |
+| `KVDigest` | Frontera/ausencia | — |
+| `KVDigestCount` | — | Frontera/ausencia |
+| `Hash` | Hermanos distantes | Hermanos distantes |
+| `KVValueHashFeatureTypeWithChildHash` | — | Árboles no vacíos sin subconsulta |
+
 ## Generación de Pruebas Multi-Capa
 
 Dado que GroveDB es un árbol de árboles, las pruebas abarcan múltiples capas. Cada capa prueba

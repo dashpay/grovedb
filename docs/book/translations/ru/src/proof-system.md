@@ -160,6 +160,141 @@ graph TD
 | 8 | Push(Hash(frank_node_hash)) | Помещаем хеш frank |
 | 9 | Child | frank становится правым потомком dave |
 
+## Типы узлов доказательств по типам деревьев
+
+Каждый тип дерева в GroveDB использует определённый набор типов узлов
+доказательств в зависимости от **роли** узла в доказательстве. Существуют
+четыре роли:
+
+| Роль | Описание |
+|------|----------|
+| **Запрашиваемый** | Узел соответствует запросу — полный ключ + значение раскрыты |
+| **На пути** | Узел является предком запрашиваемых узлов — нужен только kv_hash |
+| **Граничный** | Соседствует с отсутствующим ключом — доказывает отсутствие |
+| **Дальний** | Поддерево-сосед вне пути доказательства — нужен только node_hash |
+
+### Обычные деревья (Tree, SumTree, BigSumTree, CountTree, CountSumTree)
+
+Все пять типов деревьев используют идентичные типы узлов доказательств и одну
+и ту же хеш-функцию: `compute_hash` (= `node_hash(kv_hash, left, right)`).
+**Нет никакой разницы** в том, как они доказываются на уровне merk.
+
+Каждый узел merk внутренне несёт `feature_type` (BasicMerkNode,
+SummedMerkNode, BigSummedMerkNode, CountedMerkNode, CountedSummedMerkNode),
+но он **не включается в хеш** и **не включается в доказательство**.
+Агрегированные данные (сумма, счётчик) для этих типов деревьев находятся в
+сериализованных байтах **родительского** Element, которые верифицируются
+хешем через доказательство родительского дерева:
+
+| Тип дерева | Element хранит | Merk feature_type (не хешируется) |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **Откуда берётся сумма/счётчик?** Когда верификатор обрабатывает
+> доказательство для `[root, my_sum_tree]`, доказательство родительского
+> дерева содержит узел `KVValueHash` для ключа `my_sum_tree`. Поле `value`
+> содержит сериализованный `Element::SumTree(root_key, 42, flags)`. Поскольку
+> это значение верифицировано хешем (его хеш зафиксирован в родительском
+> корне Меркла), сумма `42` заслуживает доверия. feature_type на уровне merk
+> не имеет значения.
+
+| Роль | Тип узла V0 | Тип узла V1 | Хеш-функция |
+|------|-------------|-------------|-------------|
+| Запрашиваемый элемент | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| Запрашиваемое непустое дерево (без subquery) | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Запрашиваемое пустое дерево | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Запрашиваемая ссылка | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| На пути | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| Граничный | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| Дальний | `Hash` | `Hash` | Используется напрямую |
+
+> **Непустые деревья С subquery** спускаются в дочерний уровень — узел
+> дерева появляется как `KVValueHash` в доказательстве родительского уровня,
+> а дочерний уровень имеет собственное доказательство.
+
+> **Почему `KVValueHash` для поддеревьев?** value_hash поддерева равен
+> `combine_hash(H(element_bytes), child_root_hash)` — верификатор не может
+> пересчитать его только из байтов элемента (ему нужен хеш корня дочернего
+> дерева). Поэтому доказывающий предоставляет предвычисленный value_hash.
+>
+> **Почему `KV` для элементов?** value_hash элемента — это просто `H(value)`,
+> который верификатор может пересчитать. Использование `KV` защищено от
+> подделки: если доказывающий изменит значение, хеш не совпадёт.
+
+**Улучшение V1 — `KVValueHashFeatureTypeWithChildHash`:** В доказательствах V1,
+когда запрашиваемое непустое дерево не имеет subquery (запрос останавливается
+на этом дереве — сам элемент дерева является результатом), уровень GroveDB
+обновляет узел merk до `KVValueHashFeatureTypeWithChildHash(key, value,
+value_hash, feature_type, child_hash)`. Это позволяет верификатору проверить
+`combine_hash(H(value), child_hash) == value_hash`, предотвращая подмену
+атакующим байтов элемента при повторном использовании исходного value_hash.
+Пустые деревья не обновляются, поскольку у них нет дочернего merk для
+предоставления корневого хеша.
+
+> **Замечание по безопасности о feature_type:** Для обычных (не-provable)
+> деревьев поле `feature_type` в `KVValueHashFeatureType` и
+> `KVValueHashFeatureTypeWithChildHash` декодируется, но **не используется**
+> при вычислении хеша и не возвращается вызывающим. Каноничный тип дерева
+> находится в верифицированных хешем байтах Element. Это поле имеет значение
+> только для ProvableCountTree (см. ниже), где оно несёт счётчик, необходимый
+> для `node_hash_with_count`.
+
+### ProvableCountTree и ProvableCountSumTree
+
+Эти типы деревьев используют `node_hash_with_count(kv_hash, left, right, count)`
+вместо `node_hash`. **Счётчик** включается в хеш, поэтому верификатору нужен
+счётчик каждого узла для пересчёта корня Меркла.
+
+| Роль | Тип узла V0 | Тип узла V1 | Хеш-функция |
+|------|-------------|-------------|-------------|
+| Запрашиваемый элемент | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| Запрашиваемое непустое дерево (без subquery) | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Запрашиваемое пустое дерево | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| Запрашиваемая ссылка | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| На пути | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| Граничный | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| Дальний | `Hash` | `Hash` | Используется напрямую |
+
+> **Непустые деревья С subquery** спускаются в дочерний уровень, так же как
+> и обычные деревья.
+
+> **Почему каждый узел несёт счётчик?** Потому что используется
+> `node_hash_with_count` вместо `node_hash`. Без счётчика верификатор не может
+> восстановить ни один промежуточный хеш на пути к корню — даже для
+> незапрашиваемых узлов.
+
+**Улучшение V1:** Так же, как для обычных деревьев — запрашиваемые непустые
+деревья без subquery обновляются до `KVValueHashFeatureTypeWithChildHash` для
+верификации `combine_hash`.
+
+> **Примечание о ProvableCountSumTree:** Только **счётчик** включается в хеш.
+> Сумма передаётся в feature_type (`ProvableCountedSummedMerkNode(count,
+> sum)`), но **не хешируется**. Как и для обычных типов деревьев выше,
+> каноничное значение суммы находится в сериализованных байтах родительского
+> Element (например, `Element::ProvableCountSumTree(root_key, count, sum,
+> flags)`), которые верифицируются хешем в доказательстве родительского дерева.
+
+### Сводка: Матрица тип узла → тип дерева
+
+| Тип узла | Обычные деревья | Деревья ProvableCount |
+|----------|:--------------:|:--------------------:|
+| `KV` | Запрашиваемые элементы | — |
+| `KVCount` | — | Запрашиваемые элементы |
+| `KVValueHash` | Запрашиваемые поддеревья | — |
+| `KVValueHashFeatureType` | — | Запрашиваемые поддеревья |
+| `KVRefValueHash` | Запрашиваемые ссылки | — |
+| `KVRefValueHashCount` | — | Запрашиваемые ссылки |
+| `KVHash` | На пути | — |
+| `KVHashCount` | — | На пути |
+| `KVDigest` | Граница/отсутствие | — |
+| `KVDigestCount` | — | Граница/отсутствие |
+| `Hash` | Дальние соседи | Дальние соседи |
+| `KVValueHashFeatureTypeWithChildHash` | — | Непустые деревья без subquery |
+
 ## Генерация многоуровневых доказательств
 
 Поскольку GroveDB — это дерево деревьев, доказательства охватывают несколько уровней. Каждый уровень доказывает соответствующую часть одного дерева Merk, и уровни связаны механизмом комбинированного value_hash:

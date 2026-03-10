@@ -160,6 +160,133 @@ graph TD
 | 8 | Push(Hash(frank_node_hash)) | frank のハッシュをプッシュ |
 | 9 | Child | frank が dave の右の子になる |
 
+## ツリータイプ別の証明ノード型
+
+GroveDB の各ツリータイプは、証明内のノードの**役割**に応じて特定の証明ノード型の
+セットを使用します。4つの役割があります：
+
+| 役割 | 説明 |
+|------|-------------|
+| **クエリ対象** | ノードがクエリに一致 — 完全な key + value が公開される |
+| **パス上** | クエリ対象ノードの祖先 — kv_hash のみが必要 |
+| **境界** | 欠落キーに隣接 — 不在を証明 |
+| **遠方** | 証明パス上にない兄弟サブツリー — node_hash のみが必要 |
+
+### 通常のツリー（Tree, SumTree, BigSumTree, CountTree, CountSumTree）
+
+これら5つのツリータイプはすべて同一の証明ノード型と同じハッシュ関数を使用します：
+`compute_hash`（= `node_hash(kv_hash, left, right)`）。merk レベルでの
+証明方法に**違いはありません**。
+
+各 merk ノードは内部的に `feature_type` を持ちます（BasicMerkNode、
+SummedMerkNode、BigSummedMerkNode、CountedMerkNode、CountedSummedMerkNode）が、
+これは**ハッシュに含まれず**、**証明にも含まれません**。これらのツリータイプの
+集約データ（sum、count）は**親** Element のシリアライズされたバイトに存在し、
+親ツリーの証明を通じてハッシュ検証されます：
+
+| ツリータイプ | Element が格納するもの | Merk の feature_type（ハッシュされない） |
+|-----------|---------------|-------------------------------|
+| Tree | `Element::Tree(root_key, flags)` | `BasicMerkNode` |
+| SumTree | `Element::SumTree(root_key, sum, flags)` | `SummedMerkNode(sum)` |
+| BigSumTree | `Element::BigSumTree(root_key, sum, flags)` | `BigSummedMerkNode(sum)` |
+| CountTree | `Element::CountTree(root_key, count, flags)` | `CountedMerkNode(count)` |
+| CountSumTree | `Element::CountSumTree(root_key, count, sum, flags)` | `CountedSummedMerkNode(count, sum)` |
+
+> **sum/count はどこから来るのか？** 検証者が `[root, my_sum_tree]` の証明を
+> 処理するとき、親ツリーの証明にはキー `my_sum_tree` の `KVValueHash` ノードが
+> 含まれます。`value` フィールドにはシリアライズされた
+> `Element::SumTree(root_key, 42, flags)` が含まれます。この値はハッシュ検証
+> されているため（そのハッシュは親の Merkle ルートにコミットされている）、sum `42` は
+> 信頼できます。merk レベルの feature_type は無関係です。
+
+| 役割 | V0 ノード型 | V1 ノード型 | ハッシュ関数 |
+|------|-------------|-------------|---------------|
+| クエリ対象アイテム | `KV` | `KV` | `node_hash(kv_hash(key, H(value)), left, right)` |
+| クエリ対象の非空ツリー（サブクエリなし） | `KVValueHash` | `KVValueHashFeatureTypeWithChildHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| クエリ対象の空ツリー | `KVValueHash` | `KVValueHash` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| クエリ対象の参照 | `KVRefValueHash` | `KVRefValueHash` | `node_hash(kv_hash(key, combine_hash(ref_hash, H(deref_value))), left, right)` |
+| パス上 | `KVHash` | `KVHash` | `node_hash(kv_hash, left, right)` |
+| 境界 | `KVDigest` | `KVDigest` | `node_hash(kv_hash(key, value_hash), left, right)` |
+| 遠方 | `Hash` | `Hash` | 直接使用 |
+
+> **サブクエリ付きの非空ツリー**は子レイヤーに降りていきます — ツリーノードは親
+> レイヤーの証明で `KVValueHash` として表示され、子レイヤーは独自の証明を持ちます。
+
+> **なぜサブツリーに `KVValueHash` を使うのか？** サブツリーの value_hash は
+> `combine_hash(H(element_bytes), child_root_hash)` です — 検証者はエレメント
+> バイトのみからこれを再計算できません（子のルートハッシュが必要です）。そのため
+> 証明者が事前計算された value_hash を提供します。
+>
+> **なぜアイテムに `KV` を使うのか？** アイテムの value_hash は単に `H(value)` であり、
+> 検証者が再計算できます。`KV` を使用すると改ざん防止になります：証明者が値を変更
+> すると、ハッシュが一致しなくなります。
+
+**V1 の改善 — `KVValueHashFeatureTypeWithChildHash`：** V1 証明では、クエリ対象の
+非空ツリーにサブクエリがない場合（クエリがこのツリーで停止 — ツリーエレメント自体が
+結果）、GroveDB レイヤーは merk ノードを
+`KVValueHashFeatureTypeWithChildHash(key, value, value_hash, feature_type,
+child_hash)` にアップグレードします。これにより検証者は `combine_hash(H(value), child_hash)
+== value_hash` を確認でき、攻撃者がオリジナルの value_hash を再利用しながらエレメント
+バイトを差し替えることを防止します。空のツリーはルートハッシュを提供する子 merk が
+ないため、アップグレードされません。
+
+> **feature_type に関するセキュリティノート：** 通常の（非 provable な）ツリーでは、
+> `KVValueHashFeatureType` および `KVValueHashFeatureTypeWithChildHash` の
+> `feature_type` フィールドはデコードされますが、ハッシュ計算に**使用されず**、
+> 呼び出し元にも返されません。正規のツリータイプはハッシュ検証された Element バイトに
+> 存在します。このフィールドは ProvableCountTree（下記参照）でのみ重要であり、
+> `node_hash_with_count` に必要な count を運びます。
+
+### ProvableCountTree と ProvableCountSumTree
+
+これらのツリータイプは `node_hash` の代わりに `node_hash_with_count(kv_hash, left, right, count)`
+を使用します。**count** がハッシュに含まれるため、検証者は Merkle ルートを再計算する
+ために各ノードの count が必要です。
+
+| 役割 | V0 ノード型 | V1 ノード型 | ハッシュ関数 |
+|------|-------------|-------------|---------------|
+| クエリ対象アイテム | `KVCount` | `KVCount` | `node_hash_with_count(kv_hash(key, H(value)), left, right, count)` |
+| クエリ対象の非空ツリー（サブクエリなし） | `KVValueHashFeatureType` | `KVValueHashFeatureTypeWithChildHash` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| クエリ対象の空ツリー | `KVValueHashFeatureType` | `KVValueHashFeatureType` | `node_hash_with_count(kv_hash(key, value_hash), left, right, feature_type.count())` |
+| クエリ対象の参照 | `KVRefValueHashCount` | `KVRefValueHashCount` | `node_hash_with_count(kv_hash(key, combine_hash(...)), left, right, count)` |
+| パス上 | `KVHashCount` | `KVHashCount` | `node_hash_with_count(kv_hash, left, right, count)` |
+| 境界 | `KVDigestCount` | `KVDigestCount` | `node_hash_with_count(kv_hash(key, value_hash), left, right, count)` |
+| 遠方 | `Hash` | `Hash` | 直接使用 |
+
+> **サブクエリ付きの非空ツリー**は通常のツリーと同様に子レイヤーに降りていきます。
+
+> **なぜ各ノードが count を持つのか？** `node_hash` の代わりに `node_hash_with_count`
+> が使用されるためです。count がなければ、検証者はルートへのパス上の中間ハッシュを
+> 再構築できません — クエリ対象でないノードでも同様です。
+
+**V1 の改善：** 通常のツリーと同じです — サブクエリなしのクエリ対象非空ツリーは
+`combine_hash` 検証のために `KVValueHashFeatureTypeWithChildHash` にアップグレード
+されます。
+
+> **ProvableCountSumTree に関する注意：** **count** のみがハッシュに含まれます。sum は
+> feature_type（`ProvableCountedSummedMerkNode(count, sum)`）で運ばれますが、
+> **ハッシュされません**。上記の通常のツリータイプと同様に、正規の sum 値は
+> 親 Element のシリアライズされたバイト（例：
+> `Element::ProvableCountSumTree(root_key, count, sum, flags)`）に存在し、
+> 親ツリーの証明でハッシュ検証されます。
+
+### まとめ：ノード型 → ツリータイプ マトリックス
+
+| ノード型 | 通常のツリー | ProvableCount ツリー |
+|-----------|:------------:|:-------------------:|
+| `KV` | クエリ対象アイテム | — |
+| `KVCount` | — | クエリ対象アイテム |
+| `KVValueHash` | クエリ対象サブツリー | — |
+| `KVValueHashFeatureType` | — | クエリ対象サブツリー |
+| `KVRefValueHash` | クエリ対象参照 | — |
+| `KVRefValueHashCount` | — | クエリ対象参照 |
+| `KVHash` | パス上 | — |
+| `KVHashCount` | — | パス上 |
+| `KVDigest` | 境界/不在 | — |
+| `KVDigestCount` | — | 境界/不在 |
+| `Hash` | 遠方の兄弟 | 遠方の兄弟 |
+| `KVValueHashFeatureTypeWithChildHash` | — | サブクエリなし非空ツリー |
+
 ## マルチレイヤー証明生成
 
 GroveDB はツリーのツリーであるため、証明は複数のレイヤーにまたがります。各レイヤーは1つの Merk ツリーの関連部分を証明し、レイヤーは combined value_hash メカニズムによって接続されます：
