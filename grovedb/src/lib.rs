@@ -1,3 +1,4 @@
+// CI trigger
 //! GroveDB is a database that enables cryptographic proofs for complex queries.
 //!
 //! # Examples
