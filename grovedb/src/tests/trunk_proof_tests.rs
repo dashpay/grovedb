@@ -1559,4 +1559,167 @@ mod tests {
             result
         );
     }
+
+    /// Demonstrates that replacing KV nodes with KVValueHash nodes carrying
+    /// forged value bytes is caught by the verifier's embedded-hash validation.
+    ///
+    /// Attack: take a valid trunk proof, find a KV(key, real_value) node in the
+    /// target layer, compute real_value_hash = H(real_value), then replace it
+    /// with KVValueHash(key, forged_value, real_value_hash). The merk execute()
+    /// uses the embedded hash so the tree hash is unchanged, but the extracted
+    /// element would have forged data. The verifier must detect the mismatch.
+    #[test]
+    fn test_trunk_proof_v1_rejects_kv_value_hash_forgery() {
+        let grove_version = GroveVersion::latest();
+        let (proof_v1, query, _) = make_single_level_v1_proof();
+
+        // Get the target layer's merk proof bytes
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        let merk_bytes = match &target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        // Decode ops from the target layer
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        // Find a KV node and replace it with KVValueHash carrying forged bytes
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut found_kv = false;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KV(key, value)) if !found_kv => {
+                    // Compute the real value_hash
+                    let real_vh = grovedb_merk::tree::hash::value_hash(value.as_slice())
+                        .value()
+                        .to_owned();
+
+                    // Create forged value bytes (different content)
+                    let forged_value = b"FORGED_ELEMENT_DATA".to_vec();
+
+                    // Replace with KVValueHash: forged value but real hash
+                    tampered_ops.push(Op::Push(Node::KVValueHash(
+                        key.clone(),
+                        forged_value,
+                        real_vh,
+                    )));
+                    found_kv = true;
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+        assert!(found_kv, "should have found a KV node to forge");
+
+        // Re-encode the tampered ops
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+
+        // Rebuild the proof with tampered target layer
+        let mut tampered_v1 = proof_v1;
+        tampered_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .unwrap()
+            .merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+
+        // The tree hash is unchanged (execute() uses embedded value_hash),
+        // so combine_hash passes. But extract_elements_and_leaf_keys must
+        // catch the mismatch between forged value bytes and embedded hash.
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(result.is_err(), "should reject KVValueHash forgery");
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("value hash mismatch"),
+            "expected value hash mismatch error, got: {}",
+            err_msg
+        );
+    }
+
+    /// Same attack as above but using KVValueHashFeatureType instead of
+    /// KVValueHash — verifies that all embedded-hash variants are checked.
+    #[test]
+    fn test_trunk_proof_v1_rejects_kv_value_hash_feature_type_forgery() {
+        let grove_version = GroveVersion::latest();
+        let (proof_v1, query, _) = make_single_level_v1_proof();
+
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        let merk_bytes = match &target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut found_kv = false;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KV(key, value)) if !found_kv => {
+                    let real_vh = grovedb_merk::tree::hash::value_hash(value.as_slice())
+                        .value()
+                        .to_owned();
+                    let forged_value = b"FORGED_ELEMENT_DATA".to_vec();
+
+                    // Use KVValueHashFeatureType with a BasicMerkNode feature type
+                    tampered_ops.push(Op::Push(Node::KVValueHashFeatureType(
+                        key.clone(),
+                        forged_value,
+                        real_vh,
+                        grovedb_merk::TreeFeatureType::BasicMerkNode,
+                    )));
+                    found_kv = true;
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+        assert!(found_kv, "should have found a KV node to forge");
+
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+
+        let mut tampered_v1 = proof_v1;
+        tampered_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .unwrap()
+            .merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "should reject KVValueHashFeatureType forgery"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("value hash mismatch"),
+            "expected value hash mismatch error, got: {}",
+            err_msg
+        );
+    }
 }

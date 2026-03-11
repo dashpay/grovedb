@@ -2511,27 +2511,57 @@ impl GroveDb {
             )
         })?;
 
-        // For KVValueHashFeatureTypeWithChildHash nodes, verify that
-        // combine_hash(H(value), child_hash) == value_hash. Without this
-        // check an attacker could modify the value bytes while keeping
-        // the value_hash unchanged.
-        if let Node::KVValueHashFeatureTypeWithChildHash(_, _, node_value_hash, _, child_hash) =
-            &tree.node
-        {
-            let element_vh = value_hash(&value).value().to_owned();
-            let computed_vh = combine_hash(&element_vh, child_hash).value().to_owned();
-            if computed_vh != *node_value_hash {
+        // Verify embedded value_hash for node types that carry one.
+        // Without this, an attacker could replace KV(key, real_value)
+        // with KVValueHash(key, forged_value, real_value_hash) and the
+        // merk execute() would accept it since it uses the embedded hash.
+        match &tree.node {
+            Node::KVValueHash(_, _, node_value_hash)
+            | Node::KVValueHashFeatureType(_, _, node_value_hash, _) => {
+                let computed_vh = value_hash(&value).value().to_owned();
+                if computed_vh != *node_value_hash {
+                    return Err(Error::InvalidProof(
+                        PathQuery::new_unsized(Vec::new(), Query::default()),
+                        format!(
+                            "trunk/branch proof value hash mismatch at key {}: \
+                             H(value) = {} but embedded value_hash = {}",
+                            hex::encode(&key),
+                            hex::encode(computed_vh),
+                            hex::encode(node_value_hash),
+                        ),
+                    ));
+                }
+            }
+            Node::KVValueHashFeatureTypeWithChildHash(_, _, node_value_hash, _, child_hash) => {
+                let element_vh = value_hash(&value).value().to_owned();
+                let computed_vh = combine_hash(&element_vh, child_hash).value().to_owned();
+                if computed_vh != *node_value_hash {
+                    return Err(Error::InvalidProof(
+                        PathQuery::new_unsized(Vec::new(), Query::default()),
+                        format!(
+                            "trunk/branch proof value/child hash mismatch at key {}: \
+                             combine_hash(H(value), child_hash) = {} but value_hash = {}",
+                            hex::encode(&key),
+                            hex::encode(computed_vh),
+                            hex::encode(node_value_hash),
+                        ),
+                    ));
+                }
+            }
+            Node::KVRefValueHash(..) | Node::KVRefValueHashCount(..) => {
+                // KVRefValueHash carries an opaque node_value_hash that cannot
+                // be recomputed from the value bytes alone. These node types
+                // should never appear in trunk/branch chunk proofs.
                 return Err(Error::InvalidProof(
                     PathQuery::new_unsized(Vec::new(), Query::default()),
                     format!(
-                        "trunk/branch proof value/child hash mismatch at key {}: \
-                         combine_hash(H(value), child_hash) = {} but value_hash = {}",
+                        "trunk/branch proof contains unexpected KVRefValueHash node at key {}",
                         hex::encode(&key),
-                        hex::encode(computed_vh),
-                        hex::encode(node_value_hash),
                     ),
                 ));
             }
+            // KV, KVCount: value is used directly in hash computation — safe
+            _ => {}
         }
 
         let element = Element::deserialize(&value, grove_version)?;
