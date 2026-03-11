@@ -16,7 +16,9 @@ use grovedb_merk::{
 };
 use grovedb_merkle_mountain_range::MmrTreeProof;
 use grovedb_storage::{Storage, StorageContext};
-use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0_or_v1_with_cost, check_grovedb_v0_with_cost, version::GroveVersion,
+};
 
 #[cfg(feature = "proof_debug")]
 use crate::query_result_type::QueryResultType;
@@ -609,7 +611,7 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error> {
-        check_grovedb_v0_with_cost!(
+        check_grovedb_v0_or_v1_with_cost!(
             "prove_trunk_chunk",
             grove_version
                 .grovedb_versions
@@ -646,14 +648,31 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
-        check_grovedb_v0_with_cost!(
-            "prove_trunk_chunk_non_serialized",
-            grove_version
-                .grovedb_versions
-                .operations
-                .proof
-                .prove_trunk_chunk_non_serialized
-        );
+        match grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .prove_trunk_chunk_non_serialized
+        {
+            0 => self.prove_trunk_chunk_non_serialized_v0(query, grove_version),
+            1 => self.prove_trunk_chunk_non_serialized_v1(query, grove_version),
+            version => Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "prove_trunk_chunk_non_serialized".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
+        }
+    }
+
+    /// V0: Generate a trunk chunk proof using MerkOnlyLayerProof.
+    fn prove_trunk_chunk_non_serialized_v0(
+        &self,
+        query: &PathTrunkChunkQuery,
+        grove_version: &GroveVersion,
+    ) -> CostResult<GroveDBProof, Error> {
         let mut cost = OperationCost::default();
 
         let tx = self.start_transaction();
@@ -731,6 +750,88 @@ impl GroveDb {
         Ok(GroveDBProof::V0(GroveDBProofV0 {
             root_layer: current_layer,
             prove_options: ProveOptions::default(),
+        }))
+        .wrap_with_cost(cost)
+    }
+
+    /// V1: Generate a trunk chunk proof using LayerProof with ProofBytes::Merk.
+    ///
+    /// Nearly identical to V0 but uses the V1 proof types (LayerProof,
+    /// ProofBytes::Merk, GroveDBProofV1) so the verifier can apply the
+    /// stricter combine_hash check that prevents the count==0 forgery.
+    fn prove_trunk_chunk_non_serialized_v1(
+        &self,
+        query: &PathTrunkChunkQuery,
+        grove_version: &GroveVersion,
+    ) -> CostResult<GroveDBProof, Error> {
+        let mut cost = OperationCost::default();
+
+        let tx = self.start_transaction();
+
+        let path_slices: Vec<&[u8]> = query.path.iter().map(|p| p.as_slice()).collect();
+
+        // Generate the trunk proof for the target tree
+        let target_tree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path_slices.as_slice().into(),
+                &tx,
+                None,
+                grove_version
+            )
+        );
+
+        let trunk_result = cost_return_on_error!(
+            &mut cost,
+            target_tree
+                .trunk_query(query.max_depth, query.min_depth, grove_version)
+                .map_err(Error::MerkError)
+        );
+
+        let mut trunk_proof_encoded = Vec::new();
+        encode_into(trunk_result.proof.iter(), &mut trunk_proof_encoded);
+
+        // Start with the innermost LayerProof using ProofBytes::Merk
+        let mut current_layer = LayerProof {
+            merk_proof: ProofBytes::Merk(trunk_proof_encoded),
+            lower_layers: BTreeMap::new(),
+        };
+
+        // Build nested LayerProofs from inside out (target -> root)
+        for i in (0..query.path.len()).rev() {
+            let current_path: Vec<&[u8]> = path_slices[..i].to_vec();
+            let key = query.path[i].clone();
+
+            let subtree = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(
+                    current_path.as_slice().into(),
+                    &tx,
+                    None,
+                    grove_version
+                )
+            );
+
+            let query_item = QueryItem::Key(key.clone());
+            let merk_proof = cost_return_on_error!(
+                &mut cost,
+                self.generate_merk_proof(&subtree, &[query_item], true, None, grove_version)
+            );
+
+            let mut encoded_proof = Vec::new();
+            encode_into(merk_proof.proof.iter(), &mut encoded_proof);
+
+            let mut lower_layers = BTreeMap::new();
+            lower_layers.insert(key, current_layer);
+
+            current_layer = LayerProof {
+                merk_proof: ProofBytes::Merk(encoded_proof),
+                lower_layers,
+            };
+        }
+
+        Ok(GroveDBProof::V1(GroveDBProofV1 {
+            root_layer: current_layer,
         }))
         .wrap_with_cost(cost)
     }
