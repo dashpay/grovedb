@@ -1373,8 +1373,8 @@ mod tests {
         assert!(result.is_err(), "should reject empty path");
         let err_msg = format!("{:?}", result.unwrap_err());
         assert!(
-            err_msg.contains("not a count tree") || err_msg.contains("empty path"),
-            "wrong error: {}",
+            err_msg.contains("empty path"),
+            "expected empty-path rejection, got: {}",
             err_msg
         );
     }

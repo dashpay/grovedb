@@ -2203,6 +2203,13 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, GroveTrunkQueryResult), Error> {
+        if query.path.is_empty() {
+            return Err(Error::InvalidProof(
+                PathQuery::new_unsized(Vec::new(), Query::default()),
+                "V1 trunk: empty path - no root hash computed".to_string(),
+            ));
+        }
+
         // Collect layer info as we walk down the path for later verification
         struct LayerInfo {
             value_bytes: Vec<u8>,
@@ -2215,7 +2222,7 @@ impl GroveDb {
         let mut current_layer = &proof.root_layer;
         let mut current_path: Vec<Vec<u8>> = Vec::new();
         let mut count: Option<u64> = None;
-        let mut grovedb_root_hash: Option<CryptoHash> = None;
+        let mut grovedb_root_hash: CryptoHash = [0u8; 32];
 
         // Walk through each path segment, verifying layer proofs
         for (i, path_segment) in query.path.iter().enumerate() {
@@ -2248,7 +2255,7 @@ impl GroveDb {
                 })?;
 
             if i == 0 {
-                grovedb_root_hash = Some(layer_root_hash);
+                grovedb_root_hash = layer_root_hash;
             }
 
             let mut found_value_bytes: Option<Vec<u8>> = None;
@@ -2395,13 +2402,6 @@ impl GroveDb {
 
             current_lower_hash = layer_info.layer_root_hash;
         }
-
-        let grovedb_root_hash = grovedb_root_hash.ok_or_else(|| {
-            Error::InvalidProof(
-                PathQuery::new_unsized(Vec::new(), Query::default()),
-                "V1 trunk: empty path - no root hash computed".to_string(),
-            )
-        })?;
 
         // Handle empty tree early return (AFTER hash verification)
         if count == 0 {
