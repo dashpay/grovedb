@@ -832,7 +832,6 @@ impl GroveDb {
 
         Ok(GroveDBProof::V1(GroveDBProofV1 {
             root_layer: current_layer,
-            prove_options: ProveOptions::default(),
         }))
         .wrap_with_cost(cost)
     }
