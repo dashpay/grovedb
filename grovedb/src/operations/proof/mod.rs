@@ -41,18 +41,19 @@ use crate::{
 
 /// Options controlling proof generation behavior.
 ///
-/// # Security note
+/// # Security note (V0 proofs only)
 ///
-/// `ProveOptions` is serialized as part of the proof via `bincode::Encode` /
-/// `bincode::Decode`. During verification the verifier deserializes these
-/// options from the proof bytes, which means **the values come from the
-/// (potentially untrusted) prover**. A malicious prover could craft a proof
-/// with `decrease_limit_on_empty_sub_query_result` set to `true` even when
-/// the original query used `false`, causing the verifier to consume its
-/// result limit faster and therefore return fewer results than actually
-/// exist. Verifiers that need to guard against this should compare the
-/// deserialized options against the expected values for the query being
-/// verified.
+/// In [`GroveDBProofV0`], `ProveOptions` is serialized as part of the proof
+/// via `bincode::Encode` / `bincode::Decode`. During verification the
+/// verifier deserializes these options from the proof bytes, which means
+/// **the values come from the (potentially untrusted) prover**. A malicious
+/// prover could craft a proof with `decrease_limit_on_empty_sub_query_result`
+/// set to `true` even when the original query used `false`, causing the
+/// verifier to consume its result limit faster and therefore return fewer
+/// results than actually exist.
+///
+/// [`GroveDBProofV1`] does **not** embed `ProveOptions`. The verifier uses
+/// [`ProveOptions::default()`] instead, closing this attack vector.
 #[derive(Debug, Clone, Copy, Encode, Decode)]
 pub struct ProveOptions {
     /// This tells the proof system to decrease the available limit of the query
@@ -68,16 +69,12 @@ pub struct ProveOptions {
     /// system as the proof system goes through millions of subtrees and
     /// eventually runs out of memory.
     ///
-    /// # Security note
+    /// # Security note (V0 proofs only)
     ///
-    /// This field is embedded in the serialized proof and deserialized by the
-    /// verifier. Because it originates from the prover, it must be treated as
-    /// **untrusted input**. A malicious prover can set this to `true`
-    /// regardless of the original query intent, which causes the verifier to
-    /// count empty subtrees against the query limit and thereby return fewer
-    /// results than it should. Applications that need to defend against
-    /// result-truncation attacks should validate this value after
-    /// deserialization.
+    /// In V0 proofs this field is embedded in the serialized proof and
+    /// deserialized by the verifier. Because it originates from the prover, it
+    /// must be treated as **untrusted input**. V1 proofs do not embed this
+    /// field; the verifier uses [`ProveOptions::default()`] instead.
     pub decrease_limit_on_empty_sub_query_result: bool,
 }
 
@@ -410,12 +407,15 @@ pub struct GroveDBProofV0 {
 }
 
 /// Current (v1) GroveDB proof supporting multiple tree backing store types.
+///
+/// Unlike [`GroveDBProofV0`], V1 proofs do **not** embed [`ProveOptions`].
+/// The verifier uses [`ProveOptions::default()`] instead of trusting
+/// prover-supplied options, which closes the result-truncation attack
+/// vector described in the [`ProveOptions`] security note.
 #[derive(Encode, Decode)]
 pub struct GroveDBProofV1 {
     /// The root layer proof for the top-level tree.
     pub root_layer: LayerProof,
-    /// Options that were used when generating this proof.
-    pub prove_options: ProveOptions,
 }
 
 impl fmt::Display for MerkOnlyLayerProof {

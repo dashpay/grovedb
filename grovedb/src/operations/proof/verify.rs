@@ -327,12 +327,18 @@ impl GroveDb {
         ),
         Error,
     > {
+        // V1 proofs do not embed ProveOptions — the verifier uses the default,
+        // which closes the result-truncation attack where a malicious prover
+        // could set decrease_limit_on_empty_sub_query_result to manipulate
+        // how many results the verifier returns.
+        let prove_options = ProveOptions::default();
+
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
         let root_hash = Self::verify_layer_proof_v1(
             &proof.root_layer,
-            &proof.prove_options,
+            &prove_options,
             query,
             &mut limit,
             &[],
@@ -373,12 +379,14 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
+        let prove_options = ProveOptions::default();
+
         let mut result = Vec::new();
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
         let root_hash = Self::verify_layer_proof_v1(
             &proof.root_layer,
-            &proof.prove_options,
+            &prove_options,
             query,
             &mut limit,
             &[],

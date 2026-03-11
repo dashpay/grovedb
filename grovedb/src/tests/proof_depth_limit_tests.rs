@@ -392,10 +392,7 @@ mod tests {
                 lower_layers,
             };
         }
-        let proof = crate::operations::proof::GroveDBProofV1 {
-            root_layer: layer,
-            prove_options: ProveOptions::default(),
-        };
+        let proof = crate::operations::proof::GroveDBProofV1 { root_layer: layer };
         let full_proof = crate::operations::proof::GroveDBProof::V1(proof);
         let config = bincode::config::standard().with_big_endian();
         bincode::encode_to_vec(&full_proof, config).expect("encoding should succeed")
@@ -529,10 +526,7 @@ mod tests {
             merk_proof: ProofBytes::Merk(vec![]),
             lower_layers,
         };
-        let proof = crate::operations::proof::GroveDBProofV1 {
-            root_layer,
-            prove_options: ProveOptions::default(),
-        };
+        let proof = crate::operations::proof::GroveDBProofV1 { root_layer };
         let full_proof = crate::operations::proof::GroveDBProof::V1(proof);
         let config = bincode::config::standard().with_big_endian();
         bincode::encode_to_vec(&full_proof, config).expect("encoding should succeed")

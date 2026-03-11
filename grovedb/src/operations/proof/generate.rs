@@ -853,11 +853,7 @@ impl GroveDb {
             )
         );
 
-        Ok(GroveDBProof::V1(GroveDBProofV1 {
-            root_layer,
-            prove_options,
-        }))
-        .wrap_with_cost(cost)
+        Ok(GroveDBProof::V1(GroveDBProofV1 { root_layer })).wrap_with_cost(cost)
     }
 
     /// V1 version of prove_subqueries that returns `LayerProof` and handles
