@@ -844,22 +844,14 @@ fn merge_with_overlapping_conditional_items_intersect() {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// BUG: merge_multiple drops default_subquery_branch from 2nd+ queries
-// See: M6 in audit_2026_03_11.md
+// M6 fix: merge_multiple / merge_with correctly handle overlapping items
+// with different default_subquery_branch values
 // ───────────────────────────────────────────────────────────────────────
 
-/// Demonstrates M6: when two queries share an overlapping item and each has a
-/// different `default_subquery_branch`, the merged result only retains the 2nd
-/// query's default for the overlapping item. The 1st query's default is lost.
-///
-/// Correct behavior: Key(2) should have a merged subquery containing BOTH
-/// key "a" (from query A's default) and key "b" (from query B's default).
-///
-/// Actual behavior: Key(2) only gets key "b" (from query B's default),
-/// because `merge_multiple` never merges query A's default into the
-/// conditional subquery for overlapping items.
+/// Overlapping items between two queries should get BOTH queries' default
+/// subquery branches merged together.
 #[test]
-fn merge_multiple_drops_default_subquery_branch_for_overlapping_items() {
+fn merge_multiple_overlapping_items_get_both_defaults() {
     // Query A: items=[Key(1), Key(2)], default subquery selects key "a"
     let mut query_a = Query::new();
     query_a.insert_key(k(1));
@@ -885,15 +877,12 @@ fn merge_multiple_drops_default_subquery_branch_for_overlapping_items() {
     assert!(merged.items.contains(&QueryItem::Key(k(2))));
     assert!(merged.items.contains(&QueryItem::Key(k(3))));
 
-    // Key(1): only in query A → no conditional → uses merged default → should select "a"
-    // Key(3): only in query B → conditional from B's default → selects "b" ✓
-    // Key(2): in BOTH queries → should select BOTH "a" AND "b"
-
-    // Key(2) gets a conditional subquery branch from merge_multiple lines 501-504
     let conds = merged
         .conditional_subquery_branches
         .as_ref()
         .expect("should have conditional branches");
+
+    // Key(2) is in BOTH queries → should have merged subquery with "a" AND "b"
     let key2_branch = conds
         .get(&QueryItem::Key(k(2)))
         .expect("Key(2) should have a conditional branch");
@@ -901,31 +890,42 @@ fn merge_multiple_drops_default_subquery_branch_for_overlapping_items() {
         .subquery
         .as_ref()
         .expect("Key(2) branch should have a subquery");
-
-    // BUG: This fails — Key(2) only has "b", missing "a" from query A's default.
-    // When merge_multiple processes query B, it calls merge_conditional_boxed_subquery
-    // for Key(2) with B's default_subquery_branch. But query A's default_subquery_branch
-    // was never converted to a conditional for Key(2), so there's nothing to merge with.
-    // The result is that Key(2) only gets B's subquery, losing A's entirely.
     assert!(
         key2_subquery.items.contains(&QueryItem::Key(vec![b'a'])),
-        "BUG (M6): Key(2) lost query A's default_subquery_branch. \
-         Expected subquery to contain key 'a' from query A's default, \
-         but it only contains: {:?}",
+        "Key(2) should contain 'a' from query A's default, got: {:?}",
         key2_subquery.items
     );
     assert!(
         key2_subquery.items.contains(&QueryItem::Key(vec![b'b'])),
-        "Key(2) should contain key 'b' from query B's default"
+        "Key(2) should contain 'b' from query B's default, got: {:?}",
+        key2_subquery.items
     );
+
+    // Key(3) is only in query B → should have only "b"
+    let key3_branch = conds
+        .get(&QueryItem::Key(k(3)))
+        .expect("Key(3) should have a conditional branch");
+    let key3_subquery = key3_branch
+        .subquery
+        .as_ref()
+        .expect("Key(3) branch should have a subquery");
+    assert!(key3_subquery.items.contains(&QueryItem::Key(vec![b'b'])));
+    assert!(!key3_subquery.items.contains(&QueryItem::Key(vec![b'a'])));
+
+    // Key(1) is only in query A → uses default (A's) → selects "a"
+    assert!(!conds.contains_key(&QueryItem::Key(k(1))));
+    assert!(merged
+        .default_subquery_branch
+        .subquery
+        .as_ref()
+        .unwrap()
+        .items
+        .contains(&QueryItem::Key(vec![b'a'])));
 }
 
-/// Demonstrates that `merge_multiple` also doesn't merge the default_subquery_branch
-/// from subsequent queries into the result's default. This means even non-overlapping
-/// items from query 1 won't benefit from query 2's default when they should be
-/// independent — which is actually correct. But documenting the asymmetry.
+/// Non-overlapping items: each query's items should only get their own default.
 #[test]
-fn merge_multiple_default_subquery_branch_stays_from_first_query() {
+fn merge_multiple_non_overlapping_items_get_own_defaults() {
     let mut query_a = Query::new();
     query_a.insert_key(k(1));
     query_a.default_subquery_branch = SubqueryBranch {
@@ -942,21 +942,224 @@ fn merge_multiple_default_subquery_branch_stays_from_first_query() {
 
     let merged = Query::merge_multiple(vec![query_a, query_b]);
 
-    // The merged query's default_subquery_branch should only be from query A
-    // (query B's default was never merged into it)
+    // Key(1): only in A → uses default "a" (no conditional needed)
+    // Key(2): only in B → conditional "b"
     let default_sq = merged
         .default_subquery_branch
         .subquery
         .as_ref()
         .expect("default subquery should exist");
+    assert!(default_sq.items.contains(&QueryItem::Key(vec![b'a'])));
+
+    let conds = merged
+        .conditional_subquery_branches
+        .as_ref()
+        .expect("should have conditional branches for B's items");
+    let key2_branch = conds
+        .get(&QueryItem::Key(k(2)))
+        .expect("Key(2) should have a conditional");
+    let key2_sq = key2_branch.subquery.as_ref().unwrap();
+    assert!(key2_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+    assert!(!key2_sq.items.contains(&QueryItem::Key(vec![b'a'])));
+}
+
+/// merge_with has the same fix: overlapping items get both defaults.
+#[test]
+fn merge_with_overlapping_items_get_both_defaults() {
+    let mut query_a = Query::new();
+    query_a.insert_key(k(1));
+    query_a.insert_key(k(2));
+    query_a.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'a']))),
+    };
+
+    let mut query_b = Query::new();
+    query_b.insert_key(k(2));
+    query_b.insert_key(k(3));
+    query_b.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
+    };
+
+    query_a.merge_with(query_b);
+
+    let conds = query_a
+        .conditional_subquery_branches
+        .as_ref()
+        .expect("should have conditional branches");
+
+    // Key(2) overlaps → merged subquery should have both "a" and "b"
+    let key2_branch = conds
+        .get(&QueryItem::Key(k(2)))
+        .expect("Key(2) should have a conditional branch");
+    let key2_sq = key2_branch.subquery.as_ref().unwrap();
     assert!(
-        default_sq.items.contains(&QueryItem::Key(vec![b'a'])),
-        "default should contain 'a' from query A"
+        key2_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "Key(2) should contain 'a' from query A, got: {:?}",
+        key2_sq.items
     );
-    // This is arguably correct for non-overlapping items: Key(1) should use A's
-    // default, Key(2) should use B's default (via conditional). But it means the
-    // merged query's `default_subquery_branch` is incomplete — it only represents
-    // query A's intent, not the union.
+    assert!(
+        key2_sq.items.contains(&QueryItem::Key(vec![b'b'])),
+        "Key(2) should contain 'b' from query B, got: {:?}",
+        key2_sq.items
+    );
+}
+
+/// Three queries with pairwise overlaps: Key(2) in A+B, Key(3) in B+C.
+#[test]
+fn merge_multiple_three_queries_pairwise_overlaps() {
+    let mut qa = Query::new();
+    qa.insert_key(k(1));
+    qa.insert_key(k(2));
+    qa.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'a']))),
+    };
+
+    let mut qb = Query::new();
+    qb.insert_key(k(2));
+    qb.insert_key(k(3));
+    qb.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
+    };
+
+    let mut qc = Query::new();
+    qc.insert_key(k(3));
+    qc.insert_key(k(4));
+    qc.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'c']))),
+    };
+
+    let merged = Query::merge_multiple(vec![qa, qb, qc]);
+
+    assert_eq!(merged.items.len(), 4);
+
+    let conds = merged
+        .conditional_subquery_branches
+        .as_ref()
+        .expect("should have conditional branches");
+
+    // Key(2): in A + B → should have "a" and "b"
+    let key2_sq = conds
+        .get(&QueryItem::Key(k(2)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+    assert!(key2_sq.items.contains(&QueryItem::Key(vec![b'a'])));
+    assert!(key2_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+
+    // Key(3): in B + C → should have "b" and "c"
+    let key3_sq = conds
+        .get(&QueryItem::Key(k(3)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+    assert!(
+        key3_sq.items.contains(&QueryItem::Key(vec![b'b'])),
+        "Key(3) should have 'b', got: {:?}",
+        key3_sq.items
+    );
+    assert!(
+        key3_sq.items.contains(&QueryItem::Key(vec![b'c'])),
+        "Key(3) should have 'c', got: {:?}",
+        key3_sq.items
+    );
+
+    // Key(4): only in C → should have just "c"
+    let key4_sq = conds
+        .get(&QueryItem::Key(k(4)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+    assert!(key4_sq.items.contains(&QueryItem::Key(vec![b'c'])));
+    assert!(!key4_sq.items.contains(&QueryItem::Key(vec![b'a'])));
+    assert!(!key4_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+}
+
+/// Overlapping range items: partial overlap should correctly split.
+#[test]
+fn merge_multiple_overlapping_ranges_get_correct_defaults() {
+    // Query A: Range(3..8), default selects "a"
+    let mut query_a = Query::new();
+    query_a.insert_range(k(3)..k(8));
+    query_a.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'a']))),
+    };
+
+    // Query B: Range(1..5), default selects "b"
+    let mut query_b = Query::new();
+    query_b.insert_range(k(1)..k(5));
+    query_b.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
+    };
+
+    let merged = Query::merge_multiple(vec![query_a, query_b]);
+
+    let conds = merged
+        .conditional_subquery_branches
+        .as_ref()
+        .expect("should have conditional branches");
+
+    // The overlapping portion Range(3..5) should have both "a" and "b"
+    let overlap_branch = conds
+        .get(&QueryItem::Range(k(3)..k(5)))
+        .expect("Range(3..5) overlap should have a conditional");
+    let overlap_sq = overlap_branch.subquery.as_ref().unwrap();
+    assert!(
+        overlap_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "Overlap range should contain 'a', got: {:?}",
+        overlap_sq.items
+    );
+    assert!(
+        overlap_sq.items.contains(&QueryItem::Key(vec![b'b'])),
+        "Overlap range should contain 'b', got: {:?}",
+        overlap_sq.items
+    );
+
+    // Range(1..3) is only in B → should have just "b"
+    let b_only_branch = conds
+        .get(&QueryItem::Range(k(1)..k(3)))
+        .expect("Range(1..3) (B-only) should have a conditional");
+    let b_only_sq = b_only_branch.subquery.as_ref().unwrap();
+    assert!(b_only_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+    assert!(
+        !b_only_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "Range(1..3) should NOT contain 'a' (only in B)"
+    );
+}
+
+/// Empty default_subquery_branch on one side should not cause issues.
+#[test]
+fn merge_multiple_one_empty_default_no_panic() {
+    let mut query_a = Query::new();
+    query_a.insert_key(k(1));
+    query_a.insert_key(k(2));
+    // A has no default subquery branch (both None)
+
+    let mut query_b = Query::new();
+    query_b.insert_key(k(2));
+    query_b.insert_key(k(3));
+    query_b.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
+    };
+
+    let merged = Query::merge_multiple(vec![query_a, query_b]);
+
+    // Key(2) overlaps, but A has empty default → Key(2) should just get B's default
+    let conds = merged.conditional_subquery_branches.as_ref().unwrap();
+    let key2_branch = conds.get(&QueryItem::Key(k(2))).unwrap();
+    let key2_sq = key2_branch.subquery.as_ref().unwrap();
+    assert!(key2_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+    assert_eq!(key2_sq.items.len(), 1);
 }
 
 // ───────────────────────────────────────────────────────────────────────
