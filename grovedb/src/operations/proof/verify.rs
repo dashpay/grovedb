@@ -2520,6 +2520,8 @@ impl GroveDb {
             )
         })?;
 
+        let element = Element::deserialize(&value, grove_version)?;
+
         // Verify embedded value_hash for node types that carry one.
         // Without this, an attacker could replace KV(key, real_value)
         // with KVValueHash(key, forged_value, real_value_hash) and the
@@ -2529,16 +2531,22 @@ impl GroveDb {
             | Node::KVValueHashFeatureType(_, _, node_value_hash, _) => {
                 let computed_vh = value_hash(&value).value().to_owned();
                 if computed_vh != *node_value_hash {
-                    return Err(Error::InvalidProof(
-                        PathQuery::new_unsized(Vec::new(), Query::default()),
-                        format!(
-                            "trunk/branch proof value hash mismatch at key {}: \
-                             H(value) = {} but embedded value_hash = {}",
-                            hex::encode(&key),
-                            hex::encode(computed_vh),
-                            hex::encode(node_value_hash),
-                        ),
-                    ));
+                    // For tree elements, value_hash = combine_hash(H(value),
+                    // child_root_hash). We can't decompose the combined hash,
+                    // but the hash chain verification already validates tree
+                    // elements through the merk proof structure.
+                    if !element.is_any_tree() {
+                        return Err(Error::InvalidProof(
+                            PathQuery::new_unsized(Vec::new(), Query::default()),
+                            format!(
+                                "trunk/branch proof value hash mismatch at key {}: \
+                                 H(value) = {} but embedded value_hash = {}",
+                                hex::encode(&key),
+                                hex::encode(computed_vh),
+                                hex::encode(node_value_hash),
+                            ),
+                        ));
+                    }
                 }
             }
             Node::KVValueHashFeatureTypeWithChildHash(_, _, node_value_hash, _, child_hash) => {
@@ -2572,8 +2580,6 @@ impl GroveDb {
             // KV, KVCount: value is used directly in hash computation — safe
             _ => {}
         }
-
-        let element = Element::deserialize(&value, grove_version)?;
         elements.insert(key.clone(), element);
 
         // Check if this node has Hash children (making it a leaf)

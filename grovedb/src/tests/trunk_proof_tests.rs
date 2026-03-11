@@ -1600,8 +1600,9 @@ mod tests {
                         .value()
                         .to_owned();
 
-                    // Create forged value bytes (different content)
-                    let forged_value = b"FORGED_ELEMENT_DATA".to_vec();
+                    // Create forged value: a valid Element with different content
+                    let forged_element = Element::new_sum_item(9999);
+                    let forged_value = forged_element.serialize(grove_version).expect("serialize");
 
                     // Replace with KVValueHash: forged value but real hash
                     tampered_ops.push(Op::Push(Node::KVValueHash(
@@ -1677,7 +1678,9 @@ mod tests {
                     let real_vh = grovedb_merk::tree::hash::value_hash(value.as_slice())
                         .value()
                         .to_owned();
-                    let forged_value = b"FORGED_ELEMENT_DATA".to_vec();
+                    // Create forged value: a valid Element with different content
+                    let forged_element = Element::new_sum_item(9999);
+                    let forged_value = forged_element.serialize(grove_version).expect("serialize");
 
                     // Use KVValueHashFeatureType with a BasicMerkNode feature type
                     tampered_ops.push(Op::Push(Node::KVValueHashFeatureType(
@@ -1800,6 +1803,399 @@ mod tests {
             err_msg.contains("count is 0 (expected empty)"),
             "expected 'count is 0' error, got: {}",
             err_msg
+        );
+    }
+
+    /// Unknown version number in prove_trunk_chunk_non_serialized should
+    /// return a VersionError.
+    #[test]
+    fn test_prove_trunk_chunk_unknown_version() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert cst");
+
+        // Create a custom version with an unsupported prove_trunk_chunk_non_serialized
+        let mut bad_version = grove_version.clone();
+        bad_version
+            .grovedb_versions
+            .operations
+            .proof
+            .prove_trunk_chunk_non_serialized = 99;
+
+        let query = PathTrunkChunkQuery::new(vec![b"cst".to_vec()], 3);
+        let result = db
+            .prove_trunk_chunk_non_serialized(&query, &bad_version)
+            .unwrap();
+        match result {
+            Ok(_) => panic!("should fail with unknown version"),
+            Err(err) => assert!(
+                matches!(err, crate::Error::VersionError(_)),
+                "expected VersionError, got: {:?}",
+                err
+            ),
+        }
+    }
+
+    /// Injecting a KVRefValueHash node in the target layer should be
+    /// rejected — these nodes carry opaque hashes that can't be recomputed.
+    #[test]
+    fn test_trunk_proof_v1_rejects_kv_ref_value_hash_node() {
+        let grove_version = GroveVersion::latest();
+        let (proof_v1, query, _) = make_single_level_v1_proof();
+
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        let merk_bytes = match &target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        // Replace a KV node with KVRefValueHash
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut found_kv = false;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KV(key, value)) if !found_kv => {
+                    let fake_hash = [0xAB; 32];
+                    tampered_ops.push(Op::Push(Node::KVRefValueHash(
+                        key.clone(),
+                        value.clone(),
+                        fake_hash,
+                    )));
+                    found_kv = true;
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+        assert!(found_kv, "should have found a KV node to replace");
+
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+
+        let mut tampered_v1 = proof_v1;
+        tampered_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .unwrap()
+            .merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        // KVRefValueHash uses a different hash computation, so the merk tree
+        // hash changes and the combine_hash chain verification catches it
+        // before extract_elements_and_leaf_keys runs. Either way, the proof
+        // is rejected.
+        assert!(result.is_err(), "should reject KVRefValueHash node");
+    }
+
+    /// Injecting a KVValueHashFeatureTypeWithChildHash node with a forged
+    /// value should be caught by the combine_hash check.
+    #[test]
+    fn test_trunk_proof_v1_rejects_kv_value_hash_feature_type_with_child_hash_forgery() {
+        let grove_version = GroveVersion::latest();
+        let (proof_v1, query, _) = make_single_level_v1_proof();
+
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        let merk_bytes = match &target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        // Replace a KV node with KVValueHashFeatureTypeWithChildHash carrying
+        // the real value_hash but a forged value — the combine_hash check
+        // should detect the mismatch.
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut found_kv = false;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KV(key, value)) if !found_kv => {
+                    let real_vh = grovedb_merk::tree::hash::value_hash(value.as_slice())
+                        .value()
+                        .to_owned();
+                    // Create forged value: a valid Element with different content
+                    let forged_element = Element::new_sum_item(9999);
+                    let forged_value = forged_element.serialize(grove_version).expect("serialize");
+                    let fake_child_hash = [0x00; 32];
+
+                    tampered_ops.push(Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
+                        key.clone(),
+                        forged_value,
+                        real_vh, // This won't match combine_hash(H(forged), child_hash)
+                        grovedb_merk::TreeFeatureType::BasicMerkNode,
+                        fake_child_hash,
+                    )));
+                    found_kv = true;
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+        assert!(found_kv, "should have found a KV node to forge");
+
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+
+        let mut tampered_v1 = proof_v1;
+        tampered_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .unwrap()
+            .merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "should reject KVValueHashFeatureTypeWithChildHash forgery"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("value/child hash mismatch")
+                || err_msg.contains("value hash mismatch"),
+            "expected hash mismatch error, got: {}",
+            err_msg
+        );
+    }
+
+    /// Replacing all KV nodes with Hash nodes in the target layer should
+    /// trigger "node without key/value data" from extract_elements_and_leaf_keys.
+    #[test]
+    fn test_trunk_proof_v1_rejects_hash_node_in_target() {
+        let grove_version = GroveVersion::latest();
+        let (proof_v1, query, _) = make_single_level_v1_proof();
+
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        let merk_bytes = match &target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        // Replace all KV nodes with Hash nodes (keeping the same tree structure)
+        let tampered_ops: Vec<Op> = ops
+            .iter()
+            .map(|op| match op {
+                Op::Push(Node::KV(_, _)) => Op::Push(Node::Hash([0xAA; 32])),
+                other => other.clone(),
+            })
+            .collect();
+
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+
+        let mut tampered_v1 = proof_v1;
+        tampered_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .unwrap()
+            .merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "should reject proof with Hash nodes where KV expected"
+        );
+    }
+
+    /// A proof tree with inconsistent truncation depth (one child Hash, the
+    /// other non-Hash at the same node) should be rejected.
+    #[test]
+    fn test_trunk_proof_v1_rejects_inconsistent_depth() {
+        use std::collections::BTreeMap;
+
+        let grove_version = GroveVersion::latest();
+        let (proof_v1, query, _) = make_single_level_v1_proof();
+
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        let merk_bytes = match &target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        // To create inconsistent depth: take the valid ops and replace the
+        // second KV push (right child sibling) with a Hash node while keeping
+        // the first KV push intact. This creates one Hash child and one non-Hash
+        // child at the same level.
+        //
+        // The op sequence for a trunk proof typically looks like:
+        //   Push(KV), Push(Hash), Parent, Push(KV), Child, Parent, ...
+        // We want to create: left=KV (non-Hash), right=Hash at the same level.
+        // We do this by replacing one of the inner KV nodes with a KVHash.
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut kv_count = 0;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KV(_, _)) => {
+                    kv_count += 1;
+                    if kv_count == 2 {
+                        // Replace with KVHash — still has a hash but no key/value
+                        tampered_ops.push(Op::Push(Node::KVHash([0xBB; 32])));
+                    } else {
+                        tampered_ops.push(op.clone());
+                    }
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+
+        let mut tampered_v1 = proof_v1;
+        tampered_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .unwrap()
+            .merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+
+        // Should be rejected — either by execute() or by extract_elements
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "should reject proof with inconsistent depth or invalid node"
+        );
+    }
+
+    /// Verify that the V1 prover correctly generates proofs for trees with
+    /// subtree elements (which produce KVValueHashFeatureTypeWithChildHash
+    /// nodes), and that such proofs verify successfully.
+    #[test]
+    fn test_trunk_proof_v1_with_subtree_elements() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // Create a CountTree that contains subtrees (Tree elements)
+        db.insert(
+            EMPTY_PATH,
+            b"ct",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count_tree");
+
+        // Insert some regular items
+        for i in 0u32..5 {
+            let key = format!("item_{}", i).into_bytes();
+            db.insert(
+                &[b"ct"],
+                &key,
+                Element::new_item(vec![i as u8; 8]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+
+        // Insert some subtree elements (these generate KVValueHashFeatureTypeWithChildHash)
+        for i in 0u32..3 {
+            let key = format!("sub_{}", i).into_bytes();
+            db.insert(
+                &[b"ct"],
+                &key,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert subtree");
+
+            // Put some data in the subtrees
+            db.insert(
+                &[b"ct", key.as_slice()],
+                b"inner_key",
+                Element::new_item(vec![i as u8]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert inner item");
+        }
+
+        let query = PathTrunkChunkQuery::new(vec![b"ct".to_vec()], 3);
+        let proof = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove with subtrees");
+
+        let (root_hash, result) = GroveDb::verify_trunk_chunk_proof(&proof, &query, grove_version)
+            .expect("proof with subtrees should verify");
+
+        assert_ne!(root_hash, [0u8; 32]);
+        assert!(
+            !result.elements.is_empty(),
+            "should have extracted elements"
         );
     }
 }
