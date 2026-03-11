@@ -1409,6 +1409,12 @@ mod tests {
             result.is_err(),
             "should reject proof with invalid op sequence"
         );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("Failed to execute V1 trunk proof"),
+            "expected execution-failure error, got: {}",
+            err_msg
+        );
     }
 
     /// V1 forged count on a multi-level path must be rejected: the combine_hash
