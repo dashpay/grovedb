@@ -1243,6 +1243,79 @@ fn merge_with_existing_conditional_not_polluted_by_default() {
     );
 }
 
+/// When the incoming query has an explicit conditional on an overlapping item,
+/// the conditional takes precedence. The old query's default is NOT promoted
+/// for that item — B's explicit conditional is a deliberate override, and A's
+/// implicit default is the weaker specification.
+#[test]
+fn merge_multiple_incoming_conditional_overrides_old_default() {
+    // Query A: items=[Key(1), Key(2)], default='a'
+    let mut query_a = Query::new();
+    query_a.insert_key(k(1));
+    query_a.insert_key(k(2));
+    query_a.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'a']))),
+    };
+
+    // Query B: items=[Key(2), Key(3)], conditional Key(2)→'x', default='b'
+    let mut query_b = Query::new();
+    query_b.insert_key(k(2));
+    query_b.insert_key(k(3));
+    query_b.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
+    };
+    query_b.add_conditional_subquery(
+        QueryItem::Key(k(2)),
+        None,
+        Some(Query::new_single_key(vec![b'x'])),
+    );
+
+    let merged = Query::merge_multiple(vec![query_a, query_b]);
+
+    let conds = merged
+        .conditional_subquery_branches
+        .as_ref()
+        .expect("should have conditional branches");
+
+    // Key(2): B explicitly set conditional 'x'. This overrides both B's default
+    // 'b' and A's implicit default 'a'. The explicit conditional wins.
+    let key2_sq = conds
+        .get(&QueryItem::Key(k(2)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+    assert!(
+        key2_sq.items.contains(&QueryItem::Key(vec![b'x'])),
+        "Key(2) should have 'x' from B's explicit conditional, got: {:?}",
+        key2_sq.items
+    );
+    assert!(
+        !key2_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "Key(2) should NOT have 'a' — B's explicit conditional overrides A's default, got: {:?}",
+        key2_sq.items
+    );
+    assert!(
+        !key2_sq.items.contains(&QueryItem::Key(vec![b'b'])),
+        "Key(2) should NOT have 'b' — B's conditional overrides B's own default too, got: {:?}",
+        key2_sq.items
+    );
+
+    // Key(3): only in B, no conditional → uses B's default 'b'
+    let key3_sq = conds
+        .get(&QueryItem::Key(k(3)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+    assert!(key3_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+
+    // Key(1): only in A → uses A's default 'a'
+    assert!(!conds.contains_key(&QueryItem::Key(k(1))));
+}
+
 /// Empty default_subquery_branch on one side should not cause issues.
 #[test]
 fn merge_multiple_one_empty_default_no_panic() {
