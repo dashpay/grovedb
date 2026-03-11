@@ -1722,4 +1722,84 @@ mod tests {
             err_msg
         );
     }
+
+    /// When count==0, the target layer merk bytes must be empty.
+    /// Injecting junk bytes should be rejected to prevent bandwidth
+    /// amplification via oversized proofs.
+    #[test]
+    fn test_trunk_proof_v1_rejects_junk_bytes_in_empty_target_layer() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"root",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert root");
+
+        db.insert(
+            [b"root"].as_ref(),
+            b"empty_cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert empty_cst");
+
+        let query = PathTrunkChunkQuery::new(vec![b"root".to_vec(), b"empty_cst".to_vec()], 3);
+        let proof_bytes = db
+            .prove_trunk_chunk(&query, grove_version)
+            .unwrap()
+            .expect("prove empty tree");
+
+        // Sanity: valid proof should verify
+        GroveDb::verify_trunk_chunk_proof(&proof_bytes, &query, grove_version)
+            .expect("clean proof should verify");
+
+        // Decode, inject junk bytes into target layer, re-encode
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode proof");
+        let mut proof_v1 = match grovedb_proof {
+            GroveDBProof::V1(v1) => v1,
+            _ => panic!("expected V1 proof"),
+        };
+
+        // Navigate to the target layer (root -> "root" -> "empty_cst")
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"root".as_slice())
+            .expect("should have 'root' layer")
+            .lower_layers
+            .get_mut(b"empty_cst".as_slice())
+            .expect("should have 'empty_cst' layer");
+
+        // Inject junk bytes into the target layer's merk proof
+        target_layer.merk_proof = ProofBytes::Merk(vec![0xDE; 1024]);
+
+        let tampered_bytes =
+            bincode::encode_to_vec(&GroveDBProof::V1(proof_v1), config).expect("encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_bytes, &query, grove_version);
+        assert!(
+            result.is_err(),
+            "should reject junk bytes in empty target layer"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("count is 0 (expected empty)"),
+            "expected 'count is 0' error, got: {}",
+            err_msg
+        );
+    }
 }

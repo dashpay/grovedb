@@ -2340,6 +2340,15 @@ impl GroveDb {
         // Determine the lower hash -- always computed, even for empty trees.
         // This is the critical security fix: V0 skipped this for count==0.
         let (lower_hash, target_tree_opt) = if count == 0 {
+            if !target_merk_bytes.is_empty() {
+                return Err(Error::InvalidProof(
+                    PathQuery::new_unsized(current_path.clone(), Query::default()),
+                    format!(
+                        "V1 trunk: target layer has {} bytes but count is 0 (expected empty)",
+                        target_merk_bytes.len()
+                    ),
+                ));
+            }
             (NULL_HASH, None)
         } else {
             let tree_depth = calculate_max_tree_depth_from_count(count);
