@@ -485,43 +485,78 @@ impl Query {
             // merged_query's default_subquery_branch. We must promote that default
             // to an explicit conditional first, so it merges with the incoming
             // default rather than being silently replaced.
+            //
+            // However, old items that already have explicit conditional subquery
+            // branches were NOT using the default — we must exclude them from
+            // promotion to avoid leaking the default into existing conditionals.
             if !items.is_empty() {
-                let mut old_items_for_intersect = old_items;
-                let intersection =
-                    QueryItem::intersect_many_ordered(&mut old_items_for_intersect, items);
+                // Start with old items, then subtract any that already have
+                // conditional subquery branches (they weren't using the default)
+                let mut old_default_items = old_items;
+                if let Some(existing_conditionals) =
+                    merged_query.conditional_subquery_branches.as_ref()
+                {
+                    for conditional_item in existing_conditionals.keys().cloned() {
+                        let remaining = QueryItem::intersect_many_ordered(
+                            &mut old_default_items,
+                            vec![conditional_item],
+                        );
+                        old_default_items = remaining.ours.unwrap_or_default();
+                        if old_default_items.is_empty() {
+                            break;
+                        }
+                    }
+                }
 
-                // Items in both queries: promote merged_query's default, then merge
-                // with incoming default
-                if let Some(in_both) = intersection.in_both {
-                    let merged_default = merged_query.default_subquery_branch.clone();
-                    for item in in_both {
-                        if merged_default.subquery.is_some()
-                            || merged_default.subquery_path.is_some()
-                        {
+                if old_default_items.is_empty() {
+                    // No old items were using the default (all had conditionals
+                    // or none existed). Just apply incoming default directly —
+                    // merge_conditional_boxed_subquery will merge with any
+                    // existing conditionals automatically.
+                    for item in items {
+                        merged_query.merge_conditional_boxed_subquery(
+                            item,
+                            default_subquery_branch.clone(),
+                        );
+                    }
+                } else {
+                    let intersection =
+                        QueryItem::intersect_many_ordered(&mut old_default_items, items);
+
+                    // Items in both queries that were using the default: promote
+                    // merged_query's default, then merge with incoming default
+                    if let Some(in_both) = intersection.in_both {
+                        let merged_default = merged_query.default_subquery_branch.clone();
+                        for item in in_both {
+                            if merged_default.subquery.is_some()
+                                || merged_default.subquery_path.is_some()
+                            {
+                                merged_query.merge_conditional_boxed_subquery(
+                                    item.clone(),
+                                    merged_default.clone(),
+                                );
+                            }
                             merged_query.merge_conditional_boxed_subquery(
-                                item.clone(),
-                                merged_default.clone(),
+                                item,
+                                default_subquery_branch.clone(),
                             );
                         }
-                        merged_query.merge_conditional_boxed_subquery(
-                            item,
-                            default_subquery_branch.clone(),
-                        );
                     }
-                }
 
-                // Items only in the incoming query: just apply incoming default
-                if let Some(theirs_only) = intersection.theirs {
-                    for item in theirs_only {
-                        merged_query.merge_conditional_boxed_subquery(
-                            item,
-                            default_subquery_branch.clone(),
-                        );
+                    // Items only in the incoming query (or overlapping with old
+                    // conditional items): just apply incoming default
+                    if let Some(theirs_only) = intersection.theirs {
+                        for item in theirs_only {
+                            merged_query.merge_conditional_boxed_subquery(
+                                item,
+                                default_subquery_branch.clone(),
+                            );
+                        }
                     }
-                }
 
-                // Items only in old (ours): no action needed, they use
-                // merged_query's default_subquery_branch
+                    // Items only in old (ours): no action needed, they use
+                    // merged_query's default_subquery_branch
+                }
             }
         }
         merged_query
@@ -565,23 +600,51 @@ impl Query {
         // For remaining items, use intersection to correctly handle overlapping
         // vs non-overlapping items (same logic as merge_multiple)
         if !items.is_empty() {
-            let mut old_items_for_intersect = old_items;
-            let intersection =
-                QueryItem::intersect_many_ordered(&mut old_items_for_intersect, items);
-
-            if let Some(in_both) = intersection.in_both {
-                let self_default = self.default_subquery_branch.clone();
-                for item in in_both {
-                    if self_default.subquery.is_some() || self_default.subquery_path.is_some() {
-                        self.merge_conditional_boxed_subquery(item.clone(), self_default.clone());
+            // Subtract old items that already have conditionals (not using default)
+            let mut old_default_items = old_items;
+            if let Some(existing_conditionals) = self.conditional_subquery_branches.as_ref() {
+                for conditional_item in existing_conditionals.keys().cloned() {
+                    let remaining = QueryItem::intersect_many_ordered(
+                        &mut old_default_items,
+                        vec![conditional_item],
+                    );
+                    old_default_items = remaining.ours.unwrap_or_default();
+                    if old_default_items.is_empty() {
+                        break;
                     }
-                    self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
                 }
             }
 
-            if let Some(theirs_only) = intersection.theirs {
-                for item in theirs_only {
+            if old_default_items.is_empty() {
+                for item in items {
                     self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+                }
+            } else {
+                let intersection = QueryItem::intersect_many_ordered(&mut old_default_items, items);
+
+                if let Some(in_both) = intersection.in_both {
+                    let self_default = self.default_subquery_branch.clone();
+                    for item in in_both {
+                        if self_default.subquery.is_some() || self_default.subquery_path.is_some() {
+                            self.merge_conditional_boxed_subquery(
+                                item.clone(),
+                                self_default.clone(),
+                            );
+                        }
+                        self.merge_conditional_boxed_subquery(
+                            item,
+                            default_subquery_branch.clone(),
+                        );
+                    }
+                }
+
+                if let Some(theirs_only) = intersection.theirs {
+                    for item in theirs_only {
+                        self.merge_conditional_boxed_subquery(
+                            item,
+                            default_subquery_branch.clone(),
+                        );
+                    }
                 }
             }
         }

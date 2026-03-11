@@ -1069,6 +1069,11 @@ fn merge_multiple_three_queries_pairwise_overlaps() {
         "Key(3) should have 'c', got: {:?}",
         key3_sq.items
     );
+    assert!(
+        !key3_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "Key(3) should not inherit 'a' from query A, got: {:?}",
+        key3_sq.items
+    );
 
     // Key(4): only in C → should have just "c"
     let key4_sq = conds
@@ -1133,6 +1138,108 @@ fn merge_multiple_overlapping_ranges_get_correct_defaults() {
     assert!(
         !b_only_sq.items.contains(&QueryItem::Key(vec![b'a'])),
         "Range(1..3) should NOT contain 'a' (only in B)"
+    );
+}
+
+/// Items with existing conditional subqueries should NOT get the default
+/// promoted into them. Only items that were implicitly using the default
+/// should be promoted.
+#[test]
+fn merge_multiple_existing_conditional_not_polluted_by_default() {
+    // Query A: Key(3) has explicit conditional → 'c', default → 'a'
+    let mut query_a = Query::new();
+    query_a.insert_key(k(3));
+    query_a.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'a']))),
+    };
+    query_a.add_conditional_subquery(
+        QueryItem::Key(k(3)),
+        None,
+        Some(Query::new_single_key(vec![b'c'])),
+    );
+
+    // Query B: Key(3) with default → 'b'
+    let mut query_b = Query::new();
+    query_b.insert_key(k(3));
+    query_b.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
+    };
+
+    let merged = Query::merge_multiple(vec![query_a, query_b]);
+
+    let conds = merged
+        .conditional_subquery_branches
+        .as_ref()
+        .expect("should have conditional branches");
+    let key3_sq = conds
+        .get(&QueryItem::Key(k(3)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+
+    // Key(3) should have 'c' (from A's conditional) and 'b' (from B's default)
+    // but NOT 'a' (A's default should not leak into Key(3) which had an explicit conditional)
+    assert!(
+        key3_sq.items.contains(&QueryItem::Key(vec![b'c'])),
+        "Key(3) should have 'c' from A's conditional, got: {:?}",
+        key3_sq.items
+    );
+    assert!(
+        key3_sq.items.contains(&QueryItem::Key(vec![b'b'])),
+        "Key(3) should have 'b' from B's default, got: {:?}",
+        key3_sq.items
+    );
+    assert!(
+        !key3_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "Key(3) should NOT have 'a' — A's default must not leak into existing conditional, got: {:?}",
+        key3_sq.items
+    );
+}
+
+/// Same test for merge_with.
+#[test]
+fn merge_with_existing_conditional_not_polluted_by_default() {
+    let mut query_a = Query::new();
+    query_a.insert_key(k(3));
+    query_a.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'a']))),
+    };
+    query_a.add_conditional_subquery(
+        QueryItem::Key(k(3)),
+        None,
+        Some(Query::new_single_key(vec![b'c'])),
+    );
+
+    let mut query_b = Query::new();
+    query_b.insert_key(k(3));
+    query_b.default_subquery_branch = SubqueryBranch {
+        subquery_path: None,
+        subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
+    };
+
+    query_a.merge_with(query_b);
+
+    let conds = query_a
+        .conditional_subquery_branches
+        .as_ref()
+        .expect("should have conditional branches");
+    let key3_sq = conds
+        .get(&QueryItem::Key(k(3)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+
+    assert!(key3_sq.items.contains(&QueryItem::Key(vec![b'c'])));
+    assert!(key3_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+    assert!(
+        !key3_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "merge_with: A's default must not leak into Key(3)'s conditional, got: {:?}",
+        key3_sq.items
     );
 }
 
