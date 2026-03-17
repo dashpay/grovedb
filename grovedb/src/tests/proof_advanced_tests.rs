@@ -17,6 +17,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        operations::proof::GroveDBProof,
         tests::{make_deep_tree, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
     };
@@ -671,14 +672,22 @@ mod tests {
         query.insert_range_after(vec![3]..);
         let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
 
-        let proof = db
+        let proof_bytes = db
             .prove_query(&path_query, None, grove_version)
             .unwrap()
             .expect("prove should succeed");
 
+        // Decode proof once, then verify and check boundaries on the same object
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("should decode proof");
+
         // Verify proof is valid
-        let (_, results) =
-            GroveDb::verify_query(&proof, &path_query, grove_version).expect("should verify");
+        let (_, results) = grovedb_proof
+            .verify(&path_query, grove_version)
+            .expect("should verify");
 
         // Keys 4 and 5 should be in results
         assert!(results.iter().any(|r| r.1 == vec![4]));
@@ -688,14 +697,16 @@ mod tests {
 
         // Key 3 should exist as boundary in the proof at path [TEST_LEAF]
         assert!(
-            GroveDb::key_exists_as_boundary_in_proof(&proof, &[TEST_LEAF], &[3])
+            grovedb_proof
+                .key_exists_as_boundary(&[TEST_LEAF], &[3])
                 .expect("should not error"),
             "Key 3 should be boundary in RangeAfter(3) proof"
         );
 
         // Key 4 should NOT be a boundary
         assert!(
-            !GroveDb::key_exists_as_boundary_in_proof(&proof, &[TEST_LEAF], &[4])
+            !grovedb_proof
+                .key_exists_as_boundary(&[TEST_LEAF], &[4])
                 .expect("should not error"),
             "Key 4 is a result element, not a boundary"
         );
