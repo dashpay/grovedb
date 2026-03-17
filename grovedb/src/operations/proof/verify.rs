@@ -2750,4 +2750,82 @@ impl GroveDb {
             tree: branch_tree,
         })
     }
+
+    /// Checks whether a key exists as a boundary element (KVDigest or
+    /// KVDigestCount) in a GroveDB proof at the specified path.
+    ///
+    /// This is useful for exclusive range queries (e.g. `RangeAfter(10)`)
+    /// where the boundary key is included in the proof to anchor the range
+    /// but is not part of the result set.
+    ///
+    /// The `path` identifies which layer of the proof to inspect, and `key`
+    /// is the boundary key to look for.
+    pub fn key_exists_as_boundary_in_proof(
+        proof: &[u8],
+        path: &[&[u8]],
+        key: &[u8],
+    ) -> Result<bool, Error> {
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
+            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
+            .0;
+
+        match grovedb_proof {
+            GroveDBProof::V0(v0) => Self::find_boundary_in_merk_layer(&v0.root_layer, path, 0, key),
+            GroveDBProof::V1(v1) => Self::find_boundary_in_layer(&v1.root_layer, path, 0, key),
+        }
+    }
+
+    /// Navigates through V0 (merk-only) layer proof to find the right layer,
+    /// then checks for boundary key.
+    fn find_boundary_in_merk_layer(
+        layer: &MerkOnlyLayerProof,
+        path: &[&[u8]],
+        depth: usize,
+        key: &[u8],
+    ) -> Result<bool, Error> {
+        if depth == path.len() {
+            return grovedb_merk::proofs::query::key_exists_as_boundary_in_proof(
+                &layer.merk_proof,
+                key,
+            )
+            .map_err(Into::into);
+        }
+        let segment = path[depth];
+        match layer.lower_layers.get(segment) {
+            Some(child_layer) => {
+                Self::find_boundary_in_merk_layer(child_layer, path, depth + 1, key)
+            }
+            None => Err(Error::InvalidInput("path segment not found in proof layer")),
+        }
+    }
+
+    /// Navigates through V1 layer proof to find the right layer,
+    /// then checks for boundary key.
+    fn find_boundary_in_layer(
+        layer: &LayerProof,
+        path: &[&[u8]],
+        depth: usize,
+        key: &[u8],
+    ) -> Result<bool, Error> {
+        if depth == path.len() {
+            let merk_bytes = match &layer.merk_proof {
+                ProofBytes::Merk(bytes) => bytes,
+                _ => {
+                    return Err(Error::NotSupported(
+                        "boundary check only supported for merk proofs".to_string(),
+                    ))
+                }
+            };
+            return grovedb_merk::proofs::query::key_exists_as_boundary_in_proof(merk_bytes, key)
+                .map_err(Into::into);
+        }
+        let segment = path[depth];
+        match layer.lower_layers.get(segment) {
+            Some(child_layer) => Self::find_boundary_in_layer(child_layer, path, depth + 1, key),
+            None => Err(Error::InvalidInput("path segment not found in proof layer")),
+        }
+    }
 }

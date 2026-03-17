@@ -4305,3 +4305,191 @@ fn test_execute_proof_rejects_trailing_bytes() {
         result.as_ref().unwrap()
     );
 }
+
+// ───────────────────────────────────────────────────────────────────────
+// key_exists_as_boundary_in_proof tests
+// ───────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_range_after_boundary_key_exists() {
+    let grove_version = GroveVersion::latest();
+    // Tree has keys: [2, 3, 4, 5, 7, 8]
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // RangeAfter(vec![3]..) means: all keys AFTER 3 (exclusive), so 4, 5, 7, 8
+    // Key 3 should appear as a KVDigest boundary node in the proof
+    let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    // Verify the proof is valid
+    let mut query = Query::new();
+    query.insert_range_after(vec![3]..);
+    let expected_hash = tree.hash().unwrap();
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_hash)
+        .unwrap()
+        .expect("verify failed");
+
+    // Key 3 should NOT be in the result set (it's excluded by RangeAfter)
+    assert!(
+        !result.result_set.iter().any(|r| r.key == vec![3]),
+        "Key 3 should not be in result set for RangeAfter(3)"
+    );
+
+    // But key 3 should exist as a boundary in the proof
+    assert!(
+        verify::key_exists_as_boundary_in_proof(&bytes, &[3]).unwrap(),
+        "Key 3 should exist as boundary in RangeAfter(3) proof"
+    );
+
+    // Key 4 should NOT be a boundary — it's a result element
+    assert!(
+        !verify::key_exists_as_boundary_in_proof(&bytes, &[4]).unwrap(),
+        "Key 4 should not be a boundary — it's in the result set"
+    );
+
+    // Key 99 doesn't exist at all
+    assert!(
+        !verify::key_exists_as_boundary_in_proof(&bytes, &[99]).unwrap(),
+        "Non-existent key should not be a boundary"
+    );
+}
+
+#[test]
+fn test_range_after_to_boundary_key() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // RangeAfterTo(vec![2]..vec![7]) means: keys after 2 (exclusive) and before 7 (exclusive)
+    // So results are: 3, 4, 5. Key 2 should be a boundary.
+    let query_items = vec![QueryItem::RangeAfterTo(vec![2]..vec![7])];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let mut query = Query::new();
+    query.insert_range_after_to(vec![2]..vec![7]);
+    let expected_hash = tree.hash().unwrap();
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_hash)
+        .unwrap()
+        .expect("verify failed");
+
+    // Key 2 excluded from results
+    assert!(!result.result_set.iter().any(|r| r.key == vec![2]));
+    // Key 2 should be boundary
+    assert!(
+        verify::key_exists_as_boundary_in_proof(&bytes, &[2]).unwrap(),
+        "Key 2 should exist as boundary in RangeAfterTo proof"
+    );
+}
+
+#[test]
+fn test_range_after_to_inclusive_boundary_key() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // RangeAfterToInclusive(vec![3]..=vec![7]) means: after 3 (exclusive) up to 7 (inclusive)
+    // Results: 4, 5, 7. Key 3 should be boundary.
+    let query_items = vec![QueryItem::RangeAfterToInclusive(vec![3]..=vec![7])];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let mut query = Query::new();
+    query.insert_range_after_to_inclusive(vec![3]..=vec![7]);
+    let expected_hash = tree.hash().unwrap();
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_hash)
+        .unwrap()
+        .expect("verify failed");
+
+    assert!(!result.result_set.iter().any(|r| r.key == vec![3]));
+    assert!(
+        verify::key_exists_as_boundary_in_proof(&bytes, &[3]).unwrap(),
+        "Key 3 should be boundary in RangeAfterToInclusive proof"
+    );
+    // Key 7 should be in results (inclusive end)
+    assert!(result.result_set.iter().any(|r| r.key == vec![7]));
+}
+
+#[test]
+fn test_boundary_key_not_in_tree() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // RangeAfter(vec![6]..) — key 6 does NOT exist in the tree.
+    // Results: 7, 8. No boundary for key 6 since it doesn't exist.
+    let query_items = vec![QueryItem::RangeAfter(vec![6]..)];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let mut query = Query::new();
+    query.insert_range_after(vec![6]..);
+    let expected_hash = tree.hash().unwrap();
+    query
+        .verify_proof(bytes.as_slice(), None, true, expected_hash)
+        .unwrap()
+        .expect("verify failed");
+
+    // Key 6 doesn't exist — should not be a boundary
+    assert!(
+        !verify::key_exists_as_boundary_in_proof(&bytes, &[6]).unwrap(),
+        "Non-existent key 6 should not appear as boundary"
+    );
+    // But neighboring key 5 might appear as a KVDigest for absence proof
+    // (this depends on tree structure — just verify no panic)
+    let _ = verify::key_exists_as_boundary_in_proof(&bytes, &[5]).unwrap();
+}
+
+#[test]
+fn test_inclusive_range_no_boundary_at_start() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // Range(vec![3]..vec![7]) — inclusive start, exclusive end
+    // Results include key 3 (it's a full KV node, not a boundary)
+    let query_items = vec![QueryItem::Range(vec![3]..vec![7])];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let mut query = Query::new();
+    query.insert_range(vec![3]..vec![7]);
+    let expected_hash = tree.hash().unwrap();
+    let result = query
+        .verify_proof(bytes.as_slice(), None, true, expected_hash)
+        .unwrap()
+        .expect("verify failed");
+
+    // Key 3 is in results (inclusive start)
+    assert!(result.result_set.iter().any(|r| r.key == vec![3]));
+    // Key 3 should NOT be a boundary — it's a full result element
+    assert!(
+        !verify::key_exists_as_boundary_in_proof(&bytes, &[3]).unwrap(),
+        "Key 3 should not be boundary in inclusive Range — it's in results"
+    );
+}

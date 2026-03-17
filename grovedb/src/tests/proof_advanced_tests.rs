@@ -641,4 +641,63 @@ mod tests {
         assert_eq!(result_set[2].1, b"key5".to_vec());
         assert_eq!(result_set[2].2, Some(Element::new_item(b"value5".to_vec())));
     }
+
+    // =========================================================================
+    // key_exists_as_boundary_in_proof tests
+    // =========================================================================
+
+    #[test]
+    fn grovedb_range_after_boundary_proof() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert items with keys 1..=5 under TEST_LEAF
+        for i in 1u8..=5 {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                &[i],
+                Element::new_item(vec![i; 4]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert");
+        }
+
+        // Query: RangeAfter(3..) — results should be keys 4, 5.
+        // Key 3 should be a boundary.
+        let mut query = Query::new();
+        query.insert_range_after(vec![3]..);
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+
+        // Verify proof is valid
+        let (_, results) =
+            GroveDb::verify_query(&proof, &path_query, grove_version).expect("should verify");
+
+        // Keys 4 and 5 should be in results
+        assert!(results.iter().any(|r| r.1 == vec![4]));
+        assert!(results.iter().any(|r| r.1 == vec![5]));
+        // Key 3 should NOT be in results
+        assert!(!results.iter().any(|r| r.1 == vec![3]));
+
+        // Key 3 should exist as boundary in the proof at path [TEST_LEAF]
+        assert!(
+            GroveDb::key_exists_as_boundary_in_proof(&proof, &[TEST_LEAF], &[3])
+                .expect("should not error"),
+            "Key 3 should be boundary in RangeAfter(3) proof"
+        );
+
+        // Key 4 should NOT be a boundary
+        assert!(
+            !GroveDb::key_exists_as_boundary_in_proof(&proof, &[TEST_LEAF], &[4])
+                .expect("should not error"),
+            "Key 4 is a result element, not a boundary"
+        );
+    }
 }
