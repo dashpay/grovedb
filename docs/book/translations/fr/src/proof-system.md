@@ -411,6 +411,73 @@ graph TD
 Pour les requêtes de plage, les preuves d'absence montrent qu'il n'y a pas de clés dans la plage interrogée
 qui n'ont pas été incluses dans l'ensemble de résultats.
 
+## Détection des clés de frontière
+
+Lors de la vérification d'une preuve issue d'une requête de plage exclusive, vous pourriez avoir
+besoin de confirmer qu'une clé spécifique existe en tant qu'**élément de frontière** — une clé qui
+ancre la plage mais ne fait pas partie de l'ensemble de résultats.
+
+Par exemple, avec `RangeAfter(10)` (toutes les clés strictement après 10), la preuve
+inclut la clé 10 en tant que nœud `KVDigest`. Cela prouve que la clé 10 existe dans l'arbre
+et ancre le début de la plage, mais la clé 10 n'est pas retournée dans les résultats.
+
+### Quand les nœuds de frontière apparaissent
+
+Les nœuds `KVDigest` (ou `KVDigestCount` pour ProvableCountTree) de frontière apparaissent dans
+les preuves pour les types de requêtes de plage exclusives :
+
+| Type de requête | Clé de frontière | Ce que cela prouve |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Le début exclusif existe dans l'arbre |
+| `RangeAfterTo(start..end)` | `start` | Le début exclusif existe dans l'arbre |
+| `RangeAfterToInclusive(start..=end)` | `start` | Le début exclusif existe dans l'arbre |
+
+Les nœuds de frontière apparaissent également dans les preuves d'absence, où les clés voisines prouvent
+qu'une lacune existe (voir [Preuves d'absence](#preuves-dabsence) ci-dessus).
+
+### Vérification des clés de frontière
+
+Après avoir vérifié une preuve, vous pouvez vérifier si une clé existe en tant qu'élément
+de frontière en utilisant `key_exists_as_boundary` sur le `GroveDBProof` décodé :
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+L'argument `path` identifie quelle couche de la preuve inspecter (correspondant au chemin du
+sous-arbre GroveDB où la requête de plage a été exécutée), et `key` est la clé de frontière
+à rechercher.
+
+### Utilisation pratique : vérification de la pagination
+
+Cela est particulièrement utile pour la **pagination**. Quand un client demande « les 100 prochains
+documents après le document X », la requête est `RangeAfter(document_X_id)`. La preuve retourne
+les documents 101 à 200, mais le client peut aussi vouloir confirmer que le document X
+(le curseur de pagination) existe toujours dans l'arbre :
+
+- Si `key_exists_as_boundary` retourne `true`, le curseur est valide — le client peut
+  faire confiance au fait que la pagination est ancrée sur un document réel.
+- S'il retourne `false`, le document curseur a peut-être été supprimé entre les pages,
+  et le client devrait envisager de recommencer la pagination.
+
+> **Important :** `key_exists_as_boundary` effectue une analyse syntaxique des nœuds
+> `KVDigest`/`KVDigestCount` de la preuve. Il ne fournit aucune garantie cryptographique
+> en soi — vérifiez toujours la preuve par rapport à un hachage racine de confiance en
+> premier. Les mêmes types de nœuds apparaissent aussi dans les preuves d'absence, donc
+> l'appelant doit interpréter le résultat dans le contexte de la requête qui a généré
+> la preuve.
+
+Au niveau merk, la même vérification est disponible via
+`key_exists_as_boundary_in_proof(proof_bytes, key)` pour travailler directement avec
+les octets bruts de la preuve merk.
+
 ## Preuves V1 — Arbres non-Merk
 
 Le système de preuves V0 fonctionne exclusivement avec les sous-arbres Merk, descendant couche par
