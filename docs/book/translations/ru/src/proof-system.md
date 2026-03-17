@@ -438,12 +438,12 @@ graph TD
 `GroveDBProof`:
 
 ```rust
-// Декодирование и верификация доказательства
+// Decode and verify the proof
 let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Проверка существования граничного ключа в доказательстве
+// Check that the boundary key exists in the proof
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```

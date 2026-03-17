@@ -411,7 +411,7 @@ kumesine dahil olmayan bir anahtar.
 
 Ornegin, `RangeAfter(10)` (10'dan kesinlikle buyuk tum anahtarlar) sorgusunda ispat,
 anahtar 10'u bir `KVDigest` dugumu olarak icerir. Bu, anahtar 10'un agacta var
-oldugunu kanitlar ve araligin baslangiciniyukler, ancak anahtar 10 sonuclarda
+oldugunu kanitlar ve araligin baslangicini yukler, ancak anahtar 10 sonuclarda
 dondurulmez.
 
 ### Sinir dugumlerinin gorunme durumu
@@ -445,7 +445,7 @@ let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
 
-`path` arguemani, ispatin hangi katmaninin incelenecegini belirtir (aralik
+`path` argumani, ispatin hangi katmaninin incelenecegini belirtir (aralik
 sorgusunun yurutuldugu GroveDB alt agac yoluyla eslesir) ve `key` aranacak
 sinir anahtaridir.
 

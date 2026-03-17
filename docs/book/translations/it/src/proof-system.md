@@ -427,7 +427,7 @@ che esiste una lacuna (vedi [Prove di assenza](#prove-di-assenza) sopra).
 
 ### Verificare le chiavi di confine
 
-Dopo aver verificato una prova, e possibile controllare se una chiave esiste come elemento
+Dopo aver verificato una prova, è possibile controllare se una chiave esiste come elemento
 di confine utilizzando `key_exists_as_boundary` sul `GroveDBProof` decodificato:
 
 ```rust

@@ -380,12 +380,12 @@ graph TD
 증명을 검증한 후, 디코딩된 `GroveDBProof`에서 `key_exists_as_boundary`를 사용하여 키가 경계 엘리먼트로 존재하는지 확인할 수 있습니다:
 
 ```rust
-// 증명 디코딩 및 검증
+// Decode and verify the proof
 let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// 경계 키가 증명에 존재하는지 확인
+// Check that the boundary key exists in the proof
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```

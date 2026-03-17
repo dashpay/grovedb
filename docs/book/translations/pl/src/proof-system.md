@@ -447,12 +447,12 @@ Po weryfikacji dowodu mozna sprawdzic, czy klucz istnieje jako element graniczny
 za pomoca `key_exists_as_boundary` na zdekodowanym `GroveDBProof`:
 
 ```rust
-// Dekodowanie i weryfikacja dowodu
+// Decode and verify the proof
 let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Sprawdzenie, czy klucz graniczny istnieje w dowodzie
+// Check that the boundary key exists in the proof
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```

@@ -445,12 +445,12 @@ Apos verificar uma prova, voce pode verificar se uma chave existe como elemento
 de limite usando `key_exists_as_boundary` no `GroveDBProof` decodificado:
 
 ```rust
-// Decodificar e verificar a prova
+// Decode and verify the proof
 let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Verificar se a chave de limite existe na prova
+// Check that the boundary key exists in the proof
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
