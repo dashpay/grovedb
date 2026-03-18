@@ -4493,3 +4493,86 @@ fn test_inclusive_range_no_boundary_at_start() {
         "Key 3 should not be boundary in inclusive Range — it's in results"
     );
 }
+
+// ───────────────────────────────────────────────────────────────────────
+// boundaries_in_proof tests
+// ───────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_boundaries_in_proof_range_after() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // RangeAfter(vec![3]..) — key 3 is boundary, results are 4, 5, 7, 8
+    let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let boundaries = verify::boundaries_in_proof(&bytes).unwrap();
+    assert!(
+        boundaries.contains(&vec![3]),
+        "Key 3 should be in boundaries, got: {:?}",
+        boundaries
+    );
+}
+
+#[test]
+fn test_boundaries_in_proof_range_after_to() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // RangeAfterTo(vec![2]..vec![7]) — key 2 is boundary
+    let query_items = vec![QueryItem::RangeAfterTo(vec![2]..vec![7])];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let boundaries = verify::boundaries_in_proof(&bytes).unwrap();
+    assert!(
+        boundaries.contains(&vec![2]),
+        "Key 2 should be in boundaries, got: {:?}",
+        boundaries
+    );
+    // Result keys (3, 4, 5) should not be boundaries
+    assert!(!boundaries.contains(&vec![3]));
+    assert!(!boundaries.contains(&vec![4]));
+    assert!(!boundaries.contains(&vec![5]));
+}
+
+#[test]
+fn test_boundaries_in_proof_inclusive_range_empty() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // Range(vec![3]..vec![7]) — inclusive start, no boundary for key 3
+    let query_items = vec![QueryItem::Range(vec![3]..vec![7])];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let boundaries = verify::boundaries_in_proof(&bytes).unwrap();
+    // Key 3 is a result element, not a boundary
+    assert!(
+        !boundaries.contains(&vec![3]),
+        "Key 3 should not be a boundary in inclusive Range"
+    );
+}
+
+#[test]
+fn test_boundaries_in_proof_empty_proof() {
+    let boundaries = verify::boundaries_in_proof(&[]).unwrap();
+    assert!(boundaries.is_empty());
+}

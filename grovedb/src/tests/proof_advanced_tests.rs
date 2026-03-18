@@ -710,5 +710,23 @@ mod tests {
                 .expect("should not error"),
             "Key 4 is a result element, not a boundary"
         );
+
+        // boundaries() should return all boundary keys at once
+        let boundary_keys = grovedb_proof
+            .boundaries(&[TEST_LEAF])
+            .expect("should not error");
+        assert!(
+            boundary_keys.contains(&vec![3]),
+            "boundaries() should include key 3, got: {:?}",
+            boundary_keys
+        );
+        assert!(
+            !boundary_keys.contains(&vec![4]),
+            "boundaries() should not include result key 4"
+        );
+        assert!(
+            !boundary_keys.contains(&vec![5]),
+            "boundaries() should not include result key 5"
+        );
     }
 }

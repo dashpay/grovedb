@@ -699,3 +699,24 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
     }
     Ok(false)
 }
+
+/// Returns all boundary keys found in the given merk proof bytes.
+/// Boundary keys appear as `KVDigest` or `KVDigestCount` nodes — they
+/// prove a key exists in the tree without revealing the value.
+pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+    let decoder = Decoder::new(proof_bytes);
+    let mut keys = Vec::new();
+    for op_result in decoder {
+        let op = op_result?;
+        match op {
+            Op::Push(Node::KVDigest(k, _))
+            | Op::PushInverted(Node::KVDigest(k, _))
+            | Op::Push(Node::KVDigestCount(k, _, _))
+            | Op::PushInverted(Node::KVDigestCount(k, _, _)) => {
+                keys.push(k);
+            }
+            _ => {}
+        }
+    }
+    Ok(keys)
+}
