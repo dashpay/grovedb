@@ -4576,3 +4576,58 @@ fn test_boundaries_in_proof_empty_proof() {
     let boundaries = verify::boundaries_in_proof(&[]).unwrap();
     assert!(boundaries.is_empty());
 }
+
+#[test]
+fn test_boundaries_in_proof_right_to_left() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // RangeAfter(vec![3]..) with left_to_right=false
+    let query_items = vec![QueryItem::RangeAfter(vec![3]..)];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, false, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let boundaries = verify::boundaries_in_proof(&bytes).unwrap();
+    assert!(
+        boundaries.contains(&vec![3]),
+        "Key 3 should be boundary in right-to-left proof, got: {:?}",
+        boundaries
+    );
+}
+
+#[test]
+fn test_boundaries_in_proof_multiple_ranges() {
+    let grove_version = GroveVersion::latest();
+    let mut tree = make_6_node_tree();
+    let mut walker = RefWalker::new(&mut tree, PanicSource {});
+
+    // Two exclusive ranges: RangeAfterTo(2..4) and RangeAfterTo(5..8)
+    // Key 2 and key 5 should be boundaries
+    let query_items = vec![
+        QueryItem::RangeAfterTo(vec![2]..vec![4]),
+        QueryItem::RangeAfterTo(vec![5]..vec![8]),
+    ];
+    let (proof, ..) = walker
+        .create_proof(query_items.as_slice(), None, true, grove_version)
+        .unwrap()
+        .expect("failed to create proof");
+    let mut bytes = vec![];
+    encode_into(proof.iter(), &mut bytes);
+
+    let boundaries = verify::boundaries_in_proof(&bytes).unwrap();
+    assert!(
+        boundaries.contains(&vec![2]),
+        "Key 2 should be boundary, got: {:?}",
+        boundaries
+    );
+    assert!(
+        boundaries.contains(&vec![5]),
+        "Key 5 should be boundary, got: {:?}",
+        boundaries
+    );
+}
