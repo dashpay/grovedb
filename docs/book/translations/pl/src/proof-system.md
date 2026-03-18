@@ -472,7 +472,7 @@ let cursor_exists = grovedb_proof
 
 ### Praktyczne zastosowanie: weryfikacja paginacji
 
-Jest to szczegolnie przydatne przy **paginacji**. Gdy klient zada „nastepnych
+Jest to szczegolnie przydatne przy **paginacji**. Gdy klient zada "nastepnych
 100 dokumentow po dokumencie X", zapytanie to `RangeAfter(document_X_id)`.
 Dowod zwraca dokumenty 101-200, ale klient moze rowniez chciec potwierdzic,
 ze dokument X (kursor paginacji) nadal istnieje w drzewie:
