@@ -413,32 +413,32 @@ Bereichs gibt, die nicht in der Ergebnismenge enthalten sind.
 ## Erkennung von Grenzschlüsseln
 
 Bei der Verifikation eines Beweises aus einer exklusiven Bereichsabfrage müssen Sie
-möglicherweise bestätigen, dass ein bestimmter Schlüssel als **Grenzelement** existiert —
-ein Schlüssel, der den Bereich verankert, aber nicht Teil der Ergebnismenge ist.
+möglicherweise bestätigen, dass bestimmte Schlüssel als **Grenzelemente** existieren —
+Schlüssel, die den Bereich verankern, aber nicht Teil der Ergebnismenge sind.
 
-Beispielsweise enthält der Beweis bei `RangeAfter(10)` (alle Schlüssel strikt nach 10)
+Zum Beispiel enthält bei `RangeAfter(10)` (alle Schlüssel strikt nach 10) der Beweis
 den Schlüssel 10 als `KVDigest`-Knoten. Dies beweist, dass Schlüssel 10 im Baum
 existiert und den Beginn des Bereichs verankert, aber Schlüssel 10 wird nicht in den
 Ergebnissen zurückgegeben.
 
 ### Wann Grenzknoten erscheinen
 
-`KVDigest`-Grenzknoten (oder `KVDigestCount` für ProvableCountTree) erscheinen in
+Grenz-`KVDigest`- (oder `KVDigestCount`- für ProvableCountTree-) Knoten erscheinen in
 Beweisen für exklusive Bereichsabfragetypen:
 
 | Abfragetyp | Grenzschlüssel | Was er beweist |
 |------------|-------------|----------------|
-| `RangeAfter(start..)` | `start` | Der exklusive Start existiert im Baum |
-| `RangeAfterTo(start..end)` | `start` | Der exklusive Start existiert im Baum |
-| `RangeAfterToInclusive(start..=end)` | `start` | Der exklusive Start existiert im Baum |
+| `RangeAfter(start..)` | `start` | Der exklusive Beginn existiert im Baum |
+| `RangeAfterTo(start..end)` | `start` | Der exklusive Beginn existiert im Baum |
+| `RangeAfterToInclusive(start..=end)` | `start` | Der exklusive Beginn existiert im Baum |
 
-Grenzknoten erscheinen auch in Abwesenheitsbeweisen, wo benachbarte Schlüssel
-eine Lücke nachweisen (siehe [Abwesenheitsbeweise](#abwesenheitsbeweise) oben).
+Grenzknoten erscheinen auch in Abwesenheitsbeweisen, wo benachbarte Schlüssel eine
+Lücke nachweisen (siehe [Abwesenheitsbeweise](#abwesenheitsbeweise) oben).
 
-### Prüfung auf Grenzschlüssel
+### Alle Grenzschlüssel abrufen
 
-Nach der Verifikation eines Beweises können Sie mit `key_exists_as_boundary` auf dem
-dekodierten `GroveDBProof` prüfen, ob ein Schlüssel als Grenzelement existiert:
+Nach der Verifikation eines Beweises rufen Sie `boundaries` auf dem dekodierten
+`GroveDBProof` auf, um alle Grenzschlüssel für einen gegebenen Pfad zu erhalten:
 
 ```rust
 // Decode and verify the proof
@@ -446,35 +446,45 @@ let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Check that the boundary key exists in the proof
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+Das `path`-Argument gibt an, welche Schicht des Beweises inspiziert werden soll
+(entsprechend dem GroveDB-Teilbaumpfad, in dem die Bereichsabfrage ausgeführt wurde).
+
+### Einen einzelnen Grenzschlüssel prüfen
+
+Wenn Sie nur prüfen müssen, ob ein bestimmter Schlüssel eine Grenze ist, verwenden
+Sie `key_exists_as_boundary`:
+
+```rust
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
-
-Das `path`-Argument gibt an, welche Schicht des Beweises untersucht werden soll
-(entsprechend dem GroveDB-Teilbaumpfad, in dem die Bereichsabfrage ausgeführt wurde),
-und `key` ist der zu suchende Grenzschlüssel.
 
 ### Praktischer Einsatz: Paginierungsverifikation
 
 Dies ist besonders nützlich für die **Paginierung**. Wenn ein Client "die nächsten
 100 Dokumente nach Dokument X" anfordert, lautet die Abfrage `RangeAfter(document_X_id)`.
-Der Beweis gibt die Dokumente 101–200 zurück, aber der Client möchte möglicherweise auch
+Der Beweis gibt die Dokumente 101-200 zurück, aber der Client möchte möglicherweise auch
 bestätigen, dass Dokument X (der Paginierungscursor) noch im Baum existiert:
 
-- Wenn `key_exists_as_boundary` den Wert `true` zurückgibt, ist der Cursor gültig — der
-  Client kann darauf vertrauen, dass die Paginierung an einem echten Dokument verankert ist.
-- Wenn `false` zurückgegeben wird, wurde das Cursor-Dokument möglicherweise zwischen den
-  Seiten gelöscht, und der Client sollte erwägen, die Paginierung neu zu starten.
+- Wenn der Cursor-Schlüssel in `boundaries()` erscheint, ist der Cursor gültig — der
+  Client kann darauf vertrauen, dass die Paginierung an einem realen Dokument verankert ist.
+- Wenn er nicht erscheint, wurde das Cursor-Dokument möglicherweise zwischen den Seiten
+  gelöscht, und der Client sollte einen Neustart der Paginierung in Betracht ziehen.
 
-> **Wichtig:** `key_exists_as_boundary` führt einen syntaktischen Scan der
-> `KVDigest`/`KVDigestCount`-Knoten des Beweises durch. Es bietet allein keine
-> kryptographische Garantie — verifizieren Sie den Beweis immer zuerst gegen einen
-> vertrauenswürdigen Wurzel-Hash. Dieselben Knotentypen erscheinen auch in
-> Abwesenheitsbeweisen, daher sollte der Aufrufer das Ergebnis im Kontext der Abfrage
+> **Wichtig:** Sowohl `boundaries()` als auch `key_exists_as_boundary` führen einen
+> syntaktischen Scan der `KVDigest`/`KVDigestCount`-Knoten des Beweises durch. Sie bieten
+> allein keine kryptografische Garantie — verifizieren Sie den Beweis immer zuerst gegen
+> einen vertrauenswürdigen Wurzel-Hash. Dieselben Knotentypen erscheinen auch in
+> Abwesenheitsbeweisen, daher sollte der Aufrufer die Ergebnisse im Kontext der Abfrage
 > interpretieren, die den Beweis erzeugt hat.
 
-Auf der Merk-Ebene ist dieselbe Prüfung über
+Auf der Merk-Ebene sind dieselben Prüfungen über
+`boundaries_in_proof(proof_bytes)` und
 `key_exists_as_boundary_in_proof(proof_bytes, key)` verfügbar, um direkt mit
 rohen Merk-Beweis-Bytes zu arbeiten.
 
