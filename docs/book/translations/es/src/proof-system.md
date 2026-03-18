@@ -411,34 +411,34 @@ graph TD
 Para consultas por rango, las pruebas de ausencia muestran que no hay claves dentro del rango
 consultado que no fueron incluidas en el conjunto de resultados.
 
-## Deteccion de Claves Frontera
+## Detección de Claves Frontera
 
 Al verificar una prueba de una consulta de rango exclusivo, puede necesitar confirmar
-que claves especificas existen como **elementos frontera** — claves que anclan el rango
+que claves específicas existen como **elementos frontera** — claves que anclan el rango
 pero no forman parte del conjunto de resultados.
 
-Por ejemplo, con `RangeAfter(10)` (todas las claves estrictamente despues de 10), la
+Por ejemplo, con `RangeAfter(10)` (todas las claves estrictamente después de 10), la
 prueba incluye la clave 10 como un nodo `KVDigest`. Esto demuestra que la clave 10
-existe en el arbol y ancla el inicio del rango, pero la clave 10 no se devuelve en
+existe en el árbol y ancla el inicio del rango, pero la clave 10 no se devuelve en
 los resultados.
 
-### Cuando aparecen los nodos frontera
+### Cuándo aparecen los nodos frontera
 
 Los nodos frontera `KVDigest` (o `KVDigestCount` para ProvableCountTree) aparecen en
 las pruebas para tipos de consultas de rango exclusivo:
 
-| Tipo de consulta | Clave frontera | Que demuestra |
+| Tipo de consulta | Clave frontera | Qué demuestra |
 |------------|-------------|----------------|
-| `RangeAfter(start..)` | `start` | El inicio exclusivo existe en el arbol |
-| `RangeAfterTo(start..end)` | `start` | El inicio exclusivo existe en el arbol |
-| `RangeAfterToInclusive(start..=end)` | `start` | El inicio exclusivo existe en el arbol |
+| `RangeAfter(start..)` | `start` | El inicio exclusivo existe en el árbol |
+| `RangeAfterTo(start..end)` | `start` | El inicio exclusivo existe en el árbol |
+| `RangeAfterToInclusive(start..=end)` | `start` | El inicio exclusivo existe en el árbol |
 
-Los nodos frontera tambien aparecen en pruebas de ausencia, donde claves vecinas
+Los nodos frontera también aparecen en pruebas de ausencia, donde claves vecinas
 demuestran que existe una brecha (ver [Pruebas de Ausencia](#pruebas-de-ausencia) arriba).
 
 ### Obtener todas las claves frontera
 
-Despues de verificar una prueba, llame a `boundaries` en el `GroveDBProof` decodificado
+Después de verificar una prueba, llame a `boundaries` en el `GroveDBProof` decodificado
 para obtener todas las claves frontera en una ruta dada:
 
 ```rust
@@ -452,12 +452,12 @@ let boundary_keys: Vec<Vec<u8>> = grovedb_proof
     .boundaries(&[b"documents", b"notes"])?;
 ```
 
-El argumento `path` identifica que capa de la prueba inspeccionar (coincidiendo con
-la ruta del subarbol de GroveDB donde se ejecuto la consulta de rango).
+El argumento `path` identifica qué capa de la prueba inspeccionar (coincidiendo con
+la ruta del subárbol de GroveDB donde se ejecutó la consulta de rango).
 
 ### Verificar una sola clave frontera
 
-Si solo necesita verificar si una clave especifica es una frontera, use
+Si solo necesita verificar si una clave específica es una frontera, use
 `key_exists_as_boundary`:
 
 ```rust
@@ -465,27 +465,27 @@ let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
 
-### Uso practico: verificacion de paginacion
+### Uso práctico: verificación de paginación
 
-Esto es particularmente util para la **paginacion**. Cuando un cliente solicita "los
-siguientes 100 documentos despues del documento X," la consulta es
+Esto es particularmente útil para la **paginación**. Cuando un cliente solicita "los
+siguientes 100 documentos después del documento X," la consulta es
 `RangeAfter(document_X_id)`. La prueba devuelve los documentos 101-200, pero el cliente
-tambien puede querer confirmar que el documento X (el cursor de paginacion) aun existe
-en el arbol:
+también puede querer confirmar que el documento X (el cursor de paginación) aún existe
+en el árbol:
 
-- Si la clave del cursor aparece en `boundaries()`, el cursor es valido — el cliente
-  puede confiar en que la paginacion esta anclada a un documento real.
-- Si no aparece, el documento del cursor puede haber sido eliminado entre paginas,
-  y el cliente deberia considerar reiniciar la paginacion.
+- Si la clave del cursor aparece en `boundaries()`, el cursor es válido — el cliente
+  puede confiar en que la paginación está anclada a un documento real.
+- Si no aparece, el documento del cursor puede haber sido eliminado entre páginas,
+  y el cliente debería considerar reiniciar la paginación.
 
 > **Importante:** Tanto `boundaries()` como `key_exists_as_boundary` realizan un
-> escaneo sintactico de los nodos `KVDigest`/`KVDigestCount` de la prueba. No
-> proporcionan ninguna garantia criptografica por si solos — siempre verifique la
-> prueba contra un hash raiz de confianza primero. Los mismos tipos de nodos tambien
+> escaneo sintáctico de los nodos `KVDigest`/`KVDigestCount` de la prueba. No
+> proporcionan ninguna garantía criptográfica por sí solos — siempre verifique la
+> prueba contra un hash raíz de confianza primero. Los mismos tipos de nodos también
 > aparecen en pruebas de ausencia, por lo que el llamador debe interpretar los
-> resultados en el contexto de la consulta que genero la prueba.
+> resultados en el contexto de la consulta que generó la prueba.
 
-A nivel de merk, las mismas verificaciones estan disponibles a traves de
+A nivel de merk, las mismas verificaciones están disponibles a través de
 `boundaries_in_proof(proof_bytes)` y
 `key_exists_as_boundary_in_proof(proof_bytes, key)` para trabajar directamente con
 los bytes de prueba merk sin procesar.

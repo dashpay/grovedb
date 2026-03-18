@@ -437,7 +437,7 @@ sie w dowodach dla wylaczajacych typow zapytan zakresowych:
 | `RangeAfterTo(start..end)` | `start` | Wylaczajacy poczatek istnieje w drzewie |
 | `RangeAfterToInclusive(start..=end)` | `start` | Wylaczajacy poczatek istnieje w drzewie |
 
-Wezly graniczne pojawiaja sie rowniez w dowodach nieobecnosci, gdzie sasiednnie
+Wezly graniczne pojawiaja sie rowniez w dowodach nieobecnosci, gdzie sasiednie
 klucze dowodza istnienia luki (patrz [Dowody nieobecnosci](#dowody-nieobecnosci)
 powyzej).
 

@@ -421,7 +421,7 @@ graph TD
 | `RangeAfterToInclusive(start..=end)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
 
 Boundary node ยังปรากฏใน absence proof ที่ key ข้างเคียงพิสูจน์ว่ามีช่องว่าง
-อยู่ (ดู [Absence Proof](#absence-proofs) ด้านบน)
+อยู่ (ดู [Absence Proof](#absence-proof) ด้านบน)
 
 ### การดึง boundary key ทั้งหมด
 

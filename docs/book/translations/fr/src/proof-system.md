@@ -411,34 +411,34 @@ graph TD
 Pour les requêtes de plage, les preuves d'absence montrent qu'il n'y a pas de clés dans la plage interrogée
 qui n'ont pas été incluses dans l'ensemble de résultats.
 
-## Detection des cles frontieres
+## Détection des clés frontières
 
-Lors de la verification d'une preuve issue d'une requete de plage exclusive, vous pouvez
-avoir besoin de confirmer que des cles specifiques existent en tant qu'**elements frontieres**
-— des cles qui ancrent la plage mais ne font pas partie de l'ensemble de resultats.
+Lors de la vérification d'une preuve issue d'une requête de plage exclusive, vous pouvez
+avoir besoin de confirmer que des clés spécifiques existent en tant qu'**éléments frontières**
+— des clés qui ancrent la plage mais ne font pas partie de l'ensemble de résultats.
 
-Par exemple, avec `RangeAfter(10)` (toutes les cles strictement apres 10), la preuve
-inclut la cle 10 comme noeud `KVDigest`. Cela prouve que la cle 10 existe dans l'arbre
-et ancre le debut de la plage, mais la cle 10 n'est pas renvoyee dans les resultats.
+Par exemple, avec `RangeAfter(10)` (toutes les clés strictement après 10), la preuve
+inclut la clé 10 comme nœud `KVDigest`. Cela prouve que la clé 10 existe dans l'arbre
+et ancre le début de la plage, mais la clé 10 n'est pas renvoyée dans les résultats.
 
-### Quand les noeuds frontieres apparaissent
+### Quand les nœuds frontières apparaissent
 
-Les noeuds frontieres `KVDigest` (ou `KVDigestCount` pour ProvableCountTree) apparaissent
-dans les preuves pour les types de requetes de plage exclusives :
+Les nœuds frontières `KVDigest` (ou `KVDigestCount` pour ProvableCountTree) apparaissent
+dans les preuves pour les types de requêtes de plage exclusives :
 
-| Type de requete | Cle frontiere | Ce que cela prouve |
+| Type de requête | Clé frontière | Ce que cela prouve |
 |------------|-------------|----------------|
-| `RangeAfter(start..)` | `start` | Le debut exclusif existe dans l'arbre |
-| `RangeAfterTo(start..end)` | `start` | Le debut exclusif existe dans l'arbre |
-| `RangeAfterToInclusive(start..=end)` | `start` | Le debut exclusif existe dans l'arbre |
+| `RangeAfter(start..)` | `start` | Le début exclusif existe dans l'arbre |
+| `RangeAfterTo(start..end)` | `start` | Le début exclusif existe dans l'arbre |
+| `RangeAfterToInclusive(start..=end)` | `start` | Le début exclusif existe dans l'arbre |
 
-Les noeuds frontieres apparaissent egalement dans les preuves d'absence, ou les cles
-voisines prouvent qu'un ecart existe (voir [Preuves d'absence](#preuves-dabsence) ci-dessus).
+Les nœuds frontières apparaissent également dans les preuves d'absence, où les clés
+voisines prouvent qu'un écart existe (voir [Preuves d'absence](#preuves-dabsence) ci-dessus).
 
-### Recuperer toutes les cles frontieres
+### Récupérer toutes les clés frontières
 
-Apres avoir verifie une preuve, appelez `boundaries` sur le `GroveDBProof` decode pour
-obtenir toutes les cles frontieres a un chemin donne :
+Après avoir vérifié une preuve, appelez `boundaries` sur le `GroveDBProof` décodé pour
+obtenir toutes les clés frontières à un chemin donné :
 
 ```rust
 // Decode and verify the proof
@@ -452,11 +452,11 @@ let boundary_keys: Vec<Vec<u8>> = grovedb_proof
 ```
 
 L'argument `path` identifie quelle couche de la preuve inspecter (correspondant au
-chemin du sous-arbre GroveDB ou la requete de plage a ete executee).
+chemin du sous-arbre GroveDB où la requête de plage a été exécutée).
 
-### Verifier une seule cle frontiere
+### Vérifier une seule clé frontière
 
-Si vous avez seulement besoin de verifier si une cle specifique est une frontiere, utilisez
+Si vous avez seulement besoin de vérifier si une clé spécifique est une frontière, utilisez
 `key_exists_as_boundary` :
 
 ```rust
@@ -464,26 +464,26 @@ let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
 
-### Utilisation pratique : verification de la pagination
+### Utilisation pratique : vérification de la pagination
 
-Cela est particulierement utile pour la **pagination**. Lorsqu'un client demande « les 100
-prochains documents apres le document X », la requete est `RangeAfter(document_X_id)`. La
+Cela est particulièrement utile pour la **pagination**. Lorsqu'un client demande « les 100
+prochains documents après le document X », la requête est `RangeAfter(document_X_id)`. La
 preuve renvoie les documents 101-200, mais le client peut aussi vouloir confirmer que
 le document X (le curseur de pagination) existe toujours dans l'arbre :
 
-- Si la cle du curseur apparait dans `boundaries()`, le curseur est valide — le client
-  peut faire confiance au fait que la pagination est ancree a un document reel.
-- Si elle n'apparait pas, le document curseur a peut-etre ete supprime entre les
+- Si la clé du curseur apparaît dans `boundaries()`, le curseur est valide — le client
+  peut faire confiance au fait que la pagination est ancrée à un document réel.
+- Si elle n'apparaît pas, le document curseur a peut-être été supprimé entre les
   pages, et le client devrait envisager de relancer la pagination.
 
 > **Important :** `boundaries()` et `key_exists_as_boundary` effectuent un scan
-> syntaxique des noeuds `KVDigest`/`KVDigestCount` de la preuve. Ils ne fournissent
-> aucune garantie cryptographique a eux seuls — verifiez toujours la preuve contre un
-> hachage racine de confiance en premier. Les memes types de noeuds apparaissent aussi dans
-> les preuves d'absence, donc l'appelant doit interpreter les resultats dans le contexte
-> de la requete qui a genere la preuve.
+> syntaxique des nœuds `KVDigest`/`KVDigestCount` de la preuve. Ils ne fournissent
+> aucune garantie cryptographique à eux seuls — vérifiez toujours la preuve contre un
+> hachage racine de confiance en premier. Les mêmes types de nœuds apparaissent aussi dans
+> les preuves d'absence, donc l'appelant doit interpréter les résultats dans le contexte
+> de la requête qui a généré la preuve.
 
-Au niveau merk, les memes verifications sont disponibles via
+Au niveau merk, les mêmes vérifications sont disponibles via
 `boundaries_in_proof(proof_bytes)` et
 `key_exists_as_boundary_in_proof(proof_bytes, key)` pour travailler directement avec
 les octets bruts de la preuve merk.
