@@ -398,6 +398,71 @@ graph TD
 
 範囲クエリの場合、不在証明はクエリ範囲内に結果セットに含まれなかったキーが存在しないことを示します。
 
+## 境界キーの検出
+
+排他的範囲クエリからの証明を検証する際、特定のキーが**境界要素**として存在する
+ことを確認する必要がある場合があります — 境界要素とは、範囲を固定するが結果セットには
+含まれないキーです。
+
+例えば、`RangeAfter(10)`（10より厳密に大きいすべてのキー）の場合、証明にはキー10が
+`KVDigest` ノードとして含まれます。これはキー10がツリーに存在し、範囲の開始を固定
+していることを証明しますが、キー10は結果には返されません。
+
+### 境界ノードが出現する場合
+
+境界 `KVDigest`（または ProvableCountTree の場合は `KVDigestCount`）ノードは、
+排他的範囲クエリタイプの証明に出現します：
+
+| クエリタイプ | 境界キー | 証明内容 |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | 排他的開始がツリーに存在する |
+| `RangeAfterTo(start..end)` | `start` | 排他的開始がツリーに存在する |
+| `RangeAfterToInclusive(start..=end)` | `start` | 排他的開始がツリーに存在する |
+
+境界ノードは不在証明にも出現します。隣接するキーがギャップの存在を証明します
+（上記の[不在証明](#不在証明)を参照）。
+
+### 境界キーの確認
+
+証明を検証した後、デコードされた `GroveDBProof` で `key_exists_as_boundary` を
+使用して、キーが境界要素として存在するかどうかを確認できます：
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+`path` 引数は証明のどのレイヤーを検査するかを指定し（範囲クエリが実行された
+GroveDB サブツリーパスに対応）、`key` は検索する境界キーです。
+
+### 実用例：ページネーションの検証
+
+これは**ページネーション**で特に有用です。クライアントが「ドキュメント X の後の
+次の100件」をリクエストする場合、クエリは `RangeAfter(document_X_id)` です。
+証明はドキュメント101から200を返しますが、クライアントはドキュメント X
+（ページネーションカーソル）がまだツリーに存在することも確認したい場合があります：
+
+- `key_exists_as_boundary` が `true` を返す場合、カーソルは有効です — クライアントは
+  ページネーションが実在するドキュメントに固定されていると信頼できます。
+- `false` を返す場合、カーソルドキュメントがページ間で削除された可能性があり、
+  クライアントはページネーションの再開を検討すべきです。
+
+> **重要：** `key_exists_as_boundary` は証明の `KVDigest`/`KVDigestCount` ノードの
+> 構文的スキャンを実行します。これ単体では暗号学的保証を提供しません — 必ず最初に
+> 信頼できるルートハッシュに対して証明を検証してください。同じノードタイプは不在
+> 証明にも出現するため、呼び出し元は証明を生成したクエリのコンテキストで結果を
+> 解釈する必要があります。
+
+merk レベルでは、同じチェックが
+`key_exists_as_boundary_in_proof(proof_bytes, key)` を通じて利用可能で、
+生の merk 証明バイトを直接扱うことができます。
+
 ## V1 証明 — 非 Merk ツリー
 
 V0 証明システムは Merk サブツリーのみで動作し、グローブ階層をレイヤーごとに降りていきます。しかし、**CommitmentTree**、**MmrTree**、**BulkAppendTree**、**DenseAppendOnlyFixedSizeTree** エレメントはデータを子 Merk ツリーの外部に格納します。降りるべき子 Merk がなく、代わりに型固有のルートハッシュが Merk 子ハッシュとして流れます。

@@ -357,6 +357,52 @@ graph TD
 
 범위 쿼리의 경우, 부재 증명은 쿼리 범위 내에 결과 집합에 포함되지 않은 키가 없음을 보여줍니다.
 
+## 경계 키 탐지
+
+배타적 범위 쿼리의 증명을 검증할 때, 특정 키가 **경계 엘리먼트**로 존재하는지 확인해야 할 수 있습니다 — 경계 엘리먼트란 범위를 고정하지만 결과 집합에는 포함되지 않는 키입니다.
+
+예를 들어, `RangeAfter(10)` (10보다 큰 모든 키)의 경우, 증명에는 키 10이 `KVDigest` 노드로 포함됩니다. 이는 키 10이 트리에 존재하며 범위의 시작을 고정함을 증명하지만, 키 10은 결과에 반환되지 않습니다.
+
+### 경계 노드가 나타나는 경우
+
+경계 `KVDigest` (또는 ProvableCountTree의 경우 `KVDigestCount`) 노드는 배타적 범위 쿼리 타입의 증명에 나타납니다:
+
+| 쿼리 타입 | 경계 키 | 증명 내용 |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | 배타적 시작이 트리에 존재함 |
+| `RangeAfterTo(start..end)` | `start` | 배타적 시작이 트리에 존재함 |
+| `RangeAfterToInclusive(start..=end)` | `start` | 배타적 시작이 트리에 존재함 |
+
+경계 노드는 부재 증명에도 나타나며, 인접 키들이 갭의 존재를 증명합니다 (위의 [부재 증명](#부재-증명) 참조).
+
+### 경계 키 확인
+
+증명을 검증한 후, 디코딩된 `GroveDBProof`에서 `key_exists_as_boundary`를 사용하여 키가 경계 엘리먼트로 존재하는지 확인할 수 있습니다:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+`path` 인자는 증명의 어느 레이어를 검사할지 지정하며 (범위 쿼리가 실행된 GroveDB 서브트리 경로와 일치), `key`는 찾을 경계 키입니다.
+
+### 실용적 활용: 페이지네이션 검증
+
+이 기능은 **페이지네이션**에 특히 유용합니다. 클라이언트가 "문서 X 이후의 다음 100개 문서"를 요청하면, 쿼리는 `RangeAfter(document_X_id)`입니다. 증명은 문서 101~200을 반환하지만, 클라이언트는 문서 X(페이지네이션 커서)가 여전히 트리에 존재하는지도 확인하고 싶을 수 있습니다:
+
+- `key_exists_as_boundary`가 `true`를 반환하면, 커서가 유효합니다 — 클라이언트는 페이지네이션이 실제 문서에 고정되어 있음을 신뢰할 수 있습니다.
+- `false`를 반환하면, 페이지 사이에서 커서 문서가 삭제되었을 수 있으며, 클라이언트는 페이지네이션을 다시 시작하는 것을 고려해야 합니다.
+
+> **중요:** `key_exists_as_boundary`는 증명의 `KVDigest`/`KVDigestCount` 노드에 대한 구문적 스캔을 수행합니다. 자체적으로는 암호학적 보장을 제공하지 않으므로 — 항상 신뢰할 수 있는 루트 해시에 대해 먼저 증명을 검증하세요. 동일한 노드 타입이 부재 증명에도 나타나므로, 호출자는 증명을 생성한 쿼리의 맥락에서 결과를 해석해야 합니다.
+
+Merk 레벨에서는 원시 merk 증명 바이트를 직접 다룰 때 `key_exists_as_boundary_in_proof(proof_bytes, key)`를 통해 동일한 확인이 가능합니다.
+
 ## V1 증명 -- 비-Merk 트리
 
 V0 증명 시스템은 Merk 서브트리에서만 작동하며, 그로브 계층 구조를 레이어별로 하강합니다. 그러나 **CommitmentTree**, **MmrTree**, **BulkAppendTree**, **DenseAppendOnlyFixedSizeTree** 엘리먼트는 자식 Merk 트리 외부에 데이터를 저장합니다. 이들은 하강할 자식 Merk가 없습니다 -- 타입별 루트 해시가 대신 Merk 자식 해시로 흐릅니다.

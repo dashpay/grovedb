@@ -401,6 +401,72 @@ graph TD
 
 Per le query di intervallo, le prove di assenza mostrano che non ci sono chiavi nell'intervallo interrogato che non sono state incluse nell'insieme dei risultati.
 
+## Rilevamento delle chiavi di confine
+
+Quando si verifica una prova da una query di intervallo esclusiva, potrebbe essere necessario
+confermare che una chiave specifica esiste come **elemento di confine** — una chiave che ancora
+l'intervallo ma non fa parte dell'insieme dei risultati.
+
+Ad esempio, con `RangeAfter(10)` (tutte le chiavi strettamente dopo 10), la prova
+include la chiave 10 come nodo `KVDigest`. Questo dimostra che la chiave 10 esiste nell'albero
+e ancora l'inizio dell'intervallo, ma la chiave 10 non viene restituita nei risultati.
+
+### Quando appaiono i nodi di confine
+
+I nodi `KVDigest` (o `KVDigestCount` per ProvableCountTree) di confine appaiono nelle
+prove per i tipi di query di intervallo esclusivo:
+
+| Tipo di query | Chiave di confine | Cosa dimostra |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | L'inizio esclusivo esiste nell'albero |
+| `RangeAfterTo(start..end)` | `start` | L'inizio esclusivo esiste nell'albero |
+| `RangeAfterToInclusive(start..=end)` | `start` | L'inizio esclusivo esiste nell'albero |
+
+I nodi di confine appaiono anche nelle prove di assenza, dove le chiavi adiacenti dimostrano
+che esiste una lacuna (vedi [Prove di assenza](#prove-di-assenza) sopra).
+
+### Verificare le chiavi di confine
+
+Dopo aver verificato una prova, è possibile controllare se una chiave esiste come elemento
+di confine utilizzando `key_exists_as_boundary` sul `GroveDBProof` decodificato:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+L'argomento `path` identifica quale livello della prova ispezionare (corrispondente al
+percorso del sotto-albero GroveDB dove e stata eseguita la query di intervallo), e `key` e la
+chiave di confine da cercare.
+
+### Uso pratico: verifica della paginazione
+
+Questo e particolarmente utile per la **paginazione**. Quando un client richiede "i prossimi
+100 documenti dopo il documento X," la query e `RangeAfter(document_X_id)`. La prova
+restituisce i documenti 101-200, ma il client potrebbe anche voler confermare che il
+documento X (il cursore di paginazione) esiste ancora nell'albero:
+
+- Se `key_exists_as_boundary` restituisce `true`, il cursore e valido — il client
+  puo fidarsi che la paginazione e ancorata a un documento reale.
+- Se restituisce `false`, il documento cursore potrebbe essere stato eliminato tra le
+  pagine, e il client dovrebbe considerare di riavviare la paginazione.
+
+> **Importante:** `key_exists_as_boundary` esegue una scansione sintattica dei nodi
+> `KVDigest`/`KVDigestCount` della prova. Non fornisce alcuna garanzia crittografica
+> di per se — verificare sempre la prova rispetto a un hash radice affidabile prima.
+> Gli stessi tipi di nodo appaiono anche nelle prove di assenza, quindi il chiamante
+> dovrebbe interpretare il risultato nel contesto della query che ha generato la prova.
+
+A livello merk, lo stesso controllo e disponibile tramite
+`key_exists_as_boundary_in_proof(proof_bytes, key)` per lavorare direttamente con i
+byte grezzi della prova merk.
+
 ## Prove V1 — Alberi non-Merk
 
 Il sistema di prove V0 funziona esclusivamente con sotto-alberi Merk, scendendo livello per livello attraverso la gerarchia del bosco. Tuttavia, gli elementi **CommitmentTree**, **MmrTree**, **BulkAppendTree** e **DenseAppendOnlyFixedSizeTree** memorizzano i loro dati al di fuori di un sotto-albero Merk figlio. Non hanno un Merk figlio in cui scendere — il loro hash radice specifico del tipo fluisce invece come hash figlio Merk.

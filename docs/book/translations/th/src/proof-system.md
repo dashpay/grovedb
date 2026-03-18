@@ -399,6 +399,72 @@ graph TD
 
 สำหรับ range query absence proof แสดงว่าไม่มี key ภายในช่วงที่สืบค้นที่ไม่ได้รวมอยู่ในชุดผลลัพธ์
 
+## การตรวจจับ Boundary Key
+
+เมื่อตรวจสอบ proof จาก exclusive range query คุณอาจต้องยืนยัน
+ว่า key เฉพาะมีอยู่ในฐานะ **boundary element** — key ที่ยึดตำแหน่ง
+ช่วง (range) แต่ไม่ได้เป็นส่วนหนึ่งของชุดผลลัพธ์
+
+ตัวอย่างเช่น กับ `RangeAfter(10)` (key ทั้งหมดที่มากกว่า 10 อย่างเคร่งครัด) proof
+จะรวม key 10 เป็น node `KVDigest` ซึ่งพิสูจน์ว่า key 10 มีอยู่ในต้นไม้
+และยึดตำแหน่งจุดเริ่มต้นของช่วง แต่ key 10 ไม่ถูกส่งคืนในผลลัพธ์
+
+### เมื่อ boundary node ปรากฏ
+
+Boundary `KVDigest` (หรือ `KVDigestCount` สำหรับ ProvableCountTree) node ปรากฏใน
+proof สำหรับ exclusive range query ประเภทต่อไปนี้:
+
+| Query type | Boundary key | สิ่งที่พิสูจน์ |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
+| `RangeAfterTo(start..end)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
+| `RangeAfterToInclusive(start..=end)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
+
+Boundary node ยังปรากฏใน absence proof ซึ่ง key ข้างเคียงพิสูจน์ว่า
+มีช่องว่างอยู่ (ดู [Absence Proof](#absence-proof) ด้านบน)
+
+### การตรวจสอบ boundary key
+
+หลังจากตรวจสอบ proof แล้ว คุณสามารถตรวจสอบว่า key มีอยู่ในฐานะ boundary
+element โดยใช้ `key_exists_as_boundary` บน `GroveDBProof` ที่ถอดรหัสแล้ว:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+อาร์กิวเมนต์ `path` ระบุว่าจะตรวจสอบชั้นใดของ proof (ตรงกับ
+path ของ subtree ใน GroveDB ที่ range query ถูกดำเนินการ) และ `key` คือ
+boundary key ที่ต้องการค้นหา
+
+### การใช้งานจริง: การตรวจสอบ pagination
+
+สิ่งนี้มีประโยชน์อย่างยิ่งสำหรับ **pagination** เมื่อ client ร้องขอ "100
+เอกสารถัดไปหลังจากเอกสาร X" query จะเป็น `RangeAfter(document_X_id)` proof
+จะส่งคืนเอกสาร 101–200 แต่ client อาจต้องการยืนยันว่า
+เอกสาร X (cursor ของ pagination) ยังคงมีอยู่ในต้นไม้:
+
+- หาก `key_exists_as_boundary` คืนค่า `true` cursor ถูกต้อง — client
+  สามารถเชื่อถือได้ว่า pagination ยึดตำแหน่งกับเอกสารจริง
+- หากคืนค่า `false` เอกสาร cursor อาจถูกลบไประหว่าง
+  หน้า และ client ควรพิจารณาเริ่ม pagination ใหม่
+
+> **สำคัญ:** `key_exists_as_boundary` ดำเนินการสแกนเชิงวากยสัมพันธ์ (syntactic scan) ของ
+> node `KVDigest`/`KVDigestCount` ใน proof มันไม่ให้การรับประกัน
+> เชิงการเข้ารหัสด้วยตัวเอง — ต้องตรวจสอบ proof กับ root hash ที่เชื่อถือได้ก่อนเสมอ
+> node ประเภทเดียวกันยังปรากฏใน absence proof ดังนั้นผู้เรียก
+> ควรตีความผลลัพธ์ในบริบทของ query ที่สร้าง proof นั้น
+
+ที่ระดับ merk การตรวจสอบเดียวกันมีให้ใช้ผ่าน
+`key_exists_as_boundary_in_proof(proof_bytes, key)` สำหรับการทำงานโดยตรงกับ
+ไบต์ proof ของ merk ดิบ
+
 ## V1 Proof — ต้นไม้ Non-Merk
 
 ระบบ proof V0 ทำงานเฉพาะกับ Merk subtree โดยลงไปทีละชั้นผ่านลำดับชั้น grove อย่างไรก็ตาม element ประเภท **CommitmentTree**, **MmrTree**, **BulkAppendTree** และ **DenseAppendOnlyFixedSizeTree** จัดเก็บข้อมูลภายนอก Merk tree ลูก พวกมันไม่มี Merk ลูกให้ลงไป — type-specific root hash ของพวกมันไหลเป็น Merk child hash แทน

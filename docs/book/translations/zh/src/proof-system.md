@@ -390,6 +390,69 @@ graph TD
 
 对于范围查询，不存在性证明表明在查询范围内没有未包含在结果集中的键。
 
+## 边界键检测
+
+在验证来自排他范围查询（exclusive range query）的证明时，您可能需要确认
+某个特定键作为**边界元素**（boundary element）存在 — 即锚定范围但不属于
+结果集的键。
+
+例如，对于 `RangeAfter(10)`（严格大于 10 的所有键），证明将键 10 作为
+`KVDigest` 节点包含在内。这证明了键 10 存在于树中并锚定了范围的起点，
+但键 10 不会出现在结果中。
+
+### 边界节点何时出现
+
+边界 `KVDigest`（或 ProvableCountTree 的 `KVDigestCount`）节点出现在
+排他范围查询类型的证明中：
+
+| Query type | Boundary key | 证明内容 |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | 排他起点存在于树中 |
+| `RangeAfterTo(start..end)` | `start` | 排他起点存在于树中 |
+| `RangeAfterToInclusive(start..=end)` | `start` | 排他起点存在于树中 |
+
+边界节点也出现在不存在性证明中，其中相邻键证明存在间隙
+（参见上方的[不存在性证明](#不存在性证明)）。
+
+### 检查边界键
+
+验证证明后，您可以通过在解码后的 `GroveDBProof` 上使用
+`key_exists_as_boundary` 来检查某个键是否作为边界元素存在：
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+`path` 参数指定要检查证明的哪一层（与执行范围查询的 GroveDB 子树路径
+匹配），`key` 是要查找的边界键。
+
+### 实际用途：分页验证
+
+这对于**分页**（pagination）特别有用。当客户端请求"文档 X 之后的下 100 个
+文档"时，查询为 `RangeAfter(document_X_id)`。证明返回文档 101-200，
+但客户端可能还想确认文档 X（分页游标）仍然存在于树中：
+
+- 如果 `key_exists_as_boundary` 返回 `true`，游标有效 — 客户端可以
+  信任分页锚定于一个真实的文档。
+- 如果返回 `false`，游标文档可能在翻页期间已被删除，
+  客户端应考虑重新开始分页。
+
+> **重要说明：** `key_exists_as_boundary` 对证明的 `KVDigest`/`KVDigestCount`
+> 节点执行语法扫描（syntactic scan）。它本身不提供密码学保证 — 务必先针对
+> 可信的根哈希验证证明。同类节点也出现在不存在性证明中，因此调用者应
+> 在生成该证明的查询上下文中解读结果。
+
+在 merk 层级，相同的检查可通过
+`key_exists_as_boundary_in_proof(proof_bytes, key)` 直接使用原始 merk
+证明字节进行。
+
 ## V1 证明 — 非 Merk 树
 
 V0 证明系统仅适用于 Merk 子树，逐层向下穿过树丛层级结构。然而，**CommitmentTree**、**MmrTree**、**BulkAppendTree** 和 **DenseAppendOnlyFixedSizeTree** 元素将其数据存储在子 Merk 树之外。它们没有可进入的子 Merk — 它们的类型特定根哈希作为 Merk 子哈希流动。

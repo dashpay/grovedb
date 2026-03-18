@@ -410,6 +410,72 @@ graph TD
 Untuk range query, proof ketiadaan menunjukkan bahwa tidak ada key dalam rentang yang di-query
 yang tidak disertakan dalam set hasil.
 
+## Deteksi Key Batas
+
+Saat memverifikasi proof dari range query eksklusif, Anda mungkin perlu mengonfirmasi
+bahwa key tertentu ada sebagai **elemen batas** — key yang mengaitkan
+rentang tetapi bukan bagian dari set hasil.
+
+Sebagai contoh, dengan `RangeAfter(10)` (semua key yang secara ketat setelah 10), proof
+menyertakan key 10 sebagai node `KVDigest`. Ini membuktikan key 10 ada di pohon
+dan mengaitkan awal rentang, tetapi key 10 tidak dikembalikan dalam hasil.
+
+### Kapan node batas muncul
+
+Node `KVDigest` (atau `KVDigestCount` untuk ProvableCountTree) batas muncul dalam
+proof untuk tipe range query eksklusif:
+
+| Tipe query | Key batas | Apa yang dibuktikan |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Awal eksklusif ada di pohon |
+| `RangeAfterTo(start..end)` | `start` | Awal eksklusif ada di pohon |
+| `RangeAfterToInclusive(start..=end)` | `start` | Awal eksklusif ada di pohon |
+
+Node batas juga muncul dalam proof ketiadaan, di mana key tetangga membuktikan
+adanya celah (lihat [Proof Ketiadaan](#proof-ketiadaan) di atas).
+
+### Memeriksa key batas
+
+Setelah memverifikasi proof, Anda dapat memeriksa apakah sebuah key ada sebagai elemen
+batas menggunakan `key_exists_as_boundary` pada `GroveDBProof` yang telah didekode:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+Argumen `path` mengidentifikasi lapisan mana dari proof yang akan diperiksa (sesuai
+dengan path subtree GroveDB tempat range query dieksekusi), dan `key` adalah key
+batas yang dicari.
+
+### Penggunaan praktis: verifikasi paginasi
+
+Ini sangat berguna untuk **paginasi**. Ketika klien meminta "100 dokumen berikutnya
+setelah dokumen X," query-nya adalah `RangeAfter(document_X_id)`. Proof mengembalikan
+dokumen 101-200, tetapi klien mungkin juga ingin mengonfirmasi bahwa dokumen X
+(kursor paginasi) masih ada di pohon:
+
+- Jika `key_exists_as_boundary` mengembalikan `true`, kursor valid — klien
+  dapat mempercayai bahwa paginasi dikaitkan ke dokumen nyata.
+- Jika mengembalikan `false`, dokumen kursor mungkin telah dihapus di antara
+  halaman, dan klien harus mempertimbangkan untuk memulai ulang paginasi.
+
+> **Penting:** `key_exists_as_boundary` melakukan pemindaian sintaktis terhadap node
+> `KVDigest`/`KVDigestCount` proof. Ia tidak memberikan jaminan kriptografis dengan
+> sendirinya — selalu verifikasi proof terhadap root hash tepercaya terlebih dahulu.
+> Tipe node yang sama juga muncul dalam proof ketiadaan, jadi pemanggil harus
+> menginterpretasikan hasilnya dalam konteks query yang menghasilkan proof tersebut.
+
+Di tingkat merk, pemeriksaan yang sama tersedia melalui
+`key_exists_as_boundary_in_proof(proof_bytes, key)` untuk bekerja langsung dengan
+byte proof merk mentah.
+
 ## Proof V1 — Pohon Non-Merk
 
 Sistem proof V0 bekerja secara eksklusif dengan subtree Merk, turun lapisan demi

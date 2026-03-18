@@ -402,6 +402,74 @@ graph TD
 
 Aralik sorgulari icin yokluk ispatlari, sorgulanan aralik icinde sonuc kumesine dahil edilmemis hicbir anahtarin olmadigini gosterir.
 
+## Sinir Anahtari Tespiti
+
+Ozel aralik sorgusundan (exclusive range query) bir ispati dogrularken, belirli bir
+anahtarin **sinir elemani** (boundary element) olarak var olup olmadigini
+dogrulamaniz gerekebilir — aralik baslatici (anchor) gorevi goren ancak sonuc
+kumesine dahil olmayan bir anahtar.
+
+Ornegin, `RangeAfter(10)` (10'dan kesinlikle buyuk tum anahtarlar) sorgusunda ispat,
+anahtar 10'u bir `KVDigest` dugumu olarak icerir. Bu, anahtar 10'un agacta var
+oldugunu kanitlar ve araligin baslangicini yukler, ancak anahtar 10 sonuclarda
+dondurulmez.
+
+### Sinir dugumlerinin gorunme durumu
+
+Sinir `KVDigest` (veya ProvableCountTree icin `KVDigestCount`) dugumleri,
+ozel aralik sorgu turlerinin ispatlarinda gorulur:
+
+| Query type | Boundary key | Neyi kanitlar |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Ozel baslangic agacta mevcuttur |
+| `RangeAfterTo(start..end)` | `start` | Ozel baslangic agacta mevcuttur |
+| `RangeAfterToInclusive(start..=end)` | `start` | Ozel baslangic agacta mevcuttur |
+
+Sinir dugumleri yokluk ispatlarinda da gorunur; burada komsu anahtarlar bir
+boslugun var oldugunu kanitlar (yukarida [Yokluk Ispatlari](#yokluk-ispatlari) bolumune bakin).
+
+### Sinir anahtarlarini kontrol etme
+
+Bir ispati dogruladiktan sonra, bir anahtarin sinir elemani olarak var olup
+olmadigini, decode edilmis `GroveDBProof` uzerindeki `key_exists_as_boundary`
+ile kontrol edebilirsiniz:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Check that the boundary key exists in the proof
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+`path` argumani, ispatin hangi katmaninin incelenecegini belirtir (aralik
+sorgusunun yurutuldugu GroveDB alt agac yoluyla eslesir) ve `key` aranacak
+sinir anahtaridir.
+
+### Pratik kullanim: sayfalama dogrulamasi
+
+Bu ozellikle **sayfalama** (pagination) icin kullanislidir. Bir istemci "belge
+X'ten sonraki 100 belge" talep ettiginde, sorgu `RangeAfter(document_X_id)`
+olur. Ispat 101–200 numarali belgeleri dondurur, ancak istemci ayrica belge
+X'in (sayfalama imleci) hala agacta var olup olmadigini da dogrulamak isteyebilir:
+
+- `key_exists_as_boundary` `true` dondururse, imlec gecerlidir — istemci
+  sayfalamanin gercek bir belgeye dayali olduguna guvenebilir.
+- `false` dondururse, imlec belgesi sayfalar arasinda silinmis olabilir
+  ve istemci sayfalamayi yeniden baslatmayi dusunmelidir.
+
+> **Onemli:** `key_exists_as_boundary`, ispatin `KVDigest`/`KVDigestCount`
+> dugumlerinin sozdizimsel bir taramasini (syntactic scan) gerceklestirir. Tek basina
+> kriptografik bir garanti saglamaz — oncesinde ispati guvenilir bir kok hash'e
+> karsi her zaman dogrulayin. Ayni dugum turleri yokluk ispatlarinda da gorunur,
+> bu nedenle cagiran, sonucu ispati ureten sorgunun baglaminda yorumlamalidir.
+
+Merk seviyesinde, ayni kontrol ham merk ispat baytlariyla dogrudan calismak icin
+`key_exists_as_boundary_in_proof(proof_bytes, key)` araciligiyla kullanilabilir.
+
 ## V1 Ispatlar -- Merk Olmayan Agaclar
 
 V0 ispat sistemi yalnizca Merk alt agaclariyla calisir ve grove hiyerarsisi boyunca katman katman iner. Ancak **CommitmentTree**, **MmrTree**, **BulkAppendTree** ve **DenseAppendOnlyFixedSizeTree** elementleri verilerini bir cocuk Merk agacinin disinda depolar. Inecek bir cocuk Merk'leri yoktur -- tipe ozel kok hash'leri Merk cocuk hash olarak akar.
