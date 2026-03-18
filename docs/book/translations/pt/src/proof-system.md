@@ -414,21 +414,21 @@ graph TD
 Para consultas de faixa, provas de ausencia mostram que nao existem chaves dentro da
 faixa consultada que nao foram incluidas no conjunto de resultados.
 
-## Detecao de Chave de Limite
+## Deteccao de Chaves de Limite
 
-Ao verificar uma prova de uma consulta de faixa exclusiva, pode ser necessario
-confirmar que uma chave especifica existe como um **elemento de limite** — uma
-chave que ancora a faixa mas nao faz parte do conjunto de resultados.
+Ao verificar uma prova de uma consulta de faixa exclusiva, voce pode precisar
+confirmar que chaves especificas existem como **elementos de limite** — chaves
+que ancoram a faixa mas nao fazem parte do conjunto de resultados.
 
 Por exemplo, com `RangeAfter(10)` (todas as chaves estritamente apos 10), a
-prova inclui a chave 10 como um no `KVDigest`. Isso prova que a chave 10 existe
-na arvore e ancora o inicio da faixa, mas a chave 10 nao e retornada nos
-resultados.
+prova inclui a chave 10 como um no `KVDigest`. Isso prova que a chave 10
+existe na arvore e ancora o inicio da faixa, mas a chave 10 nao e retornada
+nos resultados.
 
 ### Quando nos de limite aparecem
 
-Nos de limite `KVDigest` (ou `KVDigestCount` para ProvableCountTree) aparecem em
-provas para tipos de consulta de faixa exclusiva:
+Nos de limite `KVDigest` (ou `KVDigestCount` para ProvableCountTree) aparecem
+em provas para tipos de consulta de faixa exclusiva:
 
 | Tipo de consulta | Chave de limite | O que prova |
 |------------|-------------|----------------|
@@ -439,10 +439,10 @@ provas para tipos de consulta de faixa exclusiva:
 Nos de limite tambem aparecem em provas de ausencia, onde chaves vizinhas provam
 que uma lacuna existe (veja [Provas de Ausencia](#provas-de-ausencia) acima).
 
-### Verificando chaves de limite
+### Recuperando todas as chaves de limite
 
-Apos verificar uma prova, voce pode verificar se uma chave existe como elemento
-de limite usando `key_exists_as_boundary` no `GroveDBProof` decodificado:
+Apos verificar uma prova, chame `boundaries` no `GroveDBProof` decodificado para
+obter todas as chaves de limite em um dado caminho:
 
 ```rust
 // Decode and verify the proof
@@ -450,14 +450,23 @@ let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Check that the boundary key exists in the proof
-let cursor_exists = grovedb_proof
-    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
 ```
 
 O argumento `path` identifica qual camada da prova inspecionar (correspondendo
-ao caminho da subarvore GroveDB onde a consulta de faixa foi executada), e `key`
-e a chave de limite a procurar.
+ao caminho da subarvore GroveDB onde a consulta de faixa foi executada).
+
+### Verificando uma unica chave de limite
+
+Se voce so precisa verificar se uma chave especifica e um limite, use
+`key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
 
 ### Uso pratico: verificacao de paginacao
 
@@ -467,19 +476,20 @@ proximos 100 documentos apos o documento X", a consulta e
 cliente tambem pode querer confirmar que o documento X (o cursor de paginacao)
 ainda existe na arvore:
 
-- Se `key_exists_as_boundary` retorna `true`, o cursor e valido — o cliente
-  pode confiar que a paginacao esta ancorada em um documento real.
-- Se retorna `false`, o documento do cursor pode ter sido excluido entre
-  paginas, e o cliente deve considerar reiniciar a paginacao.
+- Se a chave do cursor aparece em `boundaries()`, o cursor e valido — o
+  cliente pode confiar que a paginacao esta ancorada em um documento real.
+- Se nao aparece, o documento do cursor pode ter sido deletado entre paginas,
+  e o cliente deve considerar reiniciar a paginacao.
 
-> **Importante:** `key_exists_as_boundary` realiza uma varredura sintatica dos
-> nos `KVDigest`/`KVDigestCount` da prova. Nao fornece garantia criptografica
-> por si so — sempre verifique a prova contra um hash raiz confiavel primeiro.
-> Os mesmos tipos de no tambem aparecem em provas de ausencia, portanto o
-> chamador deve interpretar o resultado no contexto da consulta que gerou a
-> prova.
+> **Importante:** Tanto `boundaries()` quanto `key_exists_as_boundary` realizam
+> uma varredura sintatica dos nos `KVDigest`/`KVDigestCount` da prova. Eles nao
+> fornecem garantia criptografica por si so — sempre verifique a prova contra um
+> hash raiz confiavel primeiro. Os mesmos tipos de no tambem aparecem em provas
+> de ausencia, portanto o chamador deve interpretar os resultados no contexto da
+> consulta que gerou a prova.
 
-No nivel merk, a mesma verificacao esta disponivel via
+No nivel merk, as mesmas verificacoes estao disponiveis via
+`boundaries_in_proof(proof_bytes)` e
 `key_exists_as_boundary_in_proof(proof_bytes, key)` para trabalhar diretamente
 com bytes brutos de prova merk.
 

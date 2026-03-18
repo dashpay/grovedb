@@ -20,8 +20,8 @@ use grovedb_version::version::GroveVersion;
 pub use map::{Map, MapBuilder};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify::{
-    key_exists_as_boundary_in_proof, ProofVerificationResult, ProvedKeyOptionalValue,
-    ProvedKeyValue, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST,
+    boundaries_in_proof, key_exists_as_boundary_in_proof, ProofVerificationResult,
+    ProvedKeyOptionalValue, ProvedKeyValue, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST,
 };
 #[cfg(feature = "minimal")]
 use {super::Op, std::collections::LinkedList};

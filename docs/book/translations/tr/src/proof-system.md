@@ -404,35 +404,33 @@ Aralik sorgulari icin yokluk ispatlari, sorgulanan aralik icinde sonuc kumesine 
 
 ## Sinir Anahtari Tespiti
 
-Ozel aralik sorgusundan (exclusive range query) bir ispati dogrularken, belirli bir
-anahtarin **sinir elemani** (boundary element) olarak var olup olmadigini
-dogrulamaniz gerekebilir — aralik baslatici (anchor) gorevi goren ancak sonuc
-kumesine dahil olmayan bir anahtar.
+Ozel aralik sorgusundan gelen bir ispati dogrularken, belirli anahtarlarin
+**sinir elemanlari** olarak var oldugunu dogrulamaniz gerekebilir — araligi
+sabitleyen ancak sonuc kumesinin parcasi olmayan anahtarlar.
 
-Ornegin, `RangeAfter(10)` (10'dan kesinlikle buyuk tum anahtarlar) sorgusunda ispat,
+Ornegin, `RangeAfter(10)` (10'dan kesinlikle buyuk tum anahtarlar) ile ispat,
 anahtar 10'u bir `KVDigest` dugumu olarak icerir. Bu, anahtar 10'un agacta var
-oldugunu kanitlar ve araligin baslangicini yukler, ancak anahtar 10 sonuclarda
+oldugunu ve araligin basini sabitledigini kanitlar, ancak anahtar 10 sonuclarda
 dondurulmez.
 
-### Sinir dugumlerinin gorunme durumu
+### Sinir dugumleri ne zaman gorulur
 
 Sinir `KVDigest` (veya ProvableCountTree icin `KVDigestCount`) dugumleri,
-ozel aralik sorgu turlerinin ispatlarinda gorulur:
+ozel aralik sorgu tipleri icin ispatlarda gorulur:
 
-| Query type | Boundary key | Neyi kanitlar |
+| Sorgu tipi | Sinir anahtari | Ne kanitlar |
 |------------|-------------|----------------|
 | `RangeAfter(start..)` | `start` | Ozel baslangic agacta mevcuttur |
 | `RangeAfterTo(start..end)` | `start` | Ozel baslangic agacta mevcuttur |
 | `RangeAfterToInclusive(start..=end)` | `start` | Ozel baslangic agacta mevcuttur |
 
-Sinir dugumleri yokluk ispatlarinda da gorunur; burada komsu anahtarlar bir
-boslugun var oldugunu kanitlar (yukarida [Yokluk Ispatlari](#yokluk-ispatlari) bolumune bakin).
+Sinir dugumleri ayrica yokluk ispatlarinda da gorulur; burada komsuluk
+anahtarlari bir boslugun var oldugunu kanitlar (yukardaki [Yokluk Ispatlari](#yokluk-ispatlari) bolumune bakin).
 
-### Sinir anahtarlarini kontrol etme
+### Tum sinir anahtarlarini alma
 
-Bir ispati dogruladiktan sonra, bir anahtarin sinir elemani olarak var olup
-olmadigini, decode edilmis `GroveDBProof` uzerindeki `key_exists_as_boundary`
-ile kontrol edebilirsiniz:
+Bir ispati dogruladiktan sonra, belirli bir yoldaki tum sinir anahtarlarini
+almak icin cozumlenmis `GroveDBProof` uzerinde `boundaries` cagirin:
 
 ```rust
 // Decode and verify the proof
@@ -440,34 +438,45 @@ let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Check that the boundary key exists in the proof
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+`path` argumani, ispatin hangi katmaninin incelenecegini belirtir (aralik
+sorgusunun calistirildigi GroveDB alt agac yoluyla eslesir).
+
+### Tek bir sinir anahtarini kontrol etme
+
+Yalnizca belirli bir anahtarin sinir olup olmadigini kontrol etmeniz gerekiyorsa
+`key_exists_as_boundary` kullanin:
+
+```rust
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
 
-`path` argumani, ispatin hangi katmaninin incelenecegini belirtir (aralik
-sorgusunun yurutuldugu GroveDB alt agac yoluyla eslesir) ve `key` aranacak
-sinir anahtaridir.
-
 ### Pratik kullanim: sayfalama dogrulamasi
 
-Bu ozellikle **sayfalama** (pagination) icin kullanislidir. Bir istemci "belge
-X'ten sonraki 100 belge" talep ettiginde, sorgu `RangeAfter(document_X_id)`
-olur. Ispat 101–200 numarali belgeleri dondurur, ancak istemci ayrica belge
-X'in (sayfalama imleci) hala agacta var olup olmadigini da dogrulamak isteyebilir:
+Bu ozellikle **sayfalama** icin kullanislidir. Bir istemci "belge X'ten sonraki
+100 belge" istediginde, sorgu `RangeAfter(document_X_id)` olur. Ispat 101-200
+arasi belgeleri dondurur, ancak istemci ayrica belge X'in (sayfalama imleci)
+hala agacta var oldugunu dogrulamak isteyebilir:
 
-- `key_exists_as_boundary` `true` dondururse, imlec gecerlidir — istemci
-  sayfalamanin gercek bir belgeye dayali olduguna guvenebilir.
-- `false` dondururse, imlec belgesi sayfalar arasinda silinmis olabilir
-  ve istemci sayfalamayi yeniden baslatmayi dusunmelidir.
+- Imlec anahtari `boundaries()` icinde gorunuyorsa, imlec gecerlidir — istemci
+  sayfalanin gercek bir belgeye dayali olduguna guvenebilir.
+- Gorunmuyorsa, imlec belgesi sayfalar arasinda silinmis olabilir ve istemci
+  sayfalandirmayi yeniden baslatmayi dusunmelidir.
 
-> **Onemli:** `key_exists_as_boundary`, ispatin `KVDigest`/`KVDigestCount`
-> dugumlerinin sozdizimsel bir taramasini (syntactic scan) gerceklestirir. Tek basina
-> kriptografik bir garanti saglamaz — oncesinde ispati guvenilir bir kok hash'e
-> karsi her zaman dogrulayin. Ayni dugum turleri yokluk ispatlarinda da gorunur,
-> bu nedenle cagiran, sonucu ispati ureten sorgunun baglaminda yorumlamalidir.
+> **Onemli:** Hem `boundaries()` hem de `key_exists_as_boundary`, ispatin
+> `KVDigest`/`KVDigestCount` dugumlerinin sozdizimsel bir taramasini gerceklestirir.
+> Kendi baslarinda kriptografik garanti saglamazlar — ispati her zaman once
+> guvenilir bir kok hash'e karsi dogrulayin. Ayni dugum tipleri yokluk
+> ispatlarinda da gorulur, bu nedenle cagrici sonuclari ispati olusturan
+> sorgunun baglaminda yorumlamalidir.
 
-Merk seviyesinde, ayni kontrol ham merk ispat baytlariyla dogrudan calismak icin
+Merk seviyesinde, ayni kontroller ham merk ispat baytlariyla dogrudan calismak
+icin `boundaries_in_proof(proof_bytes)` ve
 `key_exists_as_boundary_in_proof(proof_bytes, key)` araciligiyla kullanilabilir.
 
 ## V1 Ispatlar -- Merk Olmayan Agaclar

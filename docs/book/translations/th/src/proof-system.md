@@ -401,32 +401,32 @@ graph TD
 
 ## การตรวจจับ Boundary Key
 
-เมื่อตรวจสอบ proof จาก exclusive range query คุณอาจต้องยืนยัน
-ว่า key เฉพาะมีอยู่ในฐานะ **boundary element** — key ที่ยึดตำแหน่ง
-ช่วง (range) แต่ไม่ได้เป็นส่วนหนึ่งของชุดผลลัพธ์
+เมื่อตรวจสอบ proof จากคิวรีช่วงแบบ exclusive คุณอาจต้องยืนยันว่า key เฉพาะ
+มีอยู่ในฐานะ **boundary element** — key ที่ยึดช่วงไว้แต่ไม่ได้เป็นส่วนหนึ่งของ
+ชุดผลลัพธ์
 
-ตัวอย่างเช่น กับ `RangeAfter(10)` (key ทั้งหมดที่มากกว่า 10 อย่างเคร่งครัด) proof
-จะรวม key 10 เป็น node `KVDigest` ซึ่งพิสูจน์ว่า key 10 มีอยู่ในต้นไม้
-และยึดตำแหน่งจุดเริ่มต้นของช่วง แต่ key 10 ไม่ถูกส่งคืนในผลลัพธ์
+ตัวอย่างเช่น ด้วย `RangeAfter(10)` (key ทั้งหมดที่มากกว่า 10 อย่างเคร่งครัด) proof
+จะรวม key 10 ไว้เป็นโหนด `KVDigest` ซึ่งพิสูจน์ว่า key 10 มีอยู่ในต้นไม้และ
+ยึดจุดเริ่มต้นของช่วง แต่ key 10 ไม่ถูกส่งคืนในผลลัพธ์
 
 ### เมื่อ boundary node ปรากฏ
 
-Boundary `KVDigest` (หรือ `KVDigestCount` สำหรับ ProvableCountTree) node ปรากฏใน
-proof สำหรับ exclusive range query ประเภทต่อไปนี้:
+โหนด boundary `KVDigest` (หรือ `KVDigestCount` สำหรับ ProvableCountTree) ปรากฏ
+ใน proof สำหรับประเภทคิวรีช่วงแบบ exclusive:
 
-| Query type | Boundary key | สิ่งที่พิสูจน์ |
+| ประเภทคิวรี | Boundary key | สิ่งที่พิสูจน์ |
 |------------|-------------|----------------|
 | `RangeAfter(start..)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
 | `RangeAfterTo(start..end)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
 | `RangeAfterToInclusive(start..=end)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
 
-Boundary node ยังปรากฏใน absence proof ซึ่ง key ข้างเคียงพิสูจน์ว่า
-มีช่องว่างอยู่ (ดู [Absence Proof](#absence-proof) ด้านบน)
+Boundary node ยังปรากฏใน absence proof ที่ key ข้างเคียงพิสูจน์ว่ามีช่องว่าง
+อยู่ (ดู [Absence Proof](#absence-proof) ด้านบน)
 
-### การตรวจสอบ boundary key
+### การดึง boundary key ทั้งหมด
 
-หลังจากตรวจสอบ proof แล้ว คุณสามารถตรวจสอบว่า key มีอยู่ในฐานะ boundary
-element โดยใช้ `key_exists_as_boundary` บน `GroveDBProof` ที่ถอดรหัสแล้ว:
+หลังจากตรวจสอบ proof แล้ว เรียก `boundaries` บน `GroveDBProof` ที่ถอดรหัสแล้ว
+เพื่อดึง boundary key ทั้งหมดที่ path ที่กำหนด:
 
 ```rust
 // Decode and verify the proof
@@ -434,36 +434,46 @@ let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Check that the boundary key exists in the proof
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+อาร์กิวเมนต์ `path` ระบุว่าจะตรวจสอบชั้นใดของ proof (ตรงกับ path ของ
+subtree GroveDB ที่คิวรีช่วงถูกดำเนินการ)
+
+### การตรวจสอบ boundary key เดี่ยว
+
+หากคุณต้องการตรวจสอบเพียงว่า key เฉพาะหนึ่งตัวเป็น boundary หรือไม่ ให้ใช้
+`key_exists_as_boundary`:
+
+```rust
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
 
-อาร์กิวเมนต์ `path` ระบุว่าจะตรวจสอบชั้นใดของ proof (ตรงกับ
-path ของ subtree ใน GroveDB ที่ range query ถูกดำเนินการ) และ `key` คือ
-boundary key ที่ต้องการค้นหา
+### การใช้งานจริง: การตรวจสอบการแบ่งหน้า
 
-### การใช้งานจริง: การตรวจสอบ pagination
+สิ่งนี้มีประโยชน์อย่างยิ่งสำหรับ **การแบ่งหน้า (pagination)** เมื่อไคลเอนต์ร้องขอ
+"เอกสาร 100 รายการถัดไปหลังเอกสาร X" คิวรีคือ `RangeAfter(document_X_id)` proof
+ส่งคืนเอกสาร 101-200 แต่ไคลเอนต์อาจต้องการยืนยันว่าเอกสาร X (cursor
+การแบ่งหน้า) ยังคงมีอยู่ในต้นไม้:
 
-สิ่งนี้มีประโยชน์อย่างยิ่งสำหรับ **pagination** เมื่อ client ร้องขอ "100
-เอกสารถัดไปหลังจากเอกสาร X" query จะเป็น `RangeAfter(document_X_id)` proof
-จะส่งคืนเอกสาร 101–200 แต่ client อาจต้องการยืนยันว่า
-เอกสาร X (cursor ของ pagination) ยังคงมีอยู่ในต้นไม้:
+- หาก cursor key ปรากฏใน `boundaries()` แสดงว่า cursor ถูกต้อง — ไคลเอนต์
+  สามารถเชื่อมั่นได้ว่าการแบ่งหน้ายึดกับเอกสารจริง
+- หากไม่ปรากฏ เอกสาร cursor อาจถูกลบไประหว่างหน้า และไคลเอนต์ควรพิจารณา
+  เริ่มการแบ่งหน้าใหม่
 
-- หาก `key_exists_as_boundary` คืนค่า `true` cursor ถูกต้อง — client
-  สามารถเชื่อถือได้ว่า pagination ยึดตำแหน่งกับเอกสารจริง
-- หากคืนค่า `false` เอกสาร cursor อาจถูกลบไประหว่าง
-  หน้า และ client ควรพิจารณาเริ่ม pagination ใหม่
+> **สำคัญ:** ทั้ง `boundaries()` และ `key_exists_as_boundary` ทำการสแกน
+> เชิงไวยากรณ์ของโหนด `KVDigest`/`KVDigestCount` ใน proof ไม่ได้ให้
+> การรับประกันทางการเข้ารหัสด้วยตัวเอง — ตรวจสอบ proof กับ root hash ที่เชื่อถือได้
+> ก่อนเสมอ โหนดประเภทเดียวกันยังปรากฏใน absence proof ดังนั้นผู้เรียกควร
+> ตีความผลลัพธ์ในบริบทของคิวรีที่สร้าง proof
 
-> **สำคัญ:** `key_exists_as_boundary` ดำเนินการสแกนเชิงวากยสัมพันธ์ (syntactic scan) ของ
-> node `KVDigest`/`KVDigestCount` ใน proof มันไม่ให้การรับประกัน
-> เชิงการเข้ารหัสด้วยตัวเอง — ต้องตรวจสอบ proof กับ root hash ที่เชื่อถือได้ก่อนเสมอ
-> node ประเภทเดียวกันยังปรากฏใน absence proof ดังนั้นผู้เรียก
-> ควรตีความผลลัพธ์ในบริบทของ query ที่สร้าง proof นั้น
-
-ที่ระดับ merk การตรวจสอบเดียวกันมีให้ใช้ผ่าน
+ที่ระดับ merk การตรวจสอบเดียวกันสามารถใช้ได้ผ่าน
+`boundaries_in_proof(proof_bytes)` และ
 `key_exists_as_boundary_in_proof(proof_bytes, key)` สำหรับการทำงานโดยตรงกับ
-ไบต์ proof ของ merk ดิบ
+ไบต์ proof merk ดิบ
 
 ## V1 Proof — ต้นไม้ Non-Merk
 

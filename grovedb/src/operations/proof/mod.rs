@@ -417,6 +417,59 @@ impl GroveDBProof {
         }
     }
 
+    /// Returns all boundary keys (`KVDigest` and `KVDigestCount` nodes)
+    /// found at the specified path in this proof.
+    ///
+    /// **Important:** This performs a syntactic scan of proof nodes. It
+    /// provides no cryptographic guarantee on its own — the proof should
+    /// be verified against a trusted root hash first.
+    pub fn boundaries(&self, path: &[&[u8]]) -> Result<Vec<Vec<u8>>, Error> {
+        match self {
+            GroveDBProof::V0(v0) => Self::boundaries_in_merk_layer(&v0.root_layer, path, 0),
+            GroveDBProof::V1(v1) => Self::boundaries_in_layer(&v1.root_layer, path, 0),
+        }
+    }
+
+    fn boundaries_in_merk_layer(
+        layer: &MerkOnlyLayerProof,
+        path: &[&[u8]],
+        depth: usize,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        if depth == path.len() {
+            return grovedb_merk::proofs::query::boundaries_in_proof(&layer.merk_proof)
+                .map_err(Into::into);
+        }
+        let segment = path[depth];
+        match layer.lower_layers.get(segment) {
+            Some(child_layer) => Self::boundaries_in_merk_layer(child_layer, path, depth + 1),
+            None => Err(Error::InvalidInput("path segment not found in proof layer")),
+        }
+    }
+
+    fn boundaries_in_layer(
+        layer: &LayerProof,
+        path: &[&[u8]],
+        depth: usize,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        if depth == path.len() {
+            let merk_bytes = match &layer.merk_proof {
+                ProofBytes::Merk(bytes) => bytes,
+                _ => {
+                    return Err(Error::NotSupported(
+                        "boundary check only supported for merk proofs".to_string(),
+                    ))
+                }
+            };
+            return grovedb_merk::proofs::query::boundaries_in_proof(merk_bytes)
+                .map_err(Into::into);
+        }
+        let segment = path[depth];
+        match layer.lower_layers.get(segment) {
+            Some(child_layer) => Self::boundaries_in_layer(child_layer, path, depth + 1),
+            None => Err(Error::InvalidInput("path segment not found in proof layer")),
+        }
+    }
+
     fn find_boundary_in_merk_layer(
         layer: &MerkOnlyLayerProof,
         path: &[&[u8]],

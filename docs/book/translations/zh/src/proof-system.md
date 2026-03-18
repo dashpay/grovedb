@@ -392,32 +392,31 @@ graph TD
 
 ## 边界键检测
 
-在验证来自排他范围查询（exclusive range query）的证明时，您可能需要确认
-某个特定键作为**边界元素**（boundary element）存在 — 即锚定范围但不属于
-结果集的键。
+在验证来自排他性范围查询的证明时，您可能需要确认特定键作为**边界元素**存在
+— 这些键锚定范围但不属于结果集。
 
-例如，对于 `RangeAfter(10)`（严格大于 10 的所有键），证明将键 10 作为
-`KVDigest` 节点包含在内。这证明了键 10 存在于树中并锚定了范围的起点，
-但键 10 不会出现在结果中。
+例如，对于 `RangeAfter(10)`（所有严格大于 10 的键），证明将键 10 作为
+`KVDigest` 节点包含在内。这证明键 10 存在于树中并锚定范围的起点，但键 10
+不会在结果中返回。
 
 ### 边界节点何时出现
 
-边界 `KVDigest`（或 ProvableCountTree 的 `KVDigestCount`）节点出现在
-排他范围查询类型的证明中：
+边界 `KVDigest`（或 ProvableCountTree 的 `KVDigestCount`）节点出现在排他性
+范围查询类型的证明中：
 
-| Query type | Boundary key | 证明内容 |
+| 查询类型 | 边界键 | 证明内容 |
 |------------|-------------|----------------|
-| `RangeAfter(start..)` | `start` | 排他起点存在于树中 |
-| `RangeAfterTo(start..end)` | `start` | 排他起点存在于树中 |
-| `RangeAfterToInclusive(start..=end)` | `start` | 排他起点存在于树中 |
+| `RangeAfter(start..)` | `start` | 排他性起点存在于树中 |
+| `RangeAfterTo(start..end)` | `start` | 排他性起点存在于树中 |
+| `RangeAfterToInclusive(start..=end)` | `start` | 排他性起点存在于树中 |
 
 边界节点也出现在不存在性证明中，其中相邻键证明存在间隙
 （参见上方的[不存在性证明](#不存在性证明)）。
 
-### 检查边界键
+### 获取所有边界键
 
-验证证明后，您可以通过在解码后的 `GroveDBProof` 上使用
-`key_exists_as_boundary` 来检查某个键是否作为边界元素存在：
+验证证明后，对解码的 `GroveDBProof` 调用 `boundaries` 以获取给定路径下的
+所有边界键：
 
 ```rust
 // Decode and verify the proof
@@ -425,33 +424,40 @@ let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Check that the boundary key exists in the proof
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+`path` 参数标识要检查证明的哪一层（与执行范围查询的 GroveDB 子树路径匹配）。
+
+### 检查单个边界键
+
+如果只需要检查某个特定键是否为边界，使用 `key_exists_as_boundary`：
+
+```rust
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
 
-`path` 参数指定要检查证明的哪一层（与执行范围查询的 GroveDB 子树路径
-匹配），`key` 是要查找的边界键。
+### 实际应用：分页验证
 
-### 实际用途：分页验证
+这对**分页**特别有用。当客户端请求"文档 X 之后的 100 个文档"时，查询为
+`RangeAfter(document_X_id)`。证明返回第 101-200 个文档，但客户端可能还想确认
+文档 X（分页游标）仍然存在于树中：
 
-这对于**分页**（pagination）特别有用。当客户端请求"文档 X 之后的下 100 个
-文档"时，查询为 `RangeAfter(document_X_id)`。证明返回文档 101-200，
-但客户端可能还想确认文档 X（分页游标）仍然存在于树中：
+- 如果游标键出现在 `boundaries()` 中，则游标有效 — 客户端可以信任分页锚定在
+  真实文档上。
+- 如果未出现，则游标文档可能在翻页之间被删除，客户端应考虑重新开始分页。
 
-- 如果 `key_exists_as_boundary` 返回 `true`，游标有效 — 客户端可以
-  信任分页锚定于一个真实的文档。
-- 如果返回 `false`，游标文档可能在翻页期间已被删除，
-  客户端应考虑重新开始分页。
+> **重要：** `boundaries()` 和 `key_exists_as_boundary` 都对证明的
+> `KVDigest`/`KVDigestCount` 节点执行语法扫描。它们本身不提供密码学保证
+> — 始终先针对受信任的根哈希验证证明。相同的节点类型也出现在不存在性证明中，
+> 因此调用者应在生成证明的查询上下文中解释结果。
 
-> **重要说明：** `key_exists_as_boundary` 对证明的 `KVDigest`/`KVDigestCount`
-> 节点执行语法扫描（syntactic scan）。它本身不提供密码学保证 — 务必先针对
-> 可信的根哈希验证证明。同类节点也出现在不存在性证明中，因此调用者应
-> 在生成该证明的查询上下文中解读结果。
-
-在 merk 层级，相同的检查可通过
-`key_exists_as_boundary_in_proof(proof_bytes, key)` 直接使用原始 merk
-证明字节进行。
+在 merk 层面，可以通过 `boundaries_in_proof(proof_bytes)` 和
+`key_exists_as_boundary_in_proof(proof_bytes, key)` 直接处理原始 merk 证明
+字节来使用相同的检查。
 
 ## V1 证明 — 非 Merk 树
 

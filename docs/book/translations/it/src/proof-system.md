@@ -403,17 +403,18 @@ Per le query di intervallo, le prove di assenza mostrano che non ci sono chiavi 
 
 ## Rilevamento delle chiavi di confine
 
-Quando si verifica una prova da una query di intervallo esclusiva, potrebbe essere necessario
-confermare che una chiave specifica esiste come **elemento di confine** — una chiave che ancora
-l'intervallo ma non fa parte dell'insieme dei risultati.
+Quando si verifica una prova da una query di intervallo esclusivo, potrebbe essere
+necessario confermare che chiavi specifiche esistano come **elementi di confine** — chiavi
+che ancorano l'intervallo ma non fanno parte dell'insieme dei risultati.
 
 Ad esempio, con `RangeAfter(10)` (tutte le chiavi strettamente dopo 10), la prova
-include la chiave 10 come nodo `KVDigest`. Questo dimostra che la chiave 10 esiste nell'albero
-e ancora l'inizio dell'intervallo, ma la chiave 10 non viene restituita nei risultati.
+include la chiave 10 come nodo `KVDigest`. Questo dimostra che la chiave 10 esiste
+nell'albero e ancora l'inizio dell'intervallo, ma la chiave 10 non viene restituita
+nei risultati.
 
-### Quando appaiono i nodi di confine
+### Quando compaiono i nodi di confine
 
-I nodi `KVDigest` (o `KVDigestCount` per ProvableCountTree) di confine appaiono nelle
+I nodi di confine `KVDigest` (o `KVDigestCount` per ProvableCountTree) compaiono nelle
 prove per i tipi di query di intervallo esclusivo:
 
 | Tipo di query | Chiave di confine | Cosa dimostra |
@@ -422,13 +423,13 @@ prove per i tipi di query di intervallo esclusivo:
 | `RangeAfterTo(start..end)` | `start` | L'inizio esclusivo esiste nell'albero |
 | `RangeAfterToInclusive(start..=end)` | `start` | L'inizio esclusivo esiste nell'albero |
 
-I nodi di confine appaiono anche nelle prove di assenza, dove le chiavi adiacenti dimostrano
-che esiste una lacuna (vedi [Prove di assenza](#prove-di-assenza) sopra).
+I nodi di confine compaiono anche nelle prove di assenza, dove le chiavi adiacenti
+dimostrano che esiste un vuoto (vedi [Prove di assenza](#prove-di-assenza) qui sopra).
 
-### Verificare le chiavi di confine
+### Recuperare tutte le chiavi di confine
 
-Dopo aver verificato una prova, è possibile controllare se una chiave esiste come elemento
-di confine utilizzando `key_exists_as_boundary` sul `GroveDBProof` decodificato:
+Dopo aver verificato una prova, chiamare `boundaries` sul `GroveDBProof` decodificato
+per ottenere tutte le chiavi di confine a un dato percorso:
 
 ```rust
 // Decode and verify the proof
@@ -436,34 +437,45 @@ let (grovedb_proof, _): (GroveDBProof, _) =
     bincode::decode_from_slice(&proof_bytes, config)?;
 let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
 
-// Check that the boundary key exists in the proof
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+L'argomento `path` identifica quale livello della prova ispezionare (corrispondente al
+percorso del sotto-albero GroveDB in cui è stata eseguita la query di intervallo).
+
+### Verificare una singola chiave di confine
+
+Se è necessario verificare solo se una chiave specifica è un confine, utilizzare
+`key_exists_as_boundary`:
+
+```rust
 let cursor_exists = grovedb_proof
     .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
 ```
 
-L'argomento `path` identifica quale livello della prova ispezionare (corrispondente al
-percorso del sotto-albero GroveDB dove e stata eseguita la query di intervallo), e `key` e la
-chiave di confine da cercare.
+### Utilizzo pratico: verifica della paginazione
 
-### Uso pratico: verifica della paginazione
+Questo è particolarmente utile per la **paginazione**. Quando un client richiede "i
+prossimi 100 documenti dopo il documento X," la query è `RangeAfter(document_X_id)`. La
+prova restituisce i documenti 101-200, ma il client potrebbe anche voler confermare che
+il documento X (il cursore di paginazione) esiste ancora nell'albero:
 
-Questo e particolarmente utile per la **paginazione**. Quando un client richiede "i prossimi
-100 documenti dopo il documento X," la query e `RangeAfter(document_X_id)`. La prova
-restituisce i documenti 101-200, ma il client potrebbe anche voler confermare che il
-documento X (il cursore di paginazione) esiste ancora nell'albero:
+- Se la chiave del cursore compare in `boundaries()`, il cursore è valido — il client
+  può fidarsi che la paginazione è ancorata a un documento reale.
+- Se non compare, il documento cursore potrebbe essere stato eliminato tra una pagina
+  e l'altra, e il client dovrebbe considerare di riavviare la paginazione.
 
-- Se `key_exists_as_boundary` restituisce `true`, il cursore e valido — il client
-  puo fidarsi che la paginazione e ancorata a un documento reale.
-- Se restituisce `false`, il documento cursore potrebbe essere stato eliminato tra le
-  pagine, e il client dovrebbe considerare di riavviare la paginazione.
+> **Importante:** Sia `boundaries()` che `key_exists_as_boundary` eseguono una scansione
+> sintattica dei nodi `KVDigest`/`KVDigestCount` della prova. Non forniscono alcuna
+> garanzia crittografica di per sé — verificare sempre la prova contro un hash radice
+> fidato prima. Gli stessi tipi di nodo compaiono anche nelle prove di assenza, quindi
+> il chiamante deve interpretare i risultati nel contesto della query che ha generato
+> la prova.
 
-> **Importante:** `key_exists_as_boundary` esegue una scansione sintattica dei nodi
-> `KVDigest`/`KVDigestCount` della prova. Non fornisce alcuna garanzia crittografica
-> di per se — verificare sempre la prova rispetto a un hash radice affidabile prima.
-> Gli stessi tipi di nodo appaiono anche nelle prove di assenza, quindi il chiamante
-> dovrebbe interpretare il risultato nel contesto della query che ha generato la prova.
-
-A livello merk, lo stesso controllo e disponibile tramite
+A livello merk, le stesse verifiche sono disponibili tramite
+`boundaries_in_proof(proof_bytes)` e
 `key_exists_as_boundary_in_proof(proof_bytes, key)` per lavorare direttamente con i
 byte grezzi della prova merk.
 
