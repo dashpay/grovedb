@@ -17,9 +17,7 @@ pub enum GroveVersionError {
     },
 
     /// Expected some specific versions
-    #[error(
-        "{method} not active for grove version, expected one of: {known_versions:?}"
-    )]
+    #[error("{method} not active for grove version, expected one of: {known_versions:?}")]
     VersionNotActive {
         /// method
         method: String,
