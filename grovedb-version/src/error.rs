@@ -4,7 +4,9 @@ use versioned_feature_core::FeatureVersion;
 #[derive(Error, Debug)]
 pub enum GroveVersionError {
     /// Expected some specific versions
-    #[error("grove unknown version on {method}, received: {received}")]
+    #[error(
+        "grove unknown version on {method}, received: {received}, expected one of: {known_versions:?}"
+    )]
     UnknownVersionMismatch {
         /// method
         method: String,
@@ -15,7 +17,9 @@ pub enum GroveVersionError {
     },
 
     /// Expected some specific versions
-    #[error("{method} not active for grove version")]
+    #[error(
+        "{method} not active for grove version, expected one of: {known_versions:?}"
+    )]
     VersionNotActive {
         /// method
         method: String,
