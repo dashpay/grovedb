@@ -689,10 +689,10 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
             Op::Push(Node::KVDigest(k, _))
             | Op::PushInverted(Node::KVDigest(k, _))
             | Op::Push(Node::KVDigestCount(k, _, _))
-            | Op::PushInverted(Node::KVDigestCount(k, _, _)) => {
-                if k.as_slice() == key {
-                    return Ok(true);
-                }
+            | Op::PushInverted(Node::KVDigestCount(k, _, _))
+                if k.as_slice() == key =>
+            {
+                return Ok(true);
             }
             _ => {}
         }
