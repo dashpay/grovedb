@@ -114,6 +114,43 @@ impl SizedQuery {
             offset: None,
         }
     }
+
+    /// Validates that this sized query is a well-formed
+    /// `AggregateCountOnRange` query. On success, returns a reference to the
+    /// inner range item (the `QueryItem` wrapped by `AggregateCountOnRange`).
+    ///
+    /// This is the `SizedQuery`-level entry point: it forwards to
+    /// [`Query::validate_aggregate_count_on_range`] and additionally rejects
+    /// any non-`None` `limit` or `offset` (counting is an aggregate over the
+    /// full match set — pagination would silently change the answer).
+    pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.limit.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountOnRange queries may not set SizedQuery::limit",
+            ));
+        }
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountOnRange queries may not set SizedQuery::offset",
+            ));
+        }
+        self.query
+            .validate_aggregate_count_on_range()
+            .map_err(query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
+}
+
+/// Converts a `Query::validate_aggregate_count_on_range` error into a
+/// `&'static str`. Validation only ever returns
+/// `grovedb_query::error::Error::InvalidOperation(&'static str)`, so this is
+/// just a projection of that variant; any other error variant (which would
+/// indicate an unrelated bug) is forwarded as a generic catch-all label.
+fn query_validation_error_to_static_str(e: grovedb_query::error::Error) -> &'static str {
+    match e {
+        grovedb_query::error::Error::InvalidOperation(msg) => msg,
+        _ => "AggregateCountOnRange query validation failed",
+    }
 }
 
 impl PathQuery {
@@ -142,6 +179,31 @@ impl PathQuery {
     pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
         Self { path, query }
+    }
+
+    /// Construct a `PathQuery` for an aggregate-count-on-range query against
+    /// the subtree at `path`. `range` is the inner `QueryItem` describing the
+    /// keys to count over; see [`Query::new_aggregate_count_on_range`] for the
+    /// allowed range variants.
+    pub fn new_aggregate_count_on_range(path: Vec<Vec<u8>>, range: QueryItem) -> Self {
+        Self::new_unsized(path, Query::new_aggregate_count_on_range(range))
+    }
+
+    /// Validates that this `PathQuery` is a well-formed
+    /// `AggregateCountOnRange` query. On success, returns a reference to the
+    /// inner range item.
+    ///
+    /// Forwards to [`SizedQuery::validate_aggregate_count_on_range`].
+    pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.query.validate_aggregate_count_on_range()
+    }
+
+    /// Returns `true` if this `PathQuery`'s underlying query carries an
+    /// `AggregateCountOnRange` item (whether well-formed or not). Use
+    /// [`Self::validate_aggregate_count_on_range`] when you also need
+    /// well-formedness.
+    pub fn has_aggregate_count_on_range(&self) -> bool {
+        self.query.query.aggregate_count_on_range().is_some()
     }
 
     /// The max depth of the query, this is the maximum layers we could get back
@@ -731,7 +793,7 @@ mod tests {
         query::{HasSubquery, SinglePathSubquery},
         query_result_type::QueryResultType,
         tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF},
-        Element, GroveDb, PathQuery, SizedQuery,
+        Element, Error, GroveDb, PathQuery, SizedQuery,
     };
 
     #[test]
@@ -2406,5 +2468,100 @@ mod tests {
         let result = path_query.should_add_parent_tree_at_path(&[], grove_version);
         assert!(result.is_ok());
         assert!(!result.unwrap());
+    }
+
+    // ---------- SizedQuery / PathQuery AggregateCountOnRange validation ----------
+
+    #[test]
+    fn sized_query_validate_acor_rejects_limit() {
+        let mut sq = SizedQuery::new(
+            Query::new_aggregate_count_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+            Some(10),
+            None,
+        );
+        let err = sq
+            .validate_aggregate_count_on_range()
+            .expect_err("limit must fail");
+        match err {
+            Error::InvalidQuery(msg) => assert!(msg.contains("limit")),
+            _ => panic!("expected InvalidQuery"),
+        }
+
+        // Removing the limit but keeping offset should still fail.
+        sq.limit = None;
+        sq.offset = Some(5);
+        let err = sq
+            .validate_aggregate_count_on_range()
+            .expect_err("offset must fail");
+        match err {
+            Error::InvalidQuery(msg) => assert!(msg.contains("offset")),
+            _ => panic!("expected InvalidQuery"),
+        }
+    }
+
+    #[test]
+    fn sized_query_validate_acor_forwards_query_level_errors() {
+        // SizedQuery validation should forward Query-level rejections (here:
+        // inner Key) as InvalidQuery.
+        let sq = SizedQuery::new(
+            Query::new_aggregate_count_on_range(QueryItem::Key(b"k".to_vec())),
+            None,
+            None,
+        );
+        let err = sq
+            .validate_aggregate_count_on_range()
+            .expect_err("inner Key must fail");
+        match err {
+            Error::InvalidQuery(msg) => assert!(msg.contains("Key")),
+            _ => panic!("expected InvalidQuery"),
+        }
+    }
+
+    #[test]
+    fn sized_query_validate_acor_happy_path() {
+        let sq = SizedQuery::new(
+            Query::new_aggregate_count_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+            None,
+            None,
+        );
+        let inner = sq
+            .validate_aggregate_count_on_range()
+            .expect("happy path must validate");
+        assert!(matches!(inner, QueryItem::Range(_)));
+    }
+
+    #[test]
+    fn path_query_validate_acor_forwards_to_sized_query() {
+        // PathQuery::validate_aggregate_count_on_range delegates to
+        // SizedQuery::validate_aggregate_count_on_range — exercise both error
+        // and happy paths through the public PathQuery surface.
+        let pq = PathQuery::new_aggregate_count_on_range(
+            vec![b"path".to_vec()],
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        );
+        let inner = pq
+            .validate_aggregate_count_on_range()
+            .expect("happy path through PathQuery must validate");
+        assert!(matches!(inner, QueryItem::Range(_)));
+
+        // Forward limit rejection.
+        let mut pq_bad = pq.clone();
+        pq_bad.query.limit = Some(1);
+        let err = pq_bad
+            .validate_aggregate_count_on_range()
+            .expect_err("limit must fail");
+        assert!(matches!(err, Error::InvalidQuery(_)));
+    }
+
+    #[test]
+    fn path_query_has_aggregate_count_on_range_recognizes_helper_constructor() {
+        let pq = PathQuery::new_aggregate_count_on_range(
+            vec![b"path".to_vec()],
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        );
+        assert!(pq.has_aggregate_count_on_range());
+
+        let pq_regular = PathQuery::new_single_key(vec![b"p".to_vec()], b"k".to_vec());
+        assert!(!pq_regular.has_aggregate_count_on_range());
     }
 }

@@ -128,6 +128,20 @@ impl Tree {
 
         match &self.node {
             Node::Hash(hash) => (*hash).wrap_with_cost(Default::default()),
+            // HashWithCount is self-verifying: the verifier recomputes
+            // node_hash_with_count(kv_hash, left_child_hash, right_child_hash, count)
+            // from the four committed fields. If the prover lied about `count`
+            // the recomputed hash diverges from the parent's expectation and
+            // the parent's Merkle-root check fails — so the count is bound to
+            // the proof, not just trusted on faith.
+            //
+            // The embedded child hashes (not the reconstructed-Tree's
+            // children) are what the original subtree's node_hash was computed
+            // from, so we use them directly here even though `self` is treated
+            // as a leaf in the proof Tree.
+            Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, count) => {
+                node_hash_with_count(kv_hash, left_child_hash, right_child_hash, *count)
+            }
             Node::KVHash(kv_hash) => compute_hash(self, *kv_hash),
             Node::KV(key, value) => kv_hash(key.as_slice(), value.as_slice())
                 .flat_map(|kv_hash| compute_hash(self, kv_hash)),
@@ -377,8 +391,8 @@ impl Tree {
     }
 
     /// Returns the key from this tree node if it's a KV-type node with a key.
-    /// Returns None for Hash, KVHash, or KVHashCount node types (which only
-    /// have hashes, not keys).
+    /// Returns None for Hash, KVHash, KVHashCount, or HashWithCount node
+    /// types (which only have hashes, not keys).
     #[cfg(any(feature = "minimal", feature = "verify"))]
     pub fn key(&self) -> Option<&[u8]> {
         match &self.node {
@@ -392,7 +406,9 @@ impl Tree {
             | Node::KVCount(key, ..)
             | Node::KVRefValueHashCount(key, ..) => Some(key.as_slice()),
             // These nodes don't have keys, only hashes
-            Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => None,
+            Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) | Node::HashWithCount(..) => {
+                None
+            }
         }
     }
 
@@ -404,6 +420,7 @@ impl Tree {
                 Ok((*feature_type).into())
             }
             Node::KVCount(_, _, count) => Ok(AggregateData::ProvableCount(*count)),
+            Node::HashWithCount(.., count) => Ok(AggregateData::ProvableCount(*count)),
             Node::KV(..) | Node::KVValueHash(..) => Ok(AggregateData::NoAggregateData),
             _ => Err(Error::InvalidProofError(
                 "Cannot extract aggregate data from this node type".to_string(),
@@ -500,7 +517,36 @@ pub const MAX_PROOF_TREE_HEIGHT: usize = 92;
 ///
 /// Enforces a limit of [`MAX_PROOF_OPS`] operations to prevent
 /// denial-of-service from malicious proofs.
-pub fn execute<I, F>(ops: I, collapse: bool, mut visit_node: F) -> CostResult<Tree, Error>
+///
+/// Equivalent to [`execute_with_options(ops, collapse, true, visit_node)`] —
+/// i.e. enforces the root-level AVL height-balance check after reconstruction.
+pub fn execute<I, F>(ops: I, collapse: bool, visit_node: F) -> CostResult<Tree, Error>
+where
+    I: IntoIterator<Item = Result<Op, Error>>,
+    F: FnMut(&Node) -> Result<(), Error>,
+{
+    execute_with_options(ops, collapse, true, visit_node)
+}
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Executes a proof exactly like [`execute`] but lets the caller opt out of
+/// the root-level AVL balance check.
+///
+/// Existing query / chunk / branch verifiers always pass `verify_avl_balance
+/// = true` (via [`execute`]). The aggregate-count verifier passes `false`
+/// because count proofs intentionally collapse fully-inside subtrees into a
+/// single `HashWithCount` op (height = 1) while still descending the boundary
+/// path on the other side, so the reconstructed tree's root will routinely
+/// have child heights differing by more than one — that's expected, not
+/// proof corruption. The cryptographic guarantees (hash-chain reconstruction,
+/// boundary-key checks, count commitment via `node_hash_with_count`) are all
+/// independent of AVL balance.
+pub fn execute_with_options<I, F>(
+    ops: I,
+    collapse: bool,
+    verify_avl_balance: bool,
+    mut visit_node: F,
+) -> CostResult<Tree, Error>
 where
     I: IntoIterator<Item = Result<Op, Error>>,
     F: FnMut(&Node) -> Result<(), Error>,
@@ -687,9 +733,10 @@ where
 
     let tree = stack.pop().unwrap();
 
-    if tree.child_heights.0.max(tree.child_heights.1)
-        - tree.child_heights.0.min(tree.child_heights.1)
-        > 1
+    if verify_avl_balance
+        && tree.child_heights.0.max(tree.child_heights.1)
+            - tree.child_heights.0.min(tree.child_heights.1)
+            > 1
     {
         return Err(Error::InvalidProofError(
             "Expected proof to result in a valid avl tree".to_string(),

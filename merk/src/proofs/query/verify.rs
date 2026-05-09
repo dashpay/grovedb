@@ -485,6 +485,25 @@ impl QueryProofVerify for Query {
                         )));
                     }
                 }
+                Node::HashWithCount(..) => {
+                    // `HashWithCount` is only safe inside the dedicated
+                    // aggregate-count verifier, which shape-checks each
+                    // collapsed subtree against the queried range. The plain
+                    // query verifier does no such shape check, and
+                    // `Tree::hash()` for a `HashWithCount` recomputes its
+                    // hash from the embedded `(kv_hash, l, r, count)` while
+                    // *ignoring* any reconstructed children. A malicious
+                    // prover could therefore hang fake KV pushes under a
+                    // `HashWithCount`, satisfy `execute_node` from those
+                    // pushes (so they appear as query results) while still
+                    // preserving the parent's hash chain. Fail fast here so
+                    // the regular query path can never accept one.
+                    return Err(Error::InvalidProofError(
+                        "HashWithCount node is only valid in aggregate-count proofs; \
+                         encountered in regular query verification"
+                            .to_string(),
+                    ));
+                }
             }
 
             last_push = Some(node.clone());

@@ -550,6 +550,26 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 node_feature_type,
             )
         }
+        // HashWithCount is the self-verifying compressed-subtree variant used
+        // by AggregateCountOnRange proofs. The debugger UI doesn't have a
+        // dedicated rendering for it yet — surface its committed node hash
+        // (computed from the four committed fields) and the count via the
+        // existing KVValueHashFeatureType slot, the same approach used for
+        // KVHashCount above.
+        Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, count) => {
+            use grovedb_merk::tree::node_hash_with_count;
+            let computed_node_hash =
+                node_hash_with_count(&kv_hash, &left_child_hash, &right_child_hash, count).unwrap();
+            MerkProofNode::KVValueHashFeatureType(
+                vec![],
+                grovedbg_types::Element::Item {
+                    value: vec![],
+                    element_flags: None,
+                },
+                computed_node_hash,
+                grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
+            )
+        }
     })
 }
 

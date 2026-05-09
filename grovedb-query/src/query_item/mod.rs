@@ -75,6 +75,22 @@ pub enum QueryItem {
     /// A range starting **after** a key and extending to another key,
     /// **inclusive**.
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
+
+    /// A count-only meta-query that wraps another `QueryItem` describing the
+    /// range to count.
+    ///
+    /// When this variant appears in a `Query`, the query is interpreted as
+    /// "return the **number of elements** matched by the inner range" instead
+    /// of returning the elements themselves. The proof is shaped accordingly:
+    /// boundary nodes are emitted as `KVDigestCount`, fully-inside subtree
+    /// roots as `KVHashCount`, and fully-outside subtrees as opaque `Hash`.
+    ///
+    /// This variant is only valid against `ProvableCountTree` /
+    /// `ProvableCountSumTree` (and their `NonCounted*` wrapper variants), and
+    /// it must be the **only** item in the surrounding `Query` (no subqueries,
+    /// no pagination, no other range items). The inner `QueryItem` may not be
+    /// `Key`, `RangeFull`, or another `AggregateCountOnRange`.
+    AggregateCountOnRange(Box<QueryItem>),
 }
 
 #[cfg(feature = "serde")]
@@ -120,6 +136,12 @@ impl Serialize for QueryItem {
                     "RangeAfterToInclusive",
                     range_after_to_inclusive,
                 ),
+            QueryItem::AggregateCountOnRange(inner) => serializer.serialize_newtype_variant(
+                "QueryItem",
+                10,
+                "AggregateCountOnRange",
+                inner,
+            ),
         }
     }
 }
@@ -143,6 +165,7 @@ impl<'de> Deserialize<'de> for QueryItem {
             RangeAfter,
             RangeAfterTo,
             RangeAfterToInclusive,
+            AggregateCountOnRange,
         }
 
         struct QueryItemVisitor;
@@ -199,6 +222,19 @@ impl<'de> Deserialize<'de> for QueryItem {
                         let range_after_to_inclusive = variant_access.newtype_variant()?;
                         Ok(QueryItem::RangeAfterToInclusive(range_after_to_inclusive))
                     }
+                    Field::AggregateCountOnRange => {
+                        // Deserialize the inner via a wrapper that rejects
+                        // the `AggregateCountOnRange` tag *before* recursing.
+                        // This is the serde counterpart to the bincode
+                        // depth-bounded decode + nested-rejection added in
+                        // `Self::decode_with_depth`. Without it, a
+                        // `serde`-feature client could send arbitrarily
+                        // deep nested AggregateCountOnRange payloads and
+                        // exhaust the stack inside `QueryItem::deserialize`
+                        // before any validation runs.
+                        let NonAggregateInner(inner) = variant_access.newtype_variant()?;
+                        Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
+                    }
                 }
             }
         }
@@ -214,9 +250,104 @@ impl<'de> Deserialize<'de> for QueryItem {
             "RangeAfter",
             "RangeAfterTo",
             "RangeAfterToInclusive",
+            "AggregateCountOnRange",
         ];
 
         deserializer.deserialize_enum("QueryItem", VARIANTS, QueryItemVisitor)
+    }
+}
+
+/// Newtype wrapper used internally by the serde `Deserialize` impl when
+/// deserializing the *inner* item of an `AggregateCountOnRange`. The wrapper's
+/// `Deserialize` impl mirrors `QueryItem::deserialize` but rejects the
+/// `AggregateCountOnRange` field tag immediately — without recursing — so
+/// nested aggregate payloads cannot exhaust the stack via repeated variant-10
+/// recursion through `QueryItem::deserialize`.
+///
+/// Defense-in-depth: nested `AggregateCountOnRange` is also rejected by
+/// `Query::validate_aggregate_count_on_range`, but enforcing it at decode time
+/// matches the bincode side and prevents the DoS class on its own.
+#[cfg(feature = "serde")]
+struct NonAggregateInner(QueryItem);
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for NonAggregateInner {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Field set excludes "AggregateCountOnRange"; encountering that tag
+        // produces a serde "unknown variant" error before any inner
+        // recursion can happen.
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            Key,
+            Range,
+            RangeInclusive,
+            RangeFull,
+            RangeFrom,
+            RangeTo,
+            RangeToInclusive,
+            RangeAfter,
+            RangeAfterTo,
+            RangeAfterToInclusive,
+        }
+
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = NonAggregateInner;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("non-aggregate QueryItem variant")
+            }
+
+            fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::EnumAccess<'de>,
+            {
+                let (variant, va) = data.variant()?;
+                let inner = match variant {
+                    Field::Key => QueryItem::Key(va.newtype_variant()?),
+                    Field::Range => QueryItem::Range(va.newtype_variant()?),
+                    Field::RangeInclusive => QueryItem::RangeInclusive(va.newtype_variant()?),
+                    Field::RangeFull => {
+                        va.unit_variant()?;
+                        QueryItem::RangeFull(RangeFull)
+                    }
+                    Field::RangeFrom => QueryItem::RangeFrom(va.newtype_variant()?),
+                    Field::RangeTo => QueryItem::RangeTo(va.newtype_variant()?),
+                    Field::RangeToInclusive => {
+                        let end: Vec<u8> = va.newtype_variant()?;
+                        QueryItem::RangeToInclusive(..=end)
+                    }
+                    Field::RangeAfter => QueryItem::RangeAfter(va.newtype_variant()?),
+                    Field::RangeAfterTo => QueryItem::RangeAfterTo(va.newtype_variant()?),
+                    Field::RangeAfterToInclusive => {
+                        QueryItem::RangeAfterToInclusive(va.newtype_variant()?)
+                    }
+                };
+                Ok(NonAggregateInner(inner))
+            }
+        }
+
+        // The list excludes "AggregateCountOnRange" so a serde format that
+        // surfaces unknown variants by name (most do) gives a precise error
+        // for the nested case.
+        const NON_AGGREGATE_VARIANTS: &[&str] = &[
+            "Key",
+            "Range",
+            "RangeInclusive",
+            "RangeFull",
+            "RangeFrom",
+            "RangeTo",
+            "RangeToInclusive",
+            "RangeAfter",
+            "RangeAfterTo",
+            "RangeAfterToInclusive",
+        ];
+
+        deserializer.deserialize_enum("QueryItem", NON_AGGREGATE_VARIANTS, V)
     }
 }
 
@@ -270,14 +401,46 @@ impl Encode for QueryItem {
                 range.start().encode(encoder)?;
                 range.end().encode(encoder)
             }
+            QueryItem::AggregateCountOnRange(inner) => {
+                encoder.writer().write(&[10])?;
+                inner.as_ref().encode(encoder)
+            }
         }
     }
 }
+
+/// Maximum recursion depth allowed when decoding a `QueryItem` from bincode.
+///
+/// The only recursive variant today is `AggregateCountOnRange(Box<QueryItem>)`
+/// (variant 10). A malicious payload made of repeated variant-10 bytes
+/// would otherwise recurse arbitrarily deep before any validation runs and
+/// can stack-overflow the decoder. Since nested `AggregateCountOnRange` is
+/// always rejected by `Query::validate_aggregate_count_on_range` anyway,
+/// the only legal nesting depth here is **one** (the outer wrapper plus its
+/// non-aggregate inner range). We keep a small safety margin.
+pub(crate) const MAX_QUERY_ITEM_DECODE_DEPTH: usize = 4;
 
 impl<Context> Decode<Context> for QueryItem {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl QueryItem {
+    /// Recursive bincode decode with an explicit depth counter. Used to bound
+    /// nested `AggregateCountOnRange` payloads (which would otherwise allow
+    /// stack exhaustion via repeated variant-10 bytes).
+    pub(crate) fn decode_with_depth<D: bincode::de::Decoder>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_QUERY_ITEM_DECODE_DEPTH {
+            return Err(DecodeError::Other(
+                "QueryItem nesting depth exceeded maximum during deserialization",
+            ));
+        }
         let variant_id = u8::decode(decoder)?;
 
         match variant_id {
@@ -322,9 +485,22 @@ impl<Context> Decode<Context> for QueryItem {
                 let end = Vec::<u8>::decode(decoder)?;
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
             }
+            10 => {
+                let inner = QueryItem::decode_with_depth(decoder, depth + 1)?;
+                // Defense-in-depth: nested AggregateCountOnRange is invalid
+                // by validation rules, so we also reject it at decode time.
+                // The depth guard above remains the primary stack-overflow
+                // mitigation for malicious deeper nesting.
+                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                    return Err(DecodeError::Other(
+                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                    ));
+                }
+                Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 9 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
                 found: variant_id as u32,
             }),
         }
@@ -335,6 +511,24 @@ impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
+}
+
+impl QueryItem {
+    /// Recursive bincode borrow-decode with an explicit depth counter.
+    /// Mirrors [`Self::decode_with_depth`] for the borrowed-decoder path; same
+    /// `MAX_QUERY_ITEM_DECODE_DEPTH` and same nested-`AggregateCountOnRange`
+    /// rejection apply.
+    pub(crate) fn borrow_decode_with_depth<'de, D: bincode::de::BorrowDecoder<'de>>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_QUERY_ITEM_DECODE_DEPTH {
+            return Err(DecodeError::Other(
+                "QueryItem nesting depth exceeded maximum during deserialization",
+            ));
+        }
         let variant_id = u8::decode(decoder)?;
 
         match variant_id {
@@ -379,9 +573,18 @@ impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
                 let end = Vec::<u8>::borrow_decode(decoder)?;
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
             }
+            10 => {
+                let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
+                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                    return Err(DecodeError::Other(
+                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                    ));
+                }
+                Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 9 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
                 found: variant_id as u32,
             }),
         }
@@ -427,6 +630,9 @@ impl fmt::Display for QueryItem {
                 hex_to_ascii(range.start()),
                 hex_to_ascii(range.end())
             ),
+            QueryItem::AggregateCountOnRange(inner) => {
+                write!(f, "AggregateCountOnRange({})", inner)
+            }
         }
     }
 }
@@ -437,6 +643,7 @@ impl QueryItem {
         match self {
             QueryItem::Key(key) => key.len() as u32,
             QueryItem::RangeFull(_) => 0u32,
+            QueryItem::AggregateCountOnRange(inner) => inner.processing_footprint(),
             _ => {
                 self.lower_bound().0.map_or(0u32, |x| x.len() as u32)
                     + self.upper_bound().0.map_or(0u32, |x| x.len() as u32)
@@ -458,11 +665,12 @@ impl QueryItem {
             QueryItem::RangeAfter(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterTo(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.start().as_ref()), true),
+            QueryItem::AggregateCountOnRange(inner) => inner.lower_bound(),
         }
     }
 
     /// Returns `true` if this query item has no lower bound (extends to -inf).
-    pub const fn lower_unbounded(&self) -> bool {
+    pub fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
             QueryItem::Range(_) => false,
@@ -474,6 +682,7 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => false,
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
+            QueryItem::AggregateCountOnRange(inner) => inner.lower_unbounded(),
         }
     }
 
@@ -491,11 +700,12 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => (None, true),
             QueryItem::RangeAfterTo(range) => (Some(range.end.as_ref()), false),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.end().as_ref()), true),
+            QueryItem::AggregateCountOnRange(inner) => inner.upper_bound(),
         }
     }
 
     /// Returns `true` if this query item has no upper bound (extends to +inf).
-    pub const fn upper_unbounded(&self) -> bool {
+    pub fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
             QueryItem::Range(_) => false,
@@ -507,6 +717,7 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => true,
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
+            QueryItem::AggregateCountOnRange(inner) => inner.upper_unbounded(),
         }
     }
 
@@ -535,6 +746,7 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => 7,
             QueryItem::RangeAfterTo(_) => 8,
             QueryItem::RangeAfterToInclusive(_) => 9,
+            QueryItem::AggregateCountOnRange(_) => 10,
         }
     }
 
@@ -544,7 +756,8 @@ impl QueryItem {
     }
 
     /// Returns `true` if this query item is any kind of range (not a single
-    /// key).
+    /// key). `AggregateCountOnRange` counts as a range — it describes a range
+    /// to count over.
     pub const fn is_range(&self) -> bool {
         matches!(
             self,
@@ -557,6 +770,7 @@ impl QueryItem {
                 | QueryItem::RangeAfter(_)
                 | QueryItem::RangeAfterTo(_)
                 | QueryItem::RangeAfterToInclusive(_)
+                | QueryItem::AggregateCountOnRange(_)
         )
     }
 
@@ -566,12 +780,30 @@ impl QueryItem {
     }
 
     /// Returns `true` if this query item is a range with at least one unbounded
-    /// end (e.g., `RangeFull`, `RangeFrom`, `RangeTo`, etc.).
-    pub const fn is_unbounded_range(&self) -> bool {
-        !matches!(
-            self,
-            QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
-        )
+    /// end (e.g., `RangeFull`, `RangeFrom`, `RangeTo`, etc.). For
+    /// `AggregateCountOnRange`, delegates to the inner item.
+    pub fn is_unbounded_range(&self) -> bool {
+        match self {
+            QueryItem::AggregateCountOnRange(inner) => inner.is_unbounded_range(),
+            _ => !matches!(
+                self,
+                QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
+            ),
+        }
+    }
+
+    /// Returns `true` if this query item is the count-only meta-variant.
+    pub const fn is_aggregate_count_on_range(&self) -> bool {
+        matches!(self, QueryItem::AggregateCountOnRange(_))
+    }
+
+    /// If this is `AggregateCountOnRange`, returns a reference to the inner
+    /// `QueryItem` describing the range to count. Otherwise returns `None`.
+    pub fn aggregate_count_inner(&self) -> Option<&QueryItem> {
+        match self {
+            QueryItem::AggregateCountOnRange(inner) => Some(inner.as_ref()),
+            _ => None,
+        }
     }
 
     /// Enumerates all distinct keys in this query item. Only works for `Key`,
@@ -775,6 +1007,7 @@ impl QueryItem {
                     iter.seek_for_prev(end)
                 }
             }
+            QueryItem::AggregateCountOnRange(inner) => inner.seek_for_iter(iter, left_to_right),
         }
     }
 
@@ -866,6 +1099,9 @@ impl QueryItem {
                         Ordering::Greater => true,
                     }
                 }
+            }
+            QueryItem::AggregateCountOnRange(inner) => {
+                return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
             }
         };
 
@@ -985,5 +1221,170 @@ mod test {
             QueryItem::Range(vec![20]..vec![30])
         );
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
+    }
+
+    // ---------- decode-depth + nested-AggregateCountOnRange rejection ----------
+
+    use super::MAX_QUERY_ITEM_DECODE_DEPTH;
+
+    fn bincode_config() -> bincode::config::Configuration<
+        bincode::config::BigEndian,
+        bincode::config::Fixint,
+        bincode::config::NoLimit,
+    > {
+        bincode::config::standard()
+            .with_big_endian()
+            .with_fixed_int_encoding()
+            .with_no_limit()
+    }
+
+    #[test]
+    fn decode_rejects_nested_aggregate_count_on_range() {
+        // A two-level nest: AggregateCountOnRange(AggregateCountOnRange(Range)).
+        let nested = QueryItem::AggregateCountOnRange(Box::new(QueryItem::AggregateCountOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&nested, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("nested AggregateCountOnRange must be rejected at decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateCountOnRange") || msg.contains("nesting depth"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_caps_depth_for_malicious_payload() {
+        // Construct a raw byte payload of (MAX_QUERY_ITEM_DECODE_DEPTH + 2)
+        // copies of the AggregateCountOnRange variant byte (10) followed by
+        // a base item. This bypasses the constructor-level nested rejection
+        // but should hit the depth guard. We use Range as the eventual base
+        // (variants 0..=9 don't recurse). Since variant 10 reads the next
+        // byte as a recursive QueryItem, repeated 10s recurse without
+        // bound — exactly the stack-exhaustion case the depth guard
+        // prevents.
+        let depth_to_try = MAX_QUERY_ITEM_DECODE_DEPTH + 2;
+        let mut payload: Vec<u8> = Vec::new();
+        for _ in 0..depth_to_try {
+            payload.push(10u8); // AggregateCountOnRange variant tag
+        }
+        // Innermost: Range(b"a", b"z"). Variant tag 1, then encoded start +
+        // end Vec<u8>s in big-endian fixed-int config.
+        payload.push(1u8);
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let inner_bytes = bincode::encode_to_vec(&inner, bincode_config()).unwrap();
+        // inner_bytes already starts with the variant tag (1), strip it.
+        payload.extend_from_slice(&inner_bytes[1..]);
+
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("payload exceeding max depth must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("nesting depth") || msg.contains("AggregateCountOnRange"),
+            "expected depth-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_accepts_valid_one_level_aggregate_count_on_range() {
+        // Single-level wrap with a non-aggregate inner. This is the only
+        // legal shape after validation; decoding must succeed.
+        let q = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let bytes = bincode::encode_to_vec(&q, bincode_config()).unwrap();
+        let (decoded, _): (QueryItem, _) = bincode::decode_from_slice(&bytes, bincode_config())
+            .expect("single-level wrap must decode");
+        assert_eq!(q, decoded);
+    }
+
+    // ---------- serde-feature: nested AggregateCountOnRange rejection ----------
+    //
+    // The bincode path is depth-bounded above. Mirror the same defense for the
+    // serde path so serde-feature clients can't bypass the protection — the
+    // inner item is deserialized through `NonAggregateInner`, whose enum
+    // field set excludes `AggregateCountOnRange`, so any nested payload is
+    // rejected immediately by serde without recursion through
+    // `QueryItem::deserialize`.
+    //
+    // We use `serde_test`'s token-level driver here rather than a textual
+    // format because the existing `Serialize` impl emits variant tags in
+    // PascalCase (`"AggregateCountOnRange"`) while the existing `Field` enum
+    // uses `rename_all = "snake_case"` — a pre-existing mismatch unrelated
+    // to this PR that breaks JSON round-trip but is invisible to formats
+    // that don't carry variant names textually. Using token streams sidesteps
+    // that issue and lets us validate the rejection contract directly.
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_rejects_nested_aggregate_count_on_range() {
+        // Replay the token sequence for an outer AggregateCountOnRange whose
+        // inner is itself an AggregateCountOnRange. The outer dispatch
+        // selects the AggregateCountOnRange variant and tries to deserialize
+        // the inner via `NonAggregateInner`, which does not list
+        // `aggregate_count_on_range` in its field set — serde_test surfaces
+        // this as an "unknown variant" error.
+        use serde_test::{assert_de_tokens_error, Token};
+        assert_de_tokens_error::<QueryItem>(
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+            ],
+            // Exact wording comes from serde's `field_identifier`
+            // dispatcher rejecting an out-of-set tag — the field set lives
+            // in `NonAggregateInner`'s `Field` enum, which deliberately
+            // omits `aggregate_count_on_range`.
+            "unknown field `aggregate_count_on_range`, expected one of \
+             `key`, `range`, `range_inclusive`, `range_full`, `range_from`, \
+             `range_to`, `range_to_inclusive`, `range_after`, `range_after_to`, \
+             `range_after_to_inclusive`",
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_accepts_valid_one_level_aggregate_count_on_range() {
+        // Outer `AggregateCountOnRange` wrapping a non-aggregate `Range`
+        // succeeds: the inner dispatch goes through `NonAggregateInner`,
+        // finds `range`, and the resulting Range is wrapped back up.
+        use serde_test::{assert_de_tokens, Token};
+        let expected = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_de_tokens(
+            &expected,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
+        );
     }
 }

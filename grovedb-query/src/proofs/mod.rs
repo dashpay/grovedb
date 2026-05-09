@@ -127,6 +127,30 @@ pub enum Node {
     ///
     /// Contains: `(key, value, value_hash, feature_type, child_hash)`
     KVValueHashFeatureTypeWithChildHash(Vec<u8>, Vec<u8>, CryptoHash, TreeFeatureType, CryptoHash),
+
+    /// A self-verifying compressed subtree for `AggregateCountOnRange` proofs
+    /// against a `ProvableCountTree` / `ProvableCountSumTree`.
+    ///
+    /// Encodes the subtree's *root* node as `(kv_hash, left_child_hash,
+    /// right_child_hash, count)`. The verifier reconstructs the subtree's
+    /// root `node_hash` as
+    /// `node_hash_with_count(kv_hash, left_child_hash, right_child_hash, count)`
+    /// and uses that hash exactly as `Hash(...)` would. Because `count` is
+    /// part of that recomputation, a forged count produces a different hash
+    /// and the parent's Merkle-root check fails — the count is therefore
+    /// cryptographically committed by the parent's hash chain, not just
+    /// trusted on faith.
+    ///
+    /// Used to collapse an entire fully-inside subtree into a single proof
+    /// node: the verifier doesn't need any per-key information (the parent
+    /// boundary nodes already established that every key under here is
+    /// in-range), so we hand it the four hashes plus the count.
+    ///
+    /// `left_child_hash` / `right_child_hash` are the all-zero `NULL_HASH`
+    /// when the subtree's root has no left / right child respectively.
+    ///
+    /// Contains: `(kv_hash, left_child_hash, right_child_hash, count)`
+    HashWithCount(CryptoHash, CryptoHash, CryptoHash, u64),
 }
 
 use std::fmt;
@@ -183,6 +207,13 @@ impl fmt::Display for Node {
                 "KVDigestCount({}, HASH[{}], {})",
                 hex_to_ascii(key),
                 hex::encode(value_hash),
+                count
+            ),
+            Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, count) => format!(
+                "HashWithCount(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], count={})",
+                hex::encode(kv_hash),
+                hex::encode(left_child_hash),
+                hex::encode(right_child_hash),
                 count
             ),
             Node::KVValueHashFeatureTypeWithChildHash(

@@ -109,6 +109,22 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
+        // Aggregate-count gate: validate at entry so malformed ACOR
+        // queries (invalid inner range, ACOR-hidden-in-subquery, etc.) are
+        // rejected up front instead of being skipped when the recursive
+        // prover never reaches the ACOR-bearing leaf — for example because
+        // the path doesn't exist. Without this gate, `prove_query` would
+        // happily return a regular path/absence proof for an invalid
+        // aggregate-count request.
+        if path_query
+            .query
+            .query
+            .has_aggregate_count_on_range_anywhere()
+            && let Err(e) = path_query.validate_aggregate_count_on_range()
+        {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
+
         match grove_version
             .grovedb_versions
             .operations
@@ -268,6 +284,37 @@ impl GroveDb {
         } else {
             *overall_limit
         };
+
+        // Aggregate-count short-circuit: if any item at this level is an
+        // `AggregateCountOnRange`, the surrounding `PathQuery` must validate
+        // as a well-formed aggregate-count query. We do **not** route on a
+        // partial match (e.g. a query with extra items, subqueries, or an
+        // illegal inner) — those would silently produce a count proof for
+        // the wrong shape. Instead we run the same validation the verifier
+        // runs and let it surface the precise error.
+        if query
+            .items
+            .iter()
+            .any(QueryItem::is_aggregate_count_on_range)
+        {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_count_on_range().cloned()
+            );
+            let (count_ops, _count) = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_aggregate_count_on_range(&inner_range, grove_version)
+                    .map_err(Error::MerkError)
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(count_ops.iter(), &mut serialized);
+            return Ok(MerkOnlyLayerProof {
+                merk_proof: serialized,
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
@@ -1011,6 +1058,35 @@ impl GroveDb {
         } else {
             *overall_limit
         };
+
+        // Aggregate-count short-circuit (v1 path). Same validation contract
+        // as v0: any AggregateCountOnRange at this level requires the
+        // surrounding PathQuery to validate as a well-formed aggregate-count
+        // query. The count-proof bytes are wrapped in `ProofBytes::Merk`
+        // since they share the merk Op stream encoding.
+        if query
+            .items
+            .iter()
+            .any(QueryItem::is_aggregate_count_on_range)
+        {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_count_on_range().cloned()
+            );
+            let (count_ops, _count) = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_aggregate_count_on_range(&inner_range, grove_version)
+                    .map_err(Error::MerkError)
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(count_ops.iter(), &mut serialized);
+            return Ok(LayerProof {
+                merk_proof: ProofBytes::Merk(serialized),
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
@@ -1862,6 +1938,12 @@ impl GroveDb {
                         }
                     }
                 }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on dense fixed-size merkle trees",
+                    ));
+                }
             }
         }
 
@@ -1980,6 +2062,12 @@ impl GroveDb {
                         }
                     }
                 }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on MMR trees",
+                    ));
+                }
             }
         }
 
@@ -2048,6 +2136,12 @@ impl GroveDb {
                     min_start = min_start.min(s.saturating_add(1));
                     max_end = max_end.max(e.saturating_add(1));
                 }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on BulkAppendTree",
+                    ));
+                }
             }
         }
 
@@ -2087,7 +2181,7 @@ impl GroveDb {
 mod tests {
     use grovedb_merk::proofs::query::QueryItem;
 
-    use crate::GroveDb;
+    use crate::{Error, GroveDb};
 
     /// Helper: encode a u16 as big-endian bytes.
     fn be_u16(v: u16) -> Vec<u8> {
@@ -2224,5 +2318,60 @@ mod tests {
             start,
             end
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // AggregateCountOnRange rejection on non-provable-count tree types.
+    //
+    // `AggregateCountOnRange` is only meaningful against `ProvableCountTree`
+    // and `ProvableCountSumTree` (their nodes commit a count via
+    // `node_hash_with_count`). Dense, MMR, and BulkAppendTree have no such
+    // commitment, so the index-resolution helpers must reject the variant
+    // outright rather than silently fall through.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dense_tree_rejects_aggregate_count_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u16(0)..=be_u16(5));
+        let items = vec![QueryItem::AggregateCountOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_positions(&items, 100)
+            .expect_err("dense tree must reject AggregateCountOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("dense fixed-size") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mmr_tree_rejects_aggregate_count_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateCountOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_leaf_indices(&items, 7)
+            .expect_err("MMR must reject AggregateCountOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("MMR") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bulk_append_tree_rejects_aggregate_count_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateCountOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_range(&items, 100)
+            .expect_err("BulkAppendTree must reject AggregateCountOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("BulkAppendTree") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
     }
 }

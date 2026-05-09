@@ -116,6 +116,13 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                     positions.insert(p);
                 }
             }
+            QueryItem::AggregateCountOnRange(_) => {
+                return Err(DenseMerkleError::InvalidProof(
+                    "AggregateCountOnRange is only supported on provable count trees, \
+                     not on dense fixed-size merkle trees"
+                        .into(),
+                ));
+            }
         }
     }
 

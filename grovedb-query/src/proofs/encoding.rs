@@ -150,6 +150,13 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::Push(Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, count)) => {
+                dest.write_all(&[0x1e])?;
+                dest.write_all(kv_hash)?;
+                dest.write_all(left_child_hash)?;
+                dest.write_all(right_child_hash)?;
+                count.encode_into(dest)?;
+            }
             Op::Push(Node::KVValueHashFeatureTypeWithChildHash(
                 key,
                 value,
@@ -309,6 +316,18 @@ impl Encode for Op {
                 dest.write_all(value_hash)?;
                 count.encode_into(dest)?;
             }
+            Op::PushInverted(Node::HashWithCount(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                count,
+            )) => {
+                dest.write_all(&[0x1f])?;
+                dest.write_all(kv_hash)?;
+                dest.write_all(left_child_hash)?;
+                dest.write_all(right_child_hash)?;
+                count.encode_into(dest)?;
+            }
             Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
                 key,
                 value,
@@ -377,6 +396,9 @@ impl Encode for Op {
             Op::Push(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
             }
+            Op::Push(Node::HashWithCount(_, _, _, count)) => {
+                1 + 3 * HASH_LENGTH + count.encoding_length()?
+            }
             Op::Push(Node::KVValueHashFeatureTypeWithChildHash(key, value, _, feature_type, _)) => {
                 let header = if value.len() < 65536 { 4 } else { 6 };
                 header
@@ -418,6 +440,9 @@ impl Encode for Op {
             }
             Op::PushInverted(Node::KVDigestCount(key, _, count)) => {
                 2 + key.len() + HASH_LENGTH + count.encoding_length()?
+            }
+            Op::PushInverted(Node::HashWithCount(_, _, _, count)) => {
+                1 + 3 * HASH_LENGTH + count.encoding_length()?
             }
             Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
                 key,
@@ -720,6 +745,38 @@ impl Decode for Op {
                     value_hash,
                     tree_feature_type,
                     child_hash,
+                ))
+            }
+            0x1e => {
+                let mut kv_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut kv_hash)?;
+                let mut left_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut left_child_hash)?;
+                let mut right_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut right_child_hash)?;
+                let count: u64 = Decode::decode(&mut input)?;
+
+                Self::Push(Node::HashWithCount(
+                    kv_hash,
+                    left_child_hash,
+                    right_child_hash,
+                    count,
+                ))
+            }
+            0x1f => {
+                let mut kv_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut kv_hash)?;
+                let mut left_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut left_child_hash)?;
+                let mut right_child_hash = [0; HASH_LENGTH];
+                input.read_exact(&mut right_child_hash)?;
+                let count: u64 = Decode::decode(&mut input)?;
+
+                Self::PushInverted(Node::HashWithCount(
+                    kv_hash,
+                    left_child_hash,
+                    right_child_hash,
+                    count,
                 ))
             }
             0x1d => {
@@ -2216,5 +2273,99 @@ mod test {
 
         let decoded = Op::decode(&bytes[..]).expect("decode failed");
         assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_push_hash_with_count() {
+        // (kv_hash, left_child_hash, right_child_hash, count) — the
+        // self-verifying compressed-subtree variant for AggregateCountOnRange.
+        let op = Op::Push(Node::HashWithCount(
+            [0xAA; HASH_LENGTH],
+            [0xBB; HASH_LENGTH],
+            [0xCC; HASH_LENGTH],
+            42,
+        ));
+        // 1 opcode + 3 * 32 hashes + varint(42) = 1 + 96 + 1 = 98
+        let expected_length = 1 + 3 * HASH_LENGTH + ed::Encode::encoding_length(&42u64).unwrap();
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x1e); // Push HashWithCount opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_push_inverted_hash_with_count() {
+        let op = Op::PushInverted(Node::HashWithCount(
+            [0x11; HASH_LENGTH],
+            [0x22; HASH_LENGTH],
+            [0x33; HASH_LENGTH],
+            u64::MAX,
+        ));
+        let expected_length = 1 + 3 * HASH_LENGTH + ed::Encode::encoding_length(&u64::MAX).unwrap();
+        assert_eq!(op.encoding_length(), expected_length);
+
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), expected_length);
+        assert_eq!(bytes[0], 0x1f); // PushInverted HashWithCount opcode
+
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn encode_decode_hash_with_count_zero_count_zero_children() {
+        // count = 0 (encodes to a 1-byte varint), all-zero hashes — represents
+        // a leaf-shaped collapsed subtree with no children.
+        let op = Op::Push(Node::HashWithCount(
+            [0u8; HASH_LENGTH],
+            [0u8; HASH_LENGTH],
+            [0u8; HASH_LENGTH],
+            0,
+        ));
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes[0], 0x1e);
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn decoder_with_hash_with_count_mixed_with_other_count_nodes() {
+        // Round-trip a small Op stream containing HashWithCount alongside the
+        // existing count-bearing variants — exercises the Decoder iterator
+        // boundary handling for the new variants.
+        let ops = vec![
+            Op::Push(Node::HashWithCount(
+                [1; HASH_LENGTH],
+                [2; HASH_LENGTH],
+                [3; HASH_LENGTH],
+                7,
+            )),
+            Op::Push(Node::KVDigestCount(vec![0xAB], [4; HASH_LENGTH], 1)),
+            Op::Parent,
+            Op::Push(Node::Hash([5; HASH_LENGTH])),
+            Op::Child,
+            Op::PushInverted(Node::HashWithCount(
+                [6; HASH_LENGTH],
+                [7; HASH_LENGTH],
+                [8; HASH_LENGTH],
+                12345,
+            )),
+        ];
+
+        let mut encoded = vec![];
+        for op in &ops {
+            op.encode_into(&mut encoded).unwrap();
+        }
+
+        let decoder = Decoder::new(&encoded);
+        let decoded_ops: Result<Vec<Op>, _> = decoder.collect();
+        assert_eq!(decoded_ops.unwrap(), ops);
     }
 }

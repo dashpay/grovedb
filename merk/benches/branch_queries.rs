@@ -233,7 +233,7 @@ fn get_key_from_node(node: &Node) -> Option<Vec<u8>> {
         Node::KVRefValueHash(key, ..) => Some(key.clone()),
         Node::KVCount(key, ..) => Some(key.clone()),
         Node::KVRefValueHashCount(key, ..) => Some(key.clone()),
-        Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => None,
+        Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) | Node::HashWithCount(..) => None,
     }
 }
 
