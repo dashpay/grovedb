@@ -411,6 +411,83 @@ graph TD
 For range queries, absence proofs show that there are no keys within the queried
 range that were not included in the result set.
 
+## Boundary Key Detection
+
+When verifying a proof from an exclusive range query, you may need to confirm
+that specific keys exist as **boundary elements** — keys that anchor the range
+but are not part of the result set.
+
+For example, with `RangeAfter(10)` (all keys strictly after 10), the proof
+includes key 10 as a `KVDigest` node. This proves key 10 exists in the tree
+and anchors the start of the range, but key 10 is not returned in the results.
+
+### When boundary nodes appear
+
+Boundary `KVDigest` (or `KVDigestCount` for ProvableCountTree) nodes appear in
+proofs for exclusive range query types:
+
+| Query type | Boundary key | What it proves |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | The exclusive start exists in the tree |
+| `RangeAfterTo(start..end)` | `start` | The exclusive start exists in the tree |
+| `RangeAfterToInclusive(start..=end)` | `start` | The exclusive start exists in the tree |
+
+Boundary nodes also appear in absence proofs, where neighboring keys prove a
+gap exists (see [Absence Proofs](#absence-proofs) above).
+
+### Retrieving all boundary keys
+
+After verifying a proof, call `boundaries` on the decoded `GroveDBProof` to get
+all boundary keys at a given path:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+The `path` argument identifies which layer of the proof to inspect (matching
+the GroveDB subtree path where the range query was executed).
+
+### Checking a single boundary key
+
+If you only need to check whether one specific key is a boundary, use
+`key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### Practical use: pagination verification
+
+This is particularly useful for **pagination**. When a client requests "the next
+100 documents after document X," the query is `RangeAfter(document_X_id)`. The
+proof returns documents 101-200, but the client may also want to confirm that
+document X (the pagination cursor) still exists in the tree:
+
+- If the cursor key appears in `boundaries()`, the cursor is valid — the client
+  can trust the pagination is anchored to a real document.
+- If it does not appear, the cursor document may have been deleted between
+  pages, and the client should consider restarting pagination.
+
+> **Important:** Both `boundaries()` and `key_exists_as_boundary` perform a
+> syntactic scan of the proof's `KVDigest`/`KVDigestCount` nodes. They provide
+> no cryptographic guarantee on their own — always verify the proof against a
+> trusted root hash first. The same node types also appear in absence proofs,
+> so the caller should interpret results in the context of the query that
+> generated the proof.
+
+At the merk level, the same checks are available via
+`boundaries_in_proof(proof_bytes)` and
+`key_exists_as_boundary_in_proof(proof_bytes, key)` for working directly with
+raw merk proof bytes.
+
 ## V1 Proofs — Non-Merk Trees
 
 The V0 proof system works exclusively with Merk subtrees, descending layer by

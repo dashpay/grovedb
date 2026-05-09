@@ -399,6 +399,84 @@ graph TD
 
 Đối với truy vấn phạm vi, bằng chứng vắng mặt cho thấy không có khóa nào trong phạm vi truy vấn mà không được đưa vào tập kết quả.
 
+## Phát hiện Boundary Key
+
+Khi xác minh bằng chứng từ truy vấn phạm vi exclusive, bạn có thể cần xác nhận
+rằng các khóa cụ thể tồn tại dưới dạng **phần tử biên (boundary element)** —
+các khóa neo phạm vi nhưng không nằm trong tập kết quả.
+
+Ví dụ, với `RangeAfter(10)` (tất cả khóa lớn hơn 10 một cách nghiêm ngặt),
+bằng chứng bao gồm khóa 10 dưới dạng nút `KVDigest`. Điều này chứng minh khóa
+10 tồn tại trong cây và neo điểm bắt đầu của phạm vi, nhưng khóa 10 không được
+trả về trong kết quả.
+
+### Khi nào boundary node xuất hiện
+
+Các nút boundary `KVDigest` (hoặc `KVDigestCount` cho ProvableCountTree) xuất
+hiện trong bằng chứng cho các kiểu truy vấn phạm vi exclusive:
+
+| Kiểu truy vấn | Boundary key | Chứng minh điều gì |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Điểm bắt đầu exclusive tồn tại trong cây |
+| `RangeAfterTo(start..end)` | `start` | Điểm bắt đầu exclusive tồn tại trong cây |
+| `RangeAfterToInclusive(start..=end)` | `start` | Điểm bắt đầu exclusive tồn tại trong cây |
+
+Boundary node cũng xuất hiện trong bằng chứng vắng mặt, nơi các khóa lân cận
+chứng minh rằng tồn tại khoảng trống (xem [Bằng chứng vắng mặt](#bằng-chứng-vắng-mặt) ở trên).
+
+### Lấy tất cả boundary key
+
+Sau khi xác minh bằng chứng, gọi `boundaries` trên `GroveDBProof` đã giải mã
+để lấy tất cả boundary key tại đường dẫn cho trước:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+Tham số `path` xác định tầng nào của bằng chứng cần kiểm tra (khớp với đường
+dẫn subtree GroveDB nơi truy vấn phạm vi được thực thi).
+
+### Kiểm tra một boundary key đơn lẻ
+
+Nếu bạn chỉ cần kiểm tra xem một khóa cụ thể có phải là boundary hay không,
+sử dụng `key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### Ứng dụng thực tế: xác minh phân trang
+
+Điều này đặc biệt hữu ích cho **phân trang (pagination)**. Khi client yêu cầu
+"100 tài liệu tiếp theo sau tài liệu X," truy vấn là `RangeAfter(document_X_id)`.
+Bằng chứng trả về tài liệu 101-200, nhưng client cũng có thể muốn xác nhận
+rằng tài liệu X (con trỏ phân trang) vẫn tồn tại trong cây:
+
+- Nếu khóa con trỏ xuất hiện trong `boundaries()`, con trỏ hợp lệ — client có
+  thể tin tưởng phân trang được neo vào tài liệu thực.
+- Nếu không xuất hiện, tài liệu con trỏ có thể đã bị xóa giữa các trang, và
+  client nên cân nhắc khởi động lại phân trang.
+
+> **Quan trọng:** Cả `boundaries()` và `key_exists_as_boundary` đều thực hiện
+> quét cú pháp các nút `KVDigest`/`KVDigestCount` của bằng chứng. Chúng không
+> cung cấp đảm bảo mật mã riêng — luôn xác minh bằng chứng với root hash đáng
+> tin cậy trước. Các kiểu nút tương tự cũng xuất hiện trong bằng chứng vắng mặt,
+> nên bên gọi cần diễn giải kết quả trong ngữ cảnh của truy vấn đã tạo bằng
+> chứng.
+
+Ở cấp merk, các kiểm tra tương tự có sẵn qua
+`boundaries_in_proof(proof_bytes)` và
+`key_exists_as_boundary_in_proof(proof_bytes, key)` để làm việc trực tiếp với
+byte bằng chứng merk thô.
+
 ## Bằng chứng V1 — Cây không phải Merk
 
 Hệ thống bằng chứng V0 hoạt động độc quyền với cây Merk con, đi xuống từng tầng qua hệ thống phân cấp grove. Tuy nhiên, các phần tử **CommitmentTree**, **MmrTree**, **BulkAppendTree**, và **DenseAppendOnlyFixedSizeTree** lưu dữ liệu ngoài cây Merk con. Chúng không có cây Merk con để đi xuống — root hash riêng theo kiểu của chúng chảy như child hash của Merk thay vào đó.

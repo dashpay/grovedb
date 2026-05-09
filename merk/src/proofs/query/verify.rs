@@ -7,7 +7,7 @@ use grovedb_element::ElementType;
 use crate::proofs::query::{Map, MapBuilder};
 use crate::{
     error::Error,
-    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Query},
+    proofs::{hex_to_ascii, tree::execute, Decoder, Node, Op, Query},
     tree::{combine_hash, value_hash},
     CryptoHash as MerkHash, CryptoHash,
 };
@@ -672,4 +672,51 @@ impl fmt::Display for ProofVerificationResult {
         writeln!(f, "  limit: {:?}", self.limit)?;
         write!(f, "}}")
     }
+}
+
+/// Checks whether a key exists as a boundary element in the given merk proof
+/// bytes. A boundary element is a `KVDigest` or `KVDigestCount` node — it
+/// proves the key exists in the tree without revealing the value.
+///
+/// This is useful for exclusive range queries (e.g. `RangeAfter(10)`) where
+/// the boundary key (10) is included in the proof as a digest node to anchor
+/// the range, but is not part of the result set.
+pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result<bool, Error> {
+    let decoder = Decoder::new(proof_bytes);
+    for op_result in decoder {
+        let op = op_result?;
+        match &op {
+            Op::Push(Node::KVDigest(k, _))
+            | Op::PushInverted(Node::KVDigest(k, _))
+            | Op::Push(Node::KVDigestCount(k, _, _))
+            | Op::PushInverted(Node::KVDigestCount(k, _, _)) => {
+                if k.as_slice() == key {
+                    return Ok(true);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+/// Returns all boundary keys found in the given merk proof bytes.
+/// Boundary keys appear as `KVDigest` or `KVDigestCount` nodes — they
+/// prove a key exists in the tree without revealing the value.
+pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+    let decoder = Decoder::new(proof_bytes);
+    let mut keys = Vec::new();
+    for op_result in decoder {
+        let op = op_result?;
+        match op {
+            Op::Push(Node::KVDigest(k, _))
+            | Op::PushInverted(Node::KVDigest(k, _))
+            | Op::Push(Node::KVDigestCount(k, _, _))
+            | Op::PushInverted(Node::KVDigestCount(k, _, _)) => {
+                keys.push(k);
+            }
+            _ => {}
+        }
+    }
+    Ok(keys)
 }

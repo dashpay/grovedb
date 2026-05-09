@@ -390,6 +390,75 @@ graph TD
 
 对于范围查询，不存在性证明表明在查询范围内没有未包含在结果集中的键。
 
+## 边界键检测
+
+在验证来自排他性范围查询的证明时，您可能需要确认特定键作为**边界元素**存在
+— 这些键锚定范围但不属于结果集。
+
+例如，对于 `RangeAfter(10)`（所有严格大于 10 的键），证明将键 10 作为
+`KVDigest` 节点包含在内。这证明键 10 存在于树中并锚定范围的起点，但键 10
+不会在结果中返回。
+
+### 边界节点何时出现
+
+边界 `KVDigest`（或 ProvableCountTree 的 `KVDigestCount`）节点出现在排他性
+范围查询类型的证明中：
+
+| 查询类型 | 边界键 | 证明内容 |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | 排他性起点存在于树中 |
+| `RangeAfterTo(start..end)` | `start` | 排他性起点存在于树中 |
+| `RangeAfterToInclusive(start..=end)` | `start` | 排他性起点存在于树中 |
+
+边界节点也出现在不存在性证明中，其中相邻键证明存在间隙
+（参见上方的[不存在性证明](#不存在性证明)）。
+
+### 获取所有边界键
+
+验证证明后，对解码的 `GroveDBProof` 调用 `boundaries` 以获取给定路径下的
+所有边界键：
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+`path` 参数标识要检查证明的哪一层（与执行范围查询的 GroveDB 子树路径匹配）。
+
+### 检查单个边界键
+
+如果只需要检查某个特定键是否为边界，使用 `key_exists_as_boundary`：
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### 实际应用：分页验证
+
+这对**分页**特别有用。当客户端请求"文档 X 之后的 100 个文档"时，查询为
+`RangeAfter(document_X_id)`。证明返回第 101-200 个文档，但客户端可能还想确认
+文档 X（分页游标）仍然存在于树中：
+
+- 如果游标键出现在 `boundaries()` 中，则游标有效 — 客户端可以信任分页锚定在
+  真实文档上。
+- 如果未出现，则游标文档可能在翻页之间被删除，客户端应考虑重新开始分页。
+
+> **重要：** `boundaries()` 和 `key_exists_as_boundary` 都对证明的
+> `KVDigest`/`KVDigestCount` 节点执行语法扫描。它们本身不提供密码学保证
+> — 始终先针对受信任的根哈希验证证明。相同的节点类型也出现在不存在性证明中，
+> 因此调用者应在生成证明的查询上下文中解释结果。
+
+在 merk 层面，可以通过 `boundaries_in_proof(proof_bytes)` 和
+`key_exists_as_boundary_in_proof(proof_bytes, key)` 直接处理原始 merk 证明
+字节来使用相同的检查。
+
 ## V1 证明 — 非 Merk 树
 
 V0 证明系统仅适用于 Merk 子树，逐层向下穿过树丛层级结构。然而，**CommitmentTree**、**MmrTree**、**BulkAppendTree** 和 **DenseAppendOnlyFixedSizeTree** 元素将其数据存储在子 Merk 树之外。它们没有可进入的子 Merk — 它们的类型特定根哈希作为 Merk 子哈希流动。

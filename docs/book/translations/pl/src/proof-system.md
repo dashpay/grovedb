@@ -415,6 +415,86 @@ graph TD
 Dla zapytan zakresowych dowody nieobecnosci pokazuja, ze nie ma kluczy w
 odpytywanym zakresie, ktore nie zostaly uwzglednione w zbiorze wynikow.
 
+## Wykrywanie kluczy granicznych
+
+Podczas weryfikacji dowodu z zapytania o zakres wylaczajacy moze byc konieczne
+potwierdzenie, ze okreslone klucze istnieja jako **elementy graniczne** — klucze,
+ktore zakotwiczaja zakres, ale nie sa czescia zbioru wynikow.
+
+Na przyklad, dla `RangeAfter(10)` (wszystkie klucze scisle po 10), dowod
+zawiera klucz 10 jako wezel `KVDigest`. Dowodzi to, ze klucz 10 istnieje w
+drzewie i zakotwicza poczatek zakresu, ale klucz 10 nie jest zwracany w
+wynikach.
+
+### Kiedy pojawiaja sie wezly graniczne
+
+Graniczne wezly `KVDigest` (lub `KVDigestCount` dla ProvableCountTree) pojawiaja
+sie w dowodach dla wylaczajacych typow zapytan zakresowych:
+
+| Typ zapytania | Klucz graniczny | Co dowodzi |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Wylaczajacy poczatek istnieje w drzewie |
+| `RangeAfterTo(start..end)` | `start` | Wylaczajacy poczatek istnieje w drzewie |
+| `RangeAfterToInclusive(start..=end)` | `start` | Wylaczajacy poczatek istnieje w drzewie |
+
+Wezly graniczne pojawiaja sie rowniez w dowodach nieobecnosci, gdzie sasiednie
+klucze dowodza istnienia luki (patrz [Dowody nieobecnosci](#dowody-nieobecnosci)
+powyzej).
+
+### Pobieranie wszystkich kluczy granicznych
+
+Po zweryfikowaniu dowodu, wywolaj `boundaries` na zdekodowanym `GroveDBProof`,
+aby uzyskac wszystkie klucze graniczne dla danej sciezki:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+Argument `path` identyfikuje, ktora warstwe dowodu sprawdzic (odpowiadajaca
+sciezce poddrzewa GroveDB, w ktorym wykonano zapytanie zakresowe).
+
+### Sprawdzanie pojedynczego klucza granicznego
+
+Jesli musisz tylko sprawdzic, czy jeden konkretny klucz jest granica, uzyj
+`key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### Praktyczne zastosowanie: weryfikacja paginacji
+
+Jest to szczegolnie przydatne przy **paginacji**. Gdy klient zada "nastepnych
+100 dokumentow po dokumencie X", zapytanie to `RangeAfter(document_X_id)`.
+Dowod zwraca dokumenty 101-200, ale klient moze rowniez chciec potwierdzic,
+ze dokument X (kursor paginacji) nadal istnieje w drzewie:
+
+- Jesli klucz kursora pojawia sie w `boundaries()`, kursor jest prawidlowy —
+  klient moze zaufac, ze paginacja jest zakotwiczona w rzeczywistym dokumencie.
+- Jesli nie pojawia sie, dokument kursora mogl zostac usuniety miedzy stronami
+  i klient powinien rozwazyc ponowne rozpoczecie paginacji.
+
+> **Wazne:** Zarowno `boundaries()`, jak i `key_exists_as_boundary` wykonuja
+> syntaktyczne skanowanie wezlow `KVDigest`/`KVDigestCount` dowodu. Nie
+> zapewniaja one samodzielnie zadnej gwarancji kryptograficznej — zawsze
+> najpierw zweryfikuj dowod wzgledem zaufanego hasza korzenia. Te same typy
+> wezlow pojawiaja sie rowniez w dowodach nieobecnosci, wiec wywolujacy
+> powinien interpretowac wyniki w kontekscie zapytania, ktore wygenerowalo
+> dowod.
+
+Na poziomie merk te same sprawdzenia sa dostepne poprzez
+`boundaries_in_proof(proof_bytes)` i
+`key_exists_as_boundary_in_proof(proof_bytes, key)` do pracy bezposrednio z
+surowymi bajtami dowodu merk.
+
 ## Dowody V1 -- Drzewa nie-Merk
 
 System dowodow V0 dziala wylacznie z poddrzewami Merk, schodzac warstwa po

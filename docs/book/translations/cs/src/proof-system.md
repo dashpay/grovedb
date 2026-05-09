@@ -411,6 +411,83 @@ graph TD
 Pro rozsahove dotazy dukazy neexistence ukazuji, ze v dotazovanem
 rozsahu nejsou zadne klice, ktere nebyly zahrnuty do sady vysledku.
 
+## Detekce hranicnich klicu
+
+Pri overovani dukazu z exkluzivniho rozsahoveho dotazu muze byt nutne potvrdit,
+ze specificke klice existuji jako **hranicni elementy** — klice, ktere ukotvuji
+rozsah, ale nejsou soucasti sady vysledku.
+
+Napriklad u `RangeAfter(10)` (vsechny klice striktne po 10) dukaz zahrnuje
+klic 10 jako uzel `KVDigest`. To dokazuje, ze klic 10 existuje ve stromu
+a ukotvuje zacatek rozsahu, ale klic 10 neni vracen ve vysledcich.
+
+### Kdy se hranicni uzly objevi
+
+Hranicni uzly `KVDigest` (nebo `KVDigestCount` pro ProvableCountTree) se
+objevi v dukazech pro exkluzivni typy rozsahovych dotazu:
+
+| Typ dotazu | Hranicni klic | Co dokazuje |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Exkluzivni zacatek existuje ve stromu |
+| `RangeAfterTo(start..end)` | `start` | Exkluzivni zacatek existuje ve stromu |
+| `RangeAfterToInclusive(start..=end)` | `start` | Exkluzivni zacatek existuje ve stromu |
+
+Hranicni uzly se take objevi v dukazech neexistence, kde sousedni klice
+dokazuji existenci mezery (viz [Dukazy neexistence](#dukazy-neexistence) vyse).
+
+### Ziskani vsech hranicnich klicu
+
+Po overeni dukazu zavolejte `boundaries` na dekodovanem `GroveDBProof`
+pro ziskani vsech hranicnich klicu na dane ceste:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+Argument `path` urcuje, kterou vrstvu dukazu proverit (odpovida ceste
+podstromu GroveDB, kde byl rozsahovy dotaz proveden).
+
+### Kontrola jednoho hranicniho klice
+
+Pokud potrebujete pouze zkontrolovat, zda je jeden konkretni klic hranicni,
+pouzijte `key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### Prakticke pouziti: overeni strankovani
+
+Toto je obzvlaste uzitecne pro **strankovani**. Kdyz klient pozaduje "dalsich
+100 dokumentu po dokumentu X," dotaz je `RangeAfter(document_X_id)`. Dukaz
+vraci dokumenty 101-200, ale klient muze take chtit potvrdit, ze dokument X
+(kurzor strankovani) stale existuje ve stromu:
+
+- Pokud se klic kurzoru objevi v `boundaries()`, kurzor je platny — klient
+  muze duverovat, ze strankovani je ukotveno ke skutecnemu dokumentu.
+- Pokud se neobjevi, dokument kurzoru mohl byt smazan mezi strankami
+  a klient by mel zvazit restartovani strankovani.
+
+> **Dulezite:** Jak `boundaries()`, tak `key_exists_as_boundary` provadeji
+> syntakticky pruchod uzlu `KVDigest`/`KVDigestCount` v dukazu. Samy o sobe
+> neposkytují zadnou kryptografickou zaruku — vzdy nejprve overte dukaz
+> vuci duveryhod nemu korenovemu hashi. Stejne typy uzlu se take objevi
+> v dukazech neexistence, takze volajici by mel interpretovat vysledky
+> v kontextu dotazu, ktery dukaz vygeneroval.
+
+Na urovni merk jsou stejne kontroly dostupne prostrednictvim
+`boundaries_in_proof(proof_bytes)` a
+`key_exists_as_boundary_in_proof(proof_bytes, key)` pro praci primo
+s nezpracovanymi bajty dukazu merk.
+
 ## Dukazy V1 -- Ne-Merk stromy
 
 System dukazu V0 funguje vyhradne s podstromy Merk a sestupuje vrstvu po

@@ -17,6 +17,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        operations::proof::GroveDBProof,
         tests::{make_deep_tree, make_test_grovedb, ANOTHER_TEST_LEAF, TEST_LEAF},
         Element, GroveDb, PathQuery, SizedQuery,
     };
@@ -640,5 +641,236 @@ mod tests {
 
         assert_eq!(result_set[2].1, b"key5".to_vec());
         assert_eq!(result_set[2].2, Some(Element::new_item(b"value5".to_vec())));
+    }
+
+    // =========================================================================
+    // key_exists_as_boundary_in_proof tests
+    // =========================================================================
+
+    #[test]
+    fn grovedb_range_after_boundary_proof() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert items with keys 1..=5 under TEST_LEAF
+        for i in 1u8..=5 {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                &[i],
+                Element::new_item(vec![i; 4]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert");
+        }
+
+        // Query: RangeAfter(3..) — results should be keys 4, 5.
+        // Key 3 should be a boundary.
+        let mut query = Query::new();
+        query.insert_range_after(vec![3]..);
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+
+        // Decode proof once, then verify and check boundaries on the same object
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("should decode proof");
+
+        // Verify proof is valid
+        let (_, results) = grovedb_proof
+            .verify(&path_query, grove_version)
+            .expect("should verify");
+
+        // Keys 4 and 5 should be in results
+        assert!(results.iter().any(|r| r.1 == vec![4]));
+        assert!(results.iter().any(|r| r.1 == vec![5]));
+        // Key 3 should NOT be in results
+        assert!(!results.iter().any(|r| r.1 == vec![3]));
+
+        // Key 3 should exist as boundary in the proof at path [TEST_LEAF]
+        assert!(
+            grovedb_proof
+                .key_exists_as_boundary(&[TEST_LEAF], &[3])
+                .expect("should not error"),
+            "Key 3 should be boundary in RangeAfter(3) proof"
+        );
+
+        // Key 4 should NOT be a boundary
+        assert!(
+            !grovedb_proof
+                .key_exists_as_boundary(&[TEST_LEAF], &[4])
+                .expect("should not error"),
+            "Key 4 is a result element, not a boundary"
+        );
+
+        // boundaries() should return all boundary keys at once
+        let boundary_keys = grovedb_proof
+            .boundaries(&[TEST_LEAF])
+            .expect("should not error");
+        assert!(
+            boundary_keys.contains(&vec![3]),
+            "boundaries() should include key 3, got: {:?}",
+            boundary_keys
+        );
+        assert!(
+            !boundary_keys.contains(&vec![4]),
+            "boundaries() should not include result key 4"
+        );
+        assert!(
+            !boundary_keys.contains(&vec![5]),
+            "boundaries() should not include result key 5"
+        );
+    }
+
+    #[test]
+    fn grovedb_boundaries_invalid_path() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            &[1],
+            Element::new_item(vec![1; 4]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert");
+
+        let mut query = Query::new();
+        query.insert_range_after(vec![0]..);
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("should decode");
+
+        // Valid path works
+        grovedb_proof
+            .boundaries(&[TEST_LEAF])
+            .expect("valid path should work");
+
+        // Invalid path returns error
+        let err = grovedb_proof
+            .boundaries(&[b"nonexistent"])
+            .expect_err("should error on invalid path");
+        assert!(
+            matches!(err, crate::Error::InvalidInput(_)),
+            "expected InvalidInput, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn grovedb_boundaries_empty_path_checks_root() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Query at the root level with RangeAfter to get a boundary
+        let mut query = Query::new();
+        query.insert_range_after(TEST_LEAF.to_vec()..);
+        let path_query = PathQuery::new_unsized(vec![], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("should decode");
+
+        // Empty path inspects root layer — should not panic
+        let boundaries = grovedb_proof
+            .boundaries(&[])
+            .expect("empty path should work");
+        // TEST_LEAF should be a boundary at the root level
+        assert!(
+            boundaries.contains(&TEST_LEAF.to_vec()),
+            "TEST_LEAF should be a boundary at root, got: {:?}",
+            boundaries
+        );
+    }
+
+    #[test]
+    fn grovedb_boundaries_with_multiple_boundary_keys() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Insert items 1..=10 under TEST_LEAF
+        for i in 1u8..=10 {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                &[i],
+                Element::new_item(vec![i; 4]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert");
+        }
+
+        // RangeAfterTo(3..8) — key 3 is exclusive start boundary
+        // Results: 4, 5, 6, 7
+        let mut query = Query::new();
+        query.insert_range_after_to(vec![3]..vec![8]);
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (grovedb_proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("should decode");
+
+        let (_, results) = grovedb_proof
+            .verify(&path_query, grove_version)
+            .expect("should verify");
+
+        // Results should be 4, 5, 6, 7
+        assert_eq!(results.len(), 4);
+
+        let boundaries = grovedb_proof
+            .boundaries(&[TEST_LEAF])
+            .expect("should not error");
+
+        // Key 3 should be a boundary
+        assert!(
+            boundaries.contains(&vec![3]),
+            "Key 3 should be boundary, got: {:?}",
+            boundaries
+        );
+
+        // Result keys should not be boundaries
+        for i in 4u8..=7 {
+            assert!(
+                !boundaries.contains(&vec![i]),
+                "Result key {} should not be boundary",
+                i
+            );
+        }
     }
 }

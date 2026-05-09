@@ -399,6 +399,82 @@ graph TD
 
 สำหรับ range query absence proof แสดงว่าไม่มี key ภายในช่วงที่สืบค้นที่ไม่ได้รวมอยู่ในชุดผลลัพธ์
 
+## การตรวจจับ Boundary Key
+
+เมื่อตรวจสอบ proof จากคิวรีช่วงแบบ exclusive คุณอาจต้องยืนยันว่า key เฉพาะ
+มีอยู่ในฐานะ **boundary element** — key ที่ยึดช่วงไว้แต่ไม่ได้เป็นส่วนหนึ่งของ
+ชุดผลลัพธ์
+
+ตัวอย่างเช่น ด้วย `RangeAfter(10)` (key ทั้งหมดที่มากกว่า 10 อย่างเคร่งครัด) proof
+จะรวม key 10 ไว้เป็นโหนด `KVDigest` ซึ่งพิสูจน์ว่า key 10 มีอยู่ในต้นไม้และ
+ยึดจุดเริ่มต้นของช่วง แต่ key 10 ไม่ถูกส่งคืนในผลลัพธ์
+
+### เมื่อ boundary node ปรากฏ
+
+โหนด boundary `KVDigest` (หรือ `KVDigestCount` สำหรับ ProvableCountTree) ปรากฏ
+ใน proof สำหรับประเภทคิวรีช่วงแบบ exclusive:
+
+| ประเภทคิวรี | Boundary key | สิ่งที่พิสูจน์ |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
+| `RangeAfterTo(start..end)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
+| `RangeAfterToInclusive(start..=end)` | `start` | จุดเริ่มต้นแบบ exclusive มีอยู่ในต้นไม้ |
+
+Boundary node ยังปรากฏใน absence proof ที่ key ข้างเคียงพิสูจน์ว่ามีช่องว่าง
+อยู่ (ดู [Absence Proof](#absence-proof) ด้านบน)
+
+### การดึง boundary key ทั้งหมด
+
+หลังจากตรวจสอบ proof แล้ว เรียก `boundaries` บน `GroveDBProof` ที่ถอดรหัสแล้ว
+เพื่อดึง boundary key ทั้งหมดที่ path ที่กำหนด:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+อาร์กิวเมนต์ `path` ระบุว่าจะตรวจสอบชั้นใดของ proof (ตรงกับ path ของ
+subtree GroveDB ที่คิวรีช่วงถูกดำเนินการ)
+
+### การตรวจสอบ boundary key เดี่ยว
+
+หากคุณต้องการตรวจสอบเพียงว่า key เฉพาะหนึ่งตัวเป็น boundary หรือไม่ ให้ใช้
+`key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### การใช้งานจริง: การตรวจสอบการแบ่งหน้า
+
+สิ่งนี้มีประโยชน์อย่างยิ่งสำหรับ **การแบ่งหน้า (pagination)** เมื่อไคลเอนต์ร้องขอ
+"เอกสาร 100 รายการถัดไปหลังเอกสาร X" คิวรีคือ `RangeAfter(document_X_id)` proof
+ส่งคืนเอกสาร 101-200 แต่ไคลเอนต์อาจต้องการยืนยันว่าเอกสาร X (cursor
+การแบ่งหน้า) ยังคงมีอยู่ในต้นไม้:
+
+- หาก cursor key ปรากฏใน `boundaries()` แสดงว่า cursor ถูกต้อง — ไคลเอนต์
+  สามารถเชื่อมั่นได้ว่าการแบ่งหน้ายึดกับเอกสารจริง
+- หากไม่ปรากฏ เอกสาร cursor อาจถูกลบไประหว่างหน้า และไคลเอนต์ควรพิจารณา
+  เริ่มการแบ่งหน้าใหม่
+
+> **สำคัญ:** ทั้ง `boundaries()` และ `key_exists_as_boundary` ทำการสแกน
+> เชิงไวยากรณ์ของโหนด `KVDigest`/`KVDigestCount` ใน proof ไม่ได้ให้
+> การรับประกันทางการเข้ารหัสด้วยตัวเอง — ตรวจสอบ proof กับ root hash ที่เชื่อถือได้
+> ก่อนเสมอ โหนดประเภทเดียวกันยังปรากฏใน absence proof ดังนั้นผู้เรียกควร
+> ตีความผลลัพธ์ในบริบทของคิวรีที่สร้าง proof
+
+ที่ระดับ merk การตรวจสอบเดียวกันสามารถใช้ได้ผ่าน
+`boundaries_in_proof(proof_bytes)` และ
+`key_exists_as_boundary_in_proof(proof_bytes, key)` สำหรับการทำงานโดยตรงกับ
+ไบต์ proof merk ดิบ
+
 ## V1 Proof — ต้นไม้ Non-Merk
 
 ระบบ proof V0 ทำงานเฉพาะกับ Merk subtree โดยลงไปทีละชั้นผ่านลำดับชั้น grove อย่างไรก็ตาม element ประเภท **CommitmentTree**, **MmrTree**, **BulkAppendTree** และ **DenseAppendOnlyFixedSizeTree** จัดเก็บข้อมูลภายนอก Merk tree ลูก พวกมันไม่มี Merk ลูกให้ลงไป — type-specific root hash ของพวกมันไหลเป็น Merk child hash แทน

@@ -410,6 +410,84 @@ graph TD
 Für Bereichsabfragen zeigen Abwesenheitsbeweise, dass es keine Schlüssel innerhalb des abgefragten
 Bereichs gibt, die nicht in der Ergebnismenge enthalten sind.
 
+## Erkennung von Grenzschlüsseln
+
+Bei der Verifikation eines Beweises aus einer exklusiven Bereichsabfrage müssen Sie
+möglicherweise bestätigen, dass bestimmte Schlüssel als **Grenzelemente** existieren —
+Schlüssel, die den Bereich verankern, aber nicht Teil der Ergebnismenge sind.
+
+Zum Beispiel enthält bei `RangeAfter(10)` (alle Schlüssel strikt nach 10) der Beweis
+den Schlüssel 10 als `KVDigest`-Knoten. Dies beweist, dass Schlüssel 10 im Baum
+existiert und den Beginn des Bereichs verankert, aber Schlüssel 10 wird nicht in den
+Ergebnissen zurückgegeben.
+
+### Wann Grenzknoten erscheinen
+
+Grenz-`KVDigest`- (oder `KVDigestCount`- für ProvableCountTree-) Knoten erscheinen in
+Beweisen für exklusive Bereichsabfragetypen:
+
+| Abfragetyp | Grenzschlüssel | Was er beweist |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Der exklusive Beginn existiert im Baum |
+| `RangeAfterTo(start..end)` | `start` | Der exklusive Beginn existiert im Baum |
+| `RangeAfterToInclusive(start..=end)` | `start` | Der exklusive Beginn existiert im Baum |
+
+Grenzknoten erscheinen auch in Abwesenheitsbeweisen, wo benachbarte Schlüssel eine
+Lücke nachweisen (siehe [Abwesenheitsbeweise](#abwesenheitsbeweise) oben).
+
+### Alle Grenzschlüssel abrufen
+
+Nach der Verifikation eines Beweises rufen Sie `boundaries` auf dem dekodierten
+`GroveDBProof` auf, um alle Grenzschlüssel für einen gegebenen Pfad zu erhalten:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+Das `path`-Argument gibt an, welche Schicht des Beweises inspiziert werden soll
+(entsprechend dem GroveDB-Teilbaumpfad, in dem die Bereichsabfrage ausgeführt wurde).
+
+### Einen einzelnen Grenzschlüssel prüfen
+
+Wenn Sie nur prüfen müssen, ob ein bestimmter Schlüssel eine Grenze ist, verwenden
+Sie `key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### Praktischer Einsatz: Paginierungsverifikation
+
+Dies ist besonders nützlich für die **Paginierung**. Wenn ein Client "die nächsten
+100 Dokumente nach Dokument X" anfordert, lautet die Abfrage `RangeAfter(document_X_id)`.
+Der Beweis gibt die Dokumente 101-200 zurück, aber der Client möchte möglicherweise auch
+bestätigen, dass Dokument X (der Paginierungscursor) noch im Baum existiert:
+
+- Wenn der Cursor-Schlüssel in `boundaries()` erscheint, ist der Cursor gültig — der
+  Client kann darauf vertrauen, dass die Paginierung an einem realen Dokument verankert ist.
+- Wenn er nicht erscheint, wurde das Cursor-Dokument möglicherweise zwischen den Seiten
+  gelöscht, und der Client sollte einen Neustart der Paginierung in Betracht ziehen.
+
+> **Wichtig:** Sowohl `boundaries()` als auch `key_exists_as_boundary` führen einen
+> syntaktischen Scan der `KVDigest`/`KVDigestCount`-Knoten des Beweises durch. Sie bieten
+> allein keine kryptografische Garantie — verifizieren Sie den Beweis immer zuerst gegen
+> einen vertrauenswürdigen Wurzel-Hash. Dieselben Knotentypen erscheinen auch in
+> Abwesenheitsbeweisen, daher sollte der Aufrufer die Ergebnisse im Kontext der Abfrage
+> interpretieren, die den Beweis erzeugt hat.
+
+Auf der Merk-Ebene sind dieselben Prüfungen über
+`boundaries_in_proof(proof_bytes)` und
+`key_exists_as_boundary_in_proof(proof_bytes, key)` verfügbar, um direkt mit
+rohen Merk-Beweis-Bytes zu arbeiten.
+
 ## V1-Beweise — Nicht-Merk-Bäume
 
 Das V0-Beweissystem arbeitet ausschließlich mit Merk-Teilbäumen und steigt Schicht für

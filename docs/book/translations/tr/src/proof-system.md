@@ -402,6 +402,83 @@ graph TD
 
 Aralik sorgulari icin yokluk ispatlari, sorgulanan aralik icinde sonuc kumesine dahil edilmemis hicbir anahtarin olmadigini gosterir.
 
+## Sinir Anahtari Tespiti
+
+Ozel aralik sorgusundan gelen bir ispati dogrularken, belirli anahtarlarin
+**sinir elemanlari** olarak var oldugunu dogrulamaniz gerekebilir — araligi
+sabitleyen ancak sonuc kumesinin parcasi olmayan anahtarlar.
+
+Ornegin, `RangeAfter(10)` (10'dan kesinlikle buyuk tum anahtarlar) ile ispat,
+anahtar 10'u bir `KVDigest` dugumu olarak icerir. Bu, anahtar 10'un agacta var
+oldugunu ve araligin basini sabitledigini kanitlar, ancak anahtar 10 sonuclarda
+dondurulmez.
+
+### Sinir dugumleri ne zaman gorulur
+
+Sinir `KVDigest` (veya ProvableCountTree icin `KVDigestCount`) dugumleri,
+ozel aralik sorgu tipleri icin ispatlarda gorulur:
+
+| Sorgu tipi | Sinir anahtari | Ne kanitlar |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | Ozel baslangic agacta mevcuttur |
+| `RangeAfterTo(start..end)` | `start` | Ozel baslangic agacta mevcuttur |
+| `RangeAfterToInclusive(start..=end)` | `start` | Ozel baslangic agacta mevcuttur |
+
+Sinir dugumleri ayrica yokluk ispatlarinda da gorulur; burada komsuluk
+anahtarlari bir boslugun var oldugunu kanitlar (yukardaki [Yokluk Ispatlari](#yokluk-ispatlari) bolumune bakin).
+
+### Tum sinir anahtarlarini alma
+
+Bir ispati dogruladiktan sonra, belirli bir yoldaki tum sinir anahtarlarini
+almak icin cozumlenmis `GroveDBProof` uzerinde `boundaries` cagirin:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+`path` argumani, ispatin hangi katmaninin incelenecegini belirtir (aralik
+sorgusunun calistirildigi GroveDB alt agac yoluyla eslesir).
+
+### Tek bir sinir anahtarini kontrol etme
+
+Yalnizca belirli bir anahtarin sinir olup olmadigini kontrol etmeniz gerekiyorsa
+`key_exists_as_boundary` kullanin:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### Pratik kullanim: sayfalama dogrulamasi
+
+Bu ozellikle **sayfalama** icin kullanislidir. Bir istemci "belge X'ten sonraki
+100 belge" istediginde, sorgu `RangeAfter(document_X_id)` olur. Ispat 101-200
+arasi belgeleri dondurur, ancak istemci ayrica belge X'in (sayfalama imleci)
+hala agacta var oldugunu dogrulamak isteyebilir:
+
+- Imlec anahtari `boundaries()` icinde gorunuyorsa, imlec gecerlidir — istemci
+  sayfalanin gercek bir belgeye dayali olduguna guvenebilir.
+- Gorunmuyorsa, imlec belgesi sayfalar arasinda silinmis olabilir ve istemci
+  sayfalandirmayi yeniden baslatmayi dusunmelidir.
+
+> **Onemli:** Hem `boundaries()` hem de `key_exists_as_boundary`, ispatin
+> `KVDigest`/`KVDigestCount` dugumlerinin sozdizimsel bir taramasini gerceklestirir.
+> Kendi baslarinda kriptografik garanti saglamazlar — ispati her zaman once
+> guvenilir bir kok hash'e karsi dogrulayin. Ayni dugum tipleri yokluk
+> ispatlarinda da gorulur, bu nedenle cagrici sonuclari ispati olusturan
+> sorgunun baglaminda yorumlamalidir.
+
+Merk seviyesinde, ayni kontroller ham merk ispat baytlariyla dogrudan calismak
+icin `boundaries_in_proof(proof_bytes)` ve
+`key_exists_as_boundary_in_proof(proof_bytes, key)` araciligiyla kullanilabilir.
+
 ## V1 Ispatlar -- Merk Olmayan Agaclar
 
 V0 ispat sistemi yalnizca Merk alt agaclariyla calisir ve grove hiyerarsisi boyunca katman katman iner. Ancak **CommitmentTree**, **MmrTree**, **BulkAppendTree** ve **DenseAppendOnlyFixedSizeTree** elementleri verilerini bir cocuk Merk agacinin disinda depolar. Inecek bir cocuk Merk'leri yoktur -- tipe ozel kok hash'leri Merk cocuk hash olarak akar.

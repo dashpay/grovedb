@@ -411,6 +411,85 @@ graph TD
 Para consultas por rango, las pruebas de ausencia muestran que no hay claves dentro del rango
 consultado que no fueron incluidas en el conjunto de resultados.
 
+## Detección de Claves Frontera
+
+Al verificar una prueba de una consulta de rango exclusivo, puede necesitar confirmar
+que claves específicas existen como **elementos frontera** — claves que anclan el rango
+pero no forman parte del conjunto de resultados.
+
+Por ejemplo, con `RangeAfter(10)` (todas las claves estrictamente después de 10), la
+prueba incluye la clave 10 como un nodo `KVDigest`. Esto demuestra que la clave 10
+existe en el árbol y ancla el inicio del rango, pero la clave 10 no se devuelve en
+los resultados.
+
+### Cuándo aparecen los nodos frontera
+
+Los nodos frontera `KVDigest` (o `KVDigestCount` para ProvableCountTree) aparecen en
+las pruebas para tipos de consultas de rango exclusivo:
+
+| Tipo de consulta | Clave frontera | Qué demuestra |
+|------------|-------------|----------------|
+| `RangeAfter(start..)` | `start` | El inicio exclusivo existe en el árbol |
+| `RangeAfterTo(start..end)` | `start` | El inicio exclusivo existe en el árbol |
+| `RangeAfterToInclusive(start..=end)` | `start` | El inicio exclusivo existe en el árbol |
+
+Los nodos frontera también aparecen en pruebas de ausencia, donde claves vecinas
+demuestran que existe una brecha (ver [Pruebas de Ausencia](#pruebas-de-ausencia) arriba).
+
+### Obtener todas las claves frontera
+
+Después de verificar una prueba, llame a `boundaries` en el `GroveDBProof` decodificado
+para obtener todas las claves frontera en una ruta dada:
+
+```rust
+// Decode and verify the proof
+let (grovedb_proof, _): (GroveDBProof, _) =
+    bincode::decode_from_slice(&proof_bytes, config)?;
+let (root_hash, results) = grovedb_proof.verify(&path_query, grove_version)?;
+
+// Get all boundary keys at this path
+let boundary_keys: Vec<Vec<u8>> = grovedb_proof
+    .boundaries(&[b"documents", b"notes"])?;
+```
+
+El argumento `path` identifica qué capa de la prueba inspeccionar (coincidiendo con
+la ruta del subárbol de GroveDB donde se ejecutó la consulta de rango).
+
+### Verificar una sola clave frontera
+
+Si solo necesita verificar si una clave específica es una frontera, use
+`key_exists_as_boundary`:
+
+```rust
+let cursor_exists = grovedb_proof
+    .key_exists_as_boundary(&[b"documents", b"notes"], &cursor_key)?;
+```
+
+### Uso práctico: verificación de paginación
+
+Esto es particularmente útil para la **paginación**. Cuando un cliente solicita "los
+siguientes 100 documentos después del documento X," la consulta es
+`RangeAfter(document_X_id)`. La prueba devuelve los documentos 101-200, pero el cliente
+también puede querer confirmar que el documento X (el cursor de paginación) aún existe
+en el árbol:
+
+- Si la clave del cursor aparece en `boundaries()`, el cursor es válido — el cliente
+  puede confiar en que la paginación está anclada a un documento real.
+- Si no aparece, el documento del cursor puede haber sido eliminado entre páginas,
+  y el cliente debería considerar reiniciar la paginación.
+
+> **Importante:** Tanto `boundaries()` como `key_exists_as_boundary` realizan un
+> escaneo sintáctico de los nodos `KVDigest`/`KVDigestCount` de la prueba. No
+> proporcionan ninguna garantía criptográfica por sí solos — siempre verifique la
+> prueba contra un hash raíz de confianza primero. Los mismos tipos de nodos también
+> aparecen en pruebas de ausencia, por lo que el llamador debe interpretar los
+> resultados en el contexto de la consulta que generó la prueba.
+
+A nivel de merk, las mismas verificaciones están disponibles a través de
+`boundaries_in_proof(proof_bytes)` y
+`key_exists_as_boundary_in_proof(proof_bytes, key)` para trabajar directamente con
+los bytes de prueba merk sin procesar.
+
 ## Pruebas V1 — Árboles No-Merk
 
 El sistema de pruebas V0 funciona exclusivamente con subárboles Merk, descendiendo capa por
