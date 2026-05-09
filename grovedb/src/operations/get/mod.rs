@@ -390,7 +390,12 @@ impl GroveDb {
                     .map_err(|e| e.into())
             }
             .unwrap_add_cost(&mut cost);
-            match element {
+            // Look through `NonCounted` so a parent stored as
+            // `NonCounted(Tree)` (or any wrapped tree variant) still
+            // validates as a subtree. Without this, APIs that gate on
+            // check_subtree_exists would reject paths through wrapped
+            // parents — breaking the wrapper-transparency contract.
+            match element.map(|e| e.into_underlying()) {
                 Ok(Element::Tree(..))
                 | Ok(Element::SumTree(..))
                 | Ok(Element::BigSumTree(..))

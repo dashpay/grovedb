@@ -98,10 +98,16 @@ mod tests {
             nc_item,
         );
 
-        let result = db.apply_batch(vec![op], None, None, grove_version).unwrap();
+        let err = db
+            .apply_batch(vec![op], None, None, grove_version)
+            .unwrap()
+            .expect_err("batch insert of NonCounted into NormalTree must fail");
+        // Make sure we're catching the parent-type guard, not some unrelated
+        // batch validation error.
+        let msg = format!("{err:?}");
         assert!(
-            result.is_err(),
-            "batch insert of NonCounted into NormalTree must fail"
+            msg.contains("non-counted"),
+            "expected NonCounted parent-type guard error, got: {msg}"
         );
     }
 
@@ -177,5 +183,78 @@ mod tests {
             "wrapper must survive batch propagation; got {:?}",
             stored
         );
+
+        // The outer count tree's aggregate must NOT include the
+        // NonCounted subtree. Only `plain` should count, so the outer's
+        // root aggregate count is 1. (If propagation dropped the wrapper,
+        // the subtree would be counted as a regular tree → 2.)
+        use grovedb_storage::StorageBatch;
+        let batch = StorageBatch::new();
+        let tx = db.start_transaction();
+        let outer_merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"outer"].as_ref().into(),
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open outer merk");
+        let aggregate = outer_merk
+            .aggregate_data()
+            .expect("read outer aggregate data");
+        assert_eq!(
+            aggregate.as_count_u64(),
+            1,
+            "non-counted subtree must not contribute to outer count tree's aggregate; got {:?}",
+            aggregate
+        );
+    }
+
+    #[test]
+    fn check_subtree_exists_through_non_counted_wrapper() {
+        // A NonCounted-wrapped tree at the parent path must satisfy
+        // check_subtree_exists, otherwise APIs that gate on it (e.g.
+        // inserts into the wrapped tree) would reject paths through
+        // wrapped parents.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Outer count tree under TEST_LEAF.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"ct",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert ct");
+
+        // A NonCounted(CountTree) inside the outer count tree.
+        db.insert(
+            [TEST_LEAF, b"ct"].as_ref(),
+            b"nc_ct",
+            Element::new_non_counted(Element::empty_count_tree()).expect("wrap ok"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert nc inner");
+
+        // Inserting into the wrapped subtree exercises check_subtree_exists
+        // on a path whose parent is `NonCounted(CountTree)` — should succeed.
+        db.insert(
+            [TEST_LEAF, b"ct", b"nc_ct"].as_ref(),
+            b"child",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert into wrapped subtree must succeed");
     }
 }

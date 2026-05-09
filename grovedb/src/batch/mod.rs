@@ -2119,7 +2119,12 @@ where
                         )
                     };
 
-                    let Element::Reference(path_reference, max_reference_hop, _) = &element else {
+                    // Look through `NonCounted` so a wrapped reference can
+                    // still be refreshed. The wrapper is transparent for
+                    // refresh; only the inner reference's path matters.
+                    let Element::Reference(path_reference, max_reference_hop, _) =
+                        element.underlying()
+                    else {
                         return Err(Error::InvalidInput(
                             "trying to refresh a an element that is not a reference",
                         ))

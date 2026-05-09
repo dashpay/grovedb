@@ -203,11 +203,22 @@ impl ElementType {
                     "NonCounted wrapper has no inner element discriminant byte".to_string(),
                 )
             })?;
-            // Reject nested wrappers up front.
-            if inner_byte == NON_COUNTED_WRAPPER_DISCRIMINANT {
-                return Err(ElementError::CorruptedData(
-                    "NonCounted cannot wrap another NonCounted".to_string(),
-                ));
+            // The inner discriminant must be a base type — i.e. strictly less
+            // than NON_COUNTED_WRAPPER_DISCRIMINANT (15). Bytes 15+ are not
+            // valid on-disk inner discriminants:
+            //   - 15 itself is the wrapper byte (nested wrappers forbidden),
+            //   - 16..=127 are unallocated,
+            //   - 128..=142 are the synthetic NonCountedXxx twins which
+            //     never appear on disk; without this check, the bitwise OR
+            //     below would collapse `0x80 | inner_byte` into `inner_byte`
+            //     and a payload like `[15, 128, ...]` would silently parse
+            //     as `NonCountedItem`.
+            if inner_byte >= NON_COUNTED_WRAPPER_DISCRIMINANT {
+                return Err(ElementError::CorruptedData(format!(
+                    "NonCounted inner discriminant must be a base type 0..={}, got {}",
+                    NON_COUNTED_WRAPPER_DISCRIMINANT - 1,
+                    inner_byte
+                )));
             }
             Self::try_from(NON_COUNTED_FLAG | inner_byte)
         } else {
@@ -780,6 +791,16 @@ mod tests {
         assert!(ElementType::from_serialized_value(&[15, 15]).is_err());
         // Wrapper with unknown inner discriminant is rejected.
         assert!(ElementType::from_serialized_value(&[15, 200]).is_err());
+        // Wrapper whose inner byte is itself a synthetic twin discriminant
+        // (high bit set) is rejected — only base discriminants 0..=14 are
+        // legal on-disk inner bytes. Without this guard, `0x80 | 128 == 128`
+        // would silently parse as `NonCountedItem`.
+        assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
+        // Wrapper with an unallocated mid-range inner byte (16..=127) is
+        // also rejected, even though it has no high bit set.
+        assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
     }
 
     #[test]
