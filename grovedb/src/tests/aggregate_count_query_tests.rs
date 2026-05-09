@@ -441,6 +441,297 @@ mod tests {
         assert_eq!(got_count, 3, "expected count of {{b, c, d}}");
     }
 
+    /// Helper for non-leaf-layer proof mutation tests: decode the V1
+    /// envelope, walk to the TEST_LEAF non-leaf merk proof bytes, run
+    /// `mutate` over its parsed ops, re-encode the merk proof and the
+    /// envelope. Returns the mutated bytes.
+    fn mutate_test_leaf_layer_ops(
+        proof: &[u8],
+        mutate: impl FnOnce(&mut Vec<grovedb_merk::proofs::Op>),
+    ) -> Vec<u8> {
+        use grovedb_merk::proofs::{encoding::encode_into, Decoder, Op};
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let mut decoded = decode_envelope(proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF lower layer");
+        let bytes = match &mut test_leaf_layer.merk_proof {
+            ProofBytes::Merk(b) => b,
+            _ => panic!("expected Merk bytes at TEST_LEAF non-leaf"),
+        };
+        let mut ops: Vec<Op> = Decoder::new(bytes)
+            .map(|r| r.expect("decode existing op"))
+            .collect();
+        mutate(&mut ops);
+        let mut new_bytes = Vec::new();
+        encode_into(ops.iter(), &mut new_bytes);
+        *bytes = new_bytes;
+        reencode_envelope(decoded)
+    }
+
+    #[test]
+    fn non_leaf_proof_without_target_key_is_rejected() {
+        // Mutate the TEST_LEAF non-leaf proof: replace the KV op carrying
+        // the "ct" key with a Hash op carrying that node's hash. Phase 1
+        // decodes successfully, the merk single-key verifier returns Ok
+        // with an empty result_set (no KV with matching key), and the
+        // GroveDB-level verifier surfaces "did not contain the expected
+        // key" via the `ok_or_else` arm.
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let mutated = mutate_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let key_match = matches!(
+                    op,
+                    Op::Push(
+                        Node::KV(k, _)
+                        | Node::KVValueHash(k, _, _)
+                        | Node::KVValueHashFeatureType(k, _, _, _)
+                        | Node::KVValueHashFeatureTypeWithChildHash(k, _, _, _, _)
+                    )
+                    | Op::PushInverted(
+                        Node::KV(k, _)
+                        | Node::KVValueHash(k, _, _)
+                        | Node::KVValueHashFeatureType(k, _, _, _)
+                        | Node::KVValueHashFeatureTypeWithChildHash(k, _, _, _, _)
+                    ) if k == b"ct"
+                );
+                if key_match {
+                    *op = Op::Push(Node::Hash([0u8; 32]));
+                    return;
+                }
+            }
+            panic!("test setup: no `ct` KV op found in non-leaf proof");
+        });
+        let err = GroveDb::verify_aggregate_count_query(&mutated, &path_query, v)
+            .expect_err("missing target key in non-leaf proof must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => assert!(
+                // Either Phase 2 catches "did not contain the expected key"
+                // or the upstream merk single-key verifier fails first
+                // because the swapped Hash makes the proof invalid; either
+                // outcome closes the surface.
+                msg.contains("did not contain the expected key")
+                    || msg.contains("non-leaf single-key proof"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn non_leaf_proof_with_kv_replaced_by_kvdigest_is_rejected() {
+        // Replace "ct" KV in the non-leaf proof with a KVDigest variant
+        // (key + value_hash, no value). The result_set will contain "ct"
+        // but with `value = None`, hitting the "no value bytes" arm of
+        // `verify_single_key_layer_proof_v0`.
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let mutated = mutate_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let replaced = match op {
+                    Op::Push(Node::KVValueHash(k, _, vh))
+                    | Op::PushInverted(Node::KVValueHash(k, _, vh))
+                        if k == b"ct" =>
+                    {
+                        Some((k.clone(), *vh))
+                    }
+                    Op::Push(Node::KVValueHashFeatureType(k, _, vh, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureType(k, _, vh, _))
+                        if k == b"ct" =>
+                    {
+                        Some((k.clone(), *vh))
+                    }
+                    Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, _, vh, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(k, _, vh, _, _))
+                        if k == b"ct" =>
+                    {
+                        Some((k.clone(), *vh))
+                    }
+                    _ => None,
+                };
+                if let Some((k, vh)) = replaced {
+                    *op = Op::Push(Node::KVDigest(k, vh));
+                    return;
+                }
+            }
+            panic!("test setup: no `ct` KVValueHash-flavored op found in non-leaf proof");
+        });
+        let result = GroveDb::verify_aggregate_count_query(&mutated, &path_query, v);
+        // Either we hit the "no value bytes" arm (line 295-302) or the
+        // merk single-key verifier itself rejects the type swap. Both
+        // are valid — both close the attack surface.
+        match result {
+            Err(crate::Error::InvalidProof(_, _)) => {}
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn non_leaf_proof_with_undeserializable_value_is_rejected() {
+        // Mutate the "ct" KV node's value bytes to garbage that fails
+        // `Element::deserialize`. The merk single-key verifier still
+        // returns Ok (it just hashes the bytes — it doesn't deserialize),
+        // so enforce_lower_chain hits the deserialize-failure arm.
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        // Garbage that no Element variant tag matches.
+        let garbage: Vec<u8> = vec![0xff, 0xff, 0xff];
+        let mutated = mutate_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let replaced = match op {
+                    Op::Push(Node::KVValueHash(k, val, _))
+                    | Op::PushInverted(Node::KVValueHash(k, val, _))
+                        if k == b"ct" =>
+                    {
+                        *val = garbage.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureType(k, val, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureType(k, val, _, _))
+                        if k == b"ct" =>
+                    {
+                        *val = garbage.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                        k,
+                        val,
+                        _,
+                        _,
+                        _,
+                    )) if k == b"ct" => {
+                        *val = garbage.clone();
+                        true
+                    }
+                    _ => false,
+                };
+                if replaced {
+                    return;
+                }
+            }
+            panic!("test setup: no `ct` value-bearing KV op found in non-leaf proof");
+        });
+        let result = GroveDb::verify_aggregate_count_query(&mutated, &path_query, v);
+        // Either the deserialize arm fires (line 330-338) or the chain
+        // mismatch fires first (because mutating value bytes also breaks
+        // the value_hash binding committed by the parent). Either rejects.
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, _))),
+            "mutated value bytes must be rejected, got {:?}",
+            result.map(|(_, c)| c)
+        );
+    }
+
+    #[test]
+    fn non_leaf_proof_with_non_tree_element_is_rejected() {
+        // Mutate the "ct" value bytes to a serialized non-tree Element
+        // (Item). This deserializes successfully, but enforce_lower_chain's
+        // `is_any_tree()` guard rejects: aggregate-count proofs can only
+        // descend through tree elements.
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let item_bytes = Element::new_item(vec![0xab, 0xcd])
+            .serialize(v)
+            .expect("serialize item");
+        let mutated = mutate_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let replaced = match op {
+                    Op::Push(Node::KVValueHash(k, val, _))
+                    | Op::PushInverted(Node::KVValueHash(k, val, _))
+                        if k == b"ct" =>
+                    {
+                        *val = item_bytes.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureType(k, val, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureType(k, val, _, _))
+                        if k == b"ct" =>
+                    {
+                        *val = item_bytes.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                        k,
+                        val,
+                        _,
+                        _,
+                        _,
+                    )) if k == b"ct" => {
+                        *val = item_bytes.clone();
+                        true
+                    }
+                    _ => false,
+                };
+                if replaced {
+                    return;
+                }
+            }
+            panic!("test setup: no `ct` value-bearing KV op found in non-leaf proof");
+        });
+        let result = GroveDb::verify_aggregate_count_query(&mutated, &path_query, v);
+        // Either the non-tree branch fires (line 341-349) or the chain
+        // hash check fails first (value_hash for the swapped item bytes
+        // diverges from the parent's commitment). Either rejects.
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, _))),
+            "non-tree element on path must be rejected, got {:?}",
+            result.map(|(_, c)| c)
+        );
+    }
+
     #[test]
     fn aggregate_count_with_missing_path_and_invalid_inner_is_rejected_at_entry() {
         // Codex finding: validation only fires inside `prove_subqueries` when
