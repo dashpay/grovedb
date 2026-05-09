@@ -74,6 +74,8 @@ fn test_apply_batch_rejects_insert_tree_with_root_hash() {
             root_key: None,
             flags: None,
             aggregate_data: AggregateData::NoAggregateData,
+
+            non_counted: false,
         },
     };
 
@@ -111,6 +113,8 @@ fn test_apply_batch_rejects_insert_non_merk_tree() {
             flags: None,
             aggregate_data: AggregateData::NoAggregateData,
             meta: NonMerkTreeMeta::MmrTree { mmr_size: 0 },
+
+            non_counted: false,
         },
     };
 

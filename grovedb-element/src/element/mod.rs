@@ -122,6 +122,17 @@ pub enum Element {
     /// - `height`: Tree height h; the tree has 2^h - 1 positions.
     /// - `flags`: Optional per-element metadata.
     DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
+    /// Non-counted wrapper: contains any other Element type and behaves
+    /// identically to it for storage, hashing, and internal aggregation, but
+    /// contributes 0 to its parent count tree's aggregate count when inserted.
+    /// Sums still propagate to parent sum trees.
+    ///
+    /// May only be inserted into count-bearing trees (`CountTree`,
+    /// `ProvableCountTree`, `CountSumTree`, `ProvableCountSumTree`).
+    ///
+    /// Invariant: a `NonCounted` may not wrap another `NonCounted`. Enforced
+    /// at construction and at deserialization.
+    NonCounted(Box<Element>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -307,12 +318,20 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::NonCounted(inner) => {
+                write!(f, "NonCounted({})", inner)
+            }
         }
     }
 }
 
 impl Element {
     /// Returns the ElementType for this element.
+    ///
+    /// For `Element::NonCounted(inner)`, returns the matching `NonCountedXxx`
+    /// twin of the inner element's type (high bit set). Nested wrappers are
+    /// disallowed at construction and serialization, so the inner is always
+    /// a base element.
     pub fn element_type(&self) -> ElementType {
         match self {
             Element::Item(..) => ElementType::Item,
@@ -330,6 +349,28 @@ impl Element {
             Element::MmrTree(..) => ElementType::MmrTree,
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
             Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
+            Element::NonCounted(inner) => match inner.element_type() {
+                ElementType::Item => ElementType::NonCountedItem,
+                ElementType::Reference => ElementType::NonCountedReference,
+                ElementType::Tree => ElementType::NonCountedTree,
+                ElementType::SumItem => ElementType::NonCountedSumItem,
+                ElementType::SumTree => ElementType::NonCountedSumTree,
+                ElementType::BigSumTree => ElementType::NonCountedBigSumTree,
+                ElementType::CountTree => ElementType::NonCountedCountTree,
+                ElementType::CountSumTree => ElementType::NonCountedCountSumTree,
+                ElementType::ProvableCountTree => ElementType::NonCountedProvableCountTree,
+                ElementType::ItemWithSumItem => ElementType::NonCountedItemWithSumItem,
+                ElementType::ProvableCountSumTree => ElementType::NonCountedProvableCountSumTree,
+                ElementType::CommitmentTree => ElementType::NonCountedCommitmentTree,
+                ElementType::MmrTree => ElementType::NonCountedMmrTree,
+                ElementType::BulkAppendTree => ElementType::NonCountedBulkAppendTree,
+                ElementType::DenseAppendOnlyFixedSizeTree => {
+                    ElementType::NonCountedDenseAppendOnlyFixedSizeTree
+                }
+                // Inner is always a base type — nested wrappers are
+                // forbidden at construction and (de)serialization.
+                already_non_counted => already_non_counted,
+            },
         }
     }
 

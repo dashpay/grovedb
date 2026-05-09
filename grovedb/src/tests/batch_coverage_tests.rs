@@ -539,6 +539,8 @@ mod tests {
                 root_key: None,
                 flags: None,
                 aggregate_data: AggregateData::NoAggregateData,
+
+                non_counted: false,
             },
         };
 
@@ -582,6 +584,8 @@ mod tests {
                 flags: None,
                 aggregate_data: AggregateData::NoAggregateData,
                 meta: NonMerkTreeMeta::MmrTree { mmr_size: 0 },
+
+                non_counted: false,
             },
         };
 

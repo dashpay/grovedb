@@ -6,7 +6,7 @@ use grovedb_costs::{
     cost_return_on_error_into_default, cost_return_on_error_no_add, CostResult, CostsExt,
     OperationCost,
 };
-use grovedb_element::{Element, Element::SumItem};
+use grovedb_element::Element;
 use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
@@ -163,6 +163,13 @@ impl ElementInsertToStorageExtensions for Element {
 
         let serialized = cost_return_on_error_into_default!(self.serialize(grove_version));
 
+        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         if !merk.tree_type.allows_sum_item() && self.is_sum_item() {
             return Err(Error::InvalidInputError(
                 "cannot add sum item to non sum tree",
@@ -172,7 +179,10 @@ impl ElementInsertToStorageExtensions for Element {
 
         let merk_feature_type =
             cost_return_on_error_into_default!(self.get_feature_type(merk.tree_type));
-        let batch_operations = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
+        // Use is_sum_item() (which looks through NonCounted) so that a
+        // NonCounted(SumItem(..)) takes the same specialized cost path as a
+        // bare SumItem(..).
+        let batch_operations = if self.is_sum_item() {
             let cost = cost_return_on_error_default!(self
                 .specialized_value_defined_cost(grove_version)
                 .ok_or(Error::CorruptedCodeExecution(
@@ -228,7 +238,10 @@ impl ElementInsertToStorageExtensions for Element {
             Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
         };
 
-        let entry = if matches!(self, SumItem(..) | Element::ItemWithSumItem(..)) {
+        // Use is_sum_item() (which looks through NonCounted) so that a
+        // NonCounted(SumItem(..)) takes the same specialized cost path as a
+        // bare SumItem(..).
+        let entry = if self.is_sum_item() {
             let cost = cost_return_on_error_default!(self
                 .specialized_value_defined_cost(grove_version)
                 .ok_or(Error::CorruptedCodeExecution(
@@ -421,6 +434,13 @@ impl ElementInsertToStorageExtensions for Element {
             grove_version.grovedb_versions.element.insert_reference
         );
 
+        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
@@ -505,6 +525,13 @@ impl ElementInsertToStorageExtensions for Element {
             "insert_subtree",
             grove_version.grovedb_versions.element.insert_subtree
         );
+
+        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
 
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
@@ -602,6 +629,7 @@ mod tests {
     use crate::{
         element::get::ElementFetchFromStorageExtensions,
         test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk},
+        TreeType,
     };
 
     #[test]
@@ -725,6 +753,109 @@ mod tests {
                 .unwrap()
                 .expect("expected successful get"),
             Element::new_item(b"value2".to_vec()),
+        );
+    }
+
+    #[test]
+    fn non_counted_rejected_in_normal_tree() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+        let nc = Element::new_non_counted(Element::new_item(b"x".to_vec())).expect("wrap ok");
+        let result = nc.insert(&mut merk, b"k", None, grove_version).unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
+
+    #[test]
+    fn non_counted_rejected_in_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::SumTree);
+        let nc = Element::new_non_counted(Element::new_sum_item(7)).expect("wrap ok");
+        let result = nc.insert(&mut merk, b"k", None, grove_version).unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
+
+    #[test]
+    fn non_counted_accepted_in_count_tree_contributes_zero() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountTree);
+
+        // Two regular items contribute 1 each; one NonCounted contributes 0.
+        Element::new_item(b"a".to_vec())
+            .insert(&mut merk, b"k1", None, grove_version)
+            .unwrap()
+            .expect("insert k1");
+        Element::new_item(b"b".to_vec())
+            .insert(&mut merk, b"k2", None, grove_version)
+            .unwrap()
+            .expect("insert k2");
+        Element::new_non_counted(Element::new_item(b"c".to_vec()))
+            .expect("wrap ok")
+            .insert(&mut merk, b"k3", None, grove_version)
+            .unwrap()
+            .expect("insert k3 non-counted");
+
+        let agg = merk.aggregate_data().expect("aggregate ok");
+        assert_eq!(
+            agg.as_count_u64(),
+            2,
+            "non-counted item should not be counted"
+        );
+    }
+
+    #[test]
+    fn non_counted_accepted_in_provable_count_sum_tree_keeps_sum() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountSumTree);
+
+        // A NonCounted(SumItem(10)) inside a ProvableCountSumTree contributes
+        // count = 0 and sum = 10.
+        Element::new_non_counted(Element::new_sum_item(10))
+            .expect("wrap ok")
+            .insert(&mut merk, b"k", None, grove_version)
+            .unwrap()
+            .expect("insert nc sum item");
+
+        let agg = merk.aggregate_data().expect("aggregate ok");
+        assert_eq!(agg.as_count_u64(), 0);
+        assert_eq!(agg.as_sum_i64(), 10);
+    }
+
+    #[test]
+    fn non_counted_subtree_rejected_via_insert_subtree_in_normal_tree() {
+        // Wrap a tree element and try inserting it into a non-count-bearing
+        // tree via the subtree path (used by GroveDB for tree elements).
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+        let nc_tree = Element::new_non_counted(Element::empty_tree()).expect("wrap ok");
+        let result = nc_tree
+            .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
+
+    #[test]
+    fn non_counted_count_tree_inside_count_tree_suppresses_subtree_count() {
+        // Bare ProvableCountTree(_, 5, _) inside CountTree contributes 5.
+        // Wrapped as NonCounted, contributes 0.
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountTree);
+
+        Element::new_item(b"a".to_vec())
+            .insert(&mut merk, b"k1", None, grove_version)
+            .unwrap()
+            .expect("insert k1");
+        let pct = Element::new_provable_count_tree_with_flags_and_count_value(None, 5, None);
+        Element::new_non_counted(pct)
+            .expect("wrap ok")
+            .insert(&mut merk, b"k_nc", None, grove_version)
+            .unwrap()
+            .expect("insert nc pct");
+
+        let agg = merk.aggregate_data().expect("aggregate ok");
+        assert_eq!(
+            agg.as_count_u64(),
+            1,
+            "nested count tree's 5 should be suppressed; only the bare item should count"
         );
     }
 }

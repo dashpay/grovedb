@@ -121,6 +121,20 @@ impl TreeType {
         )
     }
 
+    /// Returns whether this tree type carries a count aggregate that children
+    /// can contribute to. Only count-bearing trees may host
+    /// `Element::NonCounted` children — in any other parent the wrapper would
+    /// have no semantic effect, so it is rejected at insert time.
+    pub const fn is_count_bearing(&self) -> bool {
+        matches!(
+            self,
+            TreeType::CountTree
+                | TreeType::CountSumTree
+                | TreeType::ProvableCountTree
+                | TreeType::ProvableCountSumTree
+        )
+    }
+
     /// Returns whether this tree type allows sum items as children.
     pub fn allows_sum_item(&self) -> bool {
         match self {
@@ -271,6 +285,21 @@ mod tests {
         assert!(TreeType::MmrTree.uses_non_merk_data_storage());
         assert!(TreeType::BulkAppendTree(0).uses_non_merk_data_storage());
         assert!(TreeType::DenseAppendOnlyFixedSizeTree(0).uses_non_merk_data_storage());
+    }
+
+    #[test]
+    fn is_count_bearing() {
+        assert!(!TreeType::NormalTree.is_count_bearing());
+        assert!(!TreeType::SumTree.is_count_bearing());
+        assert!(!TreeType::BigSumTree.is_count_bearing());
+        assert!(TreeType::CountTree.is_count_bearing());
+        assert!(TreeType::CountSumTree.is_count_bearing());
+        assert!(TreeType::ProvableCountTree.is_count_bearing());
+        assert!(TreeType::ProvableCountSumTree.is_count_bearing());
+        assert!(!TreeType::CommitmentTree(0).is_count_bearing());
+        assert!(!TreeType::MmrTree.is_count_bearing());
+        assert!(!TreeType::BulkAppendTree(0).is_count_bearing());
+        assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_count_bearing());
     }
 
     #[test]
