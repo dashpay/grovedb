@@ -2439,8 +2439,18 @@ where
                                     })?,
                                 );
                                 // we need to give back the value defined cost in the case that the
-                                // new element is a tree
-                                match new_element {
+                                // new element is a tree.
+                                //
+                                // Look through `NonCounted` for the cost path
+                                // (the wrapper byte costs +1 over the bare
+                                // type, mirroring `wrapper_overhead` in
+                                // `merk/src/element/costs.rs`).
+                                let wrapper_overhead = if new_element.is_non_counted() {
+                                    1u32
+                                } else {
+                                    0
+                                };
+                                match new_element.underlying() {
                                     Element::Tree(..)
                                     | Element::SumTree(..)
                                     | Element::BigSumTree(..)
@@ -2458,13 +2468,15 @@ where
                                         let tree_cost_size = tree_type.cost_size();
                                         let tree_value_cost = tree_cost_size
                                             + flags_len
-                                            + flags_len.required_space() as u32;
+                                            + flags_len.required_space() as u32
+                                            + wrapper_overhead;
                                         Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
                                     }
                                     Element::SumItem(..) => {
                                         let sum_item_value_cost = SUM_ITEM_COST_SIZE
                                             + flags_len
-                                            + flags_len.required_space() as u32;
+                                            + flags_len.required_space() as u32
+                                            + wrapper_overhead;
                                         Ok((
                                             true,
                                             Some(SpecializedValueDefinedCost(sum_item_value_cost)),
@@ -2476,7 +2488,8 @@ where
                                             + flags_len
                                             + flags_len.required_space() as u32
                                             + item_len
-                                            + item_len.required_space() as u32;
+                                            + item_len.required_space() as u32
+                                            + wrapper_overhead;
                                         Ok((
                                             true,
                                             Some(SpecializedValueDefinedCost(sum_item_value_cost)),

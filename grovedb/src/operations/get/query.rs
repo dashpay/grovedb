@@ -87,33 +87,42 @@ impl GroveDb {
         let results_wrapped = elements
             .into_iterator()
             .map(|result_item| match result_item {
-                QueryResultElement::ElementResultItem(Element::Reference(reference_path, ..)) => {
-                    match reference_path {
-                        ReferencePathType::AbsolutePathReference(absolute_path) => {
-                            // While `map` on iterator is lazy, we should accumulate costs even if
-                            // `collect` will end in `Err`, so we'll use
-                            // external costs accumulator instead of
-                            // returning costs from `map` call.
-                            let maybe_item = self
-                                .follow_reference(
-                                    absolute_path.as_slice().into(),
-                                    allow_cache,
-                                    transaction,
-                                    grove_version,
-                                )
-                                .unwrap_add_cost(&mut cost)?;
+                QueryResultElement::ElementResultItem(element) => {
+                    // Look through `NonCounted` so a wrapped reference still
+                    // resolves; the wrapper is transparent at the query
+                    // layer.
+                    match element.into_underlying() {
+                        Element::Reference(reference_path, ..) => match reference_path {
+                            ReferencePathType::AbsolutePathReference(absolute_path) => {
+                                // While `map` on iterator is lazy, we should accumulate costs
+                                // even if `collect` will end in `Err`, so we'll use
+                                // external costs accumulator instead of
+                                // returning costs from `map` call.
+                                let maybe_item = self
+                                    .follow_reference(
+                                        absolute_path.as_slice().into(),
+                                        allow_cache,
+                                        transaction,
+                                        grove_version,
+                                    )
+                                    .unwrap_add_cost(&mut cost)?;
 
-                            match maybe_item {
-                                Element::Item(item, _) => Ok(item),
-                                Element::ItemWithSumItem(item, ..) => Ok(item),
-                                Element::SumItem(value, _) => Ok(value.encode_var_vec()),
-                                _ => {
-                                    Err(Error::InvalidQuery("the reference must result in an item"))
+                                // Same treatment for the resolved value.
+                                match maybe_item.into_underlying() {
+                                    Element::Item(item, _) => Ok(item),
+                                    Element::ItemWithSumItem(item, ..) => Ok(item),
+                                    Element::SumItem(value, _) => Ok(value.encode_var_vec()),
+                                    _ => Err(Error::InvalidQuery(
+                                        "the reference must result in an item",
+                                    )),
                                 }
                             }
-                        }
-                        _ => Err(Error::CorruptedCodeExecution(
-                            "reference after query must have absolute paths",
+                            _ => Err(Error::CorruptedCodeExecution(
+                                "reference after query must have absolute paths",
+                            )),
+                        },
+                        _ => Err(Error::InvalidQuery(
+                            "path_queries can only refer to references",
                         )),
                     }
                 }

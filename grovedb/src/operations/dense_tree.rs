@@ -54,7 +54,9 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (existing_count, height, existing_flags) = match &element {
+        // Look through NonCounted: a wrapped DenseAppendOnlyFixedSizeTree
+        // is still one.
+        let (existing_count, height, existing_flags) = match element.underlying() {
             Element::DenseAppendOnlyFixedSizeTree(count, h, flags) => (*count, *h, flags.clone()),
             _ => {
                 return Err(Error::InvalidInput("element is not a dense tree"))
@@ -183,7 +185,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let count = match &element {
+        // Look through NonCounted: a wrapped dense tree is still one.
+        let count = match element.underlying() {
             Element::DenseAppendOnlyFixedSizeTree(count, ..) => *count,
             _ => {
                 return Err(Error::InvalidInput("element is not a dense tree"))
@@ -238,7 +241,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (count, height) = match &element {
+        // Look through NonCounted: a wrapped dense tree is still one.
+        let (count, height) = match element.underlying() {
             Element::DenseAppendOnlyFixedSizeTree(count, h, _) => (*count, *h),
             _ => {
                 return Err(Error::InvalidInput("element is not a dense tree"))
@@ -294,7 +298,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path, key, true, transaction, grove_version)
         );
 
-        match element {
+        // Look through NonCounted: a wrapped dense tree is still one.
+        match element.into_underlying() {
             Element::DenseAppendOnlyFixedSizeTree(count, ..) => Ok(count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a dense tree")).wrap_with_cost(cost),
         }
@@ -377,7 +382,8 @@ impl GroveDb {
                 )
             );
 
-            let (existing_count, height) = match &element {
+            // Look through NonCounted: a wrapped dense tree is still one.
+            let (existing_count, height) = match element.underlying() {
                 Element::DenseAppendOnlyFixedSizeTree(count, h, _) => (*count, *h),
                 _ => {
                     return Err(Error::InvalidInput("element is not a dense tree"))

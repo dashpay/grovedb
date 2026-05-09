@@ -111,7 +111,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (total_count, chunk_power, existing_flags) = match &element {
+        // Look through NonCounted: a wrapped CommitmentTree is still one.
+        let (total_count, chunk_power, existing_flags) = match element.underlying() {
             Element::CommitmentTree(total_count, chunk_power, flags) => {
                 (*total_count, *chunk_power, flags.clone())
             }
@@ -262,7 +263,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (total_count, chunk_power) = match &element {
+        // Look through NonCounted: a wrapped CommitmentTree is still one.
+        let (total_count, chunk_power) = match element.underlying() {
             Element::CommitmentTree(tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a commitment tree"))
@@ -313,7 +315,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (total_count, chunk_power) = match &element {
+        // Look through NonCounted: a wrapped CommitmentTree is still one.
+        let (total_count, chunk_power) = match element.underlying() {
             Element::CommitmentTree(tc, cp, _) => (*tc, *cp),
             _ => {
                 return Err(Error::InvalidInput("element is not a commitment tree"))
@@ -393,7 +396,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path, key, true, transaction, grove_version)
         );
 
-        match element {
+        // Look through NonCounted: a wrapped CommitmentTree is still one.
+        match element.into_underlying() {
             Element::CommitmentTree(total_count, ..) => Ok(total_count).wrap_with_cost(cost),
             _ => Err(Error::InvalidInput("element is not a commitment tree")).wrap_with_cost(cost),
         }
@@ -484,7 +488,8 @@ impl GroveDb {
                 )
             );
 
-            let (total_count, chunk_power) = match &element {
+            // Look through NonCounted: a wrapped CommitmentTree is still one.
+            let (total_count, chunk_power) = match element.underlying() {
                 Element::CommitmentTree(tc, cp, _) => (*tc, *cp),
                 _ => {
                     return Err(Error::InvalidInput("element is not a commitment tree"))

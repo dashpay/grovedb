@@ -212,6 +212,49 @@ mod tests {
     }
 
     #[test]
+    fn typed_mmr_api_works_through_non_counted_wrapper() {
+        // A NonCounted-wrapped MmrTree should still work with the typed
+        // mmr_tree_* methods. Without the underlying() lookups in
+        // operations/mmr_tree.rs, the typed APIs would reject wrapped
+        // trees as "not an MMR tree".
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Outer count tree to host the wrapped MmrTree.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"ct",
+            Element::empty_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert ct");
+
+        // Wrap an empty MmrTree in NonCounted and insert it inside the
+        // count tree. The wrapper suppresses the count contribution.
+        let wrapped_mmr = Element::new_non_counted(Element::empty_mmr_tree()).expect("wrap ok");
+        db.insert(
+            [TEST_LEAF, b"ct"].as_ref(),
+            b"mmr",
+            wrapped_mmr,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert wrapped mmr");
+
+        // mmr_tree_leaf_count must look through the wrapper.
+        let count = db
+            .mmr_tree_leaf_count([TEST_LEAF, b"ct"].as_ref(), b"mmr", None, grove_version)
+            .unwrap()
+            .expect("leaf count must succeed for wrapped MmrTree");
+        assert_eq!(count, 0, "fresh MMR has zero leaves");
+    }
+
+    #[test]
     fn check_subtree_exists_through_non_counted_wrapper() {
         // A NonCounted-wrapped tree at the parent path must satisfy
         // check_subtree_exists, otherwise APIs that gate on it (e.g.

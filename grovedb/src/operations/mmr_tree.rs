@@ -57,7 +57,10 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let (mmr_size, existing_flags) = match &element {
+        // Look through `NonCounted`: a wrapped MmrTree is still an MmrTree
+        // for typed-API purposes; the wrapper only affects parent count
+        // aggregation.
+        let (mmr_size, existing_flags) = match element.underlying() {
             Element::MmrTree(size, flags) => (*size, flags.clone()),
             _ => {
                 return Err(Error::InvalidInput("element is not an MMR tree")).wrap_with_cost(cost);
@@ -199,7 +202,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let mmr_size = match &element {
+        // Look through NonCounted: a wrapped MmrTree is still an MmrTree.
+        let mmr_size = match element.underlying() {
             Element::MmrTree(size, _) => *size,
             _ => {
                 return Err(Error::InvalidInput("element is not an MMR tree")).wrap_with_cost(cost);
@@ -257,7 +261,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path.clone(), key, true, transaction, grove_version)
         );
 
-        let mmr_size = match &element {
+        // Look through NonCounted: a wrapped MmrTree is still an MmrTree.
+        let mmr_size = match element.underlying() {
             Element::MmrTree(size, _) => *size,
             _ => {
                 return Err(Error::InvalidInput("element is not an MMR tree")).wrap_with_cost(cost);
@@ -320,7 +325,8 @@ impl GroveDb {
             self.get_raw_caching_optional(path, key, true, transaction, grove_version)
         );
 
-        match element {
+        // Look through NonCounted: a wrapped MmrTree is still an MmrTree.
+        match element.into_underlying() {
             Element::MmrTree(mmr_size, _) => {
                 Ok(mmr_size_to_leaf_count(mmr_size)).wrap_with_cost(cost)
             }
@@ -412,7 +418,8 @@ impl GroveDb {
                 )
             );
 
-            let mmr_size = match &element {
+            // Look through NonCounted: a wrapped MmrTree is still an MmrTree.
+            let mmr_size = match element.underlying() {
                 Element::MmrTree(size, _) => *size,
                 _ => {
                     return Err(Error::InvalidInput("element is not an MMR tree"))
