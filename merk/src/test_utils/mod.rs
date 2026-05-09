@@ -262,13 +262,10 @@ pub fn make_tree_rand(
     };
     let mut tree = TreeNode::new(vec![0; 20], value, None, feature_type).unwrap();
 
-    let mut seed = initial_seed;
-
     let batch_count = node_count / batch_size;
-    for _ in 0..batch_count {
+    for seed in initial_seed..(initial_seed + batch_count) {
         let batch = make_batch_rand(batch_size, seed);
         tree = apply_memonly(tree, &batch, grove_version);
-        seed += 1;
     }
 
     tree
