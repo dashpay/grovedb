@@ -12,7 +12,7 @@ mod tests {
 
     use crate::{
         tests::{make_test_grovedb, TEST_LEAF},
-        Element, GroveDb, PathQuery,
+        Element, GroveDb, PathQuery, SizedQuery,
     };
 
     /// Insert the 15 single-byte keys "a".."o" into a `ProvableCountTree`
@@ -439,6 +439,68 @@ mod tests {
             .expect("verify should succeed");
         assert_eq!(got_root, root, "verifier root must match GroveDB root");
         assert_eq!(got_count, 3, "expected count of {{b, c, d}}");
+    }
+
+    #[test]
+    fn aggregate_count_with_missing_path_and_invalid_inner_is_rejected_at_entry() {
+        // Codex finding: validation only fires inside `prove_subqueries` when
+        // the recursion reaches the ACOR-bearing leaf level. If the path
+        // doesn't exist (e.g. "missing" key under TEST_LEAF), the recursive
+        // prover never sees the ACOR item and the malformed query is allowed
+        // to return a regular path/absence proof. Fix: validate at the
+        // `prove_query` entry point, before any recursive dispatch.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"missing".to_vec()],
+            // QueryItem::Key as the inner range is invalid for ACOR.
+            QueryItem::Key(b"k".to_vec()),
+        );
+        let prove_result = db.grove_db.prove_query(&path_query, None, v).unwrap();
+        match prove_result {
+            Err(crate::Error::InvalidQuery(msg)) => {
+                assert!(
+                    msg.contains("AggregateCountOnRange may not wrap Key"),
+                    "expected ACOR-Key rejection, got: {msg}"
+                );
+            }
+            other => panic!(
+                "malformed ACOR with non-existent path must be rejected at entry, got {:?}",
+                other.map(|b| b.len())
+            ),
+        }
+    }
+
+    #[test]
+    fn aggregate_count_hidden_in_subquery_branch_is_rejected_at_entry() {
+        // Codex's broader concern: an `AggregateCountOnRange` smuggled
+        // inside a `default_subquery_branch.subquery` is also invalid (ACOR
+        // is terminal — it cannot be reached via a normal subquery path)
+        // and must be rejected up front. The recursive detector
+        // `has_aggregate_count_on_range_anywhere` finds the hidden ACOR;
+        // top-level `validate_aggregate_count_on_range` then rejects
+        // because the surrounding query isn't the canonical single-ACOR
+        // shape.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let inner_acor = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let mut sub_query = grovedb_merk::proofs::Query::new();
+        sub_query.insert_item(inner_acor);
+        let mut top_query = grovedb_merk::proofs::Query::new();
+        top_query.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        top_query.set_subquery(sub_query);
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            SizedQuery::new(top_query, None, None),
+        );
+        let prove_result = db.grove_db.prove_query(&path_query, None, v).unwrap();
+        assert!(
+            matches!(prove_result, Err(crate::Error::InvalidQuery(_))),
+            "ACOR hidden in subquery branch must be rejected at entry, got {:?}",
+            prove_result.map(|b| b.len())
+        );
     }
 
     #[test]

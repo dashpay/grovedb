@@ -109,6 +109,22 @@ impl GroveDb {
         prove_options: Option<ProveOptions>,
         grove_version: &GroveVersion,
     ) -> CostResult<GroveDBProof, Error> {
+        // Aggregate-count gate: validate at entry so malformed ACOR
+        // queries (invalid inner range, ACOR-hidden-in-subquery, etc.) are
+        // rejected up front instead of being skipped when the recursive
+        // prover never reaches the ACOR-bearing leaf — for example because
+        // the path doesn't exist. Without this gate, `prove_query` would
+        // happily return a regular path/absence proof for an invalid
+        // aggregate-count request.
+        if path_query
+            .query
+            .query
+            .has_aggregate_count_on_range_anywhere()
+            && let Err(e) = path_query.validate_aggregate_count_on_range()
+        {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
+
         match grove_version
             .grovedb_versions
             .operations

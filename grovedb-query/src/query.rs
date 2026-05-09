@@ -339,6 +339,39 @@ impl Query {
             .find(|item| item.is_aggregate_count_on_range())
     }
 
+    /// Returns `true` if any item in this query — including items inside
+    /// nested subquery branches — is an `AggregateCountOnRange`.
+    ///
+    /// `AggregateCountOnRange` is a *terminal* item: the canonical
+    /// well-formed query contains exactly one `AggregateCountOnRange` at
+    /// the top level and nothing else. This recursive detector exists so
+    /// the prover can validate up front: if any ACOR is present anywhere,
+    /// the query as a whole must satisfy
+    /// [`Self::validate_aggregate_count_on_range`] — otherwise a malformed
+    /// shape (e.g. ACOR hidden inside `default_subquery_branch.subquery`)
+    /// could slip past a top-level-only check and be silently routed
+    /// through the regular-proof path.
+    pub fn has_aggregate_count_on_range_anywhere(&self) -> bool {
+        if self.aggregate_count_on_range().is_some() {
+            return true;
+        }
+        if let Some(sub) = self.default_subquery_branch.subquery.as_deref()
+            && sub.has_aggregate_count_on_range_anywhere()
+        {
+            return true;
+        }
+        if let Some(branches) = &self.conditional_subquery_branches {
+            for branch in branches.values() {
+                if let Some(sub) = branch.subquery.as_deref()
+                    && sub.has_aggregate_count_on_range_anywhere()
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Validates the Query-level constraints that apply when an
     /// `AggregateCountOnRange` is present. On success, returns a reference
     /// to the inner `QueryItem` describing the range to count.
@@ -1205,5 +1238,45 @@ mod tests {
         // Empty items → None.
         let q5 = Query::new();
         assert!(q5.aggregate_count_on_range().is_none());
+    }
+
+    #[test]
+    fn has_aggregate_count_on_range_anywhere_walks_subqueries() {
+        // No ACOR anywhere → false.
+        let plain = Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        assert!(!plain.has_aggregate_count_on_range_anywhere());
+
+        // Top-level ACOR → true (covered by `aggregate_count_on_range` too).
+        let top = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        assert!(top.has_aggregate_count_on_range_anywhere());
+
+        // ACOR hidden inside `default_subquery_branch.subquery` — the
+        // top-level-only `aggregate_count_on_range` would miss it, but the
+        // recursive helper finds it. This is the surface that the
+        // prove_query entry-point gate uses to refuse to run any
+        // ACOR-bearing query that isn't the canonical single-ACOR shape.
+        let inner_acor = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let mut hidden =
+            Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        hidden.set_subquery(inner_acor);
+        assert!(hidden.aggregate_count_on_range().is_none());
+        assert!(
+            hidden.has_aggregate_count_on_range_anywhere(),
+            "ACOR hidden in default subquery branch must be detected"
+        );
+
+        // ACOR hidden in a conditional subquery branch.
+        let inner_acor2 = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let mut conditional =
+            Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        conditional.add_conditional_subquery(
+            QueryItem::Key(b"k".to_vec()),
+            None,
+            Some(inner_acor2),
+        );
+        assert!(
+            conditional.has_aggregate_count_on_range_anywhere(),
+            "ACOR hidden in conditional subquery branch must be detected"
+        );
     }
 }
