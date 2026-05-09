@@ -715,8 +715,8 @@ mod tests {
 
         assert_eq!(decoded.items.len(), 3);
         assert_eq!(decoded.items, query.items);
-        assert_eq!(decoded.left_to_right, false);
-        assert_eq!(decoded.add_parent_tree_on_subquery, true);
+        assert!(!decoded.left_to_right);
+        assert!(decoded.add_parent_tree_on_subquery);
     }
 
     #[test]
@@ -731,7 +731,7 @@ mod tests {
         // Encode the excessive length using bincode's format
         let excessive_len = (MAX_QUERY_ITEMS as u64) + 1;
         let len_bytes =
-            bincode::encode_to_vec(&excessive_len, bincode_config()).expect("encode length");
+            bincode::encode_to_vec(excessive_len, bincode_config()).expect("encode length");
         malicious.extend_from_slice(&len_bytes);
 
         // Add enough dummy QueryItem bytes to start decoding (each Key item
@@ -807,7 +807,7 @@ mod tests {
 
         let excessive_len = (MAX_QUERY_ITEMS as u64) + 1;
         let len_bytes =
-            bincode::encode_to_vec(&excessive_len, bincode_config()).expect("encode length");
+            bincode::encode_to_vec(excessive_len, bincode_config()).expect("encode length");
         malicious.extend_from_slice(&len_bytes);
 
         // Try borrow_decode path
