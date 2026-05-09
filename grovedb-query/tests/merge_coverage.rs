@@ -950,6 +950,10 @@ fn merge_multiple_non_overlapping_items_get_own_defaults() {
         .as_ref()
         .expect("default subquery should exist");
     assert!(default_sq.items.contains(&QueryItem::Key(vec![b'a'])));
+    assert!(
+        !default_sq.items.contains(&QueryItem::Key(vec![b'b'])),
+        "default should not contain 'b' from query B in the non-overlapping case"
+    );
 
     let conds = merged
         .conditional_subquery_branches
@@ -1006,12 +1010,13 @@ fn merge_with_overlapping_items_get_both_defaults() {
     );
 }
 
-/// Three queries with pairwise overlaps: Key(2) in A+B, Key(3) in B+C.
+/// Three queries with pairwise overlaps and one key shared by all three queries.
 #[test]
 fn merge_multiple_three_queries_pairwise_overlaps() {
     let mut qa = Query::new();
     qa.insert_key(k(1));
     qa.insert_key(k(2));
+    qa.insert_key(k(5));
     qa.default_subquery_branch = SubqueryBranch {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(vec![b'a']))),
@@ -1020,6 +1025,7 @@ fn merge_multiple_three_queries_pairwise_overlaps() {
     let mut qb = Query::new();
     qb.insert_key(k(2));
     qb.insert_key(k(3));
+    qb.insert_key(k(5));
     qb.default_subquery_branch = SubqueryBranch {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(vec![b'b']))),
@@ -1028,6 +1034,7 @@ fn merge_multiple_three_queries_pairwise_overlaps() {
     let mut qc = Query::new();
     qc.insert_key(k(3));
     qc.insert_key(k(4));
+    qc.insert_key(k(5));
     qc.default_subquery_branch = SubqueryBranch {
         subquery_path: None,
         subquery: Some(Box::new(Query::new_single_key(vec![b'c']))),
@@ -1035,7 +1042,7 @@ fn merge_multiple_three_queries_pairwise_overlaps() {
 
     let merged = Query::merge_multiple(vec![qa, qb, qc]);
 
-    assert_eq!(merged.items.len(), 4);
+    assert_eq!(merged.items.len(), 5);
 
     let conds = merged
         .conditional_subquery_branches
@@ -1085,6 +1092,29 @@ fn merge_multiple_three_queries_pairwise_overlaps() {
     assert!(key4_sq.items.contains(&QueryItem::Key(vec![b'c'])));
     assert!(!key4_sq.items.contains(&QueryItem::Key(vec![b'a'])));
     assert!(!key4_sq.items.contains(&QueryItem::Key(vec![b'b'])));
+
+    // Key(5): in A + B + C -> should have "a", "b", and "c"
+    let key5_sq = conds
+        .get(&QueryItem::Key(k(5)))
+        .unwrap()
+        .subquery
+        .as_ref()
+        .unwrap();
+    assert!(
+        key5_sq.items.contains(&QueryItem::Key(vec![b'a'])),
+        "Key(5) should have 'a', got: {:?}",
+        key5_sq.items
+    );
+    assert!(
+        key5_sq.items.contains(&QueryItem::Key(vec![b'b'])),
+        "Key(5) should have 'b', got: {:?}",
+        key5_sq.items
+    );
+    assert!(
+        key5_sq.items.contains(&QueryItem::Key(vec![b'c'])),
+        "Key(5) should have 'c', got: {:?}",
+        key5_sq.items
+    );
 }
 
 /// Overlapping range items: partial overlap should correctly split.

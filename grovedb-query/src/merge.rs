@@ -433,6 +433,64 @@ impl Query {
         }
     }
 
+    fn merge_default_subquery_branch_for_remaining_items(
+        &mut self,
+        old_items: Vec<QueryItem>,
+        items: Vec<QueryItem>,
+        default_subquery_branch: SubqueryBranch,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+
+        // Start with old items, then subtract any that already have conditional
+        // subquery branches. Those items were not using the default.
+        let mut old_default_items = old_items;
+        if let Some(existing_conditionals) = self.conditional_subquery_branches.as_ref() {
+            for conditional_item in existing_conditionals.keys().cloned() {
+                let remaining = QueryItem::intersect_many_ordered(
+                    &mut old_default_items,
+                    vec![conditional_item],
+                );
+                old_default_items = remaining.ours.unwrap_or_default();
+                if old_default_items.is_empty() {
+                    break;
+                }
+            }
+        }
+
+        if old_default_items.is_empty() {
+            // No old items were using the default, or no old items existed. Just
+            // apply the incoming default directly.
+            for item in items {
+                self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+            }
+            return;
+        }
+
+        let intersection = QueryItem::intersect_many_ordered(&mut old_default_items, items);
+
+        // Items in both queries that were using the default: promote our
+        // default, then merge with the incoming default.
+        if let Some(in_both) = intersection.in_both {
+            let existing_default = self.default_subquery_branch.clone();
+            for item in in_both {
+                if existing_default.subquery.is_some() || existing_default.subquery_path.is_some() {
+                    self.merge_conditional_boxed_subquery(item.clone(), existing_default.clone());
+                }
+                self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+            }
+        }
+
+        // Items only in the incoming query, or overlapping old conditional
+        // items, just get the incoming default.
+        if let Some(theirs_only) = intersection.theirs {
+            for item in theirs_only {
+                self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
+            }
+        }
+    }
+
     /// Merges multiple queries into a single query. Items are unioned and
     /// conditional subquery branches are merged where they intersect.
     pub fn merge_multiple(mut queries: Vec<Query>) -> Self {
@@ -479,85 +537,11 @@ impl Query {
                 }
             }
 
-            // For remaining items (those without explicit conditionals), we need
-            // to add the incoming query's default_subquery_branch as a conditional.
-            // But items that overlap with pre-existing items were implicitly using
-            // merged_query's default_subquery_branch. We must promote that default
-            // to an explicit conditional first, so it merges with the incoming
-            // default rather than being silently replaced.
-            //
-            // However, old items that already have explicit conditional subquery
-            // branches were NOT using the default — we must exclude them from
-            // promotion to avoid leaking the default into existing conditionals.
-            if !items.is_empty() {
-                // Start with old items, then subtract any that already have
-                // conditional subquery branches (they weren't using the default)
-                let mut old_default_items = old_items;
-                if let Some(existing_conditionals) =
-                    merged_query.conditional_subquery_branches.as_ref()
-                {
-                    for conditional_item in existing_conditionals.keys().cloned() {
-                        let remaining = QueryItem::intersect_many_ordered(
-                            &mut old_default_items,
-                            vec![conditional_item],
-                        );
-                        old_default_items = remaining.ours.unwrap_or_default();
-                        if old_default_items.is_empty() {
-                            break;
-                        }
-                    }
-                }
-
-                if old_default_items.is_empty() {
-                    // No old items were using the default (all had conditionals
-                    // or none existed). Just apply incoming default directly —
-                    // merge_conditional_boxed_subquery will merge with any
-                    // existing conditionals automatically.
-                    for item in items {
-                        merged_query.merge_conditional_boxed_subquery(
-                            item,
-                            default_subquery_branch.clone(),
-                        );
-                    }
-                } else {
-                    let intersection =
-                        QueryItem::intersect_many_ordered(&mut old_default_items, items);
-
-                    // Items in both queries that were using the default: promote
-                    // merged_query's default, then merge with incoming default
-                    if let Some(in_both) = intersection.in_both {
-                        let merged_default = merged_query.default_subquery_branch.clone();
-                        for item in in_both {
-                            if merged_default.subquery.is_some()
-                                || merged_default.subquery_path.is_some()
-                            {
-                                merged_query.merge_conditional_boxed_subquery(
-                                    item.clone(),
-                                    merged_default.clone(),
-                                );
-                            }
-                            merged_query.merge_conditional_boxed_subquery(
-                                item,
-                                default_subquery_branch.clone(),
-                            );
-                        }
-                    }
-
-                    // Items only in the incoming query (or overlapping with old
-                    // conditional items): just apply incoming default
-                    if let Some(theirs_only) = intersection.theirs {
-                        for item in theirs_only {
-                            merged_query.merge_conditional_boxed_subquery(
-                                item,
-                                default_subquery_branch.clone(),
-                            );
-                        }
-                    }
-
-                    // Items only in old (ours): no action needed, they use
-                    // merged_query's default_subquery_branch
-                }
-            }
+            merged_query.merge_default_subquery_branch_for_remaining_items(
+                old_items,
+                items,
+                default_subquery_branch,
+            );
         }
         merged_query
     }
@@ -597,57 +581,11 @@ impl Query {
             }
         }
 
-        // For remaining items, use intersection to correctly handle overlapping
-        // vs non-overlapping items (same logic as merge_multiple)
-        if !items.is_empty() {
-            // Subtract old items that already have conditionals (not using default)
-            let mut old_default_items = old_items;
-            if let Some(existing_conditionals) = self.conditional_subquery_branches.as_ref() {
-                for conditional_item in existing_conditionals.keys().cloned() {
-                    let remaining = QueryItem::intersect_many_ordered(
-                        &mut old_default_items,
-                        vec![conditional_item],
-                    );
-                    old_default_items = remaining.ours.unwrap_or_default();
-                    if old_default_items.is_empty() {
-                        break;
-                    }
-                }
-            }
-
-            if old_default_items.is_empty() {
-                for item in items {
-                    self.merge_conditional_boxed_subquery(item, default_subquery_branch.clone());
-                }
-            } else {
-                let intersection = QueryItem::intersect_many_ordered(&mut old_default_items, items);
-
-                if let Some(in_both) = intersection.in_both {
-                    let self_default = self.default_subquery_branch.clone();
-                    for item in in_both {
-                        if self_default.subquery.is_some() || self_default.subquery_path.is_some() {
-                            self.merge_conditional_boxed_subquery(
-                                item.clone(),
-                                self_default.clone(),
-                            );
-                        }
-                        self.merge_conditional_boxed_subquery(
-                            item,
-                            default_subquery_branch.clone(),
-                        );
-                    }
-                }
-
-                if let Some(theirs_only) = intersection.theirs {
-                    for item in theirs_only {
-                        self.merge_conditional_boxed_subquery(
-                            item,
-                            default_subquery_branch.clone(),
-                        );
-                    }
-                }
-            }
-        }
+        self.merge_default_subquery_branch_for_remaining_items(
+            old_items,
+            items,
+            default_subquery_branch,
+        );
     }
 
     /// Adds a conditional subquery. A conditional subquery replaces the default
