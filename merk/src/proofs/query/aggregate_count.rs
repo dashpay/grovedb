@@ -68,10 +68,10 @@ fn classify_subtree(
     // Subtree keys are < subtree_hi_excl. If subtree_hi_excl <= range_lo,
     // every subtree key < subtree_hi_excl <= range_lo is also < range_lo,
     // so excluded regardless of whether range_lo is inclusive or exclusive.
-    if let (Some(s_hi), Some(r_lo)) = (subtree_hi_excl, range_lo) {
-        if s_hi <= r_lo {
-            return SubtreeClassification::Disjoint;
-        }
+    if let (Some(s_hi), Some(r_lo)) = (subtree_hi_excl, range_lo)
+        && s_hi <= r_lo
+    {
+        return SubtreeClassification::Disjoint;
     }
 
     // Disjoint-RIGHT: subtree entirely above the range.
@@ -79,10 +79,10 @@ fn classify_subtree(
     // Subtree keys are > subtree_lo_excl. If subtree_lo_excl >= range_hi,
     // every subtree key > subtree_lo_excl >= range_hi is also > range_hi,
     // so excluded regardless of whether range_hi is inclusive or exclusive.
-    if let (Some(s_lo), Some(r_hi)) = (subtree_lo_excl, range_hi) {
-        if s_lo >= r_hi {
-            return SubtreeClassification::Disjoint;
-        }
+    if let (Some(s_lo), Some(r_hi)) = (subtree_lo_excl, range_hi)
+        && s_lo >= r_hi
+    {
+        return SubtreeClassification::Disjoint;
     }
 
     // Contained: subtree (s_lo, s_hi) ⊆ range.
