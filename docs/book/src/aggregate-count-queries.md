@@ -137,24 +137,20 @@ A bare tuple is used for the result rather than a wrapper struct because
 the count is already a `u64` and the `path_query` itself echoes the inner
 range — there is nothing else to return.
 
-> **Note on `NonCounted` children.** `AggregateCountOnRange` counts every
-> in-range key that physically exists in the tree, regardless of whether
-> the parent's running count includes it. A `NonCounted`-wrapped item still
-> occupies a key slot in the merk and so still appears in the proof's
-> boundary walk; the verifier credits `+1` per in-range key without
-> consulting whether the node's own contribution to the parent's
-> aggregate was zeroed.
+> **Note on `NonCounted` children.** `Element::NonCounted` wrappers tell
+> the parent tree to skip the wrapped element when aggregating its own
+> count. `AggregateCountOnRange` honors this: every node in a
+> `ProvableCountTree` carries an own-count of 1 (normal) or 0
+> (`NonCounted`-wrapped), and the verifier credits only the **own-count**
+> to the in-range total when the boundary key falls in range. So
+> `NonCounted` children are excluded from the result, matching the
+> tree's own aggregate.
 >
-> If you specifically want the parent's running count (which **does**
-> exclude `NonCounted` children), read the
-> `Element::ProvableCountTree(_, count, _)` /
-> `Element::ProvableCountSumTree(_, count, _, _)` bytes directly — that
-> total is hash-verified by the parent merk's proof, and is exactly what
-> `AggregateCountOnRange(RangeFull)` would have given (and is also why
-> `RangeFull` is rejected as an inner item, see above). A future revision
-> could add a `NonCounted`-aware count mode by tracking
-> structural-vs-in-range counts separately during the shape walk; that's
-> not part of v1.
+> Mechanically the verifier derives each boundary node's own-count from
+> its committed aggregate as
+> `aggregate − left_struct − right_struct` (see the "Verifier shape
+> walk" section). For a `NonCounted` leaf, `aggregate = 0` and there are
+> no children, so own-count = 0 and the key contributes nothing.
 
 ## How the Proof is Built
 
@@ -170,12 +166,12 @@ To do that, every proof node has a role; we use a small vocabulary of
 proof-node types — three from the existing proof system, plus one new
 self-verifying node added specifically for this proof shape:
 
-| Role in proof          | Proof node type                                                                                  | What it carries                                                | Why we picked it                                                                                                         |
-|------------------------|--------------------------------------------------------------------------------------------------|----------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
-| **On-path / boundary** | `KVDigestCount(key, value_hash, count)`                                                           | key + value digest + subtree count                             | the verifier needs the **key** to test "is it in the range?", and the count to recompute the parent hash               |
-| **Fully-inside root**  | `HashWithCount(kv_hash, left_child_hash, right_child_hash, count)`                               | the four fields needed to recompute `node_hash_with_count`     | one op per collapsed subtree, **and self-verifying** — see security note below                                          |
-| **Fully-outside**      | `Hash(node_hash)`                                                                                 | one opaque node hash                                           | no key, no count — purely there to recompute the parent's hash                                                            |
-| **Empty side**         | (the empty-tree sentinel, no `Push` needed)                                                       | —                                                              | a missing child contributes hash = 0 and count = 0 to the parent                                                          |
+| Role in proof              | Proof node type                                                              | What it carries                                                | Why we picked it                                                                                                         |
+|----------------------------|------------------------------------------------------------------------------|----------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| **On-path / boundary**     | `KVDigestCount(key, value_hash, count)`                                       | key + value digest + subtree count                             | the verifier needs the **key** to test "is it in the range?", and the count is hash-bound via `node_hash_with_count` so it can also be used as the structural count of this subtree by ancestor own-count derivation |
+| **Fully-inside root**      | `HashWithCount(kv_hash, left_child_hash, right_child_hash, count)`            | the four fields needed to recompute `node_hash_with_count`     | one op per collapsed subtree, **and self-verifying** — see security note below                                          |
+| **Fully-outside**          | `HashWithCount(kv_hash, left_child_hash, right_child_hash, count)` (same)     | same shape as the inside variant                               | the structural count of an outside subtree is needed by the boundary parent's `own_count = aggregate − left − right` derivation; only `HashWithCount` carries a *hash-bound* count, so we use it for outside subtrees too. Plain `Hash(_)` would not bind a count and is therefore not used in count proofs. |
+| **Empty side**             | (the empty-tree sentinel, no `Push` needed)                                   | —                                                              | a missing child contributes hash = 0 and count = 0 to the parent                                                          |
 
 > **Why `HashWithCount` is self-verifying.** The `count` value carried by a
 > `HashWithCount` op is *bound* to the parent merk's hash chain, not trusted
@@ -525,43 +521,53 @@ Without this discipline a malicious prover could:
 1. Send a single `Push(Hash(expected_root))` for a non-empty tree, and
    receive `(expected_root, 0)` for any range — root hash matches, count is
    trivially zero.
-2. Replace an in-range `HashWithCount` subtree with a `Hash` carrying the
-   *same* `node_hash` (the hash chain still matches), undercounting by the
-   missing subtree count.
-3. Attach extra `KVDigestCount` children below a keyless `Hash` /
-   `HashWithCount`. `Tree::hash()` for those node types is computed only
-   from their embedded fields and ignores any reconstructed children, so
-   the root hash stays valid — but a verifier that summed every visited
-   node would credit the bogus children as `+1` each.
+2. Replace an in-range collapsed subtree with a hash carrying the *same*
+   `node_hash` but no count, undercounting by the missing subtree count.
+3. Attach extra `KVDigestCount` children below a keyless leaf node.
+   `Tree::hash()` for those node types is computed only from their
+   embedded fields and ignores any reconstructed children, so the root
+   hash stays valid — but a verifier that summed every visited node would
+   credit the bogus children as `+1` each.
+4. Lie about the structural count of an outside subtree to skew an
+   ancestor boundary node's `own_count` derivation, over- or under-
+   counting `NonCounted`-aware boundary contributions.
 
-To rule out all three, the verifier:
+To rule out all four, the verifier:
 
 1. **Phase 1** — decode the proof bytes into a `ProofTree` via
    `execute_with_options`. The visit-node closure performs only a coarse
-   allowlist (`Hash` / `HashWithCount` / `KVDigestCount`) and **does not
-   count anything**. (We disable the AVL balance check for this proof
-   shape — count proofs intentionally collapse one side to height 1 while
-   descending the other.)
+   allowlist (`HashWithCount` / `KVDigestCount`; **plain `Hash` is not
+   accepted in count proofs**) and **does not count anything**. (We
+   disable the AVL balance check for this proof shape — count proofs
+   intentionally collapse one side to height 1 while descending the
+   other.)
 2. **Phase 2** — walk the reconstructed tree with the same inherited
    exclusive subtree-key bounds the prover used (`(None, None)` at the
-   root). At each position, call `classify_subtree(bounds, range)` and bind
-   the proof-tree node type to the classification:
+   root). At each position, call `classify_subtree(bounds, range)` and
+   bind the proof-tree node type to the classification, returning the pair
+   `(in_range_count, structural_count)` where `structural_count` is the
+   merk-recorded aggregate count of this subtree (used by the parent's
+   `own_count` derivation):
 
-   | Classification | Required node                                | Children allowed? | Contribution                          |
-   |----------------|----------------------------------------------|-------------------|---------------------------------------|
-   | `Disjoint`     | leaf `Hash(_)`                               | **no** (must be a leaf) | `0`                              |
-   | `Contained`    | leaf `HashWithCount(_, _, _, count)`         | **no** (must be a leaf) | `count` (committed via `node_hash_with_count`) |
-   | `Boundary`     | `KVDigestCount(key, _, _)` with `key` strictly inside `bounds` | yes — recurse | recurse with tightened bounds, `+1` if `range.contains(key)` |
+   | Classification | Required node                                                         | Children allowed?       | `(in_range, structural)`                                                                                  |
+   |----------------|-----------------------------------------------------------------------|-------------------------|-----------------------------------------------------------------------------------------------------------|
+   | `Disjoint`     | leaf `HashWithCount(_, _, _, count)`                                  | **no** (must be a leaf) | `(0, count)`                                                                                              |
+   | `Contained`    | leaf `HashWithCount(_, _, _, count)`                                  | **no** (must be a leaf) | `(count, count)` — `count` is the merk's aggregate, which already excludes `NonCounted` entries (own = 0) |
+   | `Boundary`     | `KVDigestCount(key, _, aggregate)` with `key` strictly inside `bounds` | yes — recurse           | `own_count = aggregate − left_struct − right_struct`; in-range = `left_in + right_in + (own_count if range.contains(key) else 0)`; structural = `aggregate` |
 
-3. Counts are summed with `checked_add`; an overflow is treated as proof
-   corruption.
+3. Counts are summed with `checked_add`; the boundary `own_count` uses
+   `checked_sub` (so a malformed proof claiming children's structural
+   counts that exceed the parent's aggregate is rejected, not silently
+   saturated).
 
-Because every leaf-shape position is forced to be a leaf, attack 3 (smuggled
-counted children under a keyless node) is rejected. Because every
-`Contained` position must hold `HashWithCount` (and its count is bound to
-the parent's hash via `node_hash_with_count`), attack 2 is rejected.
-Because the root's `(None, None)` bounds against any bounded inner range
-classify as `Boundary` (requiring `KVDigestCount`), attack 1 is rejected.
+Because every leaf-shape position is forced to be a leaf, attack 3
+(smuggled counted children under a keyless node) is rejected. Because every
+`Contained` and `Disjoint` position must hold `HashWithCount` (and its
+count is bound to the parent's hash via `node_hash_with_count`), attacks 2
+and 4 are both rejected — outside subtrees can't lie about their
+structural count any more than inside ones can. Because the root's
+`(None, None)` bounds against any bounded inner range classify as
+`Boundary` (requiring `KVDigestCount`), attack 1 is rejected.
 
 The shape walk is independent of the chain-hash check: even a proof whose
 reconstructed root happens to match the expected root will be rejected if

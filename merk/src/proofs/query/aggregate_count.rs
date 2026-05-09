@@ -178,15 +178,7 @@ where
         let mut ops = LinkedList::new();
         let count = cost_return_on_error!(
             &mut cost,
-            emit_count_proof(
-                self,
-                inner_range,
-                tree_type,
-                None,
-                None,
-                &mut ops,
-                grove_version
-            )
+            emit_count_proof(self, inner_range, None, None, &mut ops, grove_version)
         );
         Ok((ops, count)).wrap_with_cost(cost)
     }
@@ -200,7 +192,6 @@ where
 fn emit_count_proof<S>(
     walker: &mut RefWalker<'_, S>,
     range: &QueryItem,
-    tree_type: TreeType,
     subtree_lo_excl: Option<&[u8]>,
     subtree_hi_excl: Option<&[u8]>,
     ops: &mut LinkedList<Op>,
@@ -214,59 +205,68 @@ where
     // Step 1: classify the current subtree against the inner range.
     let class = classify_subtree(subtree_lo_excl, subtree_hi_excl, range);
 
-    match class {
-        SubtreeClassification::Disjoint => {
-            // Whole subtree is outside the range: emit one opaque hash.
-            let node_hash = walker
-                .tree()
-                .hash_for_link(tree_type)
-                .unwrap_add_cost(&mut cost);
-            ops.push_back(Op::Push(Node::Hash(node_hash)));
-            return Ok(0).wrap_with_cost(cost);
-        }
-        SubtreeClassification::Contained => {
-            // Whole subtree is inside the range: emit one HashWithCount
-            // carrying enough material to reconstruct the subtree's
-            // node_hash from `(kv_hash, left_child_hash, right_child_hash,
-            // count)`. The verifier recomputes
-            // node_hash_with_count(...) and uses that as the subtree's
-            // committed hash; if the prover's `count` is wrong the recomputed
-            // hash diverges and the parent's Merkle-root check fails.
-            let aggregate = match walker.tree().aggregate_data() {
-                Ok(a) => a,
-                Err(e) => {
-                    return Err(Error::InvalidProofError(format!("aggregate_data: {}", e)))
-                        .wrap_with_cost(cost);
-                }
-            };
-            let subtree_count = match provable_count_from_aggregate(aggregate) {
-                Ok(c) => c,
-                Err(e) => return Err(e).wrap_with_cost(cost),
-            };
-            let kv_hash = *walker.tree().kv_hash();
-            let left_child_hash = walker
-                .tree()
-                .link(true)
-                .map(|l| *l.hash())
-                .unwrap_or(NULL_HASH);
-            let right_child_hash = walker
-                .tree()
-                .link(false)
-                .map(|l| *l.hash())
-                .unwrap_or(NULL_HASH);
-            ops.push_back(Op::Push(Node::HashWithCount(
-                kv_hash,
-                left_child_hash,
-                right_child_hash,
-                subtree_count,
-            )));
-            return Ok(subtree_count).wrap_with_cost(cost);
-        }
-        SubtreeClassification::Boundary => {
-            // Boundary case: descend, emit the current node as KVDigestCount,
-            // and recurse into both children.
-        }
+    if matches!(
+        class,
+        SubtreeClassification::Disjoint | SubtreeClassification::Contained
+    ) {
+        // Whole subtree is either entirely outside or entirely inside the
+        // range. Either way we emit a single self-verifying
+        // `HashWithCount(kv_hash, left_child_hash, right_child_hash, count)`
+        // op for the subtree's root.
+        //
+        // Why HashWithCount even for Disjoint subtrees (rather than the
+        // smaller `Hash(node_hash)` that an in-range count would never
+        // need)?  Because the parent's `own_count` is computed by the
+        // verifier as `parent_aggregate − left_struct − right_struct` (see
+        // `verify_count_shape`), so the *structural* count of every child
+        // — including disjoint outside subtrees — has to be
+        // cryptographically bound to the parent's hash chain. The only
+        // node type that carries a hash-bound count is `HashWithCount`
+        // (its four committed fields recompute `node_hash_with_count` and
+        // would diverge under any count tampering). Plain `Hash(node_hash)`
+        // carries no count, so a malicious prover could lie about the
+        // structural count and skew the parent's `own_count`
+        // derivation — leading to silent over/under-counts at boundary
+        // ancestors.
+        let aggregate = match walker.tree().aggregate_data() {
+            Ok(a) => a,
+            Err(e) => {
+                return Err(Error::InvalidProofError(format!("aggregate_data: {}", e)))
+                    .wrap_with_cost(cost);
+            }
+        };
+        let subtree_count = match provable_count_from_aggregate(aggregate) {
+            Ok(c) => c,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+        let kv_hash = *walker.tree().kv_hash();
+        let left_child_hash = walker
+            .tree()
+            .link(true)
+            .map(|l| *l.hash())
+            .unwrap_or(NULL_HASH);
+        let right_child_hash = walker
+            .tree()
+            .link(false)
+            .map(|l| *l.hash())
+            .unwrap_or(NULL_HASH);
+        ops.push_back(Op::Push(Node::HashWithCount(
+            kv_hash,
+            left_child_hash,
+            right_child_hash,
+            subtree_count,
+        )));
+        // For the prover-side in-range total: Contained contributes its
+        // entire subtree count (which already excludes NonCounted entries
+        // because their stored aggregate is 0); Disjoint contributes 0.
+        let in_range_contribution = match class {
+            SubtreeClassification::Contained => subtree_count,
+            SubtreeClassification::Disjoint => 0,
+            SubtreeClassification::Boundary => unreachable!(),
+        };
+        return Ok(in_range_contribution).wrap_with_cost(cost);
     }
+    // class == Boundary — fall through to descent + KVDigestCount emission.
 
     // Step 2: snapshot what we need from the current node before walking.
     // walk(true/false) takes &mut self.tree, so we must drop any existing
@@ -285,74 +285,72 @@ where
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
 
-    // Snapshot link presence + hash so we can short-circuit fully-outside
-    // children without paying the I/O cost of walk(). A Contained child
-    // still requires a walk because the new `HashWithCount` shape needs the
-    // child's `kv_hash` and grandchild hashes — material the parent's link
-    // doesn't carry. The recursive call's own Contained arm will emit the
-    // HashWithCount in a single op.
-    let (left_link_present, left_link_hash): (bool, CryptoHash) = match walker.tree().link(true) {
-        Some(link) => (true, *link.hash()),
-        None => (false, NULL_HASH),
-    };
-    let (right_link_present, right_link_hash): (bool, CryptoHash) = match walker.tree().link(false)
-    {
-        Some(link) => (true, *link.hash()),
-        None => (false, NULL_HASH),
-    };
+    // Snapshot each child link's structural aggregate count from the link
+    // itself (avoids loading the child for this lookup). The verifier needs
+    // these to compute `own_count = node_count − left_struct − right_struct`
+    // at this boundary node.
+    let left_link_aggregate: u64 = walker
+        .tree()
+        .link(true)
+        .map(|l| l.aggregate_data().as_count_u64())
+        .unwrap_or(0);
+    let right_link_aggregate: u64 = walker
+        .tree()
+        .link(false)
+        .map(|l| l.aggregate_data().as_count_u64())
+        .unwrap_or(0);
+    let left_link_present = walker.tree().link(true).is_some();
+    let right_link_present = walker.tree().link(false).is_some();
 
     let mut total: u64 = 0;
 
-    // Step 3: handle the LEFT child.
+    // Step 3: handle the LEFT child. Both Disjoint and Contained require a
+    // one-level walk so the recursive Disjoint/Contained arm can emit a
+    // self-verifying `HashWithCount` (plain `Hash` is no longer used here
+    // — see the Disjoint branch comment above).
     let left_emitted = if left_link_present {
         let left_lo = subtree_lo_excl;
         let left_hi: Option<&[u8]> = Some(node_key.as_slice());
-        let left_class = classify_subtree(left_lo, left_hi, range);
-        match left_class {
-            SubtreeClassification::Disjoint => {
-                ops.push_back(Op::Push(Node::Hash(left_link_hash)));
-                true
+        let walked = cost_return_on_error!(
+            &mut cost,
+            walker.walk(
+                true,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+        );
+        let mut left_walker = match walked {
+            Some(lw) => lw,
+            None => {
+                return Err(Error::CorruptedState(
+                    "tree.link(true) was Some but walk(true) returned None",
+                ))
+                .wrap_with_cost(cost)
             }
-            SubtreeClassification::Contained | SubtreeClassification::Boundary => {
-                let walked = cost_return_on_error!(
-                    &mut cost,
-                    walker.walk(
-                        true,
-                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                        grove_version,
-                    )
-                );
-                let mut left_walker = match walked {
-                    Some(lw) => lw,
-                    None => {
-                        return Err(Error::CorruptedState(
-                            "tree.link(true) was Some but walk(true) returned None",
-                        ))
-                        .wrap_with_cost(cost)
-                    }
-                };
-                let n = cost_return_on_error!(
-                    &mut cost,
-                    emit_count_proof(
-                        &mut left_walker,
-                        range,
-                        tree_type,
-                        left_lo,
-                        left_hi,
-                        ops,
-                        grove_version,
-                    )
-                );
-                total = total.saturating_add(n);
-                true
-            }
-        }
+        };
+        let n = cost_return_on_error!(
+            &mut cost,
+            emit_count_proof(
+                &mut left_walker,
+                range,
+                left_lo,
+                left_hi,
+                ops,
+                grove_version,
+            )
+        );
+        total = total.saturating_add(n);
+        true
     } else {
         false
     };
 
     // Step 4: emit the current node as a boundary KVDigestCount + attach left
-    // as its left child.
+    // as its left child. The node's own contribution to the in-range count
+    // is `own_count` (0 for `NonCounted`-wrapped, 1 for normal), derived as
+    // `node_count − left_struct − right_struct`. This is what makes
+    // NonCounted entries fall out of the count: a NonCounted leaf has
+    // node_count = 0 and no children, so own_count = 0.
     ops.push_back(Op::Push(Node::KVDigestCount(
         node_key.clone(),
         node_value_hash,
@@ -362,56 +360,46 @@ where
         ops.push_back(Op::Parent);
     }
     if range.contains(&node_key) {
-        total = total.saturating_add(1);
+        let own_count = node_count
+            .saturating_sub(left_link_aggregate)
+            .saturating_sub(right_link_aggregate);
+        total = total.saturating_add(own_count);
     }
 
-    // Step 5: handle the RIGHT child. Same pattern as LEFT — only Disjoint
-    // is short-circuited at the link level; Contained walks one level into
-    // the child so the recursive Contained arm can emit a self-verifying
-    // HashWithCount with the child's own kv_hash and grandchild hashes.
+    // Step 5: handle the RIGHT child. Same descent pattern as LEFT.
     let right_emitted = if right_link_present {
         let right_lo: Option<&[u8]> = Some(node_key.as_slice());
         let right_hi = subtree_hi_excl;
-        let right_class = classify_subtree(right_lo, right_hi, range);
-        match right_class {
-            SubtreeClassification::Disjoint => {
-                ops.push_back(Op::Push(Node::Hash(right_link_hash)));
-                true
+        let walked = cost_return_on_error!(
+            &mut cost,
+            walker.walk(
+                false,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+        );
+        let mut right_walker = match walked {
+            Some(rw) => rw,
+            None => {
+                return Err(Error::CorruptedState(
+                    "tree.link(false) was Some but walk(false) returned None",
+                ))
+                .wrap_with_cost(cost)
             }
-            SubtreeClassification::Contained | SubtreeClassification::Boundary => {
-                let walked = cost_return_on_error!(
-                    &mut cost,
-                    walker.walk(
-                        false,
-                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                        grove_version,
-                    )
-                );
-                let mut right_walker = match walked {
-                    Some(rw) => rw,
-                    None => {
-                        return Err(Error::CorruptedState(
-                            "tree.link(false) was Some but walk(false) returned None",
-                        ))
-                        .wrap_with_cost(cost)
-                    }
-                };
-                let n = cost_return_on_error!(
-                    &mut cost,
-                    emit_count_proof(
-                        &mut right_walker,
-                        range,
-                        tree_type,
-                        right_lo,
-                        right_hi,
-                        ops,
-                        grove_version,
-                    )
-                );
-                total = total.saturating_add(n);
-                true
-            }
-        }
+        };
+        let n = cost_return_on_error!(
+            &mut cost,
+            emit_count_proof(
+                &mut right_walker,
+                range,
+                right_lo,
+                right_hi,
+                ops,
+                grove_version,
+            )
+        );
+        total = total.saturating_add(n);
+        true
     } else {
         false
     };
@@ -488,9 +476,13 @@ pub fn verify_aggregate_count_on_range_proof(
     // execute() bails early on garbage input.
     let tree_result: CostResult<ProofTree, Error> =
         execute_with_options(decoder, false, false, |node| match node {
-            Node::Hash(_) | Node::HashWithCount(_, _, _, _) | Node::KVDigestCount(_, _, _) => {
-                Ok(())
-            }
+            // The count proof emits only `HashWithCount` (for collapsed
+            // Disjoint or Contained subtrees) and `KVDigestCount` (for
+            // Boundary nodes). Plain `Hash(_)` is no longer used here
+            // because the structural count it would otherwise stand in
+            // for is needed by the verifier's `own_count` derivation and
+            // would not be hash-bound.
+            Node::HashWithCount(_, _, _, _) | Node::KVDigestCount(_, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in aggregate count proof: {}",
                 other
@@ -502,8 +494,8 @@ pub fn verify_aggregate_count_on_range_proof(
     // walk. This binds each leaf node's type to the (subtree_bounds × range)
     // classification, so the only valid count is the one a faithful prover
     // would have produced for this exact range.
-    let count = match verify_count_shape(&tree, inner_range, None, None) {
-        Ok(c) => c,
+    let (count, _structural) = match verify_count_shape(&tree, inner_range, None, None) {
+        Ok(pair) => pair,
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
 
@@ -511,37 +503,61 @@ pub fn verify_aggregate_count_on_range_proof(
     Ok((root_hash, count)).wrap_with_cost(cost)
 }
 
-/// Recursive shape-walk over the reconstructed proof tree. At each node:
+/// Recursive shape-walk over the reconstructed proof tree. Returns the
+/// pair `(in_range_count, structural_count)`:
+///
+/// - `in_range_count` — number of keys in the subtree that fall inside the
+///   inner range AND have a non-zero own-count (i.e. are not
+///   `NonCounted`-wrapped). This is what bubbles up to the verifier's
+///   return value.
+/// - `structural_count` — the merk-recorded aggregate count of this subtree
+///   (counting normal entries as 1 and `NonCounted` entries as 0). The
+///   parent uses it to compute its own `own_count` as
+///   `parent_node_count − left_struct − right_struct` (since
+///   `parent_node_count = own + left_struct + right_struct`).
+///
+/// The structural count of every child is **cryptographically bound** to
+/// the parent's hash chain because every count-bearing node in a count
+/// proof (`KVDigestCount`, `HashWithCount`) has its count fed into
+/// `node_hash_with_count` for hash recomputation. Plain `Hash(_)` would
+/// not carry a bound count and is therefore not allowed in count proofs;
+/// see the prover-side comment in `emit_count_proof` for the full
+/// justification.
+///
+/// At each node:
 ///
 /// - Compute the expected classification from the inherited subtree bounds
 ///   and the inner range.
 /// - Require the node's type to match the classification (and reject any
 ///   children attached under a leaf-shape classification — a malicious
-///   prover could otherwise hide counted children under a `Hash` /
-///   `HashWithCount`, since their hash recomputation ignores those
-///   children).
+///   prover could otherwise hide counted children under a `HashWithCount`
+///   leaf, since its hash recomputation ignores reconstructed children).
 /// - Recurse with tightened bounds at `Boundary` nodes, summing with
-///   `checked_add`.
+///   `checked_add` and computing `own_count` via `checked_sub`.
 fn verify_count_shape(
     tree: &ProofTree,
     range: &QueryItem,
     lo: Option<&[u8]>,
     hi: Option<&[u8]>,
-) -> Result<u64, Error> {
+) -> Result<(u64, u64), Error> {
     let class = classify_subtree(lo, hi, range);
     match class {
         SubtreeClassification::Disjoint => match &tree.node {
-            Node::Hash(_) => {
+            Node::HashWithCount(_, _, _, count) => {
                 if tree.left.is_some() || tree.right.is_some() {
                     return Err(Error::InvalidProofError(
-                        "aggregate-count proof: Hash node at a Disjoint position must be a leaf"
+                        "aggregate-count proof: HashWithCount node at a Disjoint position \
+                         must be a leaf"
                             .to_string(),
                     ));
                 }
-                Ok(0)
+                // Disjoint subtree contributes 0 to the in-range count but
+                // its full structural count to the parent's `own_count`
+                // computation.
+                Ok((0, *count))
             }
             other => Err(Error::InvalidProofError(format!(
-                "aggregate-count proof: expected Hash at Disjoint position, got {}",
+                "aggregate-count proof: expected HashWithCount at Disjoint position, got {}",
                 other
             ))),
         },
@@ -554,7 +570,10 @@ fn verify_count_shape(
                             .to_string(),
                     ));
                 }
-                Ok(*count)
+                // Contained subtree's structural count (which excludes
+                // NonCounted entries because their stored aggregate is 0)
+                // is exactly its in-range count.
+                Ok((*count, *count))
             }
             other => Err(Error::InvalidProofError(format!(
                 "aggregate-count proof: expected HashWithCount at Contained position, got {}",
@@ -562,7 +581,7 @@ fn verify_count_shape(
             ))),
         },
         SubtreeClassification::Boundary => match &tree.node {
-            Node::KVDigestCount(key, _, _) => {
+            Node::KVDigestCount(key, _, aggregate) => {
                 if !key_strictly_inside(key.as_slice(), lo, hi) {
                     return Err(Error::InvalidProofError(format!(
                         "aggregate-count proof: KVDigestCount key {} falls outside its \
@@ -573,23 +592,45 @@ fn verify_count_shape(
                     )));
                 }
                 let key_slice = key.as_slice();
-                let left_count = match &tree.left {
+                let (left_in, left_struct) = match &tree.left {
                     Some(child) => verify_count_shape(&child.tree, range, lo, Some(key_slice))?,
-                    None => 0,
+                    None => (0, 0),
                 };
-                let right_count = match &tree.right {
+                let (right_in, right_struct) = match &tree.right {
                     Some(child) => verify_count_shape(&child.tree, range, Some(key_slice), hi)?,
-                    None => 0,
+                    None => (0, 0),
                 };
-                let self_contribution = u64::from(range.contains(key_slice));
-                left_count
-                    .checked_add(right_count)
+                // own_count = aggregate − left_struct − right_struct.
+                // Saturating sub here would silently mask a malformed
+                // proof (children claiming more keys than the parent's
+                // aggregate), so use checked_sub and reject.
+                let own_count = aggregate
+                    .checked_sub(left_struct)
+                    .and_then(|s| s.checked_sub(right_struct))
+                    .ok_or_else(|| {
+                        Error::InvalidProofError(format!(
+                            "aggregate-count proof: child structural counts ({} + {}) exceed \
+                             parent's aggregate count ({}) at key {}",
+                            left_struct,
+                            right_struct,
+                            aggregate,
+                            hex::encode(key)
+                        ))
+                    })?;
+                let self_contribution = if range.contains(key_slice) {
+                    own_count
+                } else {
+                    0
+                };
+                let in_range = left_in
+                    .checked_add(right_in)
                     .and_then(|s| s.checked_add(self_contribution))
                     .ok_or_else(|| {
                         Error::InvalidProofError(
-                            "aggregate-count proof: count overflowed u64".to_string(),
+                            "aggregate-count proof: in-range count overflowed u64".to_string(),
                         )
-                    })
+                    })?;
+                Ok((in_range, *aggregate))
             }
             other => Err(Error::InvalidProofError(format!(
                 "aggregate-count proof: expected KVDigestCount at Boundary position, got {}",
@@ -1038,12 +1079,19 @@ mod tests {
         let bytes = encode_proof(&forged);
 
         let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
-        let err = result.expect_err("single-Hash forgery must be rejected by shape walk");
-        let _ = merk; // keep merk alive for clarity in the test scope
+        let err = result.expect_err("single-Hash forgery must be rejected");
+        // keep merk alive for clarity in the test scope
+        let _ = merk;
+        // Plain `Hash` is no longer in the count-proof allowlist (it would
+        // carry an unbound structural count), so the rejection now lands
+        // in Phase 1's coarse allowlist rather than Phase 2's shape walk.
+        // Either error message is fine — the attack is rejected.
         match err {
             Error::InvalidProofError(msg) => {
                 assert!(
-                    msg.contains("expected KVDigestCount") || msg.contains("Boundary"),
+                    msg.contains("unexpected node type")
+                        || msg.contains("expected KVDigestCount")
+                        || msg.contains("Boundary"),
                     "unexpected message: {msg}"
                 );
             }

@@ -461,30 +461,26 @@ mod tests {
         assert!(pq.validate_aggregate_count_on_range().is_err());
     }
 
-    /// Pins the v1 contract: `AggregateCountOnRange` counts every in-range
-    /// key that physically exists in the merk, **regardless** of whether
-    /// the parent's running count was zeroed for that entry by an
-    /// `Element::NonCounted` wrapper.
+    /// `Element::NonCounted` wrappers tell the parent tree to **skip** the
+    /// wrapped element when aggregating its own count.
+    /// `AggregateCountOnRange` honors that: NonCounted children are
+    /// excluded from the result.
     ///
-    /// `NonCounted` is a parent-side aggregation hint — the wrapped entry
-    /// still occupies a key slot in the merk and still appears in the
-    /// proof's boundary walk. The shape-walk verifier credits `+1` per
-    /// in-range key without consulting whether the node's own contribution
-    /// to the parent aggregate was zeroed, so the wrapped item is included
-    /// in the count.
-    ///
-    /// Callers who specifically want the parent's running count (which does
-    /// exclude NonCounted children) should read the
-    /// `Element::ProvableCountTree(_, count, _)` bytes directly — that
-    /// total is hash-verified by the parent merk's proof and is exactly
-    /// what `AggregateCountOnRange(RangeFull)` *would* have given (and is
-    /// why `RangeFull` is rejected as an inner item).
-    ///
-    /// See the "Note on `NonCounted` children" callout in the book chapter
-    /// for the rationale and a sketch of how a future
-    /// `NonCounted`-aware mode could be added.
+    /// Mechanics — every node in a `ProvableCountTree` carries an
+    /// own_count of 1 (normal) or 0 (NonCounted). The merk-recorded
+    /// aggregate at any subtree = sum of own_counts in the subtree
+    /// (NonCounted entries contribute 0). The verifier's shape walk
+    /// derives each boundary node's own_count as
+    /// `node_aggregate − left_struct − right_struct` and credits **only
+    /// own_count** to the in-range total when the key falls in range.
+    /// For a NonCounted leaf, own_count = 0 and the wrapped key
+    /// contributes nothing. The structural counts threaded through the
+    /// walk are hash-bound at every step (every count-bearing proof node
+    /// feeds its count into `node_hash_with_count`), so a malicious
+    /// prover can't lie about a NonCounted node's status without
+    /// breaking the parent's hash chain.
     #[test]
-    fn non_counted_children_are_included_in_aggregate_count_v1_contract() {
+    fn non_counted_children_are_excluded_from_aggregate_count() {
         use crate::tests::TEST_LEAF;
 
         let v = GroveVersion::latest();
@@ -500,7 +496,7 @@ mod tests {
         .unwrap()
         .expect("insert ct");
 
-        // Five regular items.
+        // Five regular items — each contributes 1.
         for c in [b'a', b'b', b'c', b'd', b'e'] {
             db.insert(
                 [TEST_LEAF, b"ct"].as_ref(),
@@ -514,10 +510,8 @@ mod tests {
             .expect("insert regular item");
         }
 
-        // One NonCounted-wrapped item, in-range. The parent merk's
-        // *aggregate* count is 5 because of the wrapper, but the
-        // AggregateCountOnRange shape walk credits +1 for every in-range
-        // key it encounters, so the count returned here is 6.
+        // One NonCounted-wrapped item, key "f" — in-range but contributes
+        // 0 (own_count = 0).
         let nc_item =
             Element::new_non_counted(Element::new_item(b"hidden".to_vec())).expect("wrap ok");
         db.insert([TEST_LEAF, b"ct"].as_ref(), b"f", nc_item, None, None, v)
@@ -539,9 +533,8 @@ mod tests {
             GroveDb::verify_aggregate_count_query(&proof, &path_query, v).expect("verify");
         assert_eq!(got_root, root, "root mismatch");
         assert_eq!(
-            got_count, 6,
-            "AggregateCountOnRange must count every in-range key including \
-             NonCounted-wrapped ones (see book chapter for rationale)"
+            got_count, 5,
+            "NonCounted-wrapped child must be excluded from the aggregate count"
         );
     }
 
