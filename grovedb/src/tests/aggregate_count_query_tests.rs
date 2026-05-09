@@ -263,49 +263,114 @@ mod tests {
 
     #[test]
     fn count_forgery_is_caught_at_grovedb_level() {
-        // End-to-end version of the merk-level forgery test: tamper with the
-        // count in a HashWithCount op inside the encoded proof and the
-        // GroveDB verifier should reject it (root mismatch in the layer
-        // chain).
+        // End-to-end version of the merk-level forgery test: parse the
+        // GroveDB envelope, descend to the leaf merk proof, find a real
+        // HashWithCount op at a true op boundary, bump its count, re-encode
+        // — and the GroveDB verifier should reject the resulting proof
+        // (root mismatch in the layer chain).
+        //
+        // We parse rather than scan-for-byte to ensure we are mutating an
+        // actual count varint and not, say, a 0x1e byte that happens to live
+        // inside one of the embedded 32-byte hashes.
         let v = GroveVersion::latest();
         let (db, _expected_root) = setup_15_key_provable_count_tree(v);
         let path_query = PathQuery::new_aggregate_count_on_range(
             vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
             QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
         );
-        let mut proof = db
+        let proof = db
             .grove_db
             .prove_query(&path_query, None, v)
             .unwrap()
             .expect("prove_query should succeed");
 
-        // Search the encoded proof for the HashWithCount opcode (0x1e for
-        // Push, 0x1f for PushInverted) and bump the count varint by one.
-        // This is fragile to encoding changes, so we treat "found at least
-        // one" as a precondition.
-        let mut tampered = false;
-        for i in 0..proof.len() {
-            if proof[i] == 0x1e || proof[i] == 0x1f {
-                // Layout: opcode | kv_hash[32] | left[32] | right[32] | count_varint
-                let count_offset = i + 1 + 32 * 3;
-                if count_offset < proof.len() {
-                    proof[count_offset] = proof[count_offset].wrapping_add(1);
-                    tampered = true;
-                    break;
-                }
-            }
-        }
-        assert!(
-            tampered,
-            "test setup: expected at least one HashWithCount opcode in the encoded proof"
-        );
+        let tampered = tamper_leaf_count(&proof, &path_query)
+            .expect("expected at least one HashWithCount in the leaf merk proof");
 
-        let verify_result = GroveDb::verify_aggregate_count_query(&proof, &path_query, v);
+        let verify_result = GroveDb::verify_aggregate_count_query(&tampered, &path_query, v);
         assert!(
             verify_result.is_err(),
             "tampered count must be rejected at the GroveDB verifier level, got {:?}",
             verify_result.map(|(_, c)| c)
         );
+    }
+
+    /// Decode the GroveDB proof envelope, walk down to the leaf merk proof
+    /// bytes (V0: `MerkOnlyLayerProof`; V1: `LayerProof` with
+    /// `ProofBytes::Merk`), parse the merk proof into ops at true op
+    /// boundaries, increment the `count` of the first `HashWithCount` op,
+    /// and re-encode the whole envelope.
+    ///
+    /// Returns `None` if no `HashWithCount` is present in the leaf merk
+    /// proof — the test treats that as an invalid precondition.
+    fn tamper_leaf_count(proof: &[u8], path_query: &PathQuery) -> Option<Vec<u8>> {
+        use bincode::config;
+        use grovedb_merk::proofs::{encoding::encode_into, Decoder, Node, Op};
+
+        use crate::operations::proof::{
+            GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof,
+            ProofBytes,
+        };
+
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut decoded, _): (GroveDBProof, _) = bincode::decode_from_slice(proof, cfg).ok()?;
+
+        // Descend through the path layers to obtain a mutable ref to the
+        // leaf merk proof bytes.
+        let leaf_bytes: &mut Vec<u8> = match &mut decoded {
+            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => {
+                let mut layer: &mut MerkOnlyLayerProof = root_layer;
+                for key in &path_query.path {
+                    layer = layer.lower_layers.get_mut(key)?;
+                }
+                &mut layer.merk_proof
+            }
+            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => {
+                let mut layer: &mut LayerProof = root_layer;
+                for key in &path_query.path {
+                    layer = layer.lower_layers.get_mut(key)?;
+                }
+                match &mut layer.merk_proof {
+                    ProofBytes::Merk(b) => b,
+                    _ => return None,
+                }
+            }
+        };
+
+        // Parse the merk proof into ops, mutate the first HashWithCount,
+        // re-encode.
+        let mut ops: Vec<Op> = Vec::new();
+        for op in Decoder::new(leaf_bytes) {
+            ops.push(op.ok()?);
+        }
+
+        let mut tampered = false;
+        for op in ops.iter_mut() {
+            match op {
+                Op::Push(Node::HashWithCount(_, _, _, count))
+                | Op::PushInverted(Node::HashWithCount(_, _, _, count)) => {
+                    *count = count.wrapping_add(1);
+                    tampered = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if !tampered {
+            return None;
+        }
+
+        let mut new_leaf = Vec::new();
+        encode_into(ops.iter(), &mut new_leaf);
+        *leaf_bytes = new_leaf;
+
+        bincode::encode_to_vec(
+            decoded,
+            config::standard().with_big_endian().with_no_limit(),
+        )
+        .ok()
     }
 
     /// Build a 3-layer path: TEST_LEAF -> "outer" (NormalTree) ->

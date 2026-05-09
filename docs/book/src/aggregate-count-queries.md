@@ -216,7 +216,9 @@ Below, each per-case diagram colours nodes by the role table above:
 
 - 🟢 **green** = `HashWithCount` (fully-inside, contributes count, not descended)
 - 🟡 **yellow** = `KVDigestCount` (on-path / boundary, key tested for in-range)
-- ⚪ **gray**  = `Hash` (opaque, fully-outside or unneeded child of an inside subtree)
+- ⚪ **gray**  = `HashWithCount` used as a fully-outside subtree (carries the
+  structural count needed by the boundary parent's `own_count` derivation,
+  but its key is not in range so it contributes 0 to the in-range total)
 
 ---
 
@@ -236,7 +238,7 @@ graph TD
     d["d<br/>KVDigestCount<br/>key = d, vh, count = 7"]
     b["b<br/>KVDigestCount<br/>key = b, vh, count = 3"]
     f["f<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
-    aH["a<br/>Hash"]
+    aH["a<br/>HashWithCount<br/>kv_hash, l, r, count = 1"]
     c["c<br/>KVDigestCount<br/>key = c, vh, count = 1"]
     d --> b
     d --> f
@@ -254,8 +256,11 @@ Why each role:
 
 - **d, b, c** — boundary nodes on the walk to the lower bound `"c"`. Each is
   `KVDigestCount` because the verifier must test its key against `>= "c"`.
-- **a** — left child of `b`; "a" < "c", so its entire subtree is excluded.
-  Sent as a single `Hash` (no key, no count).
+- **a** — left child of `b`; "a" < "c", so its entire subtree is excluded
+  from the in-range total. Sent as a `HashWithCount` (no key) — the verifier
+  needs the structural count = 1 to derive `b`'s `own_count`, and this is
+  the only proof-node type that binds the count to `b`'s hash chain. The
+  `a` subtree contributes 0 to the in-range total (its key is not tested).
 - **f** — right child of `d`; "d" < "f" and we're including everything ≥ "c",
   so the entire `f` subtree (including its descendants) is in-range.
   We don't need to descend — `f` is sent as a single `HashWithCount` op
@@ -271,6 +276,7 @@ Verifier total:
 |------|-----------|--------------|
 | d (KVDigestCount, key="d") | "d" ≥ "c"  | **+1** |
 | b (KVDigestCount, key="b") | "b" < "c"  | +0 |
+| a (HashWithCount, count=1) | (outside, key not tested) | +0 |
 | c (KVDigestCount, key="c") | "c" ≥ "c"  | **+1** |
 | f (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
 
@@ -287,7 +293,7 @@ graph TD
     d["d<br/>KVDigestCount<br/>key = d, vh, count = 7"]
     b["b<br/>KVDigestCount<br/>key = b, vh, count = 3"]
     f["f<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
-    aH["a<br/>Hash"]
+    aH["a<br/>HashWithCount<br/>kv_hash, l, r, count = 1"]
     c["c<br/>HashWithCount<br/>kv_hash, l, r, count = 1"]
     d --> b
     d --> f
@@ -312,7 +318,9 @@ Why each role differs from the previous example:
   `(kv_hash, l, r, count)` self-contains everything the verifier needs)
   and contributes its count of 1 directly. Compare to the previous example
   where `c` was a boundary node tested against `>= "c"`.
-- **a** plays the same role as before — fully outside, opaque `Hash`. **f's
+- **a** plays the same role as before — fully outside, sent as
+  `HashWithCount` so its structural count of 1 is hash-bound to `b`.
+  Contributes 0 to the in-range total (key not tested). **f's
   original-tree children (`e`, `g`) do not appear as separate proof ops**
   — they live inside `f`'s `HashWithCount` fields.
 
@@ -322,6 +330,7 @@ Verifier total:
 |------|-----------|--------------|
 | d (KVDigestCount, key="d") | "d" > "b"          | **+1** |
 | b (KVDigestCount, key="b") | "b" > "b" → no     | +0 |
+| a (HashWithCount, count=1)   | (outside, key not tested) | +0 |
 | c (HashWithCount, count=1)   | (whole subtree in range) | **+1** |
 | f (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
 
@@ -349,7 +358,10 @@ These are the variants with both a lower and upper bound: `Range(a..b)`,
 
 The proof has **two** boundary walks meeting at the lowest common ancestor of
 the two bounds. Subtrees fully between the two bounds appear as
-`HashWithCount`; subtrees outside appear as `Hash`.
+`HashWithCount`; subtrees fully outside both bounds **also** appear as
+`HashWithCount` (the structural count is needed by the boundary parent's
+`own_count` derivation, and only `HashWithCount` binds that count to the
+parent's hash chain).
 
 To make the structure interesting we'll use a slightly bigger example tree
 than for Case 1 — 15 keys (`a` through `o`), 4 levels deep, balanced as a
@@ -402,8 +414,8 @@ graph TD
     b["b<br/>KVDigestCount<br/>key = b, vh, count = 3"]
     f["f<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
     j["j<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
-    nH["n subtree<br/>Hash"]
-    aH["a<br/>Hash"]
+    nH["n subtree<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
+    aH["a<br/>HashWithCount<br/>kv_hash, l, r, count = 1"]
     c["c<br/>KVDigestCount<br/>key = c, vh, count = 1"]
     h --> d
     h --> l
@@ -437,9 +449,13 @@ Why each role:
   the lower bound). `KVDigestCount`, key tested (it fails — `b < c`).
 - **c** — the lower bound itself. `KVDigestCount`, key tested (it passes —
   `c ≥ c`).
-- **a** — left of `b`; "a" < "c", entire subtree outside. `Hash`.
+- **a** — left of `b`; "a" < "c", entire subtree outside. Sent as
+  `HashWithCount` carrying `(kv_hash, l, r, count = 1)` so its structural
+  count is hash-bound to `b`. Contributes 0 to the in-range total.
 - **n** — right of `l`; entire subtree has keys > "l". The whole `n`
-  subtree (n, m, o) collapses to a single `Hash`.
+  subtree (n, m, o) collapses to a single `HashWithCount` carrying
+  `(kv_hash, l, r, count = 3)` so its structural count is hash-bound to
+  `l`. Contributes 0 to the in-range total.
 - **f** — right child of `d`. Every key under `f` is `> "d"` and `≤ "g" < "l"`,
   so the entire subtree is in-range. We do not descend; `f` becomes a single
   `HashWithCount` op carrying `(kv_hash, left_child_hash, right_child_hash,
@@ -467,10 +483,12 @@ Verifier total:
 | h (KVDigestCount, key="h") | "c" ≤ "h" ≤ "l" | **+1** |
 | d (KVDigestCount, key="d") | "c" ≤ "d" ≤ "l" | **+1** |
 | b (KVDigestCount, key="b") | "b" < "c" → no  | +0 |
+| a (HashWithCount, count=1) | (outside, key not tested) | +0 |
 | c (KVDigestCount, key="c") | "c" ≤ "c" ≤ "l" | **+1** |
 | f (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
 | l (KVDigestCount, key="l") | "c" ≤ "l" ≤ "l" | **+1** |
 | j (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
+| n (HashWithCount, count=3) | (outside, key not tested) | +0 |
 
 → **count = 10** ✓
 
