@@ -649,4 +649,232 @@ mod tests {
             GroveDb::verify_aggregate_count_query(&proof, &path_query, v).expect("verify");
         assert_eq!(count, 10);
     }
+
+    /// Re-encode a (possibly mutated) `GroveDBProof` envelope using the same
+    /// bincode config the prover uses on the way out.
+    fn reencode_envelope(decoded: crate::operations::proof::GroveDBProof) -> Vec<u8> {
+        bincode::encode_to_vec(
+            decoded,
+            bincode::config::standard()
+                .with_big_endian()
+                .with_no_limit(),
+        )
+        .expect("re-encode envelope")
+    }
+
+    fn decode_envelope(proof: &[u8]) -> crate::operations::proof::GroveDBProof {
+        bincode::decode_from_slice(
+            proof,
+            bincode::config::standard()
+                .with_big_endian()
+                .with_limit::<{ 256 * 1024 * 1024 }>(),
+        )
+        .expect("decode envelope")
+        .0
+    }
+
+    #[test]
+    fn v1_envelope_with_non_merk_proof_bytes_is_rejected() {
+        // The verifier's V1 layer walker only accepts `ProofBytes::Merk(_)`
+        // for aggregate-count proofs (other tree types — MMR / BulkAppend /
+        // Dense / CommitmentTree — cannot host provable count subtrees). If
+        // we swap the leaf layer's bytes for an `MMR(_)` variant, verification
+        // must fail with an `InvalidProof` error rather than silently
+        // succeed or panic.
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+
+        let mut decoded = decode_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope on latest GroveVersion");
+        };
+
+        // Walk to the leaf layer (depth = path.len()) and swap its bytes
+        // for an MMR variant.
+        let leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF lower layer")
+            .lower_layers
+            .get_mut(&b"ct".to_vec())
+            .expect("ct lower layer");
+        leaf_layer.merk_proof = ProofBytes::MMR(vec![0u8; 8]);
+
+        let reencoded = reencode_envelope(decoded);
+        let err = GroveDb::verify_aggregate_count_query(&reencoded, &path_query, v)
+            .expect_err("non-Merk leaf bytes must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("non-merk"),
+                    "expected non-merk rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn v1_envelope_with_missing_lower_layer_is_rejected() {
+        // The verifier expects a `lower_layers` entry for each non-leaf
+        // path key. If the prover (or an attacker) drops one, verification
+        // must fail rather than silently descend through a stub.
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+
+        let mut decoded = decode_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope on latest GroveVersion");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF lower layer");
+        // Drop the leaf layer's pointer entry.
+        let removed = test_leaf_layer.lower_layers.remove(&b"ct".to_vec());
+        assert!(removed.is_some(), "test setup: ct layer should exist");
+
+        let reencoded = reencode_envelope(decoded);
+        let err = GroveDb::verify_aggregate_count_query(&reencoded, &path_query, v)
+            .expect_err("missing lower_layer must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("missing lower layer"),
+                    "expected missing-lower-layer rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn v1_envelope_with_malformed_leaf_count_proof_is_rejected() {
+        // Replace the leaf merk proof bytes with a single Push(Hash(...))
+        // op stream. Phase 1 of the count verifier rejects plain `Hash` as
+        // a non-allowlisted node type, so `verify_count_leaf` surfaces an
+        // `InvalidProof` error via its `.map_err(...)` arm rather than
+        // ever reaching the chain check.
+        use std::collections::LinkedList;
+
+        use grovedb_merk::proofs::{encoding::encode_into, Node, Op};
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+
+        let mut decoded = decode_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF lower layer")
+            .lower_layers
+            .get_mut(&b"ct".to_vec())
+            .expect("ct lower layer");
+
+        // Build a malformed (but parseable) merk proof: a single Push(Hash)
+        // that the count verifier's Phase 1 rejects.
+        let mut ops: LinkedList<Op> = LinkedList::new();
+        ops.push_back(Op::Push(Node::Hash([0u8; 32])));
+        let mut bad_bytes = Vec::new();
+        encode_into(ops.iter(), &mut bad_bytes);
+        leaf_layer.merk_proof = ProofBytes::Merk(bad_bytes);
+
+        let reencoded = reencode_envelope(decoded);
+        let err = GroveDb::verify_aggregate_count_query(&reencoded, &path_query, v)
+            .expect_err("malformed leaf count proof must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("aggregate-count leaf proof failed to verify"),
+                    "expected leaf-verify failure message, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn v1_envelope_with_corrupted_non_leaf_merk_bytes_is_rejected() {
+        // Mutate the non-leaf merk proof bytes (the layer that proves
+        // existence of the "ct" tree element under TEST_LEAF). The
+        // single-key proof verification at that layer should fail before
+        // we ever descend to the leaf count proof.
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+
+        let mut decoded = decode_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        // Corrupt the TEST_LEAF non-leaf merk proof bytes by truncating to
+        // a 1-byte payload, which fails to decode as a proof op stream.
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF lower layer");
+        match &mut test_leaf_layer.merk_proof {
+            ProofBytes::Merk(b) => {
+                *b = vec![0xff];
+            }
+            other => panic!(
+                "expected Merk bytes at non-leaf, got discriminant {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+
+        let reencoded = reencode_envelope(decoded);
+        let err = GroveDb::verify_aggregate_count_query(&reencoded, &path_query, v)
+            .expect_err("corrupted non-leaf merk bytes must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, _) => {}
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
 }

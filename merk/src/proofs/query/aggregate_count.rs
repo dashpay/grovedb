@@ -1459,4 +1459,133 @@ mod tests {
             }
         }
     }
+
+    // ---------- shape-walk rejection of malformed proof shapes ----------
+    //
+    // These tests synthesize op streams that are well-formed bytes (Phase 1
+    // decode succeeds) but violate the structural invariants the shape walk
+    // requires (Phase 2 rejection). They exist to lock down the defensive
+    // error branches in `verify_count_shape` so future refactors that
+    // accidentally relax them are caught by the test suite.
+
+    /// `HashWithCount` is only valid as a leaf in the proof tree. If the
+    /// prover attaches children to a Disjoint-position `HashWithCount`,
+    /// the shape walk must reject — even though the parent's hash chain
+    /// (which uses `Tree::hash()` for `HashWithCount`, computed from the
+    /// four embedded fields and ignoring children) would still verify.
+    #[test]
+    fn shape_walk_rejects_disjoint_hashwithcount_with_children() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        // RangeAfter("o") → all 15 keys are below; the entire tree is
+        // Disjoint relative to the inner range, so the honest proof is a
+        // single Push(HashWithCount(...)).
+        let inner_range = QueryItem::RangeAfter(b"o".to_vec()..);
+        let (mut ops, _) = merk
+            .prove_aggregate_count_on_range(&inner_range, v)
+            .unwrap()
+            .expect("prove succeeds");
+
+        // Splice in another HashWithCount as the child (no key, so no
+        // ordering constraint at Phase 1) so we exercise Phase 2's
+        // leaf-only assertion at the Disjoint position.
+        let mut spliced = LinkedList::<ProofOp>::new();
+        let mut done = false;
+        for op in ops.iter() {
+            spliced.push_back(op.clone());
+            if !done && matches!(op, ProofOp::Push(Node::HashWithCount(_, _, _, _))) {
+                spliced.push_back(ProofOp::Push(Node::HashWithCount(
+                    [0u8; 32], [0u8; 32], [0u8; 32], 1,
+                )));
+                spliced.push_back(ProofOp::Parent);
+                done = true;
+            }
+        }
+        assert!(done, "test setup: expected at least one HashWithCount op");
+        ops = spliced;
+
+        let bytes = encode_proof(&ops);
+        let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+        let err = result.expect_err("Disjoint HashWithCount with children must be rejected");
+        match err {
+            Error::InvalidProofError(msg) => assert!(
+                msg.contains("Disjoint position must be a leaf"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProofError, got {:?}", other),
+        }
+    }
+
+    /// At a Disjoint position the shape walk requires `HashWithCount` (only
+    /// node type with a hash-bound count). A `Hash` op there would carry an
+    /// untrusted structural count for the parent's `own_count` derivation,
+    /// so it must be rejected.
+    #[test]
+    fn shape_walk_rejects_non_hashwithcount_at_disjoint() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        let inner_range = QueryItem::RangeAfter(b"o".to_vec()..);
+        let (mut ops, _) = merk
+            .prove_aggregate_count_on_range(&inner_range, v)
+            .unwrap()
+            .expect("prove succeeds");
+
+        // Replace the single Disjoint HashWithCount with a plain Hash.
+        let mut swapped = false;
+        for op in ops.iter_mut() {
+            if let ProofOp::Push(Node::HashWithCount(kv, l, r, c)) = op {
+                let node_hash = crate::tree::node_hash_with_count(kv, l, r, *c).unwrap();
+                *op = ProofOp::Push(Node::Hash(node_hash));
+                swapped = true;
+                break;
+            }
+        }
+        assert!(swapped, "test setup: expected a HashWithCount op to swap");
+
+        let bytes = encode_proof(&ops);
+        let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+        // Phase 1 rejects plain Hash via the allowlist; Phase 2 would also
+        // reject "expected HashWithCount at Disjoint position". Either is fine.
+        let err = result.expect_err("plain Hash at Disjoint must be rejected");
+        match err {
+            Error::InvalidProofError(_) => {}
+            other => panic!("expected InvalidProofError, got {:?}", other),
+        }
+    }
+
+    /// At a Boundary position the shape walk requires the node's key to
+    /// fall strictly inside the inherited subtree bounds. A prover that
+    /// emits a `KVDigestCount` whose key is outside those bounds is trying
+    /// to confuse the recursion's bound tracking — it must be rejected.
+    #[test]
+    fn shape_walk_rejects_kvdigestcount_outside_inherited_bounds() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+        let (mut ops, _) = merk
+            .prove_aggregate_count_on_range(&inner_range, v)
+            .unwrap()
+            .expect("prove succeeds");
+
+        // Find a Boundary KVDigestCount and rewrite its key to something
+        // outside the tree (way past 'z'). This will violate the inherited
+        // (lo, hi) bounds at the verifier's recursion frame.
+        let mut rewrote = false;
+        for op in ops.iter_mut() {
+            if let ProofOp::Push(Node::KVDigestCount(key, _, _)) = op {
+                *key = vec![0xff, 0xff];
+                rewrote = true;
+                break;
+            }
+        }
+        assert!(rewrote, "test setup: expected a KVDigestCount to rewrite");
+
+        let bytes = encode_proof(&ops);
+        let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+        let err = result.expect_err("KVDigestCount outside bounds must be rejected");
+        match err {
+            Error::InvalidProofError(_) => {}
+            other => panic!("expected InvalidProofError, got {:?}", other),
+        }
+    }
 }

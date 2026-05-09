@@ -2165,7 +2165,7 @@ impl GroveDb {
 mod tests {
     use grovedb_merk::proofs::query::QueryItem;
 
-    use crate::GroveDb;
+    use crate::{Error, GroveDb};
 
     /// Helper: encode a u16 as big-endian bytes.
     fn be_u16(v: u16) -> Vec<u8> {
@@ -2302,5 +2302,60 @@ mod tests {
             start,
             end
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // AggregateCountOnRange rejection on non-provable-count tree types.
+    //
+    // `AggregateCountOnRange` is only meaningful against `ProvableCountTree`
+    // and `ProvableCountSumTree` (their nodes commit a count via
+    // `node_hash_with_count`). Dense, MMR, and BulkAppendTree have no such
+    // commitment, so the index-resolution helpers must reject the variant
+    // outright rather than silently fall through.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dense_tree_rejects_aggregate_count_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u16(0)..=be_u16(5));
+        let items = vec![QueryItem::AggregateCountOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_positions(&items, 100)
+            .expect_err("dense tree must reject AggregateCountOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("dense fixed-size") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mmr_tree_rejects_aggregate_count_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateCountOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_leaf_indices(&items, 7)
+            .expect_err("MMR must reject AggregateCountOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("MMR") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bulk_append_tree_rejects_aggregate_count_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateCountOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_range(&items, 100)
+            .expect_err("BulkAppendTree must reject AggregateCountOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("BulkAppendTree") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
     }
 }
