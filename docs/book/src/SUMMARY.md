@@ -11,6 +11,7 @@
 - [The Proof System](proof-system.md)
 - [The Query System](query-system.md)
 - [Aggregate Sum Queries](aggregate-sum-queries.md)
+- [Aggregate Count Queries](aggregate-count-queries.md)
 - [Batch Operations](batch-operations.md)
 - [Cost Tracking](cost-tracking.md)
 - [The MMR Tree](mmr-tree.md)

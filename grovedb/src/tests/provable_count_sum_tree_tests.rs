@@ -80,6 +80,9 @@ mod tests {
                 Node::KVRefValueHashCount(k, ..) => k.clone(),
                 Node::KVHashCount(..) => vec![],
                 Node::Hash(_) | Node::KVHash(_) => vec![],
+                // HashWithCount is keyless (collapsed subtree representation
+                // for AggregateCountOnRange proofs).
+                Node::HashWithCount(..) => vec![],
             };
             results.push((key, count));
         }

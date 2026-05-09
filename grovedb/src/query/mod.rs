@@ -114,6 +114,43 @@ impl SizedQuery {
             offset: None,
         }
     }
+
+    /// Validates that this sized query is a well-formed
+    /// `AggregateCountOnRange` query. On success, returns a reference to the
+    /// inner range item (the `QueryItem` wrapped by `AggregateCountOnRange`).
+    ///
+    /// This is the `SizedQuery`-level entry point: it forwards to
+    /// [`Query::validate_aggregate_count_on_range`] and additionally rejects
+    /// any non-`None` `limit` or `offset` (counting is an aggregate over the
+    /// full match set — pagination would silently change the answer).
+    pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.limit.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountOnRange queries may not set SizedQuery::limit",
+            ));
+        }
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountOnRange queries may not set SizedQuery::offset",
+            ));
+        }
+        self.query
+            .validate_aggregate_count_on_range()
+            .map_err(query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
+}
+
+/// Converts a `Query::validate_aggregate_count_on_range` error into a
+/// `&'static str`. Validation only ever returns
+/// `grovedb_query::error::Error::InvalidOperation(&'static str)`, so this is
+/// just a projection of that variant; any other error variant (which would
+/// indicate an unrelated bug) is forwarded as a generic catch-all label.
+fn query_validation_error_to_static_str(e: grovedb_query::error::Error) -> &'static str {
+    match e {
+        grovedb_query::error::Error::InvalidOperation(msg) => msg,
+        _ => "AggregateCountOnRange query validation failed",
+    }
 }
 
 impl PathQuery {
@@ -142,6 +179,31 @@ impl PathQuery {
     pub const fn new_unsized(path: Vec<Vec<u8>>, query: Query) -> Self {
         let query = SizedQuery::new(query, None, None);
         Self { path, query }
+    }
+
+    /// Construct a `PathQuery` for an aggregate-count-on-range query against
+    /// the subtree at `path`. `range` is the inner `QueryItem` describing the
+    /// keys to count over; see [`Query::new_aggregate_count_on_range`] for the
+    /// allowed range variants.
+    pub fn new_aggregate_count_on_range(path: Vec<Vec<u8>>, range: QueryItem) -> Self {
+        Self::new_unsized(path, Query::new_aggregate_count_on_range(range))
+    }
+
+    /// Validates that this `PathQuery` is a well-formed
+    /// `AggregateCountOnRange` query. On success, returns a reference to the
+    /// inner range item.
+    ///
+    /// Forwards to [`SizedQuery::validate_aggregate_count_on_range`].
+    pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.query.validate_aggregate_count_on_range()
+    }
+
+    /// Returns `true` if this `PathQuery`'s underlying query carries an
+    /// `AggregateCountOnRange` item (whether well-formed or not). Use
+    /// [`Self::validate_aggregate_count_on_range`] when you also need
+    /// well-formedness.
+    pub fn has_aggregate_count_on_range(&self) -> bool {
+        self.query.query.aggregate_count_on_range().is_some()
     }
 
     /// The max depth of the query, this is the maximum layers we could get back

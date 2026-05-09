@@ -1,6 +1,8 @@
 //! Proof operations
 
 #[cfg(feature = "minimal")]
+mod aggregate_count;
+#[cfg(feature = "minimal")]
 mod generate;
 /// Utility functions for proof display and conversion.
 pub mod util;
@@ -737,6 +739,13 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex::encode(value_hash),
             feature_type,
             hex::encode(child_hash)
+        ),
+        Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, count) => format!(
+            "HashWithCount(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], count={})",
+            hex::encode(kv_hash),
+            hex::encode(left_child_hash),
+            hex::encode(right_child_hash),
+            count
         ),
     };
     Ok(s)

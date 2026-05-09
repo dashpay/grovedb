@@ -50,8 +50,14 @@ pub enum QueryItem {
     RangeAfter(RangeFrom<Vec<u8>>),         // (start..) exclusive start
     RangeAfterTo(Range<Vec<u8>>),           // (start..end) exclusive both
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>), // (start..=end]
+    AggregateCountOnRange(Box<QueryItem>),         // Count-only — see Aggregate Count Queries
 }
 ```
+
+> **`AggregateCountOnRange`** is a terminal item: when present, it must be the **only**
+> item in the `Query`, and the query may not carry subqueries or pagination.
+> See [Aggregate Count Queries](aggregate-count-queries.md) for the full
+> contract — it is restricted to provable count trees.
 
 Example queries:
 

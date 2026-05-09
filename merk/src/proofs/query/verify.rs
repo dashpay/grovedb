@@ -476,7 +476,16 @@ impl QueryProofVerify for Query {
                     }
                     execute_node(key, Some(value), *node_value_hash, true)?;
                 }
-                Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
+                Node::Hash(_)
+                | Node::KVHash(_)
+                | Node::KVHashCount(..)
+                | Node::HashWithCount(..) => {
+                    // HashWithCount can appear in the regular query verifier in only one
+                    // benign way: a regular query that walks past a fully-inside subtree
+                    // that an upstream layer collapsed. For aggregate-count proofs the
+                    // dedicated count verifier is used instead, so reaching here with
+                    // in_range = true indicates the proof is missing material for a
+                    // queried key, same as the other "no key info" node types.
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
                             "Proof is missing data for query range. Encountered unexpected node \

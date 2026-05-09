@@ -75,6 +75,22 @@ pub enum QueryItem {
     /// A range starting **after** a key and extending to another key,
     /// **inclusive**.
     RangeAfterToInclusive(RangeInclusive<Vec<u8>>),
+
+    /// A count-only meta-query that wraps another `QueryItem` describing the
+    /// range to count.
+    ///
+    /// When this variant appears in a `Query`, the query is interpreted as
+    /// "return the **number of elements** matched by the inner range" instead
+    /// of returning the elements themselves. The proof is shaped accordingly:
+    /// boundary nodes are emitted as `KVDigestCount`, fully-inside subtree
+    /// roots as `KVHashCount`, and fully-outside subtrees as opaque `Hash`.
+    ///
+    /// This variant is only valid against `ProvableCountTree` /
+    /// `ProvableCountSumTree` (and their `NonCounted*` wrapper variants), and
+    /// it must be the **only** item in the surrounding `Query` (no subqueries,
+    /// no pagination, no other range items). The inner `QueryItem` may not be
+    /// `Key`, `RangeFull`, or another `AggregateCountOnRange`.
+    AggregateCountOnRange(Box<QueryItem>),
 }
 
 #[cfg(feature = "serde")]
@@ -120,6 +136,12 @@ impl Serialize for QueryItem {
                     "RangeAfterToInclusive",
                     range_after_to_inclusive,
                 ),
+            QueryItem::AggregateCountOnRange(inner) => serializer.serialize_newtype_variant(
+                "QueryItem",
+                10,
+                "AggregateCountOnRange",
+                inner,
+            ),
         }
     }
 }
@@ -143,6 +165,7 @@ impl<'de> Deserialize<'de> for QueryItem {
             RangeAfter,
             RangeAfterTo,
             RangeAfterToInclusive,
+            AggregateCountOnRange,
         }
 
         struct QueryItemVisitor;
@@ -199,6 +222,10 @@ impl<'de> Deserialize<'de> for QueryItem {
                         let range_after_to_inclusive = variant_access.newtype_variant()?;
                         Ok(QueryItem::RangeAfterToInclusive(range_after_to_inclusive))
                     }
+                    Field::AggregateCountOnRange => {
+                        let inner: QueryItem = variant_access.newtype_variant()?;
+                        Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
+                    }
                 }
             }
         }
@@ -214,6 +241,7 @@ impl<'de> Deserialize<'de> for QueryItem {
             "RangeAfter",
             "RangeAfterTo",
             "RangeAfterToInclusive",
+            "AggregateCountOnRange",
         ];
 
         deserializer.deserialize_enum("QueryItem", VARIANTS, QueryItemVisitor)
@@ -270,6 +298,10 @@ impl Encode for QueryItem {
                 range.start().encode(encoder)?;
                 range.end().encode(encoder)
             }
+            QueryItem::AggregateCountOnRange(inner) => {
+                encoder.writer().write(&[10])?;
+                inner.as_ref().encode(encoder)
+            }
         }
     }
 }
@@ -322,9 +354,13 @@ impl<Context> Decode<Context> for QueryItem {
                 let end = Vec::<u8>::decode(decoder)?;
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
             }
+            10 => {
+                let inner = QueryItem::decode(decoder)?;
+                Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 9 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
                 found: variant_id as u32,
             }),
         }
@@ -379,9 +415,13 @@ impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
                 let end = Vec::<u8>::borrow_decode(decoder)?;
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
             }
+            10 => {
+                let inner = QueryItem::borrow_decode(decoder)?;
+                Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 9 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
                 found: variant_id as u32,
             }),
         }
@@ -427,6 +467,9 @@ impl fmt::Display for QueryItem {
                 hex_to_ascii(range.start()),
                 hex_to_ascii(range.end())
             ),
+            QueryItem::AggregateCountOnRange(inner) => {
+                write!(f, "AggregateCountOnRange({})", inner)
+            }
         }
     }
 }
@@ -437,6 +480,7 @@ impl QueryItem {
         match self {
             QueryItem::Key(key) => key.len() as u32,
             QueryItem::RangeFull(_) => 0u32,
+            QueryItem::AggregateCountOnRange(inner) => inner.processing_footprint(),
             _ => {
                 self.lower_bound().0.map_or(0u32, |x| x.len() as u32)
                     + self.upper_bound().0.map_or(0u32, |x| x.len() as u32)
@@ -458,11 +502,12 @@ impl QueryItem {
             QueryItem::RangeAfter(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterTo(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.start().as_ref()), true),
+            QueryItem::AggregateCountOnRange(inner) => inner.lower_bound(),
         }
     }
 
     /// Returns `true` if this query item has no lower bound (extends to -inf).
-    pub const fn lower_unbounded(&self) -> bool {
+    pub fn lower_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
             QueryItem::Range(_) => false,
@@ -474,6 +519,7 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => false,
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
+            QueryItem::AggregateCountOnRange(inner) => inner.lower_unbounded(),
         }
     }
 
@@ -491,11 +537,12 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => (None, true),
             QueryItem::RangeAfterTo(range) => (Some(range.end.as_ref()), false),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.end().as_ref()), true),
+            QueryItem::AggregateCountOnRange(inner) => inner.upper_bound(),
         }
     }
 
     /// Returns `true` if this query item has no upper bound (extends to +inf).
-    pub const fn upper_unbounded(&self) -> bool {
+    pub fn upper_unbounded(&self) -> bool {
         match self {
             QueryItem::Key(_) => false,
             QueryItem::Range(_) => false,
@@ -507,6 +554,7 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => true,
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
+            QueryItem::AggregateCountOnRange(inner) => inner.upper_unbounded(),
         }
     }
 
@@ -535,6 +583,7 @@ impl QueryItem {
             QueryItem::RangeAfter(_) => 7,
             QueryItem::RangeAfterTo(_) => 8,
             QueryItem::RangeAfterToInclusive(_) => 9,
+            QueryItem::AggregateCountOnRange(_) => 10,
         }
     }
 
@@ -544,7 +593,8 @@ impl QueryItem {
     }
 
     /// Returns `true` if this query item is any kind of range (not a single
-    /// key).
+    /// key). `AggregateCountOnRange` counts as a range — it describes a range
+    /// to count over.
     pub const fn is_range(&self) -> bool {
         matches!(
             self,
@@ -557,6 +607,7 @@ impl QueryItem {
                 | QueryItem::RangeAfter(_)
                 | QueryItem::RangeAfterTo(_)
                 | QueryItem::RangeAfterToInclusive(_)
+                | QueryItem::AggregateCountOnRange(_)
         )
     }
 
@@ -566,12 +617,30 @@ impl QueryItem {
     }
 
     /// Returns `true` if this query item is a range with at least one unbounded
-    /// end (e.g., `RangeFull`, `RangeFrom`, `RangeTo`, etc.).
-    pub const fn is_unbounded_range(&self) -> bool {
-        !matches!(
-            self,
-            QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
-        )
+    /// end (e.g., `RangeFull`, `RangeFrom`, `RangeTo`, etc.). For
+    /// `AggregateCountOnRange`, delegates to the inner item.
+    pub fn is_unbounded_range(&self) -> bool {
+        match self {
+            QueryItem::AggregateCountOnRange(inner) => inner.is_unbounded_range(),
+            _ => !matches!(
+                self,
+                QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
+            ),
+        }
+    }
+
+    /// Returns `true` if this query item is the count-only meta-variant.
+    pub const fn is_aggregate_count_on_range(&self) -> bool {
+        matches!(self, QueryItem::AggregateCountOnRange(_))
+    }
+
+    /// If this is `AggregateCountOnRange`, returns a reference to the inner
+    /// `QueryItem` describing the range to count. Otherwise returns `None`.
+    pub fn aggregate_count_inner(&self) -> Option<&QueryItem> {
+        match self {
+            QueryItem::AggregateCountOnRange(inner) => Some(inner.as_ref()),
+            _ => None,
+        }
     }
 
     /// Enumerates all distinct keys in this query item. Only works for `Key`,
@@ -775,6 +844,7 @@ impl QueryItem {
                     iter.seek_for_prev(end)
                 }
             }
+            QueryItem::AggregateCountOnRange(inner) => inner.seek_for_iter(iter, left_to_right),
         }
     }
 
@@ -866,6 +936,9 @@ impl QueryItem {
                         Ordering::Greater => true,
                     }
                 }
+            }
+            QueryItem::AggregateCountOnRange(inner) => {
+                return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
             }
         };
 

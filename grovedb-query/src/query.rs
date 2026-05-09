@@ -303,6 +303,113 @@ impl Query {
         }
     }
 
+    /// Creates an aggregate-count-on-range query that counts the elements
+    /// matched by `range`. The resulting query has `AggregateCountOnRange(range)`
+    /// as its sole item, no subquery branches, and `left_to_right = true`
+    /// (counting is direction-agnostic).
+    ///
+    /// `range` must be a true range variant (`Range`, `RangeInclusive`,
+    /// `RangeFrom`, `RangeTo`, `RangeToInclusive`, `RangeAfter`, `RangeAfterTo`,
+    /// or `RangeAfterToInclusive`). Passing `Key`, `RangeFull`, or another
+    /// `AggregateCountOnRange` is allowed at construction time but will be
+    /// rejected by [`validate_aggregate_count_on_range`].
+    pub fn new_aggregate_count_on_range(range: QueryItem) -> Self {
+        Self {
+            items: vec![QueryItem::AggregateCountOnRange(Box::new(range))],
+            left_to_right: true,
+            ..Self::default()
+        }
+    }
+
+    /// If this query contains an `AggregateCountOnRange` item, returns a
+    /// reference to it (whether the surrounding query is well-formed or not).
+    /// Returns `None` for any other shape.
+    ///
+    /// Use [`validate_aggregate_count_on_range`] when you also want to enforce
+    /// the well-formedness rules.
+    pub fn aggregate_count_on_range(&self) -> Option<&QueryItem> {
+        if self.items.len() == 1 && self.items[0].is_aggregate_count_on_range() {
+            Some(&self.items[0])
+        } else {
+            None
+        }
+    }
+
+    /// Validates the Query-level constraints that apply when an
+    /// `AggregateCountOnRange` is present. On success, returns a reference
+    /// to the inner `QueryItem` describing the range to count.
+    ///
+    /// Rules enforced (matching the constraints documented in the GroveDB
+    /// book chapter "Aggregate Count Queries"):
+    ///
+    /// 1. The query must contain exactly one item.
+    /// 2. That item must be `AggregateCountOnRange(_)`.
+    /// 3. The inner item must not be `Key` (use `has_raw` / `get_raw` for
+    ///    existence tests).
+    /// 4. The inner item must not be `RangeFull` (read the parent
+    ///    `Element::ProvableCountTree` / `Element::ProvableCountSumTree`
+    ///    bytes directly for the unconditional total).
+    /// 5. The inner item must not itself be `AggregateCountOnRange`.
+    /// 6. `default_subquery_branch.subquery` and
+    ///    `default_subquery_branch.subquery_path` must both be `None`.
+    /// 7. `conditional_subquery_branches` must be `None` or empty.
+    ///
+    /// `SizedQuery::limit` / `SizedQuery::offset` checks live at the
+    /// `PathQuery` / `SizedQuery` layer (see
+    /// [`SizedQuery::validate_aggregate_count_on_range`]).
+    pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.items.len() != 1 {
+            return Err(Error::InvalidOperation(
+                "AggregateCountOnRange must be the only item in the query",
+            ));
+        }
+        let inner = match &self.items[0] {
+            QueryItem::AggregateCountOnRange(inner) => inner.as_ref(),
+            _ => {
+                return Err(Error::InvalidOperation(
+                    "validate_aggregate_count_on_range called on a query without an \
+                     AggregateCountOnRange item",
+                ));
+            }
+        };
+        match inner {
+            QueryItem::Key(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap Key — use has_raw / get_raw for \
+                     existence tests",
+                ));
+            }
+            QueryItem::RangeFull(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap RangeFull — read the parent \
+                     ProvableCountTree element for the unconditional total",
+                ));
+            }
+            QueryItem::AggregateCountOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap another AggregateCountOnRange",
+                ));
+            }
+            _ => {}
+        }
+        if self.default_subquery_branch.subquery.is_some()
+            || self.default_subquery_branch.subquery_path.is_some()
+        {
+            return Err(Error::InvalidOperation(
+                "AggregateCountOnRange queries may not carry a default subquery branch",
+            ));
+        }
+        if let Some(branches) = &self.conditional_subquery_branches {
+            if !branches.is_empty() {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange queries may not carry conditional subquery \
+                     branches",
+                ));
+            }
+        }
+        Ok(inner)
+    }
+
     /// Returns `true` if the given key would trigger a subquery (either via
     /// the default subquery branch or a matching conditional branch).
     pub fn has_subquery_on_key(&self, key: &[u8], in_path: bool) -> bool {

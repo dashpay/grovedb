@@ -612,6 +612,7 @@ impl QueryItem {
                 start: RangeSetItem::ExclusiveStart(range.start().clone()),
                 end: RangeSetItem::Inclusive(range.end().clone()),
             },
+            QueryItem::AggregateCountOnRange(inner) => inner.to_range_set(),
         }
     }
 
@@ -660,6 +661,7 @@ impl QueryItem {
                 start: RangeSetSimpleItemBorrowed::Exclusive(range.start()),
                 end: RangeSetSimpleItemBorrowed::Inclusive(range.end()),
             }),
+            QueryItem::AggregateCountOnRange(inner) => inner.to_range_set_borrowed(),
         }
     }
 

@@ -139,6 +139,51 @@ where
                 .map_ok(|(proof, _, status, ..)| (proof, status.limit))
         })
     }
+
+    /// Generate a count-only proof for an `AggregateCountOnRange` query.
+    ///
+    /// `inner_range` is the `QueryItem` wrapped by `AggregateCountOnRange`
+    /// (the caller is expected to have already validated and stripped the
+    /// wrapper at the `Query` level via
+    /// `Query::validate_aggregate_count_on_range`).
+    ///
+    /// The merk's `tree_type` must be one of `ProvableCountTree` or
+    /// `ProvableCountSumTree` (regardless of whether the merk is empty).
+    /// Any other tree type is rejected with `Error::InvalidProofError`
+    /// before any walking happens.
+    ///
+    /// On a tree-type-valid but empty Merk this returns
+    /// `(empty proof, count = 0)` — an empty subtree is a valid input for a
+    /// count query and the answer is unambiguously zero.
+    pub fn prove_aggregate_count_on_range(
+        &self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(LinkedList<ProofOp>, u64), Error> {
+        let tree_type = self.tree_type;
+        if !matches!(
+            tree_type,
+            crate::TreeType::ProvableCountTree | crate::TreeType::ProvableCountSumTree
+        ) {
+            return Err(Error::InvalidProofError(format!(
+                "AggregateCountOnRange is only valid against ProvableCountTree or \
+                 ProvableCountSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok((LinkedList::new(), 0u64)).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.create_aggregate_count_on_range_proof(
+                    inner_range,
+                    tree_type,
+                    grove_version,
+                )
+            }
+        })
+    }
 }
 
 type Proof = (LinkedList<ProofOp>, Option<u16>);

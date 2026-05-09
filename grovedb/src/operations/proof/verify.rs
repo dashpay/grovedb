@@ -1230,6 +1230,12 @@ impl GroveDb {
                     min_start = min_start.min(s.saturating_add(1));
                     max_end = max_end.max(e.saturating_add(1));
                 }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on BulkAppendTree",
+                    ));
+                }
             }
         }
 
@@ -1347,6 +1353,12 @@ impl GroveDb {
                         positions.insert(idx);
                         check_cap!(positions);
                     }
+                }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountOnRange is only supported on provable count trees, \
+                         not on this tree type",
+                    ));
                 }
             }
         }
@@ -2665,7 +2677,8 @@ impl GroveDb {
             | Node::KVDigestCount(..)
             | Node::Hash(_)
             | Node::KVHash(_)
-            | Node::KVHashCount(..) => None,
+            | Node::KVHashCount(..)
+            | Node::HashWithCount(..) => None,
         }
     }
 
