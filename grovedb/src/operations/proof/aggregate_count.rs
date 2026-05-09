@@ -14,9 +14,7 @@
 
 use grovedb_merk::{
     proofs::{
-        query::{
-            aggregate_count::verify_aggregate_count_on_range_proof, QueryProofVerify, VerifyOptions,
-        },
+        query::{aggregate_count::verify_aggregate_count_on_range_proof, QueryProofVerify},
         Query as MerkQuery,
     },
     tree::{combine_hash, value_hash},
@@ -367,8 +365,3 @@ fn enforce_lower_chain(
     }
     Ok(())
 }
-
-// Quiet unused-import lints when only the verifier exists (the import is
-// load-bearing if/when we add count-aware verify options later).
-#[allow(dead_code)]
-fn _verify_options_imported_marker(_: VerifyOptions) {}
