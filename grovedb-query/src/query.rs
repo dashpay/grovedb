@@ -399,13 +399,12 @@ impl Query {
                 "AggregateCountOnRange queries may not carry a default subquery branch",
             ));
         }
-        if let Some(branches) = &self.conditional_subquery_branches {
-            if !branches.is_empty() {
-                return Err(Error::InvalidOperation(
-                    "AggregateCountOnRange queries may not carry conditional subquery \
-                     branches",
-                ));
-            }
+        if let Some(branches) = &self.conditional_subquery_branches
+            && !branches.is_empty()
+        {
+            return Err(Error::InvalidOperation(
+                "AggregateCountOnRange queries may not carry conditional subquery branches",
+            ));
         }
         Ok(inner)
     }
