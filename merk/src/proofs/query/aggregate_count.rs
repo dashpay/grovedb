@@ -434,22 +434,40 @@ where
 /// - `merk_root_hash` is the root hash of the reconstructed merk; the
 ///   caller must compare it against the expected root hash to complete
 ///   verification.
-/// - `count` is the number of keys in the inner range, accumulated from
-///   the proof's `HashWithCount` and in-range `KVDigestCount` nodes.
+/// - `count` is the number of keys in the inner range, computed by replaying
+///   the prover's classification walk against the reconstructed proof tree.
 ///
-/// The function rejects:
-/// - empty proof bytes (treated as count = 0 only when accompanied by a
-///   trivial empty-tree marker — see below);
-/// - any proof node whose type is not legal for this proof shape
-///   (`Hash`, `HashWithCount`, `KVDigestCount` — plus the structural
-///   `Parent` / `Child` ops, which `execute` consumes implicitly);
-/// - a proof that decodes to multiple roots or zero roots (handled by
-///   `execute`'s usual error path);
-/// - trailing bytes after the proof's last op (likely-malicious input).
+/// **Two-phase verification.** Allowlisting node types alone is unsound:
+/// a malicious prover can substitute `Hash` for an in-range subtree (to
+/// undercount), attach extra `KVDigestCount` children below a keyless
+/// `Hash` / `HashWithCount` (to overcount, since their hash recomputation
+/// ignores attached children and the root hash would still match), or send
+/// a single `Push(Hash(expected_root))` for a non-empty tree (to receive a
+/// count of 0 with the trusted root). To prevent all three, this function:
 ///
-/// Note on the "empty merk" case: an empty merk is represented by an empty
-/// proof byte stream and yields `(NULL_HASH, 0)`. Callers chaining this in
-/// a multi-layer proof should recognize that shape explicitly.
+/// 1. Decodes the proof into a `ProofTree` via `execute_with_options` with
+///    the AVL balance check disabled (count proofs intentionally collapse
+///    one side to height 1) and **does not** count anything in the
+///    `visit_node` callback.
+/// 2. Walks the reconstructed tree with the same inherited exclusive
+///    subtree-key bounds the prover used (`(None, None)` at the root).
+///    At each position it calls `classify_subtree(bounds, inner_range)` and
+///    requires the proof-tree node type to match the classification:
+///    - `Disjoint` → must be a leaf `Hash(_)`. Contributes 0.
+///    - `Contained` → must be a leaf `HashWithCount(...)`. Contributes its
+///      count.
+///    - `Boundary` → must be `KVDigestCount(key, ...)` with `key` strictly
+///      inside `bounds`. Recurse left with `(lo, key)` and right with
+///      `(key, hi)`; add 1 if `inner_range.contains(key)`.
+///
+/// Counts are summed with `checked_add`; an overflow is treated as proof
+/// corruption (`u64::MAX` keys is not a real merk shape). The caller is
+/// still responsible for verifying the returned `merk_root_hash` against
+/// their trusted root.
+///
+/// **Empty merk case.** An empty merk is represented by an empty proof byte
+/// stream and yields `(NULL_HASH, 0)`. Callers chaining this in a
+/// multi-layer proof should recognize that shape explicitly.
 pub fn verify_aggregate_count_on_range_proof(
     proof_bytes: &[u8],
     inner_range: &QueryItem,
@@ -462,43 +480,133 @@ pub fn verify_aggregate_count_on_range_proof(
     }
 
     let mut cost = OperationCost::default();
-    let mut count: u64 = 0;
     let decoder = Decoder::new(proof_bytes);
 
-    // execute propagates the visit_node Err directly through its CostResult,
-    // so the only allowlist enforcement we need lives inside the closure.
-    // We disable the AVL balance check (`verify_avl_balance = false`) because
-    // count proofs intentionally collapse fully-inside subtrees into a single
-    // op, producing a reconstructed tree whose child heights routinely differ
-    // by more than one.
+    // Phase 1: reconstruct the proof tree. The visit_node closure only
+    // performs a coarse allowlist; the per-position type/shape check happens
+    // in Phase 2 below. We still reject blatantly wrong node types here so
+    // execute() bails early on garbage input.
     let tree_result: CostResult<ProofTree, Error> =
-        execute_with_options(decoder, false, false, |node| {
-            // Only the three node types listed below are allowed in an aggregate
-            // count proof. Anything else (KV, KVValueHash, KVHash, etc.) is
-            // treated as proof corruption — the prover should never emit them in
-            // this mode.
-            match node {
-                Node::Hash(_) => Ok(()),
-                Node::HashWithCount(_, _, _, c) => {
-                    count = count.saturating_add(*c);
-                    Ok(())
-                }
-                Node::KVDigestCount(key, _, _) => {
-                    if inner_range.contains(key.as_slice()) {
-                        count = count.saturating_add(1);
-                    }
-                    Ok(())
-                }
-                other => Err(Error::InvalidProofError(format!(
-                    "unexpected node type in aggregate count proof: {}",
-                    other
-                ))),
+        execute_with_options(decoder, false, false, |node| match node {
+            Node::Hash(_) | Node::HashWithCount(_, _, _, _) | Node::KVDigestCount(_, _, _) => {
+                Ok(())
             }
+            other => Err(Error::InvalidProofError(format!(
+                "unexpected node type in aggregate count proof: {}",
+                other
+            ))),
         });
-
     let tree = cost_return_on_error!(&mut cost, tree_result);
+
+    // Phase 2: shape-check + count by replaying the prover's classification
+    // walk. This binds each leaf node's type to the (subtree_bounds × range)
+    // classification, so the only valid count is the one a faithful prover
+    // would have produced for this exact range.
+    let count = match verify_count_shape(&tree, inner_range, None, None) {
+        Ok(c) => c,
+        Err(e) => return Err(e).wrap_with_cost(cost),
+    };
+
     let root_hash = tree.hash().unwrap_add_cost(&mut cost);
     Ok((root_hash, count)).wrap_with_cost(cost)
+}
+
+/// Recursive shape-walk over the reconstructed proof tree. At each node:
+///
+/// - Compute the expected classification from the inherited subtree bounds
+///   and the inner range.
+/// - Require the node's type to match the classification (and reject any
+///   children attached under a leaf-shape classification — a malicious
+///   prover could otherwise hide counted children under a `Hash` /
+///   `HashWithCount`, since their hash recomputation ignores those
+///   children).
+/// - Recurse with tightened bounds at `Boundary` nodes, summing with
+///   `checked_add`.
+fn verify_count_shape(
+    tree: &ProofTree,
+    range: &QueryItem,
+    lo: Option<&[u8]>,
+    hi: Option<&[u8]>,
+) -> Result<u64, Error> {
+    let class = classify_subtree(lo, hi, range);
+    match class {
+        SubtreeClassification::Disjoint => match &tree.node {
+            Node::Hash(_) => {
+                if tree.left.is_some() || tree.right.is_some() {
+                    return Err(Error::InvalidProofError(
+                        "aggregate-count proof: Hash node at a Disjoint position must be a leaf"
+                            .to_string(),
+                    ));
+                }
+                Ok(0)
+            }
+            other => Err(Error::InvalidProofError(format!(
+                "aggregate-count proof: expected Hash at Disjoint position, got {}",
+                other
+            ))),
+        },
+        SubtreeClassification::Contained => match &tree.node {
+            Node::HashWithCount(_, _, _, count) => {
+                if tree.left.is_some() || tree.right.is_some() {
+                    return Err(Error::InvalidProofError(
+                        "aggregate-count proof: HashWithCount node at a Contained position \
+                         must be a leaf"
+                            .to_string(),
+                    ));
+                }
+                Ok(*count)
+            }
+            other => Err(Error::InvalidProofError(format!(
+                "aggregate-count proof: expected HashWithCount at Contained position, got {}",
+                other
+            ))),
+        },
+        SubtreeClassification::Boundary => match &tree.node {
+            Node::KVDigestCount(key, _, _) => {
+                if !key_strictly_inside(key.as_slice(), lo, hi) {
+                    return Err(Error::InvalidProofError(format!(
+                        "aggregate-count proof: KVDigestCount key {} falls outside its \
+                         inherited subtree bounds (lo={:?}, hi={:?})",
+                        hex::encode(key),
+                        lo.map(hex::encode),
+                        hi.map(hex::encode),
+                    )));
+                }
+                let key_slice = key.as_slice();
+                let left_count = match &tree.left {
+                    Some(child) => verify_count_shape(&child.tree, range, lo, Some(key_slice))?,
+                    None => 0,
+                };
+                let right_count = match &tree.right {
+                    Some(child) => verify_count_shape(&child.tree, range, Some(key_slice), hi)?,
+                    None => 0,
+                };
+                let self_contribution = u64::from(range.contains(key_slice));
+                left_count
+                    .checked_add(right_count)
+                    .and_then(|s| s.checked_add(self_contribution))
+                    .ok_or_else(|| {
+                        Error::InvalidProofError(
+                            "aggregate-count proof: count overflowed u64".to_string(),
+                        )
+                    })
+            }
+            other => Err(Error::InvalidProofError(format!(
+                "aggregate-count proof: expected KVDigestCount at Boundary position, got {}",
+                other
+            ))),
+        },
+    }
+}
+
+/// Returns true when `key` lies strictly between the exclusive bounds
+/// `(lo, hi)`, where `None` represents `-inf` / `+inf`. Used to validate that
+/// a `Boundary` `KVDigestCount` carries a key consistent with its inherited
+/// subtree window.
+fn key_strictly_inside(key: &[u8], lo: Option<&[u8]>, hi: Option<&[u8]>) -> bool {
+    let lo_ok = lo.is_none_or(|l| key > l);
+    let hi_ok = hi.is_none_or(|h| key < h);
+    lo_ok && hi_ok
 }
 
 #[cfg(test)]
@@ -904,6 +1012,147 @@ mod tests {
         assert_ne!(
             root, expected_root,
             "tampered count must produce a different reconstructed root hash"
+        );
+    }
+
+    // ---------- attack tests for the shape-walk verifier ----------
+    //
+    // These three tests exercise attacks the old allowlist-only verifier let
+    // through. With the shape walk in `verify_count_shape`, each one is
+    // rejected before the caller's root-hash check.
+
+    /// A malicious prover sends a single `Push(Hash(expected_root))` for a
+    /// non-empty tree. Without the shape check this would return
+    /// `(expected_root, 0)` for any range. The shape check classifies the
+    /// root with `(None, None)` against a bounded inner range as `Boundary`,
+    /// expects `KVDigestCount`, and rejects.
+    #[test]
+    fn shape_walk_rejects_single_hash_undercount() {
+        let v = GroveVersion::latest();
+        let (merk, expected_root) = make_15_key_provable_count_tree(v);
+        let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+
+        // Forged proof: a single Hash op carrying the genuine root hash.
+        let mut forged: LinkedList<ProofOp> = LinkedList::new();
+        forged.push_back(ProofOp::Push(Node::Hash(expected_root)));
+        let bytes = encode_proof(&forged);
+
+        let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+        let err = result.expect_err("single-Hash forgery must be rejected by shape walk");
+        let _ = merk; // keep merk alive for clarity in the test scope
+        match err {
+            Error::InvalidProofError(msg) => {
+                assert!(
+                    msg.contains("expected KVDigestCount") || msg.contains("Boundary"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProofError, got {other:?}"),
+        }
+    }
+
+    /// A malicious prover replaces an in-range `HashWithCount` subtree with
+    /// a `Hash` carrying that subtree's node_hash, undercounting by the
+    /// subtree's count. The hash chain still matches (same node_hash), so
+    /// the old allowlist verifier would have happily returned a wrong
+    /// count. The shape walk classifies that position as `Contained` and
+    /// requires `HashWithCount`, rejecting the swap.
+    #[test]
+    fn shape_walk_rejects_hash_swap_for_contained_subtree() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+        let (mut ops, _) = merk
+            .prove_aggregate_count_on_range(&inner_range, v)
+            .unwrap()
+            .expect("prove succeeds");
+
+        // Swap the first HashWithCount op for a Hash op carrying the
+        // computed node_hash for that subtree (so the chain check still
+        // matches and only the shape walk can detect the attack).
+        let mut swapped = false;
+        for op in ops.iter_mut() {
+            if let ProofOp::Push(Node::HashWithCount(kv_hash, l, r, c)) = op {
+                let node_hash = crate::tree::node_hash_with_count(kv_hash, l, r, *c).unwrap();
+                *op = ProofOp::Push(Node::Hash(node_hash));
+                swapped = true;
+                break;
+            }
+        }
+        assert!(
+            swapped,
+            "test setup: expected at least one HashWithCount op"
+        );
+
+        let bytes = encode_proof(&ops);
+        let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+        assert!(
+            result.is_err(),
+            "HashWithCount→Hash swap on a Contained subtree must be rejected by the shape walk"
+        );
+    }
+
+    /// A malicious prover attaches a `KVDigestCount` child under a leaf
+    /// `HashWithCount`. Because `Tree::hash()` for `HashWithCount` is
+    /// computed from the four embedded fields and ignores any reconstructed
+    /// children, the root hash check passes — but a naive verifier that
+    /// counts every visited node would credit the bogus child as +1. The
+    /// shape walk requires `Contained` positions to be **leaves**, so it
+    /// rejects the smuggled-in child.
+    #[test]
+    fn shape_walk_rejects_keyless_node_with_attached_children() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+        let (mut ops, _honest_count) = merk
+            .prove_aggregate_count_on_range(&inner_range, v)
+            .unwrap()
+            .expect("prove succeeds");
+
+        // Smuggle a fake +1 child under the first HashWithCount op. After
+        // any HashWithCount(...), insert: Push(Hash(zero)) Parent — that
+        // attaches an extra hashed node as the LEFT child of the
+        // HashWithCount during reconstruction. Then add a fake
+        // Push(KVDigestCount) Child that would be picked up by an
+        // allowlist verifier counting visited keys.
+        //
+        // Concretely we splice 4 ops right after the HashWithCount:
+        //   Push(KVDigestCount(in_range_key, value_hash, 1))
+        //   Parent             (attach KVDigestCount as the LEFT child of HashWithCount)
+        //   Push(Hash([0; 32]))
+        //   Child              (attach Hash as the RIGHT child of HashWithCount)
+        //
+        // The HashWithCount's hash() ignores these children, so the root
+        // hash recomputation is unaffected. The shape walk catches the
+        // Contained-position-with-children violation.
+        let mut new_ops: LinkedList<ProofOp> = LinkedList::new();
+        let mut spliced = false;
+        for op in ops.iter() {
+            new_ops.push_back(op.clone());
+            if !spliced && matches!(op, ProofOp::Push(Node::HashWithCount(_, _, _, _))) {
+                let in_range_key = b"d".to_vec();
+                new_ops.push_back(ProofOp::Push(Node::KVDigestCount(
+                    in_range_key,
+                    [0u8; 32],
+                    1,
+                )));
+                new_ops.push_back(ProofOp::Parent);
+                new_ops.push_back(ProofOp::Push(Node::Hash([0u8; 32])));
+                new_ops.push_back(ProofOp::Child);
+                spliced = true;
+            }
+        }
+        assert!(
+            spliced,
+            "test setup: expected to splice into a HashWithCount"
+        );
+        ops = new_ops;
+
+        let bytes = encode_proof(&ops);
+        let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+        assert!(
+            result.is_err(),
+            "attaching children under HashWithCount must be rejected (root hash alone wouldn't catch it)"
         );
     }
 }

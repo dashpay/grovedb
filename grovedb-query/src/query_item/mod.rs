@@ -306,10 +306,38 @@ impl Encode for QueryItem {
     }
 }
 
+/// Maximum recursion depth allowed when decoding a `QueryItem` from bincode.
+///
+/// The only recursive variant today is `AggregateCountOnRange(Box<QueryItem>)`
+/// (variant 10). A malicious payload made of repeated variant-10 bytes
+/// would otherwise recurse arbitrarily deep before any validation runs and
+/// can stack-overflow the decoder. Since nested `AggregateCountOnRange` is
+/// always rejected by `Query::validate_aggregate_count_on_range` anyway,
+/// the only legal nesting depth here is **one** (the outer wrapper plus its
+/// non-aggregate inner range). We keep a small safety margin.
+pub(crate) const MAX_QUERY_ITEM_DECODE_DEPTH: usize = 4;
+
 impl<Context> Decode<Context> for QueryItem {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
+        Self::decode_with_depth(decoder, 0)
+    }
+}
+
+impl QueryItem {
+    /// Recursive bincode decode with an explicit depth counter. Used to bound
+    /// nested `AggregateCountOnRange` payloads (which would otherwise allow
+    /// stack exhaustion via repeated variant-10 bytes).
+    pub(crate) fn decode_with_depth<D: bincode::de::Decoder>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_QUERY_ITEM_DECODE_DEPTH {
+            return Err(DecodeError::Other(
+                "QueryItem nesting depth exceeded maximum during deserialization",
+            ));
+        }
         let variant_id = u8::decode(decoder)?;
 
         match variant_id {
@@ -355,7 +383,16 @@ impl<Context> Decode<Context> for QueryItem {
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
             }
             10 => {
-                let inner = QueryItem::decode(decoder)?;
+                let inner = QueryItem::decode_with_depth(decoder, depth + 1)?;
+                // Defense-in-depth: nested AggregateCountOnRange is invalid
+                // by validation rules, so we also reject it at decode time.
+                // The depth guard above remains the primary stack-overflow
+                // mitigation for malicious deeper nesting.
+                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                    return Err(DecodeError::Other(
+                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                    ));
+                }
                 Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
             }
             _ => Err(DecodeError::UnexpectedVariant {
@@ -371,6 +408,24 @@ impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
+        Self::borrow_decode_with_depth(decoder, 0)
+    }
+}
+
+impl QueryItem {
+    /// Recursive bincode borrow-decode with an explicit depth counter.
+    /// Mirrors [`Self::decode_with_depth`] for the borrowed-decoder path; same
+    /// `MAX_QUERY_ITEM_DECODE_DEPTH` and same nested-`AggregateCountOnRange`
+    /// rejection apply.
+    pub(crate) fn borrow_decode_with_depth<'de, D: bincode::de::BorrowDecoder<'de>>(
+        decoder: &mut D,
+        depth: usize,
+    ) -> Result<Self, DecodeError> {
+        if depth > MAX_QUERY_ITEM_DECODE_DEPTH {
+            return Err(DecodeError::Other(
+                "QueryItem nesting depth exceeded maximum during deserialization",
+            ));
+        }
         let variant_id = u8::decode(decoder)?;
 
         match variant_id {
@@ -416,7 +471,12 @@ impl<'de, Context> BorrowDecode<'de, Context> for QueryItem {
                 Ok(QueryItem::RangeAfterToInclusive(start..=end))
             }
             10 => {
-                let inner = QueryItem::borrow_decode(decoder)?;
+                let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
+                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                    return Err(DecodeError::Other(
+                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                    ));
+                }
                 Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
             }
             _ => Err(DecodeError::UnexpectedVariant {
@@ -1058,5 +1118,83 @@ mod test {
             QueryItem::Range(vec![20]..vec![30])
         );
         assert!(QueryItem::Range(vec![20]..vec![30]) > QueryItem::Range(vec![10]..vec![20]));
+    }
+
+    // ---------- decode-depth + nested-AggregateCountOnRange rejection ----------
+
+    use super::MAX_QUERY_ITEM_DECODE_DEPTH;
+
+    fn bincode_config() -> bincode::config::Configuration<
+        bincode::config::BigEndian,
+        bincode::config::Fixint,
+        bincode::config::NoLimit,
+    > {
+        bincode::config::standard()
+            .with_big_endian()
+            .with_fixed_int_encoding()
+            .with_no_limit()
+    }
+
+    #[test]
+    fn decode_rejects_nested_aggregate_count_on_range() {
+        // A two-level nest: AggregateCountOnRange(AggregateCountOnRange(Range)).
+        let nested = QueryItem::AggregateCountOnRange(Box::new(QueryItem::AggregateCountOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&nested, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("nested AggregateCountOnRange must be rejected at decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateCountOnRange") || msg.contains("nesting depth"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_caps_depth_for_malicious_payload() {
+        // Construct a raw byte payload of (MAX_QUERY_ITEM_DECODE_DEPTH + 2)
+        // copies of the AggregateCountOnRange variant byte (10) followed by
+        // a base item. This bypasses the constructor-level nested rejection
+        // but should hit the depth guard. We use Range as the eventual base
+        // (variants 0..=9 don't recurse). Since variant 10 reads the next
+        // byte as a recursive QueryItem, repeated 10s recurse without
+        // bound — exactly the stack-exhaustion case the depth guard
+        // prevents.
+        let depth_to_try = MAX_QUERY_ITEM_DECODE_DEPTH + 2;
+        let mut payload: Vec<u8> = Vec::new();
+        for _ in 0..depth_to_try {
+            payload.push(10u8); // AggregateCountOnRange variant tag
+        }
+        // Innermost: Range(b"a", b"z"). Variant tag 1, then encoded start +
+        // end Vec<u8>s in big-endian fixed-int config.
+        payload.push(1u8);
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let inner_bytes = bincode::encode_to_vec(&inner, bincode_config()).unwrap();
+        // inner_bytes already starts with the variant tag (1), strip it.
+        payload.extend_from_slice(&inner_bytes[1..]);
+
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("payload exceeding max depth must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("nesting depth") || msg.contains("AggregateCountOnRange"),
+            "expected depth-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_accepts_valid_one_level_aggregate_count_on_range() {
+        // Single-level wrap with a non-aggregate inner. This is the only
+        // legal shape after validation; decoding must succeed.
+        let q = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let bytes = bincode::encode_to_vec(&q, bincode_config()).unwrap();
+        let (decoded, _): (QueryItem, _) = bincode::decode_from_slice(&bytes, bincode_config())
+            .expect("single-level wrap must decode");
+        assert_eq!(q, decoded);
     }
 }

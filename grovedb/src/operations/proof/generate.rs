@@ -269,18 +269,26 @@ impl GroveDb {
             *overall_limit
         };
 
-        // Aggregate-count short-circuit: when the query items at this level
-        // are a single AggregateCountOnRange, we skip the regular merk proof
-        // path entirely and emit a count-only merk proof. Count queries are
-        // leaf-only — `lower_layers` stays empty.
-        if let Some(inner_range) = query.items.first().and_then(|qi| match qi {
-            QueryItem::AggregateCountOnRange(inner) => Some(inner.as_ref()),
-            _ => None,
-        }) {
+        // Aggregate-count short-circuit: if any item at this level is an
+        // `AggregateCountOnRange`, the surrounding `PathQuery` must validate
+        // as a well-formed aggregate-count query. We do **not** route on a
+        // partial match (e.g. a query with extra items, subqueries, or an
+        // illegal inner) — those would silently produce a count proof for
+        // the wrong shape. Instead we run the same validation the verifier
+        // runs and let it surface the precise error.
+        if query
+            .items
+            .iter()
+            .any(QueryItem::is_aggregate_count_on_range)
+        {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_count_on_range().cloned()
+            );
             let (count_ops, _count) = cost_return_on_error!(
                 &mut cost,
                 subtree
-                    .prove_aggregate_count_on_range(inner_range, grove_version)
+                    .prove_aggregate_count_on_range(&inner_range, grove_version)
                     .map_err(Error::MerkError)
             );
             let mut serialized = Vec::with_capacity(128);
@@ -1035,18 +1043,24 @@ impl GroveDb {
             *overall_limit
         };
 
-        // Aggregate-count short-circuit (v1 path). Identical logic to v0:
-        // a single AggregateCountOnRange item routes to the count-proof
-        // generator; lower_layers is empty. The count-proof bytes are wrapped
-        // in `ProofBytes::Merk` since they share the merk Op stream encoding.
-        if let Some(inner_range) = query.items.first().and_then(|qi| match qi {
-            QueryItem::AggregateCountOnRange(inner) => Some(inner.as_ref()),
-            _ => None,
-        }) {
+        // Aggregate-count short-circuit (v1 path). Same validation contract
+        // as v0: any AggregateCountOnRange at this level requires the
+        // surrounding PathQuery to validate as a well-formed aggregate-count
+        // query. The count-proof bytes are wrapped in `ProofBytes::Merk`
+        // since they share the merk Op stream encoding.
+        if query
+            .items
+            .iter()
+            .any(QueryItem::is_aggregate_count_on_range)
+        {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_count_on_range().cloned()
+            );
             let (count_ops, _count) = cost_return_on_error!(
                 &mut cost,
                 subtree
-                    .prove_aggregate_count_on_range(inner_range, grove_version)
+                    .prove_aggregate_count_on_range(&inner_range, grove_version)
                     .map_err(Error::MerkError)
             );
             let mut serialized = Vec::with_capacity(128);
