@@ -1210,4 +1210,205 @@ mod tests {
             "expected HashWithCount-rejection message, got: {msg}"
         );
     }
+
+    // ---------- byte-mutation fuzzer ----------
+    //
+    // Stronger forgery-resistance check than the three hand-crafted attack
+    // tests above: enumerate every byte of an honest proof, flip it to
+    // each of three different values, and assert the verifier never
+    // produces a "silent forgery" — i.e. an `Ok((root, count))` where
+    // the root **matches** the honest one but the count **differs**.
+    //
+    // Three safe outcomes per mutation:
+    //  - **Rejection** — Phase 1 decode error, or Phase 2 shape mismatch.
+    //  - **Divergence** — `Ok((root', _))` where `root' != honest_root`,
+    //    so any caller comparing against their trusted root catches it.
+    //  - **Same outcome** — `Ok((honest_root, honest_count))`. This can
+    //    happen for non-canonical re-encodings (e.g. swapping
+    //    `Push` ↔ `PushInverted` doesn't change the reconstructed tree's
+    //    root or the shape walk's count). Harmless: the verifier is
+    //    deterministic on (root, count), and that pair is what the
+    //    caller acts on.
+    //
+    // The **unsafe** outcome is `Ok((honest_root, count'))` where
+    // `count' != honest_count`. The hash chain binds count via
+    // `node_hash_with_count`, so this should be impossible — the test
+    // panics if it ever happens.
+    //
+    // We also assert each safe branch fires at least once as a sanity
+    // check that the test is actually exercising the surface.
+    #[test]
+    fn fuzz_byte_mutation_no_silent_forgery() {
+        let v = GroveVersion::latest();
+        let (merk, honest_root) = make_15_key_provable_count_tree(v);
+        let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+        let (ops, honest_count) = merk
+            .prove_aggregate_count_on_range(&inner_range, v)
+            .unwrap()
+            .expect("prove");
+        let honest_bytes = encode_proof(&ops);
+        assert!(!honest_bytes.is_empty());
+
+        let mut rejected = 0usize;
+        let mut diverged = 0usize;
+        let mut same_outcome = 0usize;
+        let mut total = 0usize;
+
+        // Three different mutations per byte: +1, +0x55, XOR 0xff.
+        let deltas: [u8; 3] = [1, 0x55, 0xff];
+        for byte_idx in 0..honest_bytes.len() {
+            for &delta in &deltas {
+                let mut bytes = honest_bytes.clone();
+                let original = bytes[byte_idx];
+                let mutated = if delta == 0xff {
+                    original ^ 0xff
+                } else {
+                    original.wrapping_add(delta)
+                };
+                if mutated == original {
+                    continue; // no-op, don't count
+                }
+                bytes[byte_idx] = mutated;
+                total += 1;
+
+                let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+                match result {
+                    Err(_) => rejected += 1,
+                    Ok((root, count)) => {
+                        if root == honest_root {
+                            // Same root — the verifier MUST also produce
+                            // the same count, otherwise we have a silent
+                            // count-forgery: the caller would accept the
+                            // forged count thinking it's the honest one.
+                            assert_eq!(
+                                count, honest_count,
+                                "SILENT FORGERY at byte index {} (delta=0x{:02x}): \
+                                 verifier returned the honest root but a wrong count \
+                                 ({} != {}). The hash chain should bind count.",
+                                byte_idx, delta, count, honest_count
+                            );
+                            same_outcome += 1;
+                        } else {
+                            // Different root — caller's root check catches it.
+                            diverged += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sanity: each safe branch should fire at least once on a real proof.
+        assert!(
+            rejected > 0,
+            "expected at least one mutation to be rejected outright"
+        );
+        assert!(
+            diverged > 0,
+            "expected at least one mutation to diverge the root hash"
+        );
+        // `same_outcome` may legitimately be zero on some encoders, so we
+        // don't require it. We just require no silent forgery occurred,
+        // which the inner assert_eq! guarantees.
+        let _ = same_outcome;
+        assert_eq!(rejected + diverged + same_outcome, total);
+    }
+
+    // ---------- randomized round-trip property test ----------
+    //
+    // Build merks with varying sizes and key shapes from a deterministic
+    // RNG, run a bunch of randomly-chosen ranges through the prove → encode
+    // → verify pipeline, and assert the verifier's count agrees with a
+    // ground-truth count computed by directly intersecting the inserted
+    // keys with the range. Catches silent miscounts that the fixed
+    // examples above would miss (off-by-one, edge-of-tree, exact-bound
+    // matches against multi-byte keys, etc.).
+    #[test]
+    fn fuzz_random_trees_and_ranges_round_trip() {
+        // Tiny custom xorshift RNG so we don't have to add a dev-dep.
+        struct XorShift(u64);
+        impl XorShift {
+            fn next_u64(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                self.0 = x;
+                x
+            }
+            fn gen_range(&mut self, lo: usize, hi: usize) -> usize {
+                lo + (self.next_u64() as usize) % (hi - lo)
+            }
+            fn gen_key(&mut self, max_len: usize) -> Vec<u8> {
+                let len = 1 + self.gen_range(0, max_len);
+                (0..len).map(|_| (self.next_u64() & 0xff) as u8).collect()
+            }
+        }
+
+        let v = GroveVersion::latest();
+        let mut rng = XorShift(0xDEAD_BEEF_C0FFEE);
+        let trials = 16;
+        for trial in 0..trials {
+            let key_count = rng.gen_range(1, 64);
+            let mut keys: Vec<Vec<u8>> = (0..key_count).map(|_| rng.gen_key(8)).collect();
+            keys.sort();
+            keys.dedup();
+
+            let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+            let entries: Vec<(Vec<u8>, Op)> = keys
+                .iter()
+                .map(|k| (k.clone(), Op::Put(vec![0xAB], ProvableCountedMerkNode(1))))
+                .collect();
+            merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+                .unwrap()
+                .expect("apply");
+            merk.commit(v);
+            let root = merk.root_hash().unwrap();
+
+            // Try several random ranges per tree, picking shapes that
+            // exercise both bounded and half-bounded variants.
+            for sub_trial in 0..6 {
+                let lo = rng.gen_key(8);
+                let hi = rng.gen_key(8);
+                let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+
+                let inner_range = match sub_trial % 6 {
+                    0 => QueryItem::Range(lo.clone()..hi.clone()),
+                    1 => QueryItem::RangeInclusive(lo.clone()..=hi.clone()),
+                    2 => QueryItem::RangeFrom(lo.clone()..),
+                    3 => QueryItem::RangeAfter(lo.clone()..),
+                    4 => QueryItem::RangeTo(..hi.clone()),
+                    _ => QueryItem::RangeToInclusive(..=hi.clone()),
+                };
+
+                let expected = keys
+                    .iter()
+                    .filter(|k| inner_range.contains(k.as_slice()))
+                    .count() as u64;
+
+                let (ops, prover_count) = merk
+                    .prove_aggregate_count_on_range(&inner_range, v)
+                    .unwrap()
+                    .expect("prove");
+                assert_eq!(
+                    prover_count, expected,
+                    "trial {} sub {}: prover count mismatch for range {:?}",
+                    trial, sub_trial, inner_range
+                );
+                let bytes = encode_proof(&ops);
+                let (vroot, vcount) = verify_aggregate_count_on_range_proof(&bytes, &inner_range)
+                    .unwrap()
+                    .expect("verify");
+                assert_eq!(
+                    vroot, root,
+                    "trial {} sub {}: verifier root mismatch",
+                    trial, sub_trial
+                );
+                assert_eq!(
+                    vcount, expected,
+                    "trial {} sub {}: verifier count mismatch for range {:?}",
+                    trial, sub_trial, inner_range
+                );
+            }
+        }
+    }
 }

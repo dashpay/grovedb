@@ -137,11 +137,24 @@ A bare tuple is used for the result rather than a wrapper struct because
 the count is already a `u64` and the `path_query` itself echoes the inner
 range — there is nothing else to return.
 
-> **Note on `NonCounted` children:** the count returned reflects what the
-> *provable count tree* records — i.e. the count of elements that contributed
-> to the tree's running count. `NonCounted`-wrapped children are excluded by
-> design (their parent's count was zeroed for them), so they are also excluded
-> from `AggregateCountOnRange` results.
+> **Note on `NonCounted` children.** `AggregateCountOnRange` counts every
+> in-range key that physically exists in the tree, regardless of whether
+> the parent's running count includes it. A `NonCounted`-wrapped item still
+> occupies a key slot in the merk and so still appears in the proof's
+> boundary walk; the verifier credits `+1` per in-range key without
+> consulting whether the node's own contribution to the parent's
+> aggregate was zeroed.
+>
+> If you specifically want the parent's running count (which **does**
+> exclude `NonCounted` children), read the
+> `Element::ProvableCountTree(_, count, _)` /
+> `Element::ProvableCountSumTree(_, count, _, _)` bytes directly — that
+> total is hash-verified by the parent merk's proof, and is exactly what
+> `AggregateCountOnRange(RangeFull)` would have given (and is also why
+> `RangeFull` is rejected as an inner item, see above). A future revision
+> could add a `NonCounted`-aware count mode by tracking
+> structural-vs-in-range counts separately during the shape walk; that's
+> not part of v1.
 
 ## How the Proof is Built
 

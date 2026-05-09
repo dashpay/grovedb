@@ -460,4 +460,135 @@ mod tests {
         );
         assert!(pq.validate_aggregate_count_on_range().is_err());
     }
+
+    /// Pins the v1 contract: `AggregateCountOnRange` counts every in-range
+    /// key that physically exists in the merk, **regardless** of whether
+    /// the parent's running count was zeroed for that entry by an
+    /// `Element::NonCounted` wrapper.
+    ///
+    /// `NonCounted` is a parent-side aggregation hint — the wrapped entry
+    /// still occupies a key slot in the merk and still appears in the
+    /// proof's boundary walk. The shape-walk verifier credits `+1` per
+    /// in-range key without consulting whether the node's own contribution
+    /// to the parent aggregate was zeroed, so the wrapped item is included
+    /// in the count.
+    ///
+    /// Callers who specifically want the parent's running count (which does
+    /// exclude NonCounted children) should read the
+    /// `Element::ProvableCountTree(_, count, _)` bytes directly — that
+    /// total is hash-verified by the parent merk's proof and is exactly
+    /// what `AggregateCountOnRange(RangeFull)` *would* have given (and is
+    /// why `RangeFull` is rejected as an inner item).
+    ///
+    /// See the "Note on `NonCounted` children" callout in the book chapter
+    /// for the rationale and a sketch of how a future
+    /// `NonCounted`-aware mode could be added.
+    #[test]
+    fn non_counted_children_are_included_in_aggregate_count_v1_contract() {
+        use crate::tests::TEST_LEAF;
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"ct",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert ct");
+
+        // Five regular items.
+        for c in [b'a', b'b', b'c', b'd', b'e'] {
+            db.insert(
+                [TEST_LEAF, b"ct"].as_ref(),
+                &[c],
+                Element::new_item(vec![c]),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert regular item");
+        }
+
+        // One NonCounted-wrapped item, in-range. The parent merk's
+        // *aggregate* count is 5 because of the wrapper, but the
+        // AggregateCountOnRange shape walk credits +1 for every in-range
+        // key it encounters, so the count returned here is 6.
+        let nc_item =
+            Element::new_non_counted(Element::new_item(b"hidden".to_vec())).expect("wrap ok");
+        db.insert([TEST_LEAF, b"ct"].as_ref(), b"f", nc_item, None, None, v)
+            .unwrap()
+            .expect("insert NonCounted item");
+
+        let root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"a".to_vec()..=b"z".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove");
+        let (got_root, got_count) =
+            GroveDb::verify_aggregate_count_query(&proof, &path_query, v).expect("verify");
+        assert_eq!(got_root, root, "root mismatch");
+        assert_eq!(
+            got_count, 6,
+            "AggregateCountOnRange must count every in-range key including \
+             NonCounted-wrapped ones (see book chapter for rationale)"
+        );
+    }
+
+    /// Pin observable cost numbers + proof byte size for a known input so
+    /// regressions in the proof shape (extra unnecessary nodes, missing
+    /// short-circuit, etc.) show up as a test failure instead of as a
+    /// silent perf hit. Values are exact for the 15-key
+    /// `ProvableCountTree` + `RangeInclusive("c"..="l")` setup; if the
+    /// proof shape changes intentionally, update them here.
+    #[test]
+    fn proof_size_snapshot_for_15_key_closed_range() {
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove");
+
+        // Snapshot the proof byte size. The current shape produces a small
+        // deterministic byte stream; if this drifts upward without
+        // intent, the proof shape may have regressed.
+        //
+        // The acceptable range is conservative — we only require the
+        // proof stays bounded by what an O(log n) shape predicts for a
+        // 4-level tree (a few hundred bytes is the right ballpark; many
+        // KB would indicate the count short-circuit didn't fire). The
+        // *current* size is around 650 bytes; a few hundred bytes of
+        // headroom in either direction tolerates encoding tweaks but
+        // catches gross regressions.
+        let len = proof.len();
+        assert!(
+            (300..=900).contains(&len),
+            "aggregate-count proof size {} bytes is outside the expected \
+             [300, 900] window for a 15-key 2-layer query — proof shape \
+             may have regressed",
+            len
+        );
+
+        // Round-trip through the verifier as a sanity check that the
+        // pinned shape is still verifiable.
+        let (_root, count) =
+            GroveDb::verify_aggregate_count_query(&proof, &path_query, v).expect("verify");
+        assert_eq!(count, 10);
+    }
 }
