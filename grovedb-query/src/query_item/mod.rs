@@ -223,7 +223,16 @@ impl<'de> Deserialize<'de> for QueryItem {
                         Ok(QueryItem::RangeAfterToInclusive(range_after_to_inclusive))
                     }
                     Field::AggregateCountOnRange => {
-                        let inner: QueryItem = variant_access.newtype_variant()?;
+                        // Deserialize the inner via a wrapper that rejects
+                        // the `AggregateCountOnRange` tag *before* recursing.
+                        // This is the serde counterpart to the bincode
+                        // depth-bounded decode + nested-rejection added in
+                        // `Self::decode_with_depth`. Without it, a
+                        // `serde`-feature client could send arbitrarily
+                        // deep nested AggregateCountOnRange payloads and
+                        // exhaust the stack inside `QueryItem::deserialize`
+                        // before any validation runs.
+                        let NonAggregateInner(inner) = variant_access.newtype_variant()?;
                         Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
                     }
                 }
@@ -245,6 +254,100 @@ impl<'de> Deserialize<'de> for QueryItem {
         ];
 
         deserializer.deserialize_enum("QueryItem", VARIANTS, QueryItemVisitor)
+    }
+}
+
+/// Newtype wrapper used internally by the serde `Deserialize` impl when
+/// deserializing the *inner* item of an `AggregateCountOnRange`. The wrapper's
+/// `Deserialize` impl mirrors `QueryItem::deserialize` but rejects the
+/// `AggregateCountOnRange` field tag immediately — without recursing — so
+/// nested aggregate payloads cannot exhaust the stack via repeated variant-10
+/// recursion through `QueryItem::deserialize`.
+///
+/// Defense-in-depth: nested `AggregateCountOnRange` is also rejected by
+/// `Query::validate_aggregate_count_on_range`, but enforcing it at decode time
+/// matches the bincode side and prevents the DoS class on its own.
+#[cfg(feature = "serde")]
+struct NonAggregateInner(QueryItem);
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for NonAggregateInner {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Field set excludes "AggregateCountOnRange"; encountering that tag
+        // produces a serde "unknown variant" error before any inner
+        // recursion can happen.
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            Key,
+            Range,
+            RangeInclusive,
+            RangeFull,
+            RangeFrom,
+            RangeTo,
+            RangeToInclusive,
+            RangeAfter,
+            RangeAfterTo,
+            RangeAfterToInclusive,
+        }
+
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = NonAggregateInner;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("non-aggregate QueryItem variant")
+            }
+
+            fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::EnumAccess<'de>,
+            {
+                let (variant, va) = data.variant()?;
+                let inner = match variant {
+                    Field::Key => QueryItem::Key(va.newtype_variant()?),
+                    Field::Range => QueryItem::Range(va.newtype_variant()?),
+                    Field::RangeInclusive => QueryItem::RangeInclusive(va.newtype_variant()?),
+                    Field::RangeFull => {
+                        va.unit_variant()?;
+                        QueryItem::RangeFull(RangeFull)
+                    }
+                    Field::RangeFrom => QueryItem::RangeFrom(va.newtype_variant()?),
+                    Field::RangeTo => QueryItem::RangeTo(va.newtype_variant()?),
+                    Field::RangeToInclusive => {
+                        let end: Vec<u8> = va.newtype_variant()?;
+                        QueryItem::RangeToInclusive(..=end)
+                    }
+                    Field::RangeAfter => QueryItem::RangeAfter(va.newtype_variant()?),
+                    Field::RangeAfterTo => QueryItem::RangeAfterTo(va.newtype_variant()?),
+                    Field::RangeAfterToInclusive => {
+                        QueryItem::RangeAfterToInclusive(va.newtype_variant()?)
+                    }
+                };
+                Ok(NonAggregateInner(inner))
+            }
+        }
+
+        // The list excludes "AggregateCountOnRange" so a serde format that
+        // surfaces unknown variants by name (most do) gives a precise error
+        // for the nested case.
+        const NON_AGGREGATE_VARIANTS: &[&str] = &[
+            "Key",
+            "Range",
+            "RangeInclusive",
+            "RangeFull",
+            "RangeFrom",
+            "RangeTo",
+            "RangeToInclusive",
+            "RangeAfter",
+            "RangeAfterTo",
+            "RangeAfterToInclusive",
+        ];
+
+        deserializer.deserialize_enum("QueryItem", NON_AGGREGATE_VARIANTS, V)
     }
 }
 
@@ -1196,5 +1299,92 @@ mod test {
         let (decoded, _): (QueryItem, _) = bincode::decode_from_slice(&bytes, bincode_config())
             .expect("single-level wrap must decode");
         assert_eq!(q, decoded);
+    }
+
+    // ---------- serde-feature: nested AggregateCountOnRange rejection ----------
+    //
+    // The bincode path is depth-bounded above. Mirror the same defense for the
+    // serde path so serde-feature clients can't bypass the protection — the
+    // inner item is deserialized through `NonAggregateInner`, whose enum
+    // field set excludes `AggregateCountOnRange`, so any nested payload is
+    // rejected immediately by serde without recursion through
+    // `QueryItem::deserialize`.
+    //
+    // We use `serde_test`'s token-level driver here rather than a textual
+    // format because the existing `Serialize` impl emits variant tags in
+    // PascalCase (`"AggregateCountOnRange"`) while the existing `Field` enum
+    // uses `rename_all = "snake_case"` — a pre-existing mismatch unrelated
+    // to this PR that breaks JSON round-trip but is invisible to formats
+    // that don't carry variant names textually. Using token streams sidesteps
+    // that issue and lets us validate the rejection contract directly.
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_rejects_nested_aggregate_count_on_range() {
+        // Replay the token sequence for an outer AggregateCountOnRange whose
+        // inner is itself an AggregateCountOnRange. The outer dispatch
+        // selects the AggregateCountOnRange variant and tries to deserialize
+        // the inner via `NonAggregateInner`, which does not list
+        // `aggregate_count_on_range` in its field set — serde_test surfaces
+        // this as an "unknown variant" error.
+        use serde_test::{assert_de_tokens_error, Token};
+        assert_de_tokens_error::<QueryItem>(
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+            ],
+            // Exact wording comes from serde's `field_identifier`
+            // dispatcher rejecting an out-of-set tag — the field set lives
+            // in `NonAggregateInner`'s `Field` enum, which deliberately
+            // omits `aggregate_count_on_range`.
+            "unknown field `aggregate_count_on_range`, expected one of \
+             `key`, `range`, `range_inclusive`, `range_full`, `range_from`, \
+             `range_to`, `range_to_inclusive`, `range_after`, `range_after_to`, \
+             `range_after_to_inclusive`",
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_accepts_valid_one_level_aggregate_count_on_range() {
+        // Outer `AggregateCountOnRange` wrapping a non-aggregate `Range`
+        // succeeds: the inner dispatch goes through `NonAggregateInner`,
+        // finds `range`, and the resulting Range is wrapped back up.
+        use serde_test::{assert_de_tokens, Token};
+        let expected = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_de_tokens(
+            &expected,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
+        );
     }
 }
