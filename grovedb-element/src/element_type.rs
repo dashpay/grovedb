@@ -2,6 +2,25 @@
 
 use crate::error::ElementError;
 
+/// Bincode discriminant byte for `Element::NonCounted`. Tied to the
+/// declaration order of the `Element` enum (0-indexed, 16th variant).
+///
+/// `ElementType` does NOT have a direct variant at this byte — when
+/// `from_serialized_value` sees this discriminant, it reads the next byte to
+/// resolve the inner type and returns a synthetic `NonCountedXxx` variant
+/// (high bit set). The `test_element_serialization_discriminants_match_element_type`
+/// test pins this constant to the actual bincode encoding.
+pub const NON_COUNTED_WRAPPER_DISCRIMINANT: u8 = 15;
+
+/// High bit set on every `NonCountedXxx` discriminant. The base type can be
+/// recovered with `disc & NON_COUNTED_BASE_MASK`, and "is non-counted" is
+/// `disc & NON_COUNTED_FLAG != 0`.
+pub const NON_COUNTED_FLAG: u8 = 0x80;
+
+/// Mask to recover the base type discriminant from a `NonCountedXxx`
+/// discriminant.
+pub const NON_COUNTED_BASE_MASK: u8 = 0x7F;
+
 /// Indicates which type of proof node should be used when generating proofs.
 ///
 /// This determines whether the verifier will recompute the value hash (secure)
@@ -78,11 +97,19 @@ pub enum ProofNodeType {
     KvRefValueHashCount,
 }
 
-/// Element type discriminants matching the Element enum serialization order.
-/// These correspond to the bincode serialization of the Element enum.
+/// Element type discriminants.
 ///
-/// IMPORTANT: These values must match the order of variants in the Element
-/// enum. If Element enum order changes, these must be updated accordingly.
+/// Base types (0..=14) match the bincode serialization order of the `Element`
+/// enum. Non-counted twins (128..=142) are synthetic — they encode "this is a
+/// `NonCounted` wrapper around an inner element of base type
+/// `disc & 0x7F`". The on-disk representation of `Element::NonCounted` still
+/// uses the wrapper byte `NON_COUNTED_WRAPPER_DISCRIMINANT` (15) followed by
+/// the inner element's bytes; `from_serialized_value` synthesizes the
+/// `NonCountedXxx` variant by peeking at the second byte.
+///
+/// IMPORTANT: Base values (0..=14) must match the order of variants in the
+/// `Element` enum. The `test_element_serialization_discriminants_match_element_type`
+/// test catches drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ElementType {
@@ -116,28 +143,97 @@ pub enum ElementType {
     BulkAppendTree = 13,
     /// Dense fixed-sized Merkle tree - discriminant 14
     DenseAppendOnlyFixedSizeTree = 14,
-    /// Non-counted wrapper around any other Element - discriminant 15
-    NonCounted = 15,
+    // 15 is reserved as the on-disk wrapper byte and has no direct
+    // ElementType variant.
+    /// Non-counted wrapper around `Item` - discriminant 128
+    NonCountedItem = 128,
+    /// Non-counted wrapper around `Reference` - discriminant 129
+    NonCountedReference = 129,
+    /// Non-counted wrapper around `Tree` - discriminant 130
+    NonCountedTree = 130,
+    /// Non-counted wrapper around `SumItem` - discriminant 131
+    NonCountedSumItem = 131,
+    /// Non-counted wrapper around `SumTree` - discriminant 132
+    NonCountedSumTree = 132,
+    /// Non-counted wrapper around `BigSumTree` - discriminant 133
+    NonCountedBigSumTree = 133,
+    /// Non-counted wrapper around `CountTree` - discriminant 134
+    NonCountedCountTree = 134,
+    /// Non-counted wrapper around `CountSumTree` - discriminant 135
+    NonCountedCountSumTree = 135,
+    /// Non-counted wrapper around `ProvableCountTree` - discriminant 136
+    NonCountedProvableCountTree = 136,
+    /// Non-counted wrapper around `ItemWithSumItem` - discriminant 137
+    NonCountedItemWithSumItem = 137,
+    /// Non-counted wrapper around `ProvableCountSumTree` - discriminant 138
+    NonCountedProvableCountSumTree = 138,
+    /// Non-counted wrapper around `CommitmentTree` - discriminant 139
+    NonCountedCommitmentTree = 139,
+    /// Non-counted wrapper around `MmrTree` - discriminant 140
+    NonCountedMmrTree = 140,
+    /// Non-counted wrapper around `BulkAppendTree` - discriminant 141
+    NonCountedBulkAppendTree = 141,
+    /// Non-counted wrapper around `DenseAppendOnlyFixedSizeTree` - discriminant 142
+    NonCountedDenseAppendOnlyFixedSizeTree = 142,
 }
 
 impl ElementType {
-    /// Get the ElementType from a serialized Element's first byte.
+    /// Get the ElementType from a serialized Element's leading bytes.
     ///
-    /// This is an O(1) operation that avoids full deserialization.
+    /// Reads byte 0 in the common case. When byte 0 is the
+    /// `NON_COUNTED_WRAPPER_DISCRIMINANT`, also reads byte 1 to resolve the
+    /// inner type and returns the corresponding `NonCountedXxx` variant
+    /// (with bit 7 set).
     ///
     /// # Arguments
     /// * `serialized_value` - The serialized Element bytes
     ///
     /// # Returns
     /// * `Ok(ElementType)` - The element type
-    /// * `Err(ElementError)` - If the value is empty or has an unknown
-    ///   discriminant
+    /// * `Err(ElementError)` - If the value is empty, truncated (wrapper
+    ///   without inner byte), or has an unknown discriminant
     pub fn from_serialized_value(serialized_value: &[u8]) -> Result<Self, ElementError> {
-        let first_byte = serialized_value.first().ok_or_else(|| {
+        let first_byte = *serialized_value.first().ok_or_else(|| {
             ElementError::CorruptedData("Cannot get element type from empty value".to_string())
         })?;
 
-        Self::try_from(*first_byte)
+        if first_byte == NON_COUNTED_WRAPPER_DISCRIMINANT {
+            let inner_byte = *serialized_value.get(1).ok_or_else(|| {
+                ElementError::CorruptedData(
+                    "NonCounted wrapper has no inner element discriminant byte".to_string(),
+                )
+            })?;
+            // Reject nested wrappers up front.
+            if inner_byte == NON_COUNTED_WRAPPER_DISCRIMINANT {
+                return Err(ElementError::CorruptedData(
+                    "NonCounted cannot wrap another NonCounted".to_string(),
+                ));
+            }
+            Self::try_from(NON_COUNTED_FLAG | inner_byte)
+        } else {
+            Self::try_from(first_byte)
+        }
+    }
+
+    /// Returns true if this is a `NonCountedXxx` discriminant (bit 7 set).
+    #[inline]
+    pub const fn is_non_counted(self) -> bool {
+        (self as u8) & NON_COUNTED_FLAG != 0
+    }
+
+    /// Returns the underlying base ElementType, stripping the NonCounted bit.
+    /// For base types, returns `self` unchanged.
+    #[inline]
+    pub fn base(self) -> ElementType {
+        if self.is_non_counted() {
+            // Safe: every NonCountedXxx is constructed from a valid base
+            // discriminant 0..=14, so masking the high bit yields a valid
+            // base discriminant.
+            ElementType::try_from((self as u8) & NON_COUNTED_BASE_MASK)
+                .expect("NonCounted twin always has a valid base")
+        } else {
+            self
+        }
     }
 
     /// Returns the type of proof node that should be used for this element
@@ -177,21 +273,28 @@ impl ElementType {
     /// # Arguments
     /// * `parent_tree_type` - The type of tree containing this element, or
     ///   `None` for root-level elements
+    ///
+    /// The `NonCounted` wrapper is transparent for proof-node-type
+    /// selection: both `self` and `parent_tree_type` are normalized via
+    /// `base()` before dispatch. The proof shape is determined by the inner
+    /// element type, not by the wrapper.
     #[inline]
     pub fn proof_node_type(&self, parent_tree_type: Option<ElementType>) -> ProofNodeType {
+        let parent_base = parent_tree_type.map(|t| t.base());
         let is_provable_count_tree = matches!(
-            parent_tree_type,
+            parent_base,
             Some(ElementType::ProvableCountTree) | Some(ElementType::ProvableCountSumTree)
         );
 
-        if self.has_simple_value_hash() {
+        let base = self.base();
+        if base.has_simple_value_hash() {
             // Items (Item, SumItem, ItemWithSumItem)
             if is_provable_count_tree {
                 ProofNodeType::KvCount
             } else {
                 ProofNodeType::Kv
             }
-        } else if self.is_reference() {
+        } else if base.is_reference() {
             // References need combined hash (for reference resolution).
             // In ProvableCountTree, they also need the count in node_hash.
             // GroveDB post-processes these to KVRefValueHash/KVRefValueHashCount.
@@ -215,11 +318,12 @@ impl ElementType {
     ///
     /// Item types have `value_hash = H(serialized_element)`.
     /// These can safely use `Node::KV` in proofs because the verifier
-    /// can recompute the hash from the value.
+    /// can recompute the hash from the value. Looks through the
+    /// `NonCounted` wrapper.
     #[inline]
     pub fn has_simple_value_hash(&self) -> bool {
         matches!(
-            self,
+            self.base(),
             ElementType::Item | ElementType::SumItem | ElementType::ItemWithSumItem
         )
     }
@@ -239,15 +343,11 @@ impl ElementType {
     }
 
     /// Returns true if this element type is any kind of tree (subtree).
-    ///
-    /// Note: this returns false for `NonCounted` because the wrapper itself is
-    /// not a tree (its inner element may or may not be). Callers that want to
-    /// look through a `NonCounted` wrapper should call
-    /// `Element::is_any_tree()` instead, which inspects the underlying element.
+    /// Looks through the `NonCounted` wrapper.
     #[inline]
     pub fn is_tree(&self) -> bool {
         matches!(
-            self,
+            self.base(),
             ElementType::Tree
                 | ElementType::SumTree
                 | ElementType::BigSumTree
@@ -262,18 +362,19 @@ impl ElementType {
         )
     }
 
-    /// Returns true if this element type is a reference.
+    /// Returns true if this element type is a reference. Looks through the
+    /// `NonCounted` wrapper.
     #[inline]
     pub fn is_reference(&self) -> bool {
-        matches!(self, ElementType::Reference)
+        matches!(self.base(), ElementType::Reference)
     }
 
     /// Returns true if this element type is any kind of item (not a tree or
-    /// reference).
+    /// reference). Looks through the `NonCounted` wrapper.
     #[inline]
     pub fn is_item(&self) -> bool {
         matches!(
-            self,
+            self.base(),
             ElementType::Item | ElementType::SumItem | ElementType::ItemWithSumItem
         )
     }
@@ -296,7 +397,21 @@ impl ElementType {
             ElementType::MmrTree => "mmr tree",
             ElementType::BulkAppendTree => "bulk_append_tree",
             ElementType::DenseAppendOnlyFixedSizeTree => "dense_tree",
-            ElementType::NonCounted => "non_counted",
+            ElementType::NonCountedItem => "non_counted item",
+            ElementType::NonCountedReference => "non_counted reference",
+            ElementType::NonCountedTree => "non_counted tree",
+            ElementType::NonCountedSumItem => "non_counted sum item",
+            ElementType::NonCountedSumTree => "non_counted sum tree",
+            ElementType::NonCountedBigSumTree => "non_counted big sum tree",
+            ElementType::NonCountedCountTree => "non_counted count tree",
+            ElementType::NonCountedCountSumTree => "non_counted count sum tree",
+            ElementType::NonCountedProvableCountTree => "non_counted provable count tree",
+            ElementType::NonCountedItemWithSumItem => "non_counted item with sum item",
+            ElementType::NonCountedProvableCountSumTree => "non_counted provable count sum tree",
+            ElementType::NonCountedCommitmentTree => "non_counted commitment tree",
+            ElementType::NonCountedMmrTree => "non_counted mmr tree",
+            ElementType::NonCountedBulkAppendTree => "non_counted bulk_append_tree",
+            ElementType::NonCountedDenseAppendOnlyFixedSizeTree => "non_counted dense_tree",
         }
     }
 }
@@ -304,6 +419,11 @@ impl ElementType {
 impl TryFrom<u8> for ElementType {
     type Error = ElementError;
 
+    /// Maps a discriminant byte to an `ElementType`.
+    ///
+    /// `NON_COUNTED_WRAPPER_DISCRIMINANT` (15) on its own is rejected: it is
+    /// the on-disk wrapper byte and must be paired with the inner element's
+    /// discriminant byte. Use `from_serialized_value` for that.
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(ElementType::Item),
@@ -321,7 +441,23 @@ impl TryFrom<u8> for ElementType {
             12 => Ok(ElementType::MmrTree),
             13 => Ok(ElementType::BulkAppendTree),
             14 => Ok(ElementType::DenseAppendOnlyFixedSizeTree),
-            15 => Ok(ElementType::NonCounted),
+            // 15 is the raw NonCounted wrapper byte; from_serialized_value
+            // resolves it by reading the inner discriminant.
+            128 => Ok(ElementType::NonCountedItem),
+            129 => Ok(ElementType::NonCountedReference),
+            130 => Ok(ElementType::NonCountedTree),
+            131 => Ok(ElementType::NonCountedSumItem),
+            132 => Ok(ElementType::NonCountedSumTree),
+            133 => Ok(ElementType::NonCountedBigSumTree),
+            134 => Ok(ElementType::NonCountedCountTree),
+            135 => Ok(ElementType::NonCountedCountSumTree),
+            136 => Ok(ElementType::NonCountedProvableCountTree),
+            137 => Ok(ElementType::NonCountedItemWithSumItem),
+            138 => Ok(ElementType::NonCountedProvableCountSumTree),
+            139 => Ok(ElementType::NonCountedCommitmentTree),
+            140 => Ok(ElementType::NonCountedMmrTree),
+            141 => Ok(ElementType::NonCountedBulkAppendTree),
+            142 => Ok(ElementType::NonCountedDenseAppendOnlyFixedSizeTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -375,8 +511,57 @@ mod tests {
             ElementType::try_from(14).unwrap(),
             ElementType::DenseAppendOnlyFixedSizeTree
         );
-        assert_eq!(ElementType::try_from(15).unwrap(), ElementType::NonCounted);
+        // 15 is the raw NonCounted wrapper byte and is rejected by TryFrom;
+        // it has no direct ElementType variant (use from_serialized_value).
+        assert!(ElementType::try_from(15).is_err());
         assert!(ElementType::try_from(16).is_err());
+
+        // High-bit twins
+        assert_eq!(
+            ElementType::try_from(128).unwrap(),
+            ElementType::NonCountedItem
+        );
+        assert_eq!(
+            ElementType::try_from(129).unwrap(),
+            ElementType::NonCountedReference
+        );
+        assert_eq!(
+            ElementType::try_from(142).unwrap(),
+            ElementType::NonCountedDenseAppendOnlyFixedSizeTree
+        );
+        // Bytes between the base and twin ranges are invalid.
+        assert!(ElementType::try_from(127).is_err());
+        // Bytes past the highest twin are invalid.
+        assert!(ElementType::try_from(143).is_err());
+    }
+
+    #[test]
+    fn test_non_counted_helpers() {
+        // is_non_counted: high bit means non-counted
+        assert!(!ElementType::Item.is_non_counted());
+        assert!(!ElementType::Tree.is_non_counted());
+        assert!(ElementType::NonCountedItem.is_non_counted());
+        assert!(ElementType::NonCountedTree.is_non_counted());
+        assert!(ElementType::NonCountedDenseAppendOnlyFixedSizeTree.is_non_counted());
+
+        // base() strips the wrapper and returns the underlying type.
+        assert_eq!(ElementType::Item.base(), ElementType::Item);
+        assert_eq!(ElementType::NonCountedItem.base(), ElementType::Item);
+        assert_eq!(ElementType::NonCountedTree.base(), ElementType::Tree);
+        assert_eq!(
+            ElementType::NonCountedProvableCountTree.base(),
+            ElementType::ProvableCountTree
+        );
+
+        // The discriminant relationship: twin = base | 0x80
+        assert_eq!(
+            ElementType::NonCountedItem as u8,
+            ElementType::Item as u8 | NON_COUNTED_FLAG
+        );
+        assert_eq!(
+            ElementType::NonCountedDenseAppendOnlyFixedSizeTree as u8,
+            ElementType::DenseAppendOnlyFixedSizeTree as u8 | NON_COUNTED_FLAG
+        );
     }
 
     #[test]
@@ -394,6 +579,12 @@ mod tests {
         assert!(ElementType::CountTree.has_combined_value_hash());
         assert!(ElementType::CountSumTree.has_combined_value_hash());
         assert!(ElementType::ProvableCountTree.has_combined_value_hash());
+
+        // The wrapper is transparent: NonCountedItem still hashes simply.
+        assert!(ElementType::NonCountedItem.has_simple_value_hash());
+        assert!(ElementType::NonCountedSumItem.has_simple_value_hash());
+        assert!(ElementType::NonCountedTree.has_combined_value_hash());
+        assert!(ElementType::NonCountedReference.has_combined_value_hash());
     }
 
     #[test]
@@ -525,6 +716,32 @@ mod tests {
     }
 
     #[test]
+    fn test_proof_node_type_through_non_counted_wrapper() {
+        use super::ProofNodeType;
+
+        // Wrapping doesn't change proof shape — both self and parent fall
+        // back to base() before dispatch.
+        assert_eq!(
+            ElementType::NonCountedItem.proof_node_type(None),
+            ProofNodeType::Kv,
+        );
+        assert_eq!(
+            ElementType::NonCountedItem
+                .proof_node_type(Some(ElementType::NonCountedProvableCountTree)),
+            ProofNodeType::KvCount,
+        );
+        assert_eq!(
+            ElementType::NonCountedReference
+                .proof_node_type(Some(ElementType::ProvableCountSumTree)),
+            ProofNodeType::KvRefValueHashCount,
+        );
+        assert_eq!(
+            ElementType::NonCountedTree.proof_node_type(Some(ElementType::ProvableCountTree)),
+            ProofNodeType::KvValueHashFeatureType,
+        );
+    }
+
+    #[test]
     fn test_from_serialized_value() {
         // Test with valid first bytes
         assert_eq!(
@@ -541,10 +758,33 @@ mod tests {
 
         // Test with unknown discriminant
         assert!(ElementType::from_serialized_value(&[255]).is_err());
+
+        // NonCounted wrapper: the leading byte is the wrapper discriminant
+        // (15) and the next byte is the inner type's discriminant. The
+        // returned type is the synthetic NonCountedXxx with bit 7 set.
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 0, 1, 2, 3]).unwrap(),
+            ElementType::NonCountedItem
+        );
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 6]).unwrap(),
+            ElementType::NonCountedCountTree
+        );
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 14]).unwrap(),
+            ElementType::NonCountedDenseAppendOnlyFixedSizeTree
+        );
+        // Truncated wrapper (no inner byte) is rejected.
+        assert!(ElementType::from_serialized_value(&[15]).is_err());
+        // Nested NonCounted is rejected.
+        assert!(ElementType::from_serialized_value(&[15, 15]).is_err());
+        // Wrapper with unknown inner discriminant is rejected.
+        assert!(ElementType::from_serialized_value(&[15, 200]).is_err());
     }
 
     #[test]
     fn test_is_tree() {
+        // Base types
         assert!(!ElementType::Item.is_tree());
         assert!(!ElementType::Reference.is_tree());
         assert!(ElementType::Tree.is_tree());
@@ -559,8 +799,19 @@ mod tests {
         assert!(ElementType::MmrTree.is_tree());
         assert!(ElementType::BulkAppendTree.is_tree());
         assert!(ElementType::DenseAppendOnlyFixedSizeTree.is_tree());
-        // NonCounted is a wrapper, not a tree itself.
-        assert!(!ElementType::NonCounted.is_tree());
+
+        // The wrapper is transparent: NonCountedTree is a tree, NonCountedItem is not.
+        assert!(!ElementType::NonCountedItem.is_tree());
+        assert!(!ElementType::NonCountedReference.is_tree());
+        assert!(ElementType::NonCountedTree.is_tree());
+        assert!(ElementType::NonCountedSumTree.is_tree());
+        assert!(ElementType::NonCountedProvableCountTree.is_tree());
+        assert!(ElementType::NonCountedDenseAppendOnlyFixedSizeTree.is_tree());
+
+        // is_item / is_reference also see through the wrapper.
+        assert!(ElementType::NonCountedItem.is_item());
+        assert!(ElementType::NonCountedSumItem.is_item());
+        assert!(ElementType::NonCountedReference.is_reference());
     }
 
     /// Verifies that serialized Element discriminants match ElementType
@@ -661,19 +912,13 @@ mod tests {
                 ElementType::DenseAppendOnlyFixedSizeTree,
                 "DenseAppendOnlyFixedSizeTree",
             ),
-            // discriminant 15
-            (
-                Element::NonCounted(Box::new(Element::Item(vec![1, 2, 3], None))),
-                ElementType::NonCounted,
-                "NonCounted",
-            ),
         ];
 
-        // Verify we're testing all 16 discriminants (0-15)
+        // Verify we're testing all 15 base discriminants (0-14)
         assert_eq!(
             test_cases.len(),
-            16,
-            "Expected 16 Element variants in test, got {}",
+            15,
+            "Expected 15 base Element variants in test, got {}",
             test_cases.len()
         );
 
@@ -712,6 +957,86 @@ mod tests {
                 parsed_type, expected_type,
                 "ElementType::from_serialized_value for {} returned {:?}, expected {:?}",
                 variant_name, parsed_type, expected_type
+            );
+        }
+    }
+
+    /// Pins the bincode discriminant for `Element::NonCounted` to
+    /// `NON_COUNTED_WRAPPER_DISCRIMINANT`. If someone reorders the `Element`
+    /// enum and pushes `NonCounted` to a different position, this catches it
+    /// — `from_serialized_value` reads byte 1 specifically when byte 0 is
+    /// this constant.
+    #[test]
+    fn test_non_counted_wrapper_discriminant_pinned() {
+        use grovedb_version::version::GroveVersion;
+
+        use crate::element::Element;
+
+        let grove_version = GroveVersion::latest();
+
+        // Pick one inner element per category to verify the wrapper byte +
+        // inner byte resolve to the right NonCountedXxx.
+        let cases: Vec<(Element, ElementType, u8, &str)> = vec![
+            (
+                Element::NonCounted(Box::new(Element::Item(vec![1, 2, 3], None))),
+                ElementType::NonCountedItem,
+                0,
+                "NonCounted(Item)",
+            ),
+            (
+                Element::NonCounted(Box::new(Element::SumItem(7, None))),
+                ElementType::NonCountedSumItem,
+                3,
+                "NonCounted(SumItem)",
+            ),
+            (
+                Element::NonCounted(Box::new(Element::CountTree(None, 5, None))),
+                ElementType::NonCountedCountTree,
+                6,
+                "NonCounted(CountTree)",
+            ),
+            (
+                Element::NonCounted(Box::new(Element::ProvableCountTree(None, 5, None))),
+                ElementType::NonCountedProvableCountTree,
+                8,
+                "NonCounted(ProvableCountTree)",
+            ),
+        ];
+
+        for (element, expected_type, expected_inner_disc, name) in cases {
+            let serialized = element
+                .serialize(grove_version)
+                .unwrap_or_else(|e| panic!("Failed to serialize {}: {:?}", name, e));
+
+            assert!(
+                serialized.len() >= 2,
+                "Serialized {} should have at least 2 bytes",
+                name
+            );
+            assert_eq!(
+                serialized[0], NON_COUNTED_WRAPPER_DISCRIMINANT,
+                "{}: first byte should be the wrapper discriminant (15)",
+                name
+            );
+            assert_eq!(
+                serialized[1], expected_inner_disc,
+                "{}: second byte should match the inner element's discriminant",
+                name
+            );
+
+            let parsed = ElementType::from_serialized_value(&serialized)
+                .unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", name, e));
+            assert_eq!(
+                parsed, expected_type,
+                "{}: from_serialized_value returned {:?}, expected {:?}",
+                name, parsed, expected_type
+            );
+            // And the synthetic discriminant follows the 0x80|base rule.
+            assert_eq!(
+                parsed as u8,
+                expected_inner_disc | NON_COUNTED_FLAG,
+                "{}: NonCountedXxx = inner_disc | 0x80",
+                name
             );
         }
     }

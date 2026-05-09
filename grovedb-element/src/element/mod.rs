@@ -327,6 +327,11 @@ impl fmt::Display for Element {
 
 impl Element {
     /// Returns the ElementType for this element.
+    ///
+    /// For `Element::NonCounted(inner)`, returns the matching `NonCountedXxx`
+    /// twin of the inner element's type (high bit set). Nested wrappers are
+    /// disallowed at construction and serialization, so the inner is always
+    /// a base element.
     pub fn element_type(&self) -> ElementType {
         match self {
             Element::Item(..) => ElementType::Item,
@@ -344,7 +349,28 @@ impl Element {
             Element::MmrTree(..) => ElementType::MmrTree,
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
             Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
-            Element::NonCounted(..) => ElementType::NonCounted,
+            Element::NonCounted(inner) => match inner.element_type() {
+                ElementType::Item => ElementType::NonCountedItem,
+                ElementType::Reference => ElementType::NonCountedReference,
+                ElementType::Tree => ElementType::NonCountedTree,
+                ElementType::SumItem => ElementType::NonCountedSumItem,
+                ElementType::SumTree => ElementType::NonCountedSumTree,
+                ElementType::BigSumTree => ElementType::NonCountedBigSumTree,
+                ElementType::CountTree => ElementType::NonCountedCountTree,
+                ElementType::CountSumTree => ElementType::NonCountedCountSumTree,
+                ElementType::ProvableCountTree => ElementType::NonCountedProvableCountTree,
+                ElementType::ItemWithSumItem => ElementType::NonCountedItemWithSumItem,
+                ElementType::ProvableCountSumTree => ElementType::NonCountedProvableCountSumTree,
+                ElementType::CommitmentTree => ElementType::NonCountedCommitmentTree,
+                ElementType::MmrTree => ElementType::NonCountedMmrTree,
+                ElementType::BulkAppendTree => ElementType::NonCountedBulkAppendTree,
+                ElementType::DenseAppendOnlyFixedSizeTree => {
+                    ElementType::NonCountedDenseAppendOnlyFixedSizeTree
+                }
+                // Inner is always a base type — nested wrappers are
+                // forbidden at construction and (de)serialization.
+                already_non_counted => already_non_counted,
+            },
         }
     }
 
