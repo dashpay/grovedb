@@ -17,7 +17,7 @@ client = ["shardtree"]
 sqlite = ["client", "rusqlite"]
 
 [dependencies]
-orchard = { git = "https://github.com/dashpay/orchard.git", rev = "41c8f7169f2683c99cf0e0c63e8d25ec12c47a79", features = ["circuit"] }
+orchard = { git = "https://github.com/dashpay/orchard.git", rev = "898258d76aab2822249492aede59a02d49278fff", features = ["circuit"] }
 incrementalmerkletree = "0.8"
 shardtree = { version = "0.6", optional = true }
 rusqlite = { version = "0.38", features = ["bundled"], optional = true }
