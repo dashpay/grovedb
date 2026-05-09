@@ -1013,4 +1013,175 @@ mod tests {
             "innermost query should have no further subquery"
         );
     }
+
+    // ---------- AggregateCountOnRange validation tests ----------
+    //
+    // These hit each numbered rule in `Query::validate_aggregate_count_on_range`
+    // independently. The happy path is also covered to ensure the success
+    // arm returns the inner range.
+
+    fn make_acor_query(inner: QueryItem) -> Query {
+        Query::new_aggregate_count_on_range(inner)
+    }
+
+    #[test]
+    fn validate_acor_happy_path_returns_inner() {
+        let q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let inner = q
+            .validate_aggregate_count_on_range()
+            .expect("happy path should validate");
+        match inner {
+            QueryItem::Range(r) => {
+                assert_eq!(r.start, b"a".to_vec());
+                assert_eq!(r.end, b"z".to_vec());
+            }
+            _ => panic!("expected inner Range"),
+        }
+    }
+
+    #[test]
+    fn validate_acor_rejects_extra_items() {
+        let mut q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        q.items.push(QueryItem::Key(b"extra".to_vec()));
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("two-item query must fail");
+        assert!(matches!(err, crate::error::Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn validate_acor_rejects_non_acor_only_item() {
+        // A query with one item that isn't AggregateCountOnRange triggers the
+        // "validate called on a query without an AggregateCountOnRange item"
+        // branch.
+        let q = Query::new_single_query_item(QueryItem::Key(b"k".to_vec()));
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("non-ACOR-only item must fail");
+        assert!(matches!(err, crate::error::Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn validate_acor_rejects_inner_key() {
+        let q = make_acor_query(QueryItem::Key(b"k".to_vec()));
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("inner Key must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(msg.contains("Key")),
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_acor_rejects_inner_range_full() {
+        let q = make_acor_query(QueryItem::RangeFull(std::ops::RangeFull));
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("inner RangeFull must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(msg.contains("RangeFull")),
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_acor_rejects_nested_acor() {
+        // AggregateCountOnRange wrapping another AggregateCountOnRange.
+        let inner_acor = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let q = make_acor_query(inner_acor);
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("nested ACOR must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(msg.contains("AggregateCountOnRange"))
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_acor_rejects_default_subquery_branch() {
+        let mut q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        q.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(Query::new())),
+        };
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("default subquery branch must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(msg.contains("subquery")),
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_acor_rejects_default_subquery_path() {
+        let mut q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        q.default_subquery_branch = SubqueryBranch {
+            subquery_path: Some(vec![b"x".to_vec()]),
+            subquery: None,
+        };
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("subquery_path must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(msg.contains("subquery")),
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_acor_rejects_conditional_subquery_branches() {
+        let mut q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let mut branches = IndexMap::new();
+        branches.insert(
+            QueryItem::Key(b"k".to_vec()),
+            SubqueryBranch {
+                subquery_path: None,
+                subquery: Some(Box::new(Query::new())),
+            },
+        );
+        q.conditional_subquery_branches = Some(branches);
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("conditional branches must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(msg.contains("conditional"));
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_acor_accepts_empty_conditional_branches_map() {
+        // An empty `Some(IndexMap::new())` is treated as "no branches" by the
+        // validator (the rule enforces non-empty rejection only).
+        let mut q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        q.conditional_subquery_branches = Some(IndexMap::new());
+        let inner = q
+            .validate_aggregate_count_on_range()
+            .expect("empty conditional map must validate");
+        assert!(matches!(inner, QueryItem::Range(_)));
+    }
+
+    #[test]
+    fn aggregate_count_on_range_helper_returns_some_only_for_well_shaped() {
+        let q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        assert!(q.aggregate_count_on_range().is_some());
+
+        // Two items → not the well-shaped form.
+        let mut q2 = q.clone();
+        q2.items.push(QueryItem::Key(b"x".to_vec()));
+        assert!(q2.aggregate_count_on_range().is_none());
+
+        // Single non-ACOR item → also None.
+        let q3 = Query::new_single_query_item(QueryItem::Key(b"x".to_vec()));
+        assert!(q3.aggregate_count_on_range().is_none());
+    }
 }

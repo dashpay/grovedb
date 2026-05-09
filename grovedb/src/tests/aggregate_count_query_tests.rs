@@ -8,7 +8,7 @@
 #[cfg(test)]
 mod tests {
     use grovedb_merk::proofs::query::QueryItem;
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v2::GROVE_V2, GroveVersion};
 
     use crate::{
         tests::{make_test_grovedb, TEST_LEAF},
@@ -306,5 +306,158 @@ mod tests {
             "tampered count must be rejected at the GroveDB verifier level, got {:?}",
             verify_result.map(|(_, c)| c)
         );
+    }
+
+    /// Build a 3-layer path: TEST_LEAF -> "outer" (NormalTree) ->
+    /// "inner" (ProvableCountTree) populated with 5 keys "a".."e".
+    fn setup_three_layer_provable_count_tree(
+        grove_version: &GroveVersion,
+    ) -> (crate::tests::TempGroveDb, [u8; 32]) {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert outer");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"inner",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert inner");
+        for c in b'a'..=b'e' {
+            db.insert(
+                [TEST_LEAF, b"outer", b"inner"].as_ref(),
+                &[c],
+                Element::new_item(vec![c]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert leaf");
+        }
+        let root = db
+            .grove_db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash");
+        (db, root)
+    }
+
+    #[test]
+    fn three_layer_path_round_trip() {
+        // Exercises the multi-layer chain enforcement: layer 0 proves TEST_LEAF
+        // exists, layer 1 proves "outer" exists in TEST_LEAF, layer 2 proves
+        // "inner" exists in outer, layer 3 is the count proof on inner.
+        let v = GroveVersion::latest();
+        let (db, root) = setup_three_layer_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"inner".to_vec()],
+            QueryItem::RangeInclusive(b"b".to_vec()..=b"d".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let (got_root, got_count) = GroveDb::verify_aggregate_count_query(&proof, &path_query, v)
+            .expect("verify should succeed");
+        assert_eq!(got_root, root, "verifier root must match GroveDB root");
+        assert_eq!(got_count, 3, "expected count of {{b, c, d}}");
+    }
+
+    #[test]
+    fn corrupted_path_layer_byte_is_rejected() {
+        // Tamper with a non-leaf-layer byte (a tree-element value byte) and
+        // verify that the chain enforcement catches it. We pick a byte deep
+        // enough that it lands inside one of the parent merk's KV value bytes.
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_three_layer_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"inner".to_vec()],
+            QueryItem::RangeInclusive(b"b".to_vec()..=b"d".to_vec()),
+        );
+        let mut proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        // Flip a byte well inside the proof — the exact location doesn't
+        // matter as long as it isn't the bincode envelope length prefix.
+        // Index 32 is past the envelope and into the first inner merk's bytes.
+        let target = proof.len() / 2;
+        proof[target] = proof[target].wrapping_add(1);
+        let verify_result = GroveDb::verify_aggregate_count_query(&proof, &path_query, v);
+        assert!(
+            verify_result.is_err(),
+            "tampered proof byte must be rejected, got {:?}",
+            verify_result.map(|(_, c)| c)
+        );
+    }
+
+    #[test]
+    fn provable_count_tree_works_on_grove_v2_envelope() {
+        // GROVE_V2 dispatches to the V0 prove_query_non_serialized path, which
+        // produces a `MerkOnlyLayerProof` envelope rather than V1's
+        // `LayerProof`. Verify the same prove → verify cycle works through that
+        // envelope.
+        let v: &GroveVersion = &GROVE_V2;
+        let (db, root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query (v0 envelope) should succeed");
+        let (got_root, got_count) = GroveDb::verify_aggregate_count_query(&proof, &path_query, v)
+            .expect("verify should succeed against v0 envelope");
+        assert_eq!(got_root, root);
+        assert_eq!(got_count, 10);
+    }
+
+    #[test]
+    fn verify_rejects_malformed_path_query_at_entry() {
+        // Even before any proof bytes are decoded, the verifier rejects a
+        // path_query that isn't a well-formed AggregateCountOnRange query.
+        let v = GroveVersion::latest();
+        let bad_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec()],
+            QueryItem::Key(b"k".to_vec()), // inner Key is not allowed
+        );
+        // Any proof bytes are fine — validation happens before decoding.
+        let dummy_proof = vec![0u8; 16];
+        let err = GroveDb::verify_aggregate_count_query(&dummy_proof, &bad_query, v)
+            .expect_err("malformed path_query must be rejected up front");
+        let s = format!("{:?}", err);
+        assert!(
+            s.contains("Key") || s.contains("InvalidQuery"),
+            "got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn validate_at_construction_rejects_nested_aggregate_count_on_range() {
+        // Nested AggregateCountOnRange is rejected at validation time.
+        let pq = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+                b"a".to_vec()..b"z".to_vec(),
+            ))),
+        );
+        assert!(pq.validate_aggregate_count_on_range().is_err());
     }
 }
