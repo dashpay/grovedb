@@ -118,24 +118,24 @@ well-formed when **all** of the following hold:
 Violating constraints 1–8 returns `Error::InvalidQuery(...)` with a message
 that names the offending field, before any I/O is performed.
 
-## Result Type
+## API surface
 
-A successful aggregate-count query returns:
+`AggregateCountOnRange` queries go through the **same** `prove_query` entry
+point as every other `PathQuery` — only the verifier is dedicated:
 
 ```rust
-pub struct AggregateCountQueryResult {
-    /// Number of elements matched by the inner range.
-    pub count: u64,
-    /// Range that was actually counted (for caller convenience — copy of
-    /// the inner QueryItem after normalization).
-    pub counted_range: QueryItem,
-}
+// Prove side — unchanged from regular queries:
+GroveDb::prove_query(&path_query, prove_options, grove_version)
+    -> CostResult<Vec<u8>, Error>
+
+// Verify side — dedicated, returns (root_hash, count):
+GroveDb::verify_aggregate_count_query(proof, &path_query, grove_version)
+    -> Result<(CryptoHash, u64), Error>
 ```
 
-When the query is run via the proof-generating path, the proof bytes are
-returned alongside the result, exactly as for any other PathQuery. The
-verifier path returns the same `AggregateCountQueryResult` together with
-the verified root hash.
+A bare tuple is used for the result rather than a wrapper struct because
+the count is already a `u64` and the `path_query` itself echoes the inner
+range — there is nothing else to return.
 
 > **Note on `NonCounted` children:** the count returned reflects what the
 > *provable count tree* records — i.e. the count of elements that contributed
@@ -153,23 +153,30 @@ generator's job is to produce just enough structure that the verifier can:
    expected hash.
 2. Compute the answer **count** from the count fields embedded along the way.
 
-To do that, every proof node has a role; we use a small fixed vocabulary of
-proof-node types from the existing proof system (see
-[Proof System → ProvableCountTree node types](proof-system.md#provablecounttree-and-provablecountsumtree)):
+To do that, every proof node has a role; we use a small vocabulary of
+proof-node types — three from the existing proof system, plus one new
+self-verifying node added specifically for this proof shape:
 
-| Role in proof          | Proof node type                                | What it carries                                      | Why we picked it                                                                       |
-|------------------------|------------------------------------------------|------------------------------------------------------|----------------------------------------------------------------------------------------|
-| **On-path / boundary** | `KVDigestCount(key, value_hash, count)`        | the node's key + value digest + subtree count        | the verifier needs the **key** to test "is it in the range?", and the count to recompute the parent hash |
-| **Fully-inside root**  | `KVHashCount(kv_hash, count)`                  | precomputed `kv_hash(key, value_hash)` + count       | the verifier already knows every key under here is in-range, so the key itself is *not* needed; the count is added directly to the running total |
-| **Fully-outside**      | `Hash(node_hash)`                              | one opaque node hash                                 | no key, no count — purely there to recompute the parent's hash                         |
-| **Empty side**         | (the empty-tree sentinel, no `Push` needed)    | —                                                    | a missing child contributes hash = 0 and count = 0 to the parent                        |
+| Role in proof          | Proof node type                                                                                  | What it carries                                                | Why we picked it                                                                                                         |
+|------------------------|--------------------------------------------------------------------------------------------------|----------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| **On-path / boundary** | `KVDigestCount(key, value_hash, count)`                                                           | key + value digest + subtree count                             | the verifier needs the **key** to test "is it in the range?", and the count to recompute the parent hash               |
+| **Fully-inside root**  | `HashWithCount(kv_hash, left_child_hash, right_child_hash, count)`                               | the four fields needed to recompute `node_hash_with_count`     | one op per collapsed subtree, **and self-verifying** — see security note below                                          |
+| **Fully-outside**      | `Hash(node_hash)`                                                                                 | one opaque node hash                                           | no key, no count — purely there to recompute the parent's hash                                                            |
+| **Empty side**         | (the empty-tree sentinel, no `Push` needed)                                                       | —                                                              | a missing child contributes hash = 0 and count = 0 to the parent                                                          |
 
-> **Hash recomputation for `KVHashCount` subtrees:** because we don't descend
-> into a fully-inside subtree, its left/right children appear in the proof as
-> `Hash(child_node_hash)` so the verifier can still recompute
-> `node_hash_with_count(kv_hash, left_hash, right_hash, count)` for the
-> subtree's root. This costs two extra hashes per inside subtree (~64 bytes).
-> An "Open Design Questions" item below considers a tighter encoding.
+> **Why `HashWithCount` is self-verifying.** The `count` value carried by a
+> `HashWithCount` op is *bound* to the parent merk's hash chain, not trusted
+> on faith. The verifier computes
+> `node_hash_with_count(kv_hash, left_child_hash, right_child_hash, count)`
+> from the four committed fields and uses the result as the subtree's
+> committed `node_hash` for the parent's hash recomputation. If the prover
+> lied about `count`, the recomputed `node_hash` diverges from what the
+> parent committed, and the parent's Merkle-root check fails. (An earlier
+> draft of this design used `HashWithCount(node_hash, count)` only — that
+> form was rejected during review because the count would have been
+> trustlessly attached metadata, with no cryptographic binding. See the
+> "Verifier shape walk" section below for the second half of the
+> security story.)
 
 ### Walking running example
 
@@ -198,7 +205,7 @@ graph TD
 
 Below, each per-case diagram colours nodes by the role table above:
 
-- 🟢 **green** = `KVHashCount` (fully-inside, contributes count, not descended)
+- 🟢 **green** = `HashWithCount` (fully-inside, contributes count, not descended)
 - 🟡 **yellow** = `KVDigestCount` (on-path / boundary, key tested for in-range)
 - ⚪ **gray**  = `Hash` (opaque, fully-outside or unneeded child of an inside subtree)
 
@@ -219,25 +226,19 @@ Expected: `{c, d, e, f, g}`, count = 5.
 graph TD
     d["d<br/>KVDigestCount<br/>key = d, vh, count = 7"]
     b["b<br/>KVDigestCount<br/>key = b, vh, count = 3"]
-    f["f<br/>KVHashCount<br/>kv_hash, count = 3"]
+    f["f<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
     aH["a<br/>Hash"]
     c["c<br/>KVDigestCount<br/>key = c, vh, count = 1"]
-    eH["e<br/>Hash"]
-    gH["g<br/>Hash"]
     d --> b
     d --> f
     b --> aH
     b --> c
-    f --> eH
-    f --> gH
 
     style d fill:#fef9e7,stroke:#f39c12,stroke-width:2px
     style b fill:#fef9e7,stroke:#f39c12,stroke-width:2px
     style c fill:#fef9e7,stroke:#f39c12,stroke-width:2px
     style f fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
     style aH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style eH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style gH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
 ```
 
 Why each role:
@@ -248,10 +249,12 @@ Why each role:
   Sent as a single `Hash` (no key, no count).
 - **f** — right child of `d`; "d" < "f" and we're including everything ≥ "c",
   so the entire `f` subtree (including its descendants) is in-range.
-  We don't need to descend — `f` is sent as `KVHashCount` and contributes its
-  full subtree count of 3 directly.
-- **e, g** — children of `f`; we don't need them as nodes, just opaque
-  `Hash`es so the verifier can recompute `f.node_hash`.
+  We don't need to descend — `f` is sent as a single `HashWithCount` op
+  whose `(kv_hash, left_child_hash, right_child_hash, count)` lets the
+  verifier recompute `f.node_hash` self-contained, and contributes the full
+  subtree count of 3 directly. **The original tree's `e` and `g` children
+  do not appear as separate proof ops** — their hashes live inside the
+  `HashWithCount`'s `left_child_hash` / `right_child_hash` fields.
 
 Verifier total:
 
@@ -260,7 +263,7 @@ Verifier total:
 | d (KVDigestCount, key="d") | "d" ≥ "c"  | **+1** |
 | b (KVDigestCount, key="b") | "b" < "c"  | +0 |
 | c (KVDigestCount, key="c") | "c" ≥ "c"  | **+1** |
-| f (KVHashCount, count=3)   | (whole subtree in range) | **+3** |
+| f (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
 
 → **count = 5** ✓
 
@@ -274,25 +277,19 @@ flips from `>=` to `>`.
 graph TD
     d["d<br/>KVDigestCount<br/>key = d, vh, count = 7"]
     b["b<br/>KVDigestCount<br/>key = b, vh, count = 3"]
-    f["f<br/>KVHashCount<br/>kv_hash, count = 3"]
+    f["f<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
     aH["a<br/>Hash"]
-    c["c<br/>KVHashCount<br/>kv_hash, count = 1"]
-    eH["e<br/>Hash"]
-    gH["g<br/>Hash"]
+    c["c<br/>HashWithCount<br/>kv_hash, l, r, count = 1"]
     d --> b
     d --> f
     b --> aH
     b --> c
-    f --> eH
-    f --> gH
 
     style d fill:#fef9e7,stroke:#f39c12,stroke-width:2px
     style b fill:#fef9e7,stroke:#f39c12,stroke-width:2px
     style c fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
     style f fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
     style aH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style eH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style gH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
 ```
 
 Why each role differs from the previous example:
@@ -302,11 +299,13 @@ Why each role differs from the previous example:
   test is now `> "b"`, so `b` itself **fails** and contributes 0.
 - **c** is the right child of `b`. Every key in `c`'s subtree is `> "b"`
   (here, just the leaf `c` itself), so the whole subtree is in-range. We
-  don't descend; `c` becomes `KVHashCount` (no key needed) and contributes
-  its count of 1 directly. Compare to the previous example where `c` was a
-  boundary node tested against `>= "c"`.
-- **a, f, e, g** play the same roles as before — `a` is fully outside,
-  `f` is fully inside (with `e`/`g` as opaque `Hash` children).
+  don't descend; `c` becomes `HashWithCount` (no key needed — its
+  `(kv_hash, l, r, count)` self-contains everything the verifier needs)
+  and contributes its count of 1 directly. Compare to the previous example
+  where `c` was a boundary node tested against `>= "c"`.
+- **a** plays the same role as before — fully outside, opaque `Hash`. **f's
+  original-tree children (`e`, `g`) do not appear as separate proof ops**
+  — they live inside `f`'s `HashWithCount` fields.
 
 Verifier total:
 
@@ -314,14 +313,14 @@ Verifier total:
 |------|-----------|--------------|
 | d (KVDigestCount, key="d") | "d" > "b"          | **+1** |
 | b (KVDigestCount, key="b") | "b" > "b" → no     | +0 |
-| c (KVHashCount, count=1)   | (whole subtree in range) | **+1** |
-| f (KVHashCount, count=3)   | (whole subtree in range) | **+3** |
+| c (HashWithCount, count=1)   | (whole subtree in range) | **+1** |
+| f (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
 
 → **count = 5** ✓
 
 > **Take-away:** the *match set* is the same as `RangeFrom("c"..)`, but the
 > *proof shape* is slightly cheaper — one fewer `KVDigestCount` and one extra
-> `KVHashCount` — because the bound aligns with an internal node rather than
+> `HashWithCount` — because the bound aligns with an internal node rather than
 > a leaf. The generator picks the shape based on where the bound key lives
 > in the tree, not on what the user wrote.
 
@@ -341,7 +340,7 @@ These are the variants with both a lower and upper bound: `Range(a..b)`,
 
 The proof has **two** boundary walks meeting at the lowest common ancestor of
 the two bounds. Subtrees fully between the two bounds appear as
-`KVHashCount`; subtrees outside appear as `Hash`.
+`HashWithCount`; subtrees outside appear as `Hash`.
 
 To make the structure interesting we'll use a slightly bigger example tree
 than for Case 1 — 15 keys (`a` through `o`), 4 levels deep, balanced as a
@@ -392,15 +391,11 @@ graph TD
     d["d<br/>KVDigestCount<br/>key = d, vh, count = 7"]
     l["l<br/>KVDigestCount<br/>key = l, vh, count = 7"]
     b["b<br/>KVDigestCount<br/>key = b, vh, count = 3"]
-    f["f<br/>KVHashCount<br/>kv_hash, count = 3"]
-    j["j<br/>KVHashCount<br/>kv_hash, count = 3"]
+    f["f<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
+    j["j<br/>HashWithCount<br/>kv_hash, l, r, count = 3"]
     nH["n subtree<br/>Hash"]
     aH["a<br/>Hash"]
     c["c<br/>KVDigestCount<br/>key = c, vh, count = 1"]
-    eH["e<br/>Hash"]
-    gH["g<br/>Hash"]
-    iH["i<br/>Hash"]
-    kH["k<br/>Hash"]
     h --> d
     h --> l
     d --> b
@@ -409,10 +404,6 @@ graph TD
     l --> nH
     b --> aH
     b --> c
-    f --> eH
-    f --> gH
-    j --> iH
-    j --> kH
 
     style h fill:#fef9e7,stroke:#f39c12,stroke-width:2px
     style d fill:#fef9e7,stroke:#f39c12,stroke-width:2px
@@ -423,10 +414,6 @@ graph TD
     style j fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
     style aH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
     style nH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style eH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style gH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style iH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
-    style kH fill:#e8e8e8,stroke:#999,stroke-dasharray:5 5
 ```
 
 Why each role:
@@ -445,21 +432,24 @@ Why each role:
 - **n** — right of `l`; entire subtree has keys > "l". The whole `n`
   subtree (n, m, o) collapses to a single `Hash`.
 - **f** — right child of `d`. Every key under `f` is `> "d"` and `≤ "g" < "l"`,
-  so the entire subtree is in-range. We do not descend; `f` becomes
-  `KVHashCount` and contributes its full count of 3 (e, f, g).
-- **e, g** — children of `f`; needed only as opaque `Hash` so the verifier
-  can recompute `f.node_hash`.
-- **j** — left child of `l`. Every key under `j` is `≥ "i" > "c"` and
-  `≤ "k" < "l"`, so the entire subtree is in-range. `KVHashCount`,
-  contributes count = 3 (i, j, k).
-- **i, k** — children of `j`; opaque `Hash` for `j.node_hash` recomputation.
+  so the entire subtree is in-range. We do not descend; `f` becomes a single
+  `HashWithCount` op carrying `(kv_hash, left_child_hash, right_child_hash,
+  count=3)` and contributes 3 directly. **Its original-tree children `e`
+  and `g` do not appear as separate proof ops** — their hashes are inside
+  `f`'s `HashWithCount` fields.
+- **j** — left child of `l`. Same shape as `f`: every key under `j` is
+  `≥ "i" > "c"` and `≤ "k" < "l"`, so the entire subtree is in-range.
+  `HashWithCount`, contributes count = 3. `i` and `k` likewise live inside
+  `j`'s embedded child hashes.
 
-> **Two layers' worth of work avoided:** because `f` and `j` each shave off
-> two children plus their grandchildren-as-opaque-hashes (well, here
-> grandchildren happen to be leaves), the proof for a 15-key range scan in a
-> 4-level tree contains only **13 push ops** — barely more than the 7-key
-> example in Case 1. This is what "O(log n) regardless of count" looks like
-> in practice: deeper trees do not blow up the proof.
+> **Each collapsed subtree is one Push op.** Because `HashWithCount`
+> embeds its `(kv_hash, left_child_hash, right_child_hash, count)`
+> directly, every fully-inside subtree contributes exactly **one** proof
+> op regardless of its depth in the original tree. The proof for this
+> 15-key range scan in a 4-level tree is just **9 push ops** (h, d, b, c,
+> a, f, l, j, n) plus the structural Parent/Child ops — barely more than
+> the 7-key example in Case 1. This is what "O(log n) regardless of
+> count" looks like in practice: deeper trees do not blow up the proof.
 
 Verifier total:
 
@@ -469,9 +459,9 @@ Verifier total:
 | d (KVDigestCount, key="d") | "c" ≤ "d" ≤ "l" | **+1** |
 | b (KVDigestCount, key="b") | "b" < "c" → no  | +0 |
 | c (KVDigestCount, key="c") | "c" ≤ "c" ≤ "l" | **+1** |
-| f (KVHashCount, count=3)   | (whole subtree in range) | **+3** |
+| f (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
 | l (KVDigestCount, key="l") | "c" ≤ "l" ≤ "l" | **+1** |
-| j (KVHashCount, count=3)   | (whole subtree in range) | **+3** |
+| j (HashWithCount, count=3)   | (whole subtree in range) | **+3** |
 
 → **count = 10** ✓
 
@@ -514,6 +504,77 @@ Each of those is a single proof-node Push. Therefore the proof's node count is
 a billion-key range can be done with the same proof size as counting a
 hundred-key range.
 
+## Verifier shape walk
+
+The verifier is **two-phase**, not just a "count everything visible" pass.
+Without this discipline a malicious prover could:
+
+1. Send a single `Push(Hash(expected_root))` for a non-empty tree, and
+   receive `(expected_root, 0)` for any range — root hash matches, count is
+   trivially zero.
+2. Replace an in-range `HashWithCount` subtree with a `Hash` carrying the
+   *same* `node_hash` (the hash chain still matches), undercounting by the
+   missing subtree count.
+3. Attach extra `KVDigestCount` children below a keyless `Hash` /
+   `HashWithCount`. `Tree::hash()` for those node types is computed only
+   from their embedded fields and ignores any reconstructed children, so
+   the root hash stays valid — but a verifier that summed every visited
+   node would credit the bogus children as `+1` each.
+
+To rule out all three, the verifier:
+
+1. **Phase 1** — decode the proof bytes into a `ProofTree` via
+   `execute_with_options`. The visit-node closure performs only a coarse
+   allowlist (`Hash` / `HashWithCount` / `KVDigestCount`) and **does not
+   count anything**. (We disable the AVL balance check for this proof
+   shape — count proofs intentionally collapse one side to height 1 while
+   descending the other.)
+2. **Phase 2** — walk the reconstructed tree with the same inherited
+   exclusive subtree-key bounds the prover used (`(None, None)` at the
+   root). At each position, call `classify_subtree(bounds, range)` and bind
+   the proof-tree node type to the classification:
+
+   | Classification | Required node                                | Children allowed? | Contribution                          |
+   |----------------|----------------------------------------------|-------------------|---------------------------------------|
+   | `Disjoint`     | leaf `Hash(_)`                               | **no** (must be a leaf) | `0`                              |
+   | `Contained`    | leaf `HashWithCount(_, _, _, count)`         | **no** (must be a leaf) | `count` (committed via `node_hash_with_count`) |
+   | `Boundary`     | `KVDigestCount(key, _, _)` with `key` strictly inside `bounds` | yes — recurse | recurse with tightened bounds, `+1` if `range.contains(key)` |
+
+3. Counts are summed with `checked_add`; an overflow is treated as proof
+   corruption.
+
+Because every leaf-shape position is forced to be a leaf, attack 3 (smuggled
+counted children under a keyless node) is rejected. Because every
+`Contained` position must hold `HashWithCount` (and its count is bound to
+the parent's hash via `node_hash_with_count`), attack 2 is rejected.
+Because the root's `(None, None)` bounds against any bounded inner range
+classify as `Boundary` (requiring `KVDigestCount`), attack 1 is rejected.
+
+The shape walk is independent of the chain-hash check: even a proof whose
+reconstructed root happens to match the expected root will be rejected if
+its shape diverges from what `classify_subtree` expects.
+
+## Decode safety
+
+`QueryItem::AggregateCountOnRange(Box<QueryItem>)` is the only recursive
+variant in the enum. To prevent a small malicious payload of repeated
+variant-10 bytes from exhausting the stack inside the bincode or serde
+decoder before any validation runs:
+
+- The bincode `Decode` / `BorrowDecode` impls dispatch through internal
+  `decode_with_depth` helpers with `MAX_QUERY_ITEM_DECODE_DEPTH = 4` (the
+  only legal nesting is one wrap, plus headroom). Exceeding the limit
+  errors with `"QueryItem nesting depth exceeded maximum during
+  deserialization"`.
+- The serde `Deserialize` impl deserializes the inner item via a
+  `NonAggregateInner` newtype wrapper whose `Field` enum **omits**
+  `AggregateCountOnRange`, so a nested-aggregate payload is rejected by
+  serde's enum dispatcher immediately, with no recursion through
+  `QueryItem::deserialize`.
+- Defense in depth: an inner `AggregateCountOnRange` is also rejected on
+  decode (in addition to being rejected by
+  `Query::validate_aggregate_count_on_range`).
+
 ## Cost Model
 
 `AggregateCountOnRange` queries are designed to be cheap and predictable:
@@ -537,23 +598,25 @@ use grovedb::{Element, GroveDb, PathQuery, Query, SizedQuery};
 use grovedb_query::QueryItem;
 
 // "How many votes have keys between block 1_000 and 2_000 (exclusive)?"
-let mut q = Query::new();
-q.insert_item(QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
-    1_000u64.to_be_bytes().to_vec()..2_000u64.to_be_bytes().to_vec(),
-))));
+// Use the helper constructor to skip the boilerplate of building the Query
+// and SizedQuery by hand.
+let path_query = PathQuery::new_aggregate_count_on_range(
+    vec![b"votes".to_vec()],
+    QueryItem::Range(1_000u64.to_be_bytes().to_vec()..2_000u64.to_be_bytes().to_vec()),
+);
 
-let path_query = PathQuery::new_unsized(vec![b"votes".to_vec()], q);
-let (proof_bytes, _root_hash) = db.prove_query(&path_query, None, grove_version)
+let proof_bytes = db
+    .prove_query(&path_query, None, grove_version)
     .unwrap()
     .expect("prove failed");
 
-// Verifier side — only needs proof_bytes + the trusted root hash.
-let (root, result) = GroveDb::verify_aggregate_count_query(
+// Verifier side — only needs the proof bytes + the trusted root hash.
+let (root, count) = GroveDb::verify_aggregate_count_query(
     &proof_bytes, &path_query, grove_version,
 ).expect("verify failed");
 
 assert_eq!(root, expected_root_hash);
-println!("votes in [1000, 2000): {}", result.count);
+println!("votes in [1000, 2000): {}", count);
 ```
 
 ## Comparison Table
@@ -568,22 +631,26 @@ println!("votes in [1000, 2000): {}", result.count);
 | Required tree type               | Any                          | `SumTree`, `BigSumTree`, ...     | Provable count trees only             |
 | Proof size relative to result    | O(result)                    | O(matched items)                 | **O(log n)** regardless of count      |
 
-## Open Design Questions
+## Settled design choices
 
-These are intentionally noted for review before implementation lands:
+These were called out as open questions during design and have been
+locked in by the shipped implementation:
 
-1. **Multiple `AggregateCountOnRange` items per query.** The current design forbids
-   `items: [AggregateCountOnRange(A), AggregateCountOnRange(B)]` because the result type
-   would need to grow to a `Vec<u64>`. A future revision could lift this
-   restriction by introducing a parallel result type, but the v1 design keeps
-   the contract simple: one `AggregateCountOnRange` per `Query`, returning one `u64`.
-2. **`add_parent_tree_on_subquery`.** Forbidden under the same logic as other
+1. **One `AggregateCountOnRange` per `Query`.** A multi-count `Query` would
+   need a `Vec<u64>` result, which the current bare-tuple verifier
+   signature deliberately doesn't carry. Validation enforces
+   `items.len() == 1`. A future revision could lift this with a parallel
+   result type without touching the proof shape.
+2. **`add_parent_tree_on_subquery` forbidden.** Same logic as the other
    subquery flags — `AggregateCountOnRange` is leaf-only.
-3. **`SizedQuery` semantics.** Setting `limit` or `offset` at the
-   `SizedQuery` level is rejected. We considered silently ignoring them, but
-   that risks callers writing limit-paginated UIs against an endpoint that
-   does not actually paginate — better to fail loudly.
-4. **Cost-limit interaction.** Because the cost of an aggregate-count query
+3. **`SizedQuery::limit` / `offset` rejected loudly.** Silently ignoring
+   them risks callers writing limit-paginated UIs against an endpoint that
+   does not paginate; rejection makes the misuse impossible.
+4. **`HashWithCount` is self-verifying** (4 fields, not 2). The simpler
+   `HashWithCount(node_hash, count)` form was rejected in review because
+   the count would have been trustlessly attached metadata; the shipped
+   form binds `count` to the parent's hash chain via `node_hash_with_count`.
+5. **Cost-limit interaction.** Because the cost of an aggregate-count query
    is bounded by `O(log n)`, a `cost_limit` should rarely fire. The query
    still respects existing cost-limit machinery for parity with other paths.
 
