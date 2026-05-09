@@ -241,8 +241,12 @@ impl GroveDb {
             }
         }
 
-        match element {
-            Element::Reference(ref reference_path, ..) => {
+        // Dispatch via the underlying element so a NonCounted wrapper takes
+        // the same path as its inner element. The actual `element.insert*`
+        // calls operate on the outer wrapper, which is what we want — the
+        // serialized wrapper bytes go to storage.
+        match element.underlying() {
+            Element::Reference(reference_path, ..) => {
                 let path = path.to_vec(); // TODO: need for support for references in path library
                 let reference_path = cost_return_on_error_into!(
                     &mut cost,
@@ -276,13 +280,13 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Tree(ref value, _)
-            | Element::SumTree(ref value, ..)
-            | Element::BigSumTree(ref value, ..)
-            | Element::CountTree(ref value, ..)
-            | Element::CountSumTree(ref value, ..)
-            | Element::ProvableCountTree(ref value, ..)
-            | Element::ProvableCountSumTree(ref value, ..) => {
+            Element::Tree(value, _)
+            | Element::SumTree(value, ..)
+            | Element::BigSumTree(value, ..)
+            | Element::CountTree(value, ..)
+            | Element::CountSumTree(value, ..)
+            | Element::ProvableCountTree(value, ..)
+            | Element::ProvableCountSumTree(value, ..) => {
                 if value.is_some() {
                     return Err(Error::InvalidCodeExecution(
                         "a tree should be empty at the moment of insertion when not using batches",
@@ -342,6 +346,16 @@ impl GroveDb {
                         grove_version
                     )
                 );
+            }
+            // `underlying()` only unwraps one level; nested NonCounted is
+            // forbidden by the constructor and (de)serializer, but the public
+            // insert path can still receive a hand-built nested wrapper —
+            // return a typed error rather than panic.
+            Element::NonCounted(_) => {
+                return Err(Error::InvalidInput(
+                    "nested NonCounted wrappers are not allowed",
+                ))
+                .wrap_with_cost(cost);
             }
         }
 

@@ -383,4 +383,28 @@ impl Element {
     pub fn new_dense_tree(count: u16, height: u8, flags: Option<ElementFlags>) -> Self {
         Element::DenseAppendOnlyFixedSizeTree(count, height, flags)
     }
+
+    /// Wrap an element in `NonCounted` so it contributes 0 to its parent count
+    /// tree's aggregate count when inserted. Sums (if any) still propagate.
+    ///
+    /// Returns `InvalidInput` if `inner` is itself a `NonCounted`. Wrapping
+    /// is not idempotent at the type level — use `into_non_counted` to wrap
+    /// without that risk.
+    pub fn new_non_counted(inner: Element) -> Result<Self, ElementError> {
+        if matches!(inner, Element::NonCounted(_)) {
+            return Err(ElementError::InvalidInput(
+                "NonCounted cannot wrap another NonCounted",
+            ));
+        }
+        Ok(Element::NonCounted(Box::new(inner)))
+    }
+
+    /// Wrap `self` in `NonCounted`. If `self` is already `NonCounted`, returns
+    /// `self` unchanged (idempotent).
+    pub fn into_non_counted(self) -> Self {
+        match self {
+            Element::NonCounted(_) => self,
+            other => Element::NonCounted(Box::new(other)),
+        }
+    }
 }

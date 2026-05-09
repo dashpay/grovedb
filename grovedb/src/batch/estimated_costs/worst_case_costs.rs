@@ -1118,6 +1118,8 @@ mod tests {
                 count: 0,
                 height: 8,
             },
+
+            non_counted: false,
         };
         let key = KeyInfo::KnownKey(b"new_dense".to_vec());
         let cost = op
@@ -1146,6 +1148,8 @@ mod tests {
                 total_count: 0,
                 chunk_power: 3,
             },
+
+            non_counted: false,
         };
         let key = KeyInfo::KnownKey(b"new_bulk".to_vec());
         let cost = op

@@ -482,7 +482,11 @@ impl GroveDb {
                 let key = &proved_key_value.key;
                 let hash = &proved_key_value.proof;
                 if let Some(value_bytes) = &proved_key_value.value {
-                    let element = Element::deserialize(value_bytes, grove_version)?;
+                    // Look through NonCounted: dispatch on inner element. The
+                    // serialized value bytes used for hashing keep their
+                    // wrapper byte, so cryptographic verification still works.
+                    let element =
+                        Element::deserialize(value_bytes, grove_version)?.into_underlying();
 
                     verified_keys.insert(key.clone());
 
@@ -639,6 +643,7 @@ impl GroveDb {
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
                                 ));
                             }
+                            Element::NonCounted(_) => unreachable!("unwrapped above"),
                         }
                     } else if element.is_any_item()
                         || !internal_query.has_subquery_or_matching_in_path_on_key(key)
@@ -1446,7 +1451,10 @@ impl GroveDb {
                 let key = &proved_key_value.key;
                 let hash = &proved_key_value.proof;
                 if let Some(value_bytes) = &proved_key_value.value {
-                    let element = Element::deserialize(value_bytes, grove_version)?;
+                    // Look through NonCounted: dispatch on inner element. The
+                    // serialized value bytes still hash to the on-disk value.
+                    let element =
+                        Element::deserialize(value_bytes, grove_version)?.into_underlying();
 
                     verified_keys.insert(key.clone());
 
@@ -1598,6 +1606,7 @@ impl GroveDb {
                                     "Proof has lower layer for a non Tree.".to_string(),
                                 ));
                             }
+                            Element::NonCounted(_) => unreachable!("unwrapped above"),
                         }
                     } else if element.is_any_item()
                         || !internal_query.has_subquery_or_matching_in_path_on_key(key)
@@ -2661,9 +2670,11 @@ impl GroveDb {
     }
 
     /// Extract the count from a CountTree, CountSumTree, ProvableCountTree,
-    /// or ProvableCountSumTree element.
+    /// or ProvableCountSumTree element. Looks through `NonCounted` so that a
+    /// trunk proof rooted at a wrapped count tree still extracts the inner
+    /// tree's count.
     fn extract_count_from_element(element: &Element) -> Option<u64> {
-        match element {
+        match element.underlying() {
             Element::CountTree(_, count, _)
             | Element::CountSumTree(_, count, ..)
             | Element::ProvableCountTree(_, count, _)

@@ -160,7 +160,7 @@ impl GroveDb {
                     .is_empty()
                     .then(Vec::new)
                     .into_iter()
-                    .chain(nested_chunk_ids.into_iter())
+                    .chain(nested_chunk_ids)
                 {
                     let (chunk, _) =
                         chunk_producer

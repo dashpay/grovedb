@@ -772,7 +772,10 @@ impl ElementAggregateSumQueryExtensions for Element {
 
         let element = element.convert_if_reference_to_absolute_reference(path, key)?;
 
-        let value = match element {
+        // Look through `NonCounted`: a wrapped sum item is exactly the kind
+        // of element this aggregator should accept (suppress the count
+        // contribution while still totaling the sum).
+        let value = match element.into_underlying() {
             Element::SumItem(value, _) => value,
             Element::ItemWithSumItem(_, value, _) => value,
             _ => return Err(Error::InvalidInput("Only sum items are allowed")),

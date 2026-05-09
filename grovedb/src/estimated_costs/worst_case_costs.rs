@@ -186,7 +186,9 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
-        match value {
+        // Look through `NonCounted` for cost dispatch.
+        let wrapper_overhead = if value.is_non_counted() { 1u32 } else { 0 };
+        match value.underlying() {
             Element::Tree(_, flags)
             | Element::SumTree(_, _, flags)
             | Element::BigSumTree(_, _, flags)
@@ -196,7 +198,7 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 let tree_cost_size = value.tree_type().unwrap().cost_size();
-                let value_len = tree_cost_size + flags_len;
+                let value_len = tree_cost_size + flags_len + wrapper_overhead;
                 add_cost_case_merk_insert_layered(
                     &mut cost,
                     key_len,
@@ -241,7 +243,9 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
-        match value {
+        // Look through `NonCounted` for cost dispatch.
+        let wrapper_overhead = if value.is_non_counted() { 1u32 } else { 0 };
+        match value.underlying() {
             Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -252,7 +256,7 @@ impl GroveDb {
                 } else {
                     TREE_COST_SIZE
                 };
-                let value_len = tree_cost_size + flags_len;
+                let value_len = tree_cost_size + flags_len + wrapper_overhead;
                 add_cost_case_merk_replace_layered(
                     &mut cost,
                     key_len,

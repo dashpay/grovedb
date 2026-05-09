@@ -87,33 +87,42 @@ impl GroveDb {
         let results_wrapped = elements
             .into_iterator()
             .map(|result_item| match result_item {
-                QueryResultElement::ElementResultItem(Element::Reference(reference_path, ..)) => {
-                    match reference_path {
-                        ReferencePathType::AbsolutePathReference(absolute_path) => {
-                            // While `map` on iterator is lazy, we should accumulate costs even if
-                            // `collect` will end in `Err`, so we'll use
-                            // external costs accumulator instead of
-                            // returning costs from `map` call.
-                            let maybe_item = self
-                                .follow_reference(
-                                    absolute_path.as_slice().into(),
-                                    allow_cache,
-                                    transaction,
-                                    grove_version,
-                                )
-                                .unwrap_add_cost(&mut cost)?;
+                QueryResultElement::ElementResultItem(element) => {
+                    // Look through `NonCounted` so a wrapped reference still
+                    // resolves; the wrapper is transparent at the query
+                    // layer.
+                    match element.into_underlying() {
+                        Element::Reference(reference_path, ..) => match reference_path {
+                            ReferencePathType::AbsolutePathReference(absolute_path) => {
+                                // While `map` on iterator is lazy, we should accumulate costs
+                                // even if `collect` will end in `Err`, so we'll use
+                                // external costs accumulator instead of
+                                // returning costs from `map` call.
+                                let maybe_item = self
+                                    .follow_reference(
+                                        absolute_path.as_slice().into(),
+                                        allow_cache,
+                                        transaction,
+                                        grove_version,
+                                    )
+                                    .unwrap_add_cost(&mut cost)?;
 
-                            match maybe_item {
-                                Element::Item(item, _) => Ok(item),
-                                Element::ItemWithSumItem(item, ..) => Ok(item),
-                                Element::SumItem(value, _) => Ok(value.encode_var_vec()),
-                                _ => {
-                                    Err(Error::InvalidQuery("the reference must result in an item"))
+                                // Same treatment for the resolved value.
+                                match maybe_item.into_underlying() {
+                                    Element::Item(item, _) => Ok(item),
+                                    Element::ItemWithSumItem(item, ..) => Ok(item),
+                                    Element::SumItem(value, _) => Ok(value.encode_var_vec()),
+                                    _ => Err(Error::InvalidQuery(
+                                        "the reference must result in an item",
+                                    )),
                                 }
                             }
-                        }
-                        _ => Err(Error::CorruptedCodeExecution(
-                            "reference after query must have absolute paths",
+                            _ => Err(Error::CorruptedCodeExecution(
+                                "reference after query must have absolute paths",
+                            )),
+                        },
+                        _ => Err(Error::InvalidQuery(
+                            "path_queries can only refer to references",
                         )),
                     }
                 }
@@ -209,6 +218,10 @@ where {
                 .query
                 .follow_element
         );
+        // Look through NonCounted: a NonCounted-wrapped reference still
+        // resolves; a NonCounted item still returns itself. The wrapper's
+        // sole effect is on parent count aggregation.
+        let element = element.into_underlying();
         match element {
             Element::Reference(reference_path, ..) => {
                 match reference_path {
@@ -218,6 +231,9 @@ where {
                         // end in `Err`, so we'll use
                         // external costs accumulator instead of
                         // returning costs from `map` call.
+                        // Normalize the resolved value too, so a Reference
+                        // pointing at NonCounted(Item) returns the same shape
+                        // as a directly-queried NonCounted(Item).
                         let maybe_item = self
                             .follow_reference(
                                 absolute_path.as_slice().into(),
@@ -225,7 +241,8 @@ where {
                                 transaction,
                                 grove_version,
                             )
-                            .unwrap_add_cost(cost)?;
+                            .unwrap_add_cost(cost)?
+                            .into_underlying();
 
                         if maybe_item.is_any_item() {
                             Ok(maybe_item)
@@ -254,6 +271,7 @@ where {
             | Element::DenseAppendOnlyFixedSizeTree(..) => {
                 Err(Error::InvalidQuery("path_queries can not refer to trees"))
             }
+            Element::NonCounted(_) => unreachable!("unwrapped above"),
         }
     }
 
@@ -338,6 +356,8 @@ where {
             .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
+                    // NonCounted is transparent at this layer.
+                    let element = element.into_underlying();
                     match element {
                         Element::Reference(reference_path, ..) => {
                             match reference_path {
@@ -356,7 +376,7 @@ where {
                                         )
                                         .unwrap_add_cost(&mut cost)?;
 
-                                    match maybe_item {
+                                    match maybe_item.into_underlying() {
                                         Element::Item(item, _)
                                         | Element::ItemWithSumItem(item, ..) => Ok(item),
                                         Element::SumItem(item, _) => Ok(item.encode_var_vec()),
@@ -385,6 +405,7 @@ where {
                         | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
+                        Element::NonCounted(_) => unreachable!("unwrapped above"),
                     }
                 }
                 _ => Err(Error::CorruptedCodeExecution(
@@ -435,6 +456,8 @@ where {
             .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
+                    // NonCounted is transparent at this layer.
+                    let element = element.into_underlying();
                     match element {
                         Element::Reference(reference_path, ..) => {
                             match reference_path {
@@ -453,7 +476,7 @@ where {
                                         )
                                         .unwrap_add_cost(&mut cost)?;
 
-                                    match maybe_item {
+                                    match maybe_item.into_underlying() {
                                         Element::Item(item, _) => {
                                             Ok(QueryItemOrSumReturnType::ItemData(item))
                                         }
@@ -535,6 +558,7 @@ where {
                             "path_queries can only refer to items, sum items, references and sum \
                              trees",
                         )),
+                        Element::NonCounted(_) => unreachable!("unwrapped above"),
                     }
                 }
                 _ => Err(Error::CorruptedCodeExecution(
@@ -665,6 +689,8 @@ where {
             .into_iterator()
             .map(|result_item| match result_item {
                 QueryResultElement::ElementResultItem(element) => {
+                    // NonCounted is transparent at this layer.
+                    let element = element.into_underlying();
                     match element {
                         Element::Reference(reference_path, ..) => {
                             match reference_path {
@@ -683,7 +709,8 @@ where {
                                         )
                                         .unwrap_add_cost(&mut cost)?;
 
-                                    if let Element::SumItem(item, _) = maybe_item {
+                                    if let Element::SumItem(item, _) = maybe_item.into_underlying()
+                                    {
                                         Ok(item)
                                     } else {
                                         Err(Error::InvalidQuery(
@@ -714,6 +741,7 @@ where {
                             "path_queries over sum items can only refer to sum items and \
                              references",
                         )),
+                        Element::NonCounted(_) => unreachable!("unwrapped above"),
                     }
                 }
                 _ => Err(Error::CorruptedCodeExecution(

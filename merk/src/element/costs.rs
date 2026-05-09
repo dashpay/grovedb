@@ -51,7 +51,8 @@ pub trait ElementCostPrivateExtensions {
 }
 
 impl ElementCostPrivateExtensions for Element {
-    /// Get tree cost for the element
+    /// Get tree cost for the element. For `NonCounted`, delegates to the
+    /// inner element and adds 1 byte for the wrapper discriminant.
     fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         check_grovedb_v0!(
             "get_specialized_cost",
@@ -70,6 +71,7 @@ impl ElementCostPrivateExtensions for Element {
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::ProvableCountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
+            Element::NonCounted(inner) => Ok(inner.get_specialized_cost(grove_version)? + 1),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
@@ -94,13 +96,23 @@ impl ElementCostExtensions for Element {
         );
         // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value, grove_version)?;
+        // Look through NonCounted: the wrapper has no per-variant cost
+        // semantics — the cost is determined by the inner element's type.
+        // For the catch-all (Item / Reference) path, value.len() already
+        // includes the wrapper byte. For tree- and sum-item paths that use
+        // cost-size constants, we add 1 byte of `wrapper_overhead` to keep
+        // the on-disk byte count exact.
+        let (element, wrapper_overhead) = match element {
+            Element::NonCounted(inner) => (*inner, 1u32),
+            other => (other, 0u32),
+        };
         let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = TREE_COST_SIZE + flags_len;
+                let value_len = TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -111,7 +123,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = SUM_TREE_COST_SIZE + flags_len;
+                let value_len = SUM_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -122,7 +134,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = BIG_SUM_TREE_COST_SIZE + flags_len;
+                let value_len = BIG_SUM_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -133,7 +145,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = COUNT_TREE_COST_SIZE + flags_len;
+                let value_len = COUNT_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -144,7 +156,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = COUNT_SUM_TREE_COST_SIZE + flags_len;
+                let value_len = COUNT_SUM_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -155,7 +167,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = COUNT_TREE_COST_SIZE + flags_len;
+                let value_len = COUNT_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -166,7 +178,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = COUNT_SUM_TREE_COST_SIZE + flags_len;
+                let value_len = COUNT_SUM_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -177,7 +189,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = COMMITMENT_TREE_COST_SIZE + flags_len;
+                let value_len = COMMITMENT_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -188,7 +200,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = MMR_TREE_COST_SIZE + flags_len;
+                let value_len = MMR_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -199,7 +211,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = BULK_APPEND_TREE_COST_SIZE + flags_len;
+                let value_len = BULK_APPEND_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -210,7 +222,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = DENSE_TREE_COST_SIZE + flags_len;
+                let value_len = DENSE_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
@@ -221,7 +233,7 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = SUM_ITEM_COST_SIZE + flags_len;
+                let value_len = SUM_ITEM_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::node_value_byte_cost_size(key_len, value_len, node_type)
             }
@@ -234,17 +246,22 @@ impl ElementCostExtensions for Element {
                 let value_len = item_value_len
                     + item_value_len.required_space() as u32
                     + SUM_ITEM_COST_SIZE
-                    + flags_len;
+                    + flags_len
+                    + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::node_value_byte_cost_size(key_len, value_len, node_type)
             }
+            // Item / Reference / NonCounted-of-NonCounted (impossible by
+            // construction): catch-all uses raw value.len() which already
+            // includes any wrapper byte present.
             _ => KV::node_value_byte_cost_size(key.len() as u32, value.len() as u32, node_type),
         };
         Ok(cost)
     }
 
     /// Get the value defined cost for a serialized value item with sum item or
-    /// sum item
+    /// sum item. Looks through `NonCounted` (the +1 wrapper-byte cost is
+    /// already folded in by `get_specialized_cost`).
     fn specialized_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
         let value_cost = self.get_specialized_cost(grove_version).ok()?;
 
@@ -253,7 +270,7 @@ impl ElementCostExtensions for Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        match self {
+        match self.underlying() {
             Element::SumItem(..) => Some(cost),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
@@ -263,7 +280,8 @@ impl ElementCostExtensions for Element {
         }
     }
 
-    /// Get the value defined cost for a serialized value item with a tree
+    /// Get the value defined cost for a serialized value item with a tree.
+    /// Looks through `NonCounted`.
     fn layered_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
         let value_cost = self.get_specialized_cost(grove_version).ok()?;
 
@@ -272,7 +290,7 @@ impl ElementCostExtensions for Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        match self {
+        match self.underlying() {
             Element::Tree(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
@@ -288,7 +306,8 @@ impl ElementCostExtensions for Element {
         }
     }
 
-    /// Get the value defined cost for a serialized value
+    /// Get the value defined cost for a serialized value. Looks through
+    /// `NonCounted`.
     fn value_defined_cost(&self, grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
         let value_cost = self.get_specialized_cost(grove_version).ok()?;
 
@@ -297,7 +316,7 @@ impl ElementCostExtensions for Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        match self {
+        match self.underlying() {
             Element::Tree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)

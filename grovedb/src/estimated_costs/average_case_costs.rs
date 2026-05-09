@@ -326,7 +326,11 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
-        match value {
+        // Look through `NonCounted` for cost dispatch (the wrapper byte is
+        // accounted for via `wrapper_overhead` parallel to
+        // `merk/src/element/costs.rs`).
+        let wrapper_overhead = if value.is_non_counted() { 1u32 } else { 0 };
+        match value.underlying() {
             Element::Tree(_, flags)
             | Element::SumTree(_, _, flags)
             | Element::BigSumTree(_, _, flags)
@@ -336,7 +340,7 @@ impl GroveDb {
                     flags_len + flags_len.required_space() as u32
                 });
                 let tree_cost_size = value.tree_type().unwrap().cost_size();
-                let value_len = tree_cost_size + flags_len;
+                let value_len = tree_cost_size + flags_len + wrapper_overhead;
                 add_cost_case_merk_replace_layered(&mut cost, key_len, value_len, in_tree_type)
             }
             Element::Item(_, flags) | Element::SumItem(_, flags) => {
@@ -351,7 +355,7 @@ impl GroveDb {
                     cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
                         as u32
                 };
-                let value_len = sum_item_cost_size + flags_len;
+                let value_len = sum_item_cost_size + flags_len + wrapper_overhead;
                 add_cost_case_merk_replace_same_size(&mut cost, key_len, value_len, in_tree_type)
             }
             _ => add_cost_case_merk_replace_same_size(
