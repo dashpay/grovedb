@@ -109,7 +109,7 @@ fn encode_decode_push_inverted_kvdigestcount() {
 
 #[test]
 fn encode_into_function_encodes_multiple_ops() {
-    let ops = vec![Op::Parent, Op::Child, Op::ParentInverted, Op::ChildInverted];
+    let ops = [Op::Parent, Op::Child, Op::ParentInverted, Op::ChildInverted];
     let mut output = vec![];
     encode_into(ops.iter(), &mut output);
     assert_eq!(output, vec![0x10, 0x11, 0x12, 0x13]);
