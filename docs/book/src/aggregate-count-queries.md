@@ -631,27 +631,4 @@ println!("votes in [1000, 2000): {}", count);
 | Required tree type               | Any                          | `SumTree`, `BigSumTree`, ...     | Provable count trees only             |
 | Proof size relative to result    | O(result)                    | O(matched items)                 | **O(log n)** regardless of count      |
 
-## Settled design choices
-
-These were called out as open questions during design and have been
-locked in by the shipped implementation:
-
-1. **One `AggregateCountOnRange` per `Query`.** A multi-count `Query` would
-   need a `Vec<u64>` result, which the current bare-tuple verifier
-   signature deliberately doesn't carry. Validation enforces
-   `items.len() == 1`. A future revision could lift this with a parallel
-   result type without touching the proof shape.
-2. **`add_parent_tree_on_subquery` forbidden.** Same logic as the other
-   subquery flags — `AggregateCountOnRange` is leaf-only.
-3. **`SizedQuery::limit` / `offset` rejected loudly.** Silently ignoring
-   them risks callers writing limit-paginated UIs against an endpoint that
-   does not paginate; rejection makes the misuse impossible.
-4. **`HashWithCount` is self-verifying** (4 fields, not 2). The simpler
-   `HashWithCount(node_hash, count)` form was rejected in review because
-   the count would have been trustlessly attached metadata; the shipped
-   form binds `count` to the parent's hash chain via `node_hash_with_count`.
-5. **Cost-limit interaction.** Because the cost of an aggregate-count query
-   is bounded by `O(log n)`, a `cost_limit` should rarely fire. The query
-   still respects existing cost-limit machinery for parity with other paths.
-
 ---
