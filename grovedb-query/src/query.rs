@@ -321,18 +321,22 @@ impl Query {
         }
     }
 
-    /// If this query contains an `AggregateCountOnRange` item, returns a
-    /// reference to it (whether the surrounding query is well-formed or not).
-    /// Returns `None` for any other shape.
+    /// If this query contains an `AggregateCountOnRange` item *anywhere* in
+    /// its `items` vec, returns a reference to the first such item (whether
+    /// the surrounding query is well-formed or not). Returns `None` only
+    /// when no item is an `AggregateCountOnRange`.
     ///
-    /// Use [`validate_aggregate_count_on_range`] when you also want to enforce
-    /// the well-formedness rules.
+    /// This is intentionally a **detection-only** helper: malformed queries
+    /// like `items: [Key(...), AggregateCountOnRange(...)]` still report
+    /// `Some(...)` here so callers don't accidentally route them through
+    /// the regular-query path. Use
+    /// [`Self::validate_aggregate_count_on_range`] when you also need to
+    /// enforce the well-formedness rules (single item, allowed inner kind,
+    /// no subqueries, etc.).
     pub fn aggregate_count_on_range(&self) -> Option<&QueryItem> {
-        if self.items.len() == 1 && self.items[0].is_aggregate_count_on_range() {
-            Some(&self.items[0])
-        } else {
-            None
-        }
+        self.items
+            .iter()
+            .find(|item| item.is_aggregate_count_on_range())
     }
 
     /// Validates the Query-level constraints that apply when an
@@ -1171,17 +1175,35 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_count_on_range_helper_returns_some_only_for_well_shaped() {
+    fn aggregate_count_on_range_helper_detects_acor_anywhere_in_items() {
+        // Well-formed shape — single ACOR item.
         let q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
         assert!(q.aggregate_count_on_range().is_some());
 
-        // Two items → not the well-shaped form.
+        // Two items including ACOR → still detected, so the routing layer
+        // can hand the malformed query to validate_aggregate_count_on_range
+        // for a precise error rather than silently treating it as a regular
+        // query.
         let mut q2 = q.clone();
         q2.items.push(QueryItem::Key(b"x".to_vec()));
-        assert!(q2.aggregate_count_on_range().is_none());
+        assert!(
+            q2.aggregate_count_on_range().is_some(),
+            "ACOR + extra item must still be detected as ACOR-bearing"
+        );
 
-        // Single non-ACOR item → also None.
-        let q3 = Query::new_single_query_item(QueryItem::Key(b"x".to_vec()));
-        assert!(q3.aggregate_count_on_range().is_none());
+        // ACOR not at index 0 — also detected.
+        let mut q3 = Query::new_single_query_item(QueryItem::Key(b"x".to_vec()));
+        q3.items.push(QueryItem::AggregateCountOnRange(Box::new(
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        )));
+        assert!(q3.aggregate_count_on_range().is_some());
+
+        // No ACOR anywhere → None.
+        let q4 = Query::new_single_query_item(QueryItem::Key(b"x".to_vec()));
+        assert!(q4.aggregate_count_on_range().is_none());
+
+        // Empty items → None.
+        let q5 = Query::new();
+        assert!(q5.aggregate_count_on_range().is_none());
     }
 }

@@ -1155,4 +1155,59 @@ mod tests {
             "attaching children under HashWithCount must be rejected (root hash alone wouldn't catch it)"
         );
     }
+
+    /// `HashWithCount` is only safe inside the dedicated aggregate-count
+    /// verifier (which shape-checks the collapsed subtree). The plain
+    /// `Query::execute_proof` verifier must reject it on sight — otherwise
+    /// a malicious prover could include `HashWithCount` in a regular
+    /// query proof, attach fake KV children to it (whose pushes the
+    /// verifier would credit as query results via `execute_node`), and
+    /// have the parent's hash chain still verify because
+    /// `Tree::hash()` for `HashWithCount` ignores attached children.
+    #[test]
+    fn regular_query_verifier_rejects_hash_with_count_node() {
+        use crate::proofs::query::QueryProofVerify;
+        let v = GroveVersion::latest();
+
+        // Build a regular merk and a regular range query against it.
+        let mut merk = TempMerk::new(v);
+        for i in 0u8..5 {
+            merk.apply::<_, Vec<_>>(
+                &[(
+                    vec![i],
+                    Op::Put(vec![i], crate::TreeFeatureType::BasicMerkNode),
+                )],
+                &[],
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("apply");
+        }
+        merk.commit(v);
+        let q = crate::proofs::query::Query::new_single_query_item(QueryItem::Range(
+            vec![0u8]..vec![5u8],
+        ));
+
+        // Generate an honest proof, then splice a `HashWithCount` push into
+        // it. The exact op sequence doesn't matter for what we're testing —
+        // we just need the regular verifier to refuse to process the proof
+        // because it contains a `HashWithCount`.
+        let (mut ops, _) = merk
+            .prove_unchecked_query_items(&[QueryItem::Range(vec![0u8]..vec![5u8])], None, true, v)
+            .unwrap()
+            .expect("prove");
+        ops.push_front(ProofOp::Push(Node::HashWithCount(
+            [0u8; 32], [0u8; 32], [0u8; 32], 0,
+        )));
+        let bytes = encode_proof(&ops);
+
+        let result = q.execute_proof(&bytes, None, true, 0).unwrap();
+        let err = result.expect_err("regular query verifier must reject HashWithCount on sight");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("HashWithCount") || msg.contains("aggregate-count"),
+            "expected HashWithCount-rejection message, got: {msg}"
+        );
+    }
 }
