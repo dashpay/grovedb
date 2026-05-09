@@ -68,7 +68,50 @@ impl ElementReconstructExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(c, h, f) => {
                 Some(Element::DenseAppendOnlyFixedSizeTree(*c, *h, f.clone()))
             }
+            // Recurse on the inner element and re-wrap. Without this, a
+            // batch that mutates a subtree under a wrapped tree would lose
+            // the NonCounted wrapper on the parent's stored element when
+            // its root key gets propagated upward.
+            Element::NonCounted(inner) => inner
+                .reconstruct_with_root_key(maybe_root_key, aggregate_data)
+                .map(|reconstructed| Element::NonCounted(Box::new(reconstructed))),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use grovedb_element::Element;
+
+    use super::ElementReconstructExtensions;
+    use crate::tree::AggregateData;
+
+    #[test]
+    fn reconstruct_preserves_non_counted_wrapper() {
+        // A NonCounted-wrapped tree must come back wrapped after a root-key
+        // propagation, otherwise update_tree_item_preserve_flag on a
+        // subtree mutation would silently strip the wrapper from the
+        // on-disk parent element.
+        let inner = Element::new_count_tree_with_flags_and_count_value(None, 7, None);
+        let wrapped = Element::new_non_counted(inner).expect("wrap ok");
+        let new_root = Some(b"new_root".to_vec());
+        let reconstructed = wrapped
+            .reconstruct_with_root_key(new_root.clone(), AggregateData::Count(7))
+            .expect("reconstruct ok");
+        // Outer is still NonCounted.
+        assert!(matches!(reconstructed, Element::NonCounted(_)));
+        // Inner is the same kind of tree with the new root key.
+        if let Element::NonCounted(boxed) = reconstructed {
+            assert!(matches!(*boxed, Element::CountTree(ref k, 7, _) if k == &new_root));
+        }
+    }
+
+    #[test]
+    fn reconstruct_returns_none_for_non_tree() {
+        let item = Element::new_item(b"x".to_vec());
+        assert!(item
+            .reconstruct_with_root_key(None, AggregateData::NoAggregateData)
+            .is_none());
     }
 }

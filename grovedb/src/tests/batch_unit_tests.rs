@@ -93,6 +93,8 @@ mod tests {
                 root_key: None,
                 flags: None,
                 aggregate_data: AggregateData::NoAggregateData,
+
+                non_counted: false,
             },
             GroveOp::ReplaceTreeRootKey {
                 // 4
@@ -150,6 +152,8 @@ mod tests {
                 flags: None,
                 aggregate_data: AggregateData::NoAggregateData,
                 meta: meta_commitment,
+
+                non_counted: false,
             },
         ];
 
@@ -467,6 +471,8 @@ mod tests {
                 root_key: None,
                 flags: None,
                 aggregate_data: AggregateData::NoAggregateData,
+
+                non_counted: false,
             },
         };
         let dbg = format!("{:?}", internal_op2);
@@ -496,6 +502,8 @@ mod tests {
                 flags: None,
                 aggregate_data: AggregateData::NoAggregateData,
                 meta: meta2,
+
+                non_counted: false,
             },
         };
         let dbg = format!("{:?}", internal_op4);

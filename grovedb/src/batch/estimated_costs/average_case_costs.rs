@@ -1483,6 +1483,8 @@ mod tests {
             flags: None,
             aggregate_data: AggregateData::NoAggregateData,
             meta: NonMerkTreeMeta::MmrTree { mmr_size: 50 },
+
+            non_counted: false,
         };
         let key = KeyInfo::KnownKey(b"inmerk_key".to_vec());
         let layer_info = EstimatedLayerInformation {

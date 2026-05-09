@@ -4,7 +4,9 @@
 use bincode::config;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
-use crate::{element::Element, error::ElementError};
+use crate::{
+    element::Element, element_type::NON_COUNTED_WRAPPER_DISCRIMINANT, error::ElementError,
+};
 
 impl Element {
     /// Serializes self. Returns vector of u8s.
@@ -41,20 +43,42 @@ impl Element {
 
     /// Deserializes given bytes and sets as self.
     ///
-    /// Rejects `NonCounted(NonCounted(_))` to close a recursion / stack
-    /// overflow vector — bincode itself imposes some recursion limits, but
-    /// explicit rejection here is cheaper and more obvious.
+    /// Pre-checks the leading bytes for a nested `NonCounted` wrapper and
+    /// rejects before invoking bincode. This closes a stack-exhaustion
+    /// vector: a hostile payload of repeated `NON_COUNTED_WRAPPER_DISCRIMINANT`
+    /// bytes would otherwise cause bincode to recursively decode the
+    /// `Box<Element>` chain (and overflow the stack) before any post-decode
+    /// check could fire. The pre-check is O(1) — only the first two bytes
+    /// matter.
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
         check_grovedb_v0!(
             "Element::deserialize",
             grove_version.grovedb_versions.element.deserialize
         );
+        // Pre-check: if the wire starts with the wrapper discriminant, the
+        // very next byte must NOT be the wrapper discriminant again. This
+        // bounds the recursion bincode will attempt.
+        if matches!(
+            bytes,
+            [
+                NON_COUNTED_WRAPPER_DISCRIMINANT,
+                NON_COUNTED_WRAPPER_DISCRIMINANT,
+                ..
+            ]
+        ) {
+            return Err(ElementError::CorruptedData(
+                "deserialized NonCounted wrapping another NonCounted".to_string(),
+            ));
+        }
         let config = config::standard().with_big_endian().with_no_limit();
         let elem: Element = bincode::decode_from_slice(bytes, config)
             .map_err(|e| {
                 ElementError::CorruptedData(format!("unable to deserialize element {}", e))
             })?
             .0;
+        // Defensive belt-and-braces post-check (guards against future
+        // bincode/discriminant changes that could let a nested wrapper
+        // sneak past the pre-check).
         if let Element::NonCounted(inner) = &elem
             && matches!(**inner, Element::NonCounted(_))
         {

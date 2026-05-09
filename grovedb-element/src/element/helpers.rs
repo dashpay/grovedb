@@ -601,6 +601,28 @@ mod non_counted_tests {
         assert!(Element::deserialize(&bytes, grove_version).is_err());
     }
 
+    /// The pre-check before bincode decode is the actual stack-overflow
+    /// guard: a long chain of wrapper bytes is rejected without bincode
+    /// recursing through them. This synthesizes the malicious payload
+    /// directly (no construction goes through `serialize`).
+    #[test]
+    fn deserialize_rejects_long_nested_wrapper_chain_without_recursion() {
+        let grove_version = GroveVersion::latest();
+        // 1024 wrapper bytes followed by a base item. With the post-check
+        // alone, bincode would recurse through all 1024 Box<Element>
+        // wrappers before our check fires — pre-check stops it on byte 1.
+        let mut bytes = vec![15u8; 1024];
+        bytes.extend_from_slice(&[0, 0, 0]); // Item with empty value, no flags
+        let err = Element::deserialize(&bytes, grove_version)
+            .expect_err("nested wrapper bytes must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("NonCounted") || msg.contains("non_counted"),
+            "error should mention nested NonCounted: {}",
+            msg
+        );
+    }
+
     #[test]
     fn serialize_rejects_nested_non_counted() {
         let inner = Element::NonCounted(Box::new(Element::Item(b"x".to_vec(), None)));

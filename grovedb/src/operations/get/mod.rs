@@ -70,6 +70,8 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
 
+        // Look through `NonCounted` so a wrapped reference still resolves.
+        // The wrapper is transparent at the get/query layer.
         match cost_return_on_error!(
             &mut cost,
             self.get_raw_caching_optional(
@@ -79,7 +81,9 @@ impl GroveDb {
                 transaction,
                 grove_version
             )
-        ) {
+        )
+        .into_underlying()
+        {
             Element::Reference(reference_path, ..) => {
                 let path_owned = cost_return_on_error_into!(
                     &mut cost,
@@ -156,7 +160,9 @@ impl GroveDb {
                 return Err(Error::CorruptedPath("empty path".to_string())).wrap_with_cost(cost);
             }
             visited.insert(current_path.clone());
-            match current_element {
+            // Look through `NonCounted` so a chain that hops via a wrapped
+            // reference is followed instead of being returned as a value.
+            match current_element.into_underlying() {
                 Element::Reference(reference_path, ..) => {
                     current_path = cost_return_on_error_into!(
                         &mut cost,
