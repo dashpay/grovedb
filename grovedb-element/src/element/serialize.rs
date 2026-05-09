@@ -8,11 +8,22 @@ use crate::{element::Element, error::ElementError};
 
 impl Element {
     /// Serializes self. Returns vector of u8s.
+    ///
+    /// Rejects `NonCounted(NonCounted(_))` — the wrapper is not allowed to
+    /// nest. Constructed via `Element::new_non_counted` this is impossible,
+    /// but a caller could build it directly.
     pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, ElementError> {
         check_grovedb_v0!(
             "Element::serialize",
             grove_version.grovedb_versions.element.serialize
         );
+        if let Element::NonCounted(inner) = self
+            && matches!(**inner, Element::NonCounted(_))
+        {
+            return Err(ElementError::CorruptedData(
+                "NonCounted cannot wrap another NonCounted".to_string(),
+            ));
+        }
         let config = config::standard().with_big_endian().with_no_limit();
         bincode::encode_to_vec(self, config)
             .map_err(|e| ElementError::CorruptedData(format!("unable to serialize element {}", e)))
@@ -28,18 +39,30 @@ impl Element {
             .map(|serialized| serialized.len())
     }
 
-    /// Deserializes given bytes and sets as self
+    /// Deserializes given bytes and sets as self.
+    ///
+    /// Rejects `NonCounted(NonCounted(_))` to close a recursion / stack
+    /// overflow vector — bincode itself imposes some recursion limits, but
+    /// explicit rejection here is cheaper and more obvious.
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
         check_grovedb_v0!(
             "Element::deserialize",
             grove_version.grovedb_versions.element.deserialize
         );
         let config = config::standard().with_big_endian().with_no_limit();
-        Ok(bincode::decode_from_slice(bytes, config)
+        let elem: Element = bincode::decode_from_slice(bytes, config)
             .map_err(|e| {
                 ElementError::CorruptedData(format!("unable to deserialize element {}", e))
             })?
-            .0)
+            .0;
+        if let Element::NonCounted(inner) = &elem
+            && matches!(**inner, Element::NonCounted(_))
+        {
+            return Err(ElementError::CorruptedData(
+                "deserialized NonCounted wrapping another NonCounted".to_string(),
+            ));
+        }
+        Ok(elem)
     }
 }
 

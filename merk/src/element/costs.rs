@@ -51,7 +51,8 @@ pub trait ElementCostPrivateExtensions {
 }
 
 impl ElementCostPrivateExtensions for Element {
-    /// Get tree cost for the element
+    /// Get tree cost for the element. For `NonCounted`, delegates to the
+    /// inner element and adds 1 byte for the wrapper discriminant.
     fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         check_grovedb_v0!(
             "get_specialized_cost",
@@ -70,6 +71,7 @@ impl ElementCostPrivateExtensions for Element {
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::ProvableCountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
+            Element::NonCounted(inner) => Ok(inner.get_specialized_cost(grove_version)? + 1),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
@@ -94,6 +96,12 @@ impl ElementCostExtensions for Element {
         );
         // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value, grove_version)?;
+        // Look through NonCounted: the wrapper itself has no per-variant cost
+        // semantics — the cost is determined by the inner element's type. The
+        // +1 byte for the wrapper discriminant is reflected in the catch-all
+        // (Item) path via value.len(); for the tree/sum-item paths that use
+        // cost-size constants, it is a 1-byte under-count we accept.
+        let element = element.into_underlying();
         let cost = match element {
             Element::Tree(_, flags) => {
                 let flags_len = flags.map_or(0, |flags| {
@@ -244,7 +252,8 @@ impl ElementCostExtensions for Element {
     }
 
     /// Get the value defined cost for a serialized value item with sum item or
-    /// sum item
+    /// sum item. Looks through `NonCounted` (the +1 wrapper-byte cost is
+    /// already folded in by `get_specialized_cost`).
     fn specialized_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
         let value_cost = self.get_specialized_cost(grove_version).ok()?;
 
@@ -253,7 +262,7 @@ impl ElementCostExtensions for Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        match self {
+        match self.underlying() {
             Element::SumItem(..) => Some(cost),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;
@@ -263,7 +272,8 @@ impl ElementCostExtensions for Element {
         }
     }
 
-    /// Get the value defined cost for a serialized value item with a tree
+    /// Get the value defined cost for a serialized value item with a tree.
+    /// Looks through `NonCounted`.
     fn layered_value_defined_cost(&self, grove_version: &GroveVersion) -> Option<u32> {
         let value_cost = self.get_specialized_cost(grove_version).ok()?;
 
@@ -272,7 +282,7 @@ impl ElementCostExtensions for Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        match self {
+        match self.underlying() {
             Element::Tree(..)
             | Element::SumTree(..)
             | Element::BigSumTree(..)
@@ -288,7 +298,8 @@ impl ElementCostExtensions for Element {
         }
     }
 
-    /// Get the value defined cost for a serialized value
+    /// Get the value defined cost for a serialized value. Looks through
+    /// `NonCounted`.
     fn value_defined_cost(&self, grove_version: &GroveVersion) -> Option<ValueDefinedCostType> {
         let value_cost = self.get_specialized_cost(grove_version).ok()?;
 
@@ -297,7 +308,7 @@ impl ElementCostExtensions for Element {
                 let flags_len = flags.len() as u32;
                 flags_len + flags_len.required_space() as u32
             });
-        match self {
+        match self.underlying() {
             Element::Tree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)

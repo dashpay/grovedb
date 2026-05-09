@@ -36,7 +36,7 @@ pub trait ElementTreeTypeExtensions {
 }
 impl ElementTreeTypeExtensions for Element {
     /// Check if the element is a tree and return the root_tree info and tree
-    /// type
+    /// type. Looks through `NonCounted`.
     fn root_key_and_tree_type_owned(self) -> Option<(Option<Vec<u8>>, TreeType)> {
         match self {
             Element::Tree(root_key, _) => Some((root_key, TreeType::NormalTree)),
@@ -60,12 +60,13 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some((None, TreeType::DenseAppendOnlyFixedSizeTree(height)))
             }
+            Element::NonCounted(inner) => inner.root_key_and_tree_type_owned(),
             _ => None,
         }
     }
 
     /// Check if the element is a tree and return the root_tree info and the
-    /// tree type
+    /// tree type. Looks through `NonCounted`.
     fn root_key_and_tree_type(&self) -> Option<(&Option<Vec<u8>>, TreeType)> {
         // We use a const None to return a stable reference for non-Merk tree types.
         const NONE_ROOT_KEY: Option<Vec<u8>> = None;
@@ -92,11 +93,13 @@ impl ElementTreeTypeExtensions for Element {
                 &NONE_ROOT_KEY,
                 TreeType::DenseAppendOnlyFixedSizeTree(*height),
             )),
+            Element::NonCounted(inner) => inner.root_key_and_tree_type(),
             _ => None,
         }
     }
 
-    /// Check if the element is a tree and return the flags and the tree type
+    /// Check if the element is a tree and return the flags and the tree type.
+    /// Looks through `NonCounted`.
     fn tree_flags_and_type(&self) -> Option<(&Option<ElementFlags>, TreeType)> {
         match self {
             Element::Tree(_, flags) => Some((flags, TreeType::NormalTree)),
@@ -118,11 +121,13 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, flags) => {
                 Some((flags, TreeType::DenseAppendOnlyFixedSizeTree(*height)))
             }
+            Element::NonCounted(inner) => inner.tree_flags_and_type(),
             _ => None,
         }
     }
 
-    /// Check if the element is a tree and return the tree type
+    /// Check if the element is a tree and return the tree type. Looks through
+    /// `NonCounted`.
     fn tree_type(&self) -> Option<TreeType> {
         match self {
             Element::Tree(..) => Some(TreeType::NormalTree),
@@ -142,12 +147,13 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
+            Element::NonCounted(inner) => inner.tree_type(),
             _ => None,
         }
     }
 
     /// Check if the element is a tree and return the aggregate of elements in
-    /// the tree
+    /// the tree. Looks through `NonCounted`.
     fn tree_feature_type(&self) -> Option<TreeFeatureType> {
         match self {
             Element::Tree(..) => Some(BasicMerkNode),
@@ -165,11 +171,13 @@ impl ElementTreeTypeExtensions for Element {
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
             Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
+            Element::NonCounted(inner) => inner.tree_feature_type(),
             _ => None,
         }
     }
 
-    /// Check if the element is a tree and return the tree type
+    /// Check if the element is a tree and return the tree type. Looks through
+    /// `NonCounted`.
     fn maybe_tree_type(&self) -> MaybeTree {
         match self {
             Element::Tree(..) => MaybeTree::Tree(TreeType::NormalTree),
@@ -189,11 +197,19 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
+            Element::NonCounted(inner) => inner.maybe_tree_type(),
             _ => MaybeTree::NotTree,
         }
     }
 
-    /// Get the tree feature type
+    /// Get the tree feature type.
+    ///
+    /// `count_value_or_default` and `count_sum_value_or_default` already
+    /// return 0 (resp. (0, inner_sum)) for `Element::NonCounted`, so the
+    /// existing dispatch produces the right feature type for the wrapper
+    /// without an explicit branch here. Sum-bearing parents still see the
+    /// inner element's sum because `sum_value_or_default` and
+    /// `big_sum_value_or_default` delegate through the wrapper.
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
             TreeType::NormalTree => Ok(BasicMerkNode),

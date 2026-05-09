@@ -116,6 +116,8 @@ pub enum ElementType {
     BulkAppendTree = 13,
     /// Dense fixed-sized Merkle tree - discriminant 14
     DenseAppendOnlyFixedSizeTree = 14,
+    /// Non-counted wrapper around any other Element - discriminant 15
+    NonCounted = 15,
 }
 
 impl ElementType {
@@ -237,6 +239,11 @@ impl ElementType {
     }
 
     /// Returns true if this element type is any kind of tree (subtree).
+    ///
+    /// Note: this returns false for `NonCounted` because the wrapper itself is
+    /// not a tree (its inner element may or may not be). Callers that want to
+    /// look through a `NonCounted` wrapper should call
+    /// `Element::is_any_tree()` instead, which inspects the underlying element.
     #[inline]
     pub fn is_tree(&self) -> bool {
         matches!(
@@ -289,6 +296,7 @@ impl ElementType {
             ElementType::MmrTree => "mmr tree",
             ElementType::BulkAppendTree => "bulk_append_tree",
             ElementType::DenseAppendOnlyFixedSizeTree => "dense_tree",
+            ElementType::NonCounted => "non_counted",
         }
     }
 }
@@ -313,6 +321,7 @@ impl TryFrom<u8> for ElementType {
             12 => Ok(ElementType::MmrTree),
             13 => Ok(ElementType::BulkAppendTree),
             14 => Ok(ElementType::DenseAppendOnlyFixedSizeTree),
+            15 => Ok(ElementType::NonCounted),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -366,7 +375,8 @@ mod tests {
             ElementType::try_from(14).unwrap(),
             ElementType::DenseAppendOnlyFixedSizeTree
         );
-        assert!(ElementType::try_from(15).is_err());
+        assert_eq!(ElementType::try_from(15).unwrap(), ElementType::NonCounted);
+        assert!(ElementType::try_from(16).is_err());
     }
 
     #[test]
@@ -549,6 +559,8 @@ mod tests {
         assert!(ElementType::MmrTree.is_tree());
         assert!(ElementType::BulkAppendTree.is_tree());
         assert!(ElementType::DenseAppendOnlyFixedSizeTree.is_tree());
+        // NonCounted is a wrapper, not a tree itself.
+        assert!(!ElementType::NonCounted.is_tree());
     }
 
     /// Verifies that serialized Element discriminants match ElementType
@@ -649,13 +661,19 @@ mod tests {
                 ElementType::DenseAppendOnlyFixedSizeTree,
                 "DenseAppendOnlyFixedSizeTree",
             ),
+            // discriminant 15
+            (
+                Element::NonCounted(Box::new(Element::Item(vec![1, 2, 3], None))),
+                ElementType::NonCounted,
+                "NonCounted",
+            ),
         ];
 
-        // Verify we're testing all 15 discriminants (0-14)
+        // Verify we're testing all 16 discriminants (0-15)
         assert_eq!(
             test_cases.len(),
-            15,
-            "Expected 15 Element variants in test, got {}",
+            16,
+            "Expected 16 Element variants in test, got {}",
             test_cases.len()
         );
 

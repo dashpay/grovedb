@@ -956,7 +956,10 @@ impl GroveDb {
         let mut element_iterator = KVIterator::new(merk.storage.raw_iter(), &all_query).unwrap();
 
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
-            let element = Element::raw_decode(&element_value, grove_version)?;
+            // Look through NonCounted: verification dispatches on inner type.
+            // The on-disk value bytes are still the wrapper bytes, so the
+            // hash checks below operate on those.
+            let element = Element::raw_decode(&element_value, grove_version)?.into_underlying();
             match element {
                 Element::SumTree(..)
                 | Element::Tree(..)
@@ -1107,6 +1110,7 @@ impl GroveDb {
                         );
                     }
                 }
+                Element::NonCounted(_) => unreachable!("unwrapped above"),
             }
         }
         Ok(issues)

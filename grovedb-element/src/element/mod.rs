@@ -122,6 +122,17 @@ pub enum Element {
     /// - `height`: Tree height h; the tree has 2^h - 1 positions.
     /// - `flags`: Optional per-element metadata.
     DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
+    /// Non-counted wrapper: contains any other Element type and behaves
+    /// identically to it for storage, hashing, and internal aggregation, but
+    /// contributes 0 to its parent count tree's aggregate count when inserted.
+    /// Sums still propagate to parent sum trees.
+    ///
+    /// May only be inserted into count-bearing trees (`CountTree`,
+    /// `ProvableCountTree`, `CountSumTree`, `ProvableCountSumTree`).
+    ///
+    /// Invariant: a `NonCounted` may not wrap another `NonCounted`. Enforced
+    /// at construction and at deserialization.
+    NonCounted(Box<Element>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -307,6 +318,9 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::NonCounted(inner) => {
+                write!(f, "NonCounted({})", inner)
+            }
         }
     }
 }
@@ -330,6 +344,7 @@ impl Element {
             Element::MmrTree(..) => ElementType::MmrTree,
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
             Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
+            Element::NonCounted(..) => ElementType::NonCounted,
         }
     }
 

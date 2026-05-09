@@ -332,7 +332,11 @@ impl GroveDb {
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
-                        let elem = Element::deserialize(value, grove_version);
+                        // Look through NonCounted: dispatch on inner type.
+                        // The serialized `value` (which is what's hashed in
+                        // the proof) keeps its wrapper byte either way.
+                        let elem =
+                            Element::deserialize(value, grove_version).map(|e| e.into_underlying());
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
                                 let absolute_path = cost_return_on_error_into!(
@@ -524,6 +528,8 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
+                            // NonCounted is unwrapped above via into_underlying().
+                            Ok(Element::NonCounted(_)) => unreachable!("unwrapped above"),
                             Err(e) => {
                                 return Err(Error::CorruptedData(format!(
                                     "failed to deserialize element during proof generation: {e}"
@@ -1047,7 +1053,11 @@ impl GroveDb {
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
-                        let elem = Element::deserialize(value, grove_version);
+                        // Look through NonCounted: dispatch on inner type.
+                        // The serialized `value` (which is what's hashed in
+                        // the proof) keeps its wrapper byte either way.
+                        let elem =
+                            Element::deserialize(value, grove_version).map(|e| e.into_underlying());
                         match elem {
                             Ok(Element::Reference(reference_path, ..)) => {
                                 let absolute_path = cost_return_on_error_into!(
@@ -1353,6 +1363,8 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
+                            // NonCounted is unwrapped above via into_underlying().
+                            Ok(Element::NonCounted(_)) => unreachable!("unwrapped above"),
                             Err(e) => {
                                 return Err(Error::CorruptedData(format!(
                                     "failed to deserialize element during proof generation: {e}"

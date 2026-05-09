@@ -1441,6 +1441,11 @@ where
             .wrap_with_cost(cost);
         };
 
+        // Look through `NonCounted` for dispatch — the wrapper does not change
+        // how a referenced value is hashed or how a tree/reference is processed.
+        // The actual `element.serialize()` below preserves the wrapper byte
+        // when present, so the resulting value hash matches what's on disk.
+        let element = element.into_underlying();
         match element {
             Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                 let serialized =
@@ -1477,6 +1482,8 @@ where
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
+            // NonCounted is unwrapped above via into_underlying().
+            Element::NonCounted(_) => unreachable!("unwrapped above"),
         }
     }
 
@@ -1541,7 +1548,9 @@ where
                 GroveOp::InsertOrReplace { element }
                 | GroveOp::Replace { element }
                 | GroveOp::Patch { element, .. } => {
-                    match element {
+                    // Look through NonCounted for dispatch; serialize the outer
+                    // wrapper for hashing so the value hash matches storage.
+                    match element.underlying() {
                         Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                             let serialized = cost_return_on_error_into_no_add!(
                                 cost,
@@ -1625,10 +1634,12 @@ where
                             ))
                             .wrap_with_cost(cost)
                         }
+                        // NonCounted is unwrapped via underlying() above.
+                        Element::NonCounted(_) => unreachable!("unwrapped above"),
                     }
                 }
                 GroveOp::InsertWithKnownToNotAlreadyExist { element }
-                | GroveOp::InsertIfNotExists { element, .. } => match element {
+                | GroveOp::InsertIfNotExists { element, .. } => match element.underlying() {
                     Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                         let serialized = cost_return_on_error_into_no_add!(
                             cost,
@@ -1668,6 +1679,8 @@ where
                         ))
                         .wrap_with_cost(cost)
                     }
+                    // NonCounted is unwrapped via underlying() above.
+                    Element::NonCounted(_) => unreachable!("unwrapped above"),
                 },
                 GroveOp::RefreshReference {
                     reference_path_type,
@@ -1851,7 +1864,11 @@ where
                         }
                     }
 
-                    match &element {
+                    // Look through NonCounted; methods called on `element`
+                    // (serialize, get_feature_type, insert_*_into_batch_operations,
+                    // element_at_key_already_exists) are wrapper-aware via the
+                    // helper methods updated in grovedb-element.
+                    match element.underlying() {
                         Element::Reference(path_reference, element_max_reference_hop, _) => {
                             // Check existence for InsertIfNotExists on references
                             if is_insert_if_not_exists
@@ -2041,6 +2058,8 @@ where
                                 );
                             }
                         }
+                        // NonCounted is unwrapped via underlying() above.
+                        Element::NonCounted(_) => unreachable!("unwrapped above"),
                     }
                 }
                 GroveOp::RefreshReference {

@@ -121,6 +121,20 @@ impl TreeType {
         )
     }
 
+    /// Returns whether this tree type carries a count aggregate that children
+    /// can contribute to. Only count-bearing trees may host
+    /// `Element::NonCounted` children — in any other parent the wrapper would
+    /// have no semantic effect, so it is rejected at insert time.
+    pub const fn is_count_bearing(&self) -> bool {
+        matches!(
+            self,
+            TreeType::CountTree
+                | TreeType::CountSumTree
+                | TreeType::ProvableCountTree
+                | TreeType::ProvableCountSumTree
+        )
+    }
+
     /// Returns whether this tree type allows sum items as children.
     pub fn allows_sum_item(&self) -> bool {
         match self {

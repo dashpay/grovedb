@@ -408,7 +408,13 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                 })
                 .transpose()
         );
-        match &element {
+        // Look through `NonCounted` for cost computation: the wrapper does
+        // not change which cost path applies — its inner element type does.
+        // (The +1 wrapper byte is already accounted for via value.as_ref()
+        // .unwrap().len() for items; for trees it's a 1-byte under-count we
+        // accept, consistent with `costs.rs`.)
+        let element_for_cost = element.as_ref().map(|e| e.underlying());
+        match element_for_cost {
             Some(Element::Item(..)) | Some(Element::Reference(..)) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
@@ -451,6 +457,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Some(Element::MmrTree(_, flags))
             | Some(Element::BulkAppendTree(.., flags))
             | Some(Element::DenseAppendOnlyFixedSizeTree(.., flags)) => {
+                // tree_type() looks through NonCounted, so this works for both
+                // a bare tree and a NonCounted(tree).
                 let tree_cost_size = element.as_ref().unwrap().tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -464,6 +472,10 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                         NodeType::NormalNode,
                     ) as u64
             }
+            // NonCounted wrappers are unwrapped above; reaching this arm means
+            // the inner type wasn't one of the explicit arms (impossible given
+            // exhaustiveness above).
+            Some(Element::NonCounted(_)) => {}
             None => {}
         }
         Ok(element).wrap_with_cost(cost)
@@ -506,7 +518,10 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                 Error::CorruptedData(format!("unable to deserialize element: {e}"))
             })
         );
-        match &element {
+        // Look through `NonCounted` for cost computation; see V0 path above
+        // for rationale.
+        let element_for_cost = element.underlying();
+        match element_for_cost {
             Element::Item(..) | Element::Reference(..) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
@@ -551,6 +566,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             | Element::MmrTree(_, flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => {
+                // tree_type() looks through NonCounted.
                 let tree_cost_size = element.tree_type().unwrap().cost_size();
                 let flags_len = flags.as_ref().map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -564,6 +580,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                         node_type,
                     ) as u64
             }
+            // NonCounted wrappers are unwrapped above.
+            Element::NonCounted(_) => {}
         }
         Ok(Some(element)).wrap_with_cost(cost)
     }
