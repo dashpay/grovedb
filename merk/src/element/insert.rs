@@ -434,6 +434,13 @@ impl ElementInsertToStorageExtensions for Element {
             grove_version.grovedb_versions.element.insert_reference
         );
 
+        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
@@ -518,6 +525,13 @@ impl ElementInsertToStorageExtensions for Element {
             "insert_subtree",
             grove_version.grovedb_versions.element.insert_subtree
         );
+
+        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
 
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
@@ -804,6 +818,19 @@ mod tests {
         let agg = merk.aggregate_data().expect("aggregate ok");
         assert_eq!(agg.as_count_u64(), 0);
         assert_eq!(agg.as_sum_i64(), 10);
+    }
+
+    #[test]
+    fn non_counted_subtree_rejected_via_insert_subtree_in_normal_tree() {
+        // Wrap a tree element and try inserting it into a non-count-bearing
+        // tree via the subtree path (used by GroveDB for tree elements).
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+        let nc_tree = Element::new_non_counted(Element::empty_tree()).expect("wrap ok");
+        let result = nc_tree
+            .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
     }
 
     #[test]

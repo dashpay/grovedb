@@ -347,7 +347,16 @@ impl GroveDb {
                     )
                 );
             }
-            Element::NonCounted(_) => unreachable!("unwrapped above"),
+            // `underlying()` only unwraps one level; nested NonCounted is
+            // forbidden by the constructor and (de)serializer, but the public
+            // insert path can still receive a hand-built nested wrapper —
+            // return a typed error rather than panic.
+            Element::NonCounted(_) => {
+                return Err(Error::InvalidInput(
+                    "nested NonCounted wrappers are not allowed",
+                ))
+                .wrap_with_cost(cost);
+            }
         }
 
         Ok(subtree_to_insert_into).wrap_with_cost(cost)

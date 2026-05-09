@@ -222,6 +222,9 @@ where {
                         // end in `Err`, so we'll use
                         // external costs accumulator instead of
                         // returning costs from `map` call.
+                        // Normalize the resolved value too, so a Reference
+                        // pointing at NonCounted(Item) returns the same shape
+                        // as a directly-queried NonCounted(Item).
                         let maybe_item = self
                             .follow_reference(
                                 absolute_path.as_slice().into(),
@@ -229,7 +232,8 @@ where {
                                 transaction,
                                 grove_version,
                             )
-                            .unwrap_add_cost(cost)?;
+                            .unwrap_add_cost(cost)?
+                            .into_underlying();
 
                         if maybe_item.is_any_item() {
                             Ok(maybe_item)

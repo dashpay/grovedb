@@ -288,6 +288,21 @@ mod tests {
     }
 
     #[test]
+    fn is_count_bearing() {
+        assert!(!TreeType::NormalTree.is_count_bearing());
+        assert!(!TreeType::SumTree.is_count_bearing());
+        assert!(!TreeType::BigSumTree.is_count_bearing());
+        assert!(TreeType::CountTree.is_count_bearing());
+        assert!(TreeType::CountSumTree.is_count_bearing());
+        assert!(TreeType::ProvableCountTree.is_count_bearing());
+        assert!(TreeType::ProvableCountSumTree.is_count_bearing());
+        assert!(!TreeType::CommitmentTree(0).is_count_bearing());
+        assert!(!TreeType::MmrTree.is_count_bearing());
+        assert!(!TreeType::BulkAppendTree(0).is_count_bearing());
+        assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_count_bearing());
+    }
+
+    #[test]
     fn allows_sum_item() {
         assert!(!TreeType::NormalTree.allows_sum_item());
         assert!(TreeType::SumTree.allows_sum_item());

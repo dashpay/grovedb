@@ -410,9 +410,14 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
         );
         // Look through `NonCounted` for cost computation: the wrapper does
         // not change which cost path applies — its inner element type does.
-        // (The +1 wrapper byte is already accounted for via value.as_ref()
-        // .unwrap().len() for items; for trees it's a 1-byte under-count we
-        // accept, consistent with `costs.rs`.)
+        // For the catch-all (Item / Reference) path, value.len() already
+        // includes the wrapper byte. For tree- and sum-item paths that use
+        // cost-size constants, add `wrapper_overhead` to keep accounting
+        // exact.
+        let wrapper_overhead = element
+            .as_ref()
+            .map(|e| if e.is_non_counted() { 1u32 } else { 0 })
+            .unwrap_or(0);
         let element_for_cost = element.as_ref().map(|e| e.underlying());
         match element_for_cost {
             Some(Element::Item(..)) | Some(Element::Reference(..)) => {
@@ -430,7 +435,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = cost_size + flags_len;
+                let value_len = cost_size + flags_len + wrapper_overhead;
                 cost.storage_loaded_bytes = KV::node_value_byte_cost_size(
                     key_ref.len() as u32,
                     value_len,
@@ -464,7 +469,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = tree_cost_size + flags_len;
+                let value_len = tree_cost_size + flags_len + wrapper_overhead;
                 cost.storage_loaded_bytes =
                     KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                         key_ref.len() as u32,
@@ -519,7 +524,9 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             })
         );
         // Look through `NonCounted` for cost computation; see V0 path above
-        // for rationale.
+        // for rationale. Capture the wrapper byte before unwrapping so the
+        // tree- and sum-item arms can include it in value_len.
+        let wrapper_overhead = if element.is_non_counted() { 1u32 } else { 0 };
         let element_for_cost = element.underlying();
         match element_for_cost {
             Element::Item(..) | Element::Reference(..) => {
@@ -537,7 +544,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = cost_size + flags_len;
+                let value_len = cost_size + flags_len + wrapper_overhead;
                 cost.storage_loaded_bytes =
                     KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, node_type) as u64
                 // this is changed to sum node in v1
@@ -550,8 +557,11 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len =
-                    item_value_len + item_value_len.required_space() as u32 + cost_size + flags_len;
+                let value_len = item_value_len
+                    + item_value_len.required_space() as u32
+                    + cost_size
+                    + flags_len
+                    + wrapper_overhead;
                 cost.storage_loaded_bytes =
                     KV::node_value_byte_cost_size(key_ref.len() as u32, value_len, node_type) as u64
             }
@@ -572,7 +582,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                let value_len = tree_cost_size + flags_len;
+                let value_len = tree_cost_size + flags_len + wrapper_overhead;
                 cost.storage_loaded_bytes =
                     KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                         key_ref.len() as u32,

@@ -2670,9 +2670,11 @@ impl GroveDb {
     }
 
     /// Extract the count from a CountTree, CountSumTree, ProvableCountTree,
-    /// or ProvableCountSumTree element.
+    /// or ProvableCountSumTree element. Looks through `NonCounted` so that a
+    /// trunk proof rooted at a wrapped count tree still extracts the inner
+    /// tree's count.
     fn extract_count_from_element(element: &Element) -> Option<u64> {
-        match element {
+        match element.underlying() {
             Element::CountTree(_, count, _)
             | Element::CountSumTree(_, count, ..)
             | Element::ProvableCountTree(_, count, _)

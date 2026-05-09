@@ -1441,12 +1441,10 @@ where
             .wrap_with_cost(cost);
         };
 
-        // Look through `NonCounted` for dispatch — the wrapper does not change
-        // how a referenced value is hashed or how a tree/reference is processed.
-        // The actual `element.serialize()` below preserves the wrapper byte
-        // when present, so the resulting value hash matches what's on disk.
-        let element = element.into_underlying();
-        match element {
+        // Dispatch on the underlying element type but compute the value hash
+        // from the OUTER element's serialized bytes. Storage keeps the
+        // wrapper byte; the on-disk value hash must reflect that.
+        match element.underlying() {
             Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
                 let serialized =
                     cost_return_on_error_into_no_add!(cost, element.serialize(grove_version));
@@ -1456,7 +1454,7 @@ where
             Element::Reference(path, ..) => {
                 let path = cost_return_on_error_into_no_add!(
                     cost,
-                    path_from_reference_qualified_path_type(path, qualified_path)
+                    path_from_reference_qualified_path_type(path.clone(), qualified_path)
                 );
                 self.follow_reference_get_value_hash(
                     path.as_slice(),
@@ -1482,8 +1480,10 @@ where
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
-            // NonCounted is unwrapped above via into_underlying().
-            Element::NonCounted(_) => unreachable!("unwrapped above"),
+            // underlying() unwraps a single level; the constructor and
+            // (de)serializer reject nested NonCounted, so this is unreachable
+            // by construction.
+            Element::NonCounted(_) => unreachable!("NonCounted may not nest"),
         }
     }
 
@@ -2615,6 +2615,14 @@ impl GroveDb {
                                                 | GroveOp::InsertIfNotExists { element, .. }
                                                 | GroveOp::Replace { element }
                                                 | GroveOp::Patch { element, .. } => {
+                                                    // Look through NonCounted: a wrapped tree
+                                                    // still needs to be converted into the
+                                                    // appropriate InsertTreeWithRootHash /
+                                                    // InsertNonMerkTree variant during
+                                                    // upward propagation, otherwise the chain
+                                                    // below would fall into the "non tree"
+                                                    // error path.
+                                                    let element = element.underlying();
                                                     // Standard Merk trees
                                                     if let Element::Tree(_, flags) = element {
                                                         *mutable_occupied_entry =
