@@ -458,11 +458,32 @@ mod serde_impl {
     //! payload could construct invalid `NotSummed(Item)` or cross-wrapper
     //! values that the rest of the system assumes do not exist.
     //!
-    //! Approach: a private shadow enum (`ElementShadow`) mirrors `Element`
-    //! verbatim with `#[serde(rename = "Element")]` so the wire format is
-    //! identical. The derived `Deserialize` on the shadow handles the
-    //! recursive descent; we then convert to `Element` and call
-    //! [`Element::validate_wrapper_invariants`].
+    //! ### Why a shadow enum?
+    //!
+    //! Serde does not provide a derive-and-validate passthrough for whole
+    //! types. The relevant attributes don't fit:
+    //! - `#[serde(try_from = "...")]` needs a *separate* source type — you
+    //!   can't point it back at `Self` (infinite recursion at the type
+    //!   level).
+    //! - `#[serde(remote = "...")]` is only for foreign types you don't own.
+    //! - `#[serde(deserialize_with = "...")]` is field-level, not type-level.
+    //! - `#[serde(transparent)]` / `#[serde(flatten)]` are for single-field
+    //!   structs and field embedding respectively.
+    //!
+    //! That leaves three real options: (1) duplicate the variants in a
+    //! shadow type and convert via `From`, (2) write a manual `Visitor`
+    //! that walks all 17 variants by hand, or (3) drop the `Deserialize`
+    //! derive entirely. The shadow is the shortest of (1) and (2), and
+    //! we keep `Deserialize` because external tooling consumers may rely
+    //! on it.
+    //!
+    //! ### Approach
+    //!
+    //! A private shadow enum (`ElementShadow`) mirrors `Element` verbatim
+    //! with `#[serde(rename = "Element")]` so the wire format is identical.
+    //! The derived `Deserialize` on the shadow handles the recursive
+    //! descent; we then convert to `Element` and call
+    //! [`Element::check_recursive_wrapper_invariants`].
     //!
     //! Each `Box<ElementShadow>` field deserializes through the shadow's
     //! own `Deserialize` impl, so validation fires at every level of the
