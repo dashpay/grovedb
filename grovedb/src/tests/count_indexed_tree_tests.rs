@@ -1498,6 +1498,169 @@ mod tests {
     }
 
     #[test]
+    fn direct_delete_empty_cidx_cleans_up_secondary_storage() {
+        // Even an empty cidx has metadata at both the primary's prefix
+        // and the secondary's prefix (Blake3(primary_prefix || 0x01)).
+        // db.delete() must clear both so that re-creating a cidx at the
+        // same path doesn't observe stale state.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Delete the empty cidx.
+        db.delete([TEST_LEAF].as_ref(), b"cidx", None, None, grove_version)
+            .unwrap()
+            .expect("delete empty cidx");
+
+        // The cidx element is gone.
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap();
+        assert!(result.is_err(), "cidx element should be gone after delete");
+
+        // Re-create a fresh cidx at the same path; populate it. If the
+        // old secondary storage wasn't cleaned, the new secondary's
+        // queries would observe stale entries.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"fresh_key",
+            Element::new_item(b"fresh".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert into fresh cidx");
+
+        // Top-k must show ONLY the fresh entry.
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top after re-create");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1, b"fresh_key".to_vec());
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "expected no issues, got {:?}", issues);
+    }
+
+    #[test]
+    fn direct_delete_non_empty_cidx_cleans_up_both_namespaces() {
+        // Non-empty cidx: must allow_deleting_non_empty_trees, must clean
+        // up BOTH primary subtree storage and secondary storage.
+        use crate::operations::delete::DeleteOptions;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Populate with multiple entries having different counts so the
+        // secondary has real data.
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sub");
+        }
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"x",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate sub");
+
+        // Delete the non-empty cidx.
+        let opts = DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            ..Default::default()
+        };
+        db.delete(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Some(opts),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete non-empty cidx");
+
+        // The cidx element is gone.
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap();
+        assert!(result.is_err());
+
+        // Re-create + populate; query must see only the fresh entry.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"only",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 1, "secondary must have exactly the new entry");
+        assert_eq!(top[0].1, b"only".to_vec());
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "expected no issues, got {:?}", issues);
+    }
+
+    #[test]
     fn batch_delete_item_from_cidx_primary_works() {
         // Batch path: a Delete op at a path inside a cidx primary mirrors
         // the count change to the secondary (delete branch of
