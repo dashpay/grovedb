@@ -111,22 +111,6 @@ impl TreeFeatureType {
         }
     }
 
-    /// Force the sum component of this feature type to 0, leaving count
-    /// components untouched. No-op for variants that don't carry a sum.
-    ///
-    /// Used by the `Element::NotSummed` wrapper: when computing the parent
-    /// tree's feature type for a not-summed child, we use the inner sum-tree
-    /// element's feature type but zero out its sum so the parent's
-    /// aggregate excludes it.
-    pub fn zero_sum(&mut self) {
-        match self {
-            SummedMerkNode(sum) => *sum = 0,
-            BigSummedMerkNode(sum) => *sum = 0,
-            CountedSummedMerkNode(_, sum) | ProvableCountedSummedMerkNode(_, sum) => *sum = 0,
-            BasicMerkNode | CountedMerkNode(_) | ProvableCountedMerkNode(_) => {}
-        }
-    }
-
     /// Get the NodeType for this feature type
     pub fn node_type(&self) -> NodeType {
         match self {
@@ -333,37 +317,6 @@ mod tests {
         let mut prov_count_sum = ProvableCountedSummedMerkNode(7, 42);
         prov_count_sum.zero_count();
         assert_eq!(prov_count_sum, ProvableCountedSummedMerkNode(0, 42));
-    }
-
-    #[test]
-    fn zero_sum_only_zeros_sum() {
-        let mut basic = BasicMerkNode;
-        basic.zero_sum();
-        assert_eq!(basic, BasicMerkNode);
-
-        let mut counted = CountedMerkNode(7);
-        counted.zero_sum();
-        assert_eq!(counted, CountedMerkNode(7));
-
-        let mut prov_counted = ProvableCountedMerkNode(7);
-        prov_counted.zero_sum();
-        assert_eq!(prov_counted, ProvableCountedMerkNode(7));
-
-        let mut summed = SummedMerkNode(42);
-        summed.zero_sum();
-        assert_eq!(summed, SummedMerkNode(0));
-
-        let mut big_summed = BigSummedMerkNode(42);
-        big_summed.zero_sum();
-        assert_eq!(big_summed, BigSummedMerkNode(0));
-
-        let mut count_sum = CountedSummedMerkNode(7, 42);
-        count_sum.zero_sum();
-        assert_eq!(count_sum, CountedSummedMerkNode(7, 0));
-
-        let mut prov_count_sum = ProvableCountedSummedMerkNode(7, 42);
-        prov_count_sum.zero_sum();
-        assert_eq!(prov_count_sum, ProvableCountedSummedMerkNode(7, 0));
     }
 
     #[test]

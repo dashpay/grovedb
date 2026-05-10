@@ -439,17 +439,19 @@ impl Element {
         }
     }
 
-    /// Wrap `self` in `NotSummed` without re-validating the inner element's
-    /// type. Panics if `self` is not a sum-tree variant. Used by batch
-    /// propagation paths that have already established the element will be
-    /// a sum-tree type.
-    pub fn into_not_summed_unchecked(self) -> Self {
-        match Self::new_not_summed(self) {
-            Ok(wrapped) => wrapped,
-            Err(_) => panic!(
-                "into_not_summed_unchecked called on non-sum-tree element — caller must ensure \
-                 the element is one of SumTree/BigSumTree/CountSumTree/ProvableCountSumTree"
-            ),
+    /// Wrap `self` in `NotSummed`. If `self` is already `NotSummed`, returns
+    /// it unchanged (idempotent on `NotSummed`).
+    ///
+    /// Returns `InvalidInput` if `self` is `NonCounted` (the two wrappers
+    /// are mutually exclusive) or any non-sum-tree variant. Mirrors
+    /// [`Element::into_non_counted`].
+    pub fn into_not_summed(self) -> Result<Self, ElementError> {
+        match self {
+            Element::NotSummed(_) => Ok(self),
+            Element::NonCounted(_) => Err(ElementError::InvalidInput(
+                "cannot wrap NonCounted in NotSummed; wrappers are mutually exclusive",
+            )),
+            other => Self::new_not_summed(other),
         }
     }
 }

@@ -2326,7 +2326,9 @@ where
                             .into_non_counted()
                             .expect("into_non_counted on freshly-constructed bare tree element")
                     } else if not_summed {
-                        element.into_not_summed_unchecked()
+                        element
+                            .into_not_summed()
+                            .expect("into_not_summed on freshly-constructed sum-tree element")
                     } else {
                         element
                     };
