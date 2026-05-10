@@ -1432,12 +1432,10 @@ mod tests {
     }
 
     #[test]
-    fn batch_insert_into_cidx_primary_is_rejected() {
-        // The batch propagation has no two-Merk hook for cidx primaries:
-        // an InsertOrReplace at a path whose merk is the cidx primary
-        // would update the primary alone, leaving the secondary index
-        // stale. Fail fast with a clear NotSupported pointing callers
-        // to the dedicated cidx APIs.
+    fn batch_insert_into_cidx_primary_works() {
+        // Batch insert of a non-cidx leaf element directly into a cidx
+        // primary's Merk now mirrors the change to the secondary and
+        // updates the cidx element on the parent merk via H1-A.
         use crate::batch::QualifiedGroveDbOp;
 
         let grove_version = GroveVersion::latest();
@@ -1458,16 +1456,45 @@ mod tests {
             b"item".to_vec(),
             Element::new_item(b"v".to_vec()),
         )];
-        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
-        match result {
-            Err(crate::Error::NotSupported(msg)) => {
-                assert!(
-                    msg.contains("CountIndexedTree primary"),
-                    "expected cidx primary message, got: {msg}"
-                );
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch insert into cidx primary");
+
+        // Reading the item back resolves through the cidx primary.
+        let fetched = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"item", None, grove_version)
+            .unwrap()
+            .expect("get item");
+        assert_eq!(fetched, Element::new_item(b"v".to_vec()));
+
+        // The cidx element on the parent now reflects count = 1 with
+        // both root keys set.
+        let cidx_element = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get cidx");
+        match cidx_element {
+            Element::CountIndexedTree(primary, secondary, count, _) => {
+                assert!(primary.is_some());
+                assert!(secondary.is_some());
+                assert_eq!(count, 1);
             }
-            other => panic!("expected NotSupported, got {:?}", other),
+            other => panic!("expected CountIndexedTree, got {:?}", other),
         }
+
+        // The secondary index has the new entry: count=1, key=item.
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("top-5");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0], (1u64, b"item".to_vec()));
+
+        // Full-tree integrity check: H1-A walk through the cidx node.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "expected no issues, got {:?}", issues);
     }
 
     #[test]

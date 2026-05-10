@@ -1133,12 +1133,25 @@ impl GroveDbOpConsistencyResults {
 }
 
 /// Cache for Merk trees by their paths.
-struct TreeCacheMerkByPath<S, F> {
+struct TreeCacheMerkByPath<S, F, F2> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     get_merk_fn: F,
+    /// Opens a CountIndexedTree secondary Merk given the cidx primary's
+    /// path. Used when ops mutate a cidx primary so the secondary mirror
+    /// stays in sync at apply time. The closure is responsible for
+    /// reading the cidx element from the parent merk to discover the
+    /// secondary's current root key, then opening the secondary at the
+    /// derived prefix.
+    get_secondary_merk_fn: F2,
+    /// Per-cidx-primary captured secondary state after apply, keyed by
+    /// the primary's path. Populated by `execute_ops_on_path` when the
+    /// path's merk is a cidx primary; consumed by the bubble-up code so
+    /// a `ReplaceCountIndexedTreeRootKeys` op can be emitted on the
+    /// parent level carrying both primary and secondary state.
+    cidx_secondary_after_apply: HashMap<Vec<Vec<u8>>, (CryptoHash, Option<Vec<u8>>)>,
 }
 
-impl<S, F> fmt::Debug for TreeCacheMerkByPath<S, F> {
+impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheMerkByPath").finish()
     }
@@ -1172,11 +1185,23 @@ trait TreeCache<G, SR> {
         root_key: Option<Vec<u8>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+
+    /// After a level's `execute_ops_on_path` returns, the bubble-up code
+    /// calls this to retrieve the cidx-secondary state captured by that
+    /// level (if the level was a cidx primary). Default impl returns
+    /// `None` for caches that do not support cidx primary mutations.
+    fn take_cidx_secondary_after_apply(
+        &mut self,
+        _path: &[Vec<u8>],
+    ) -> Option<(CryptoHash, Option<Vec<u8>>)> {
+        None
+    }
 }
 
-impl<'db, S, F> TreeCacheMerkByPath<S, F>
+impl<'db, S, F, F2> TreeCacheMerkByPath<S, F, F2>
 where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     /// Processes a reference, determining whether it can be retrieved from a
@@ -1769,7 +1794,7 @@ where
     }
 }
 
-impl<'db, S, F, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F>
+impl<'db, S, F, F2, G, SR> TreeCache<G, SR> for TreeCacheMerkByPath<S, F, F2>
 where
     G: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
     SR: FnMut(
@@ -1778,6 +1803,7 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     fn insert(
@@ -1798,6 +1824,13 @@ where
         }
 
         Ok(()).wrap_with_cost(cost)
+    }
+
+    fn take_cidx_secondary_after_apply(
+        &mut self,
+        path: &[Vec<u8>],
+    ) -> Option<(CryptoHash, Option<Vec<u8>>)> {
+        self.cidx_secondary_after_apply.remove(path)
     }
 
     fn update_base_merk_root_key(
@@ -1848,38 +1881,69 @@ where
             merk.tree_type
         };
 
-        // The batch path has no two-Merk propagation hook for cidx
-        // primaries: applying ops directly to the primary would update
-        // the primary's root hash but leave the secondary index stale,
-        // breaking the H1-A composition stored in the cidx element on
-        // the parent merk and the count-ordered query semantics. Reject
-        // any mutation op (insert / replace / patch / delete / refresh)
-        // that targets a path whose merk is a cidx primary. Up-bubbled
-        // ReplaceTreeRootKey / ReplaceNonMerkTreeRoot ops are allowed —
-        // those represent the parent's response to a child subtree's
-        // root change; the cidx primary itself is not the mutated tree
-        // in that case.
-        if in_tree_type.is_count_indexed_primary() {
-            for (_key, op) in ops_at_path_by_key.iter() {
-                if !matches!(
+        // For cidx primaries, capture the pre-apply count value of every
+        // key that this level's ops will mutate. After
+        // `merk.apply_with_specialized_costs` runs we re-read each
+        // key's post-apply element and use the (old, new) count pair to
+        // mirror the change in the secondary Merk. Then we store the
+        // post-mirror secondary state in `cidx_secondary_after_apply`
+        // so the bubble-up code can emit
+        // `ReplaceCountIndexedTreeRootKeys` instead of the standard
+        // `ReplaceTreeRootKey`. `ReplaceTreeRootKey` ops on a cidx
+        // primary level represent a child subtree's bubble-up — the
+        // child's element bytes have a new aggregate count, so its
+        // secondary entry needs to move; we capture it here too.
+        let cidx_pre_state: Option<HashMap<Vec<u8>, Option<u64>>> = if in_tree_type
+            .is_count_indexed_primary()
+        {
+            let merk = self.merks.get(path).expect("the Merk is cached");
+            let mut pre: HashMap<Vec<u8>, Option<u64>> = HashMap::new();
+            for (key_info, op) in ops_at_path_by_key.iter() {
+                let key_bytes = key_info.get_key_clone();
+                let mutates = matches!(
                     op,
-                    GroveOp::ReplaceTreeRootKey { .. }
-                        | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                    GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+                        | GroveOp::InsertIfNotExists { .. }
+                        | GroveOp::InsertOrReplace { .. }
+                        | GroveOp::Replace { .. }
+                        | GroveOp::Patch { .. }
+                        | GroveOp::Delete
+                        | GroveOp::DeleteTree(..)
+                        | GroveOp::RefreshReference { .. }
+                        | GroveOp::ReplaceTreeRootKey { .. }
                         | GroveOp::InsertTreeWithRootHash { .. }
+                        | GroveOp::ReplaceNonMerkTreeRoot { .. }
                         | GroveOp::InsertNonMerkTree { .. }
-                ) {
-                    return Err(Error::NotSupported(
-                        "batch mutations targeting a CountIndexedTree primary are not \
-                         supported; use insert_into_count_indexed_tree / \
-                         delete_from_count_indexed_tree for direct cidx mutations, or \
-                         apply ops further inside a sub-tree under the primary so the \
-                         existing two-Merk propagation handles the secondary update"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
+                );
+                if mutates && !pre.contains_key(&key_bytes) {
+                    let maybe_bytes = cost_return_on_error!(
+                        &mut cost,
+                        merk.get(
+                            key_bytes.as_slice(),
+                            true,
+                            Some(&Element::value_defined_cost_for_serialized_value),
+                            grove_version,
+                        )
+                        .map_err(Error::MerkError)
+                    );
+                    let old_count = if let Some(bytes) = maybe_bytes {
+                        let elem = cost_return_on_error_no_add!(
+                            cost,
+                            Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
+                                Error::CorruptedData(format!("cidx pre-state deserialize: {e}"))
+                            })
+                        );
+                        Some(elem.count_value_or_default())
+                    } else {
+                        None
+                    };
+                    pre.insert(key_bytes, old_count);
                 }
             }
-        }
+            Some(pre)
+        } else {
+            None
+        };
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
@@ -2717,6 +2781,69 @@ where
             )
             .map_err(|e| Error::CorruptedData(e.to_string()))
         );
+
+        // Post-apply: if this level was a cidx primary, mirror each
+        // mutation to the secondary and capture the secondary's
+        // post-mirror state into `cidx_secondary_after_apply` so the
+        // bubble-up can emit `ReplaceCountIndexedTreeRootKeys`.
+        if let Some(pre) = cidx_pre_state {
+            // Collect post-apply counts per key. We re-borrow the merk
+            // (now applied) to read each key's new element.
+            let merk = self.merks.get(path).expect("the Merk is cached");
+            let mut deltas: Vec<(Vec<u8>, Option<u64>, Option<u64>)> =
+                Vec::with_capacity(pre.len());
+            for (key, old_count) in pre {
+                let maybe_bytes = cost_return_on_error!(
+                    &mut cost,
+                    merk.get(
+                        key.as_slice(),
+                        true,
+                        Some(&Element::value_defined_cost_for_serialized_value),
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+                );
+                let new_count = if let Some(bytes) = maybe_bytes {
+                    let elem = cost_return_on_error_no_add!(
+                        cost,
+                        Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
+                            Error::CorruptedData(format!("cidx post-state deserialize: {e}"))
+                        })
+                    );
+                    Some(elem.count_value_or_default())
+                } else {
+                    None
+                };
+                deltas.push((key, old_count, new_count));
+            }
+
+            // Open the secondary via the closure (it does the parent
+            // merk lookup to find the current secondary_root_key).
+            let mut secondary_merk =
+                cost_return_on_error!(&mut cost, (self.get_secondary_merk_fn)(path));
+            for (key, old_count, new_count) in deltas {
+                cost_return_on_error!(
+                    &mut cost,
+                    crate::operations::count_indexed_tree::mirror_to_secondary_for_batch(
+                        &mut secondary_merk,
+                        key.as_slice(),
+                        old_count,
+                        new_count,
+                        grove_version,
+                    )
+                );
+            }
+            let (sec_hash, sec_root_key, _) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            self.cidx_secondary_after_apply
+                .insert(path.to_vec(), (sec_hash, sec_root_key));
+        }
+
+        let merk = self.merks.get_mut(path).expect("the Merk is cached");
         merk.root_hash_key_and_aggregate_data()
             .add_cost(cost)
             .map_err(Error::MerkError)
@@ -2814,6 +2941,12 @@ impl GroveDb {
                         )
                     );
 
+                    // If the just-finished level was a cidx primary,
+                    // pull the post-mirror secondary state from the
+                    // side-channel set by execute_ops_on_path so the
+                    // bubble-up can carry it.
+                    let cidx_secondary_state =
+                        merk_tree_cache.take_cidx_secondary_after_apply(&path.to_path());
                     if current_level > 0 {
                         // We need to propagate up this root hash, this means adding grove_db
                         // operations up for the level above
@@ -2827,11 +2960,25 @@ impl GroveDb {
                                 {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
-                                                hash: root_hash,
-                                                root_key: calculated_root_key,
-                                                aggregate_data,
-                                            });
+                                            if let Some((sec_hash, sec_root_key)) =
+                                                cidx_secondary_state
+                                            {
+                                                vacant_entry.insert(
+                                                    GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                                        primary_hash: root_hash,
+                                                        primary_root_key: calculated_root_key,
+                                                        primary_aggregate_data: aggregate_data,
+                                                        secondary_hash: sec_hash,
+                                                        secondary_root_key: sec_root_key,
+                                                    },
+                                                );
+                                            } else {
+                                                vacant_entry.insert(GroveOp::ReplaceTreeRootKey {
+                                                    hash: root_hash,
+                                                    root_key: calculated_root_key,
+                                                    aggregate_data,
+                                                });
+                                            }
                                         }
                                         Entry::Occupied(occupied_entry) => {
                                             let mutable_occupied_entry = occupied_entry.into_mut();
@@ -2841,9 +2988,27 @@ impl GroveDb {
                                                     root_key,
                                                     aggregate_data: aggregate_data_entry,
                                                 } => {
-                                                    *hash = root_hash;
-                                                    *root_key = calculated_root_key;
-                                                    *aggregate_data_entry = aggregate_data;
+                                                    if let Some((sec_hash, sec_root_key)) =
+                                                        cidx_secondary_state
+                                                    {
+                                                        // Upgrade to the cidx variant so
+                                                        // the parent merk's value_hash
+                                                        // is recomputed via H1-A.
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                                                primary_hash: root_hash,
+                                                                primary_root_key:
+                                                                    calculated_root_key,
+                                                                primary_aggregate_data:
+                                                                    aggregate_data,
+                                                                secondary_hash: sec_hash,
+                                                                secondary_root_key: sec_root_key,
+                                                            };
+                                                    } else {
+                                                        *hash = root_hash;
+                                                        *root_key = calculated_root_key;
+                                                        *aggregate_data_entry = aggregate_data;
+                                                    }
                                                 }
                                                 GroveOp::ReplaceNonMerkTreeRoot {
                                                     hash, ..
@@ -3094,26 +3259,45 @@ impl GroveDb {
                                 } else {
                                     let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> =
                                         BTreeMap::new();
-                                    ops_on_path.insert(
-                                        key.clone(),
+                                    let new_op = if let Some((sec_hash, sec_root_key)) =
+                                        cidx_secondary_state
+                                    {
+                                        GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                            primary_hash: root_hash,
+                                            primary_root_key: calculated_root_key,
+                                            primary_aggregate_data: aggregate_data,
+                                            secondary_hash: sec_hash,
+                                            secondary_root_key: sec_root_key,
+                                        }
+                                    } else {
                                         GroveOp::ReplaceTreeRootKey {
                                             hash: root_hash,
                                             root_key: calculated_root_key,
                                             aggregate_data,
-                                        },
-                                    );
+                                        }
+                                    };
+                                    ops_on_path.insert(key.clone(), new_op);
                                     ops_at_level_above.insert(parent_path, ops_on_path);
                                 }
                             } else {
                                 let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
-                                ops_on_path.insert(
-                                    key.clone(),
-                                    GroveOp::ReplaceTreeRootKey {
-                                        hash: root_hash,
-                                        root_key: calculated_root_key,
-                                        aggregate_data,
-                                    },
-                                );
+                                let new_op =
+                                    if let Some((sec_hash, sec_root_key)) = cidx_secondary_state {
+                                        GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                            primary_hash: root_hash,
+                                            primary_root_key: calculated_root_key,
+                                            primary_aggregate_data: aggregate_data,
+                                            secondary_hash: sec_hash,
+                                            secondary_root_key: sec_root_key,
+                                        }
+                                    } else {
+                                        GroveOp::ReplaceTreeRootKey {
+                                            hash: root_hash,
+                                            root_key: calculated_root_key,
+                                            aggregate_data,
+                                        }
+                                    };
+                                ops_on_path.insert(key.clone(), new_op);
                                 let mut ops_on_level: BTreeMap<
                                     KeyInfoPath,
                                     BTreeMap<KeyInfo, GroveOp>,
@@ -3155,6 +3339,7 @@ impl GroveDb {
             Error,
         >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        get_secondary_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
         check_grovedb_v0_with_cost!(
@@ -3171,6 +3356,8 @@ impl GroveDb {
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
+                    get_secondary_merk_fn,
+                    cidx_secondary_after_apply: Default::default(),
                 }
             )
         );
@@ -3200,6 +3387,7 @@ impl GroveDb {
             Error,
         >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+        get_secondary_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<OpsByLevelPath>, Error> {
         check_grovedb_v0_with_cost!(
@@ -3220,6 +3408,8 @@ impl GroveDb {
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
+                    get_secondary_merk_fn,
+                    cidx_secondary_after_apply: Default::default(),
                 }
             )
         );
@@ -3950,6 +4140,17 @@ impl GroveDb {
                         grove_version,
                     )
                 },
+                |primary_path: &[Vec<u8>]| {
+                    let primary_refs: Vec<&[u8]> =
+                        primary_path.iter().map(|v| v.as_slice()).collect();
+                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
+                    self.open_count_indexed_secondary_for_batch(
+                        cidx_path,
+                        &storage_batch,
+                        tx.as_ref(),
+                        grove_version,
+                    )
+                },
                 grove_version
             )
         );
@@ -4303,7 +4504,18 @@ impl GroveDb {
                         grove_version,
                     )
                 },
-                grove_version
+                |primary_path: &[Vec<u8>]| {
+                    let primary_refs: Vec<&[u8]> =
+                        primary_path.iter().map(|v| v.as_slice()).collect();
+                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
+                    self.open_count_indexed_secondary_for_batch(
+                        cidx_path,
+                        &storage_batch,
+                        tx.as_ref(),
+                        grove_version,
+                    )
+                },
+                grove_version,
             )
         );
         // if we paused at the root height, the left over operations would be to replace
@@ -4374,6 +4586,17 @@ impl GroveDb {
                         path.into(),
                         tx.as_ref(),
                         new_merk,
+                        grove_version,
+                    )
+                },
+                |primary_path: &[Vec<u8>]| {
+                    let primary_refs: Vec<&[u8]> =
+                        primary_path.iter().map(|v| v.as_slice()).collect();
+                    let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
+                    self.open_count_indexed_secondary_for_batch(
+                        cidx_path,
+                        &continue_storage_batch,
+                        tx.as_ref(),
                         grove_version,
                     )
                 },

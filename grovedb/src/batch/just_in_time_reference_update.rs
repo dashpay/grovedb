@@ -21,9 +21,10 @@ use crate::{
     Element, ElementFlags, Error,
 };
 
-impl<'db, S, F> TreeCacheMerkByPath<S, F>
+impl<'db, S, F, F2> TreeCacheMerkByPath<S, F, F2>
 where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
     S: StorageContext<'db>,
 {
     pub(crate) fn process_old_element_flags<G, SR>(

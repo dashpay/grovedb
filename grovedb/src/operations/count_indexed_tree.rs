@@ -93,6 +93,61 @@ impl GroveDb {
         }
     }
 
+    /// Helper used by the batch path: open the secondary Merk for the cidx
+    /// primary at `path`. Reads the parent merk's cidx element to discover
+    /// the secondary's current root_key, then opens the secondary at the
+    /// derived prefix sharing the supplied storage batch and transaction.
+    pub(crate) fn open_count_indexed_secondary_for_batch<'db, 'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        batch: &'db StorageBatch,
+        tx: &'db Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let (parent_path, cidx_key) = match path.derive_parent() {
+            Some(p) => p,
+            None => {
+                return Err(Error::InvalidPath(
+                    "cannot open cidx secondary at root path".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        let parent_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(parent_path, tx, Some(batch), grove_version)
+        );
+        let element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&parent_merk, cidx_key, true, grove_version).map_err(Error::MerkError)
+        );
+        let secondary_root_key = match element.underlying() {
+            Element::CountIndexedTree(_, s, ..) | Element::ProvableCountIndexedTree(_, s, ..) => {
+                s.clone()
+            }
+            _ => {
+                return Err(Error::CorruptedData(
+                    "open_count_indexed_secondary_for_batch: parent element is not a \
+                     CountIndexedTree"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        self.open_count_indexed_secondary_at_path(
+            path,
+            secondary_root_key,
+            tx,
+            Some(batch),
+            grove_version,
+        )
+        .add_cost(cost)
+    }
+
     /// Insert (or update) an item under a key into a `CountIndexedTree`
     /// element. Mirrors the change in the count-ordered secondary index and
     /// updates the parent's element bytes (primary_root_key,
@@ -1293,6 +1348,54 @@ impl GroveDb {
 
         Ok(true).wrap_with_cost(cost)
     }
+}
+
+/// Apply the secondary-mirror update for a primary mutation in the
+/// generic batch path. Handles all four cases (insert / update / delete
+/// / no-op) by combining `old_count` and `new_count` Options:
+/// - `(None, None)`: no-op (key was absent before and after).
+/// - `(None, Some(c))`: insert at count `c`.
+/// - `(Some(c), None)`: delete the secondary entry at count `c`.
+/// - `(Some(o), Some(n))`: update — delete entry at `o` and insert at `n`
+///   (skips both if `o == n`).
+pub(crate) fn mirror_to_secondary_for_batch<'db, S: StorageContext<'db>>(
+    secondary: &mut Merk<S>,
+    item_key: &[u8],
+    old_count: Option<u64>,
+    new_count: Option<u64>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let mut cost = OperationCost::default();
+    if old_count == new_count {
+        // (None, None) and (Some(o) == Some(o)) are no-ops.
+        return Ok(()).wrap_with_cost(cost);
+    }
+    if let Some(old) = old_count {
+        let old_secondary_key = make_secondary_key(old, item_key);
+        cost_return_on_error!(
+            &mut cost,
+            Element::delete(
+                secondary,
+                old_secondary_key.as_slice(),
+                None,
+                false,
+                TreeType::ProvableCountTree,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+    }
+    if let Some(new) = new_count {
+        let new_secondary_key = make_secondary_key(new, item_key);
+        let secondary_entry = Element::new_item(Vec::new());
+        cost_return_on_error!(
+            &mut cost,
+            secondary_entry
+                .insert(secondary, new_secondary_key.as_slice(), None, grove_version)
+                .map_err(Error::MerkError)
+        );
+    }
+    Ok(()).wrap_with_cost(cost)
 }
 
 /// Apply the secondary-mirror update for a primary insert/update.
