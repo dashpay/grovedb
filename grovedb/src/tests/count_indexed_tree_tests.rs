@@ -1792,6 +1792,144 @@ mod tests {
     }
 
     #[test]
+    fn apply_partial_batch_with_delete_tree_on_cidx_cleans_up_secondary() {
+        // Exercises the cidx-secondary cleanup pass added to
+        // apply_partial_batch (parallels the apply_batch cleanup but
+        // routes through the partial-batch code path).
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            grovedb_merk::tree_type::TreeType::CountIndexedTree,
+            crate::batch::SubelementsDeletionBehavior::DeleteChildren,
+        )];
+        db.apply_partial_batch(
+            ops,
+            None,
+            |_cost, _leftover| Ok(vec![]),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply_partial_batch should succeed");
+
+        // Re-create + populate; the secondary must have only the new
+        // entry (proves the partial-batch cidx cleanup ran).
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"only",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1, b"only".to_vec());
+    }
+
+    #[test]
+    fn batch_delete_tree_on_cidx_dont_check_with_no_cleanup_still_clears_secondary() {
+        // The DontCheckWithNoCleanup behavior skips primary subtree
+        // cleanup but cidx secondary cleanup must still run because
+        // the cidx secondary lives in a different namespace not
+        // covered by find_subtrees.
+        use crate::batch::{QualifiedGroveDbOp, SubelementsDeletionBehavior};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // DontCheckWithNoCleanup requires the cidx to be empty (caller
+        // promises it). It is — we just created it.
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            grovedb_merk::tree_type::TreeType::CountIndexedTree,
+            SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("delete tree no-cleanup");
+
+        // Re-create + populate. The new cidx secondary must observe only
+        // the new entry; if the secondary cleanup didn't run for the
+        // DontCheckWithNoCleanup path, stale empty-cidx metadata could
+        // surface here.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1, b"k".to_vec());
+    }
+
+    #[test]
     fn batch_overwrite_cidx_rejected_with_override_protection_on() {
         // The standard tree-override flag also rejects cidx overwrites
         // (covers the validate_insertion_does_not_override_tree=true
