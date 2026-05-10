@@ -88,12 +88,52 @@ pub struct CountIndexedQueryResult {
 
 impl GroveDb {
     /// Generate a proof for the top-`k` entries of a `CountIndexedTree`,
-    /// ordered by `count_value`.
+    /// ordered by `count_value`. Thin wrapper around
+    /// [`Self::prove_count_indexed_query`] with a full-range secondary
+    /// query.
     pub fn prove_count_indexed_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
         descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut full_range = MerkQuery::new();
+        full_range.insert_all();
+        full_range.left_to_right = !descending;
+        self.prove_count_indexed_query(path, full_range, Some(k), transaction, grove_version)
+    }
+
+    /// Generate a proof for an arbitrary query over a `CountIndexedTree`'s
+    /// **secondary** index keyspace. Secondary keys are
+    /// `(count_value_be ‖ original_key)`; callers can express any
+    /// predicate that fits the standard `MerkQuery` shape (single keys,
+    /// prefix ranges, multi-range, ascending or descending) by building
+    /// the query in those bytes.
+    ///
+    /// The encoded envelope binds:
+    /// - the chain of single-key Merk proofs from the GroveDB root to the
+    ///   cidx element's parent merk;
+    /// - the cidx primary's root hash (attestation needed by the H1-A
+    ///   verifier);
+    /// - per-cidx-ancestor secondary attestation when the path traverses
+    ///   nested cidx (so verifier uses `combine_hash_three` at those
+    ///   layers);
+    /// - a standard Merk range proof of `secondary_query` against the
+    ///   cidx secondary, with the `limit` if any.
+    ///
+    /// Verify with [`Self::verify_count_indexed_query`] using the same
+    /// `secondary_query`.
+    pub fn prove_count_indexed_query<'b, B, P>(
+        &self,
+        path: P,
+        secondary_query: MerkQuery,
+        limit: Option<u16>,
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<u8>, Error>
@@ -109,7 +149,14 @@ impl GroveDb {
 
         let envelope = cost_return_on_error!(
             &mut cost,
-            self.build_count_indexed_proof(path, k, descending, tx_ref, &batch, grove_version)
+            self.build_count_indexed_proof(
+                path,
+                secondary_query,
+                limit,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
         );
 
         let bytes = cost_return_on_error_no_add!(
@@ -124,8 +171,8 @@ impl GroveDb {
     fn build_count_indexed_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
-        k: u16,
-        descending: bool,
+        secondary_query: MerkQuery,
+        limit: Option<u16>,
         transaction: &'db Transaction,
         batch: &'db StorageBatch,
         grove_version: &GroveVersion,
@@ -267,13 +314,16 @@ impl GroveDb {
                 grove_version,
             )
         );
-        let mut sec_query = MerkQuery::new();
-        sec_query.insert_all();
-        sec_query.left_to_right = !descending;
+        // Echo the user-supplied query parameters needed by the verifier
+        // to interpret the secondary proof. `requested_limit` is the
+        // resolved u16 (0 means "no limit"); `descending` is just
+        // !left_to_right echoed for the existing top-k convenience field.
+        let descending = !secondary_query.left_to_right;
+        let requested_limit = limit.unwrap_or(0);
         let sec_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
-                .prove(sec_query, Some(k), grove_version)
+                .prove(secondary_query, limit, grove_version)
                 .map_err(Error::MerkError)
         );
 
@@ -282,7 +332,7 @@ impl GroveDb {
             primary_root_hash,
             ancestor_cidx_secondary_root_hashes,
             secondary_proof: sec_result.proof,
-            requested_limit: k,
+            requested_limit,
             descending,
         })
         .wrap_with_cost(cost)
@@ -336,7 +386,32 @@ impl GroveDb {
         let (envelope, _): (CountIndexedRangeProof, _) =
             bincode::decode_from_slice(proof_bytes, bincode::config::standard())
                 .map_err(|e| Error::CorruptedData(format!("decoding cidx proof: {e}")))?;
+        let mut full_range = MerkQuery::new();
+        full_range.insert_all();
+        full_range.left_to_right = !envelope.descending;
+        Self::verify_count_indexed_inner(envelope, full_range, path)
+    }
 
+    /// Verify a proof produced by [`Self::prove_count_indexed_query`].
+    /// `secondary_query` must match the query supplied at proof time
+    /// (positional binding: the merk proof's encoded sequence is
+    /// query-shape-dependent).
+    pub fn verify_count_indexed_query(
+        proof_bytes: &[u8],
+        secondary_query: MerkQuery,
+        path: &[&[u8]],
+    ) -> Result<CountIndexedQueryResult, Error> {
+        let (envelope, _): (CountIndexedRangeProof, _) =
+            bincode::decode_from_slice(proof_bytes, bincode::config::standard())
+                .map_err(|e| Error::CorruptedData(format!("decoding cidx proof: {e}")))?;
+        Self::verify_count_indexed_inner(envelope, secondary_query, path)
+    }
+
+    fn verify_count_indexed_inner(
+        envelope: CountIndexedRangeProof,
+        secondary_query: MerkQuery,
+        path: &[&[u8]],
+    ) -> Result<CountIndexedQueryResult, Error> {
         if envelope.layer_proofs.len() != path.len() {
             return Err(Error::CorruptedData(format!(
                 "cidx proof has {} layers but path has {} segments",
@@ -356,14 +431,17 @@ impl GroveDb {
         //    `combine_hash(H(child_bytes), child_root_hash)`.
 
         // 1a. Verify the secondary range proof first (no chain dep).
-        let mut sec_query = MerkQuery::new();
-        sec_query.insert_all();
-        sec_query.left_to_right = !envelope.descending;
-        let (secondary_root_hash, sec_result) = sec_query
+        let limit_for_verify = if envelope.requested_limit == 0 {
+            None
+        } else {
+            Some(envelope.requested_limit)
+        };
+        let left_to_right = secondary_query.left_to_right;
+        let (secondary_root_hash, sec_result) = secondary_query
             .execute_proof(
                 &envelope.secondary_proof,
-                Some(envelope.requested_limit),
-                !envelope.descending,
+                limit_for_verify,
+                left_to_right,
                 0,
             )
             .unwrap()

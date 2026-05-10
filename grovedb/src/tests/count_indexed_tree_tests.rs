@@ -2173,6 +2173,87 @@ mod tests {
     }
 
     #[test]
+    fn prove_count_indexed_query_with_count_range() {
+        // Arbitrary secondary query: prove only entries with count
+        // in [3, 5] (encoded as the byte range
+        // [3u64.be_bytes() .. 6u64.be_bytes()]).
+        use grovedb_merk::proofs::Query as MerkQuery;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Build entries with diverse counts: a=1, b=2, c=3, d=5, e=8.
+        for (k, count) in [
+            (b"a".as_slice(), 1),
+            (b"b", 2),
+            (b"c", 3),
+            (b"d", 5),
+            (b"e", 8),
+        ] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sub");
+            // Pump count up by inserting count distinct items into sub.
+            for i in 0..count {
+                let item_key = format!("x{i}").into_bytes();
+                db.insert(
+                    [TEST_LEAF, b"cidx", k].as_ref(),
+                    &item_key,
+                    Element::new_item(b"d".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate sub");
+            }
+        }
+
+        // Build secondary query covering count in [3, 5] inclusive.
+        // Lower bound: 3u64::to_be_bytes() (zero-suffix). Upper: 6u64
+        // (exclusive in the next-count slot).
+        let lo = 3u64.to_be_bytes().to_vec();
+        let hi = 6u64.to_be_bytes().to_vec();
+        let mut q = MerkQuery::new();
+        q.insert_range(lo..hi);
+        q.left_to_right = true;
+
+        let proof = db
+            .prove_count_indexed_query(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                q.clone(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove arbitrary cidx query");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result =
+            GroveDb::verify_count_indexed_query(&proof, q, path).expect("verify arbitrary");
+        // Should yield c (count=3) and d (count=5); b (count=2) and e
+        // (count=8) are outside the [3, 5] window.
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries[0], (3u64, b"c".to_vec()));
+        assert_eq!(result.entries[1], (5u64, b"d".to_vec()));
+    }
+
+    #[test]
     fn verify_count_indexed_top_k_rejects_path_length_mismatch() {
         // Generate a real proof, then verify with a path of the wrong length.
         let grove_version = GroveVersion::latest();
