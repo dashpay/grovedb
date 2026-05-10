@@ -1306,23 +1306,26 @@ mod tests {
     }
 
     #[test]
-    fn direct_insert_rejects_non_empty_count_indexed_tree() {
-        // The direct (non-batch) insert path requires both root keys = None.
-        // Non-empty insertion belongs in the batch path with cascading
-        // propagation (follow-up PR).
+    fn direct_insert_rejects_mismatched_cidx_root_keys() {
+        // Direct insertion of a non-empty CountIndexedTree element is
+        // supported (migration / restore-from-backup path), but the
+        // primary_root_key / secondary_root_key declared on the element
+        // must match the actual on-disk state of the primary and
+        // secondary Merks. A claim that does not match should fail
+        // rather than persist an inconsistent root_hash chain.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
-        let non_empty = Element::new_count_indexed_tree_with_root_keys_and_count_value(
-            Some(b"primary".to_vec()),
+        let bogus = Element::new_count_indexed_tree_with_root_keys_and_count_value(
+            Some(b"primary-not-on-disk".to_vec()),
             None,
-            0,
+            5,
             None,
         );
         let result = db
             .insert(
                 [TEST_LEAF].as_ref(),
                 b"key",
-                non_empty,
+                bogus,
                 None,
                 None,
                 grove_version,

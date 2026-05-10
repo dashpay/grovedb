@@ -281,28 +281,82 @@ impl GroveDb {
                 );
             }
             // CountIndexedTree / ProvableCountIndexedTree own two child Merks
-            // (primary + secondary). On direct insertion we accept only the
-            // empty case (both root keys = None, count = 0) because there is
-            // no two-Merk batch-cascade machinery in this code path; full
-            // batch / cascading-aggregation support lives in the batch
-            // propagation work.
+            // (primary + secondary). The H1-A combined value hash needs the
+            // actual root hashes from both child Merks; for the empty case
+            // (both root keys = None, count = 0) those are `NULL_HASH`,
+            // otherwise we open the existing child Merks and read their
+            // current root hashes so the parent's value_hash is consistent
+            // with on-disk state (migration / restore-from-backup path).
             Element::CountIndexedTree(primary, secondary, count_value, _)
             | Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
-                if primary.is_some() || secondary.is_some() || *count_value != 0 {
-                    return Err(Error::InvalidCodeExecution(
-                        "a CountIndexedTree must be empty at the moment of direct insertion (both \
-                         primary_root_key and secondary_root_key must be None and count = 0); \
-                         non-empty insertion requires batch operations",
-                    ))
-                    .wrap_with_cost(cost);
-                }
+                let (primary_root_hash, secondary_root_hash) =
+                    if primary.is_none() && secondary.is_none() && *count_value == 0 {
+                        (NULL_HASH, NULL_HASH)
+                    } else {
+                        // Non-empty cidx: open the existing primary and
+                        // secondary Merks and verify their root keys match
+                        // the values the caller is asserting in the
+                        // element bytes. Mismatch ⇒ the element bytes
+                        // would diverge from on-disk state; refuse rather
+                        // than persist an inconsistent root_hash chain.
+                        let child_path_owned = path.derive_owned_with_child(key.to_vec());
+                        let child_path = SubtreePath::from(&child_path_owned);
+                        let primary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_transactional_merk_at_path(
+                                child_path.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (p_hash, p_root_key, _) = cost_return_on_error!(
+                            &mut cost,
+                            primary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &p_root_key != primary {
+                            return Err(Error::InvalidInput(
+                                "CountIndexedTree direct insertion: provided \
+                                 primary_root_key does not match the existing \
+                                 primary Merk's root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        let secondary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_count_indexed_secondary_at_path(
+                                child_path,
+                                secondary.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (s_hash, s_root_key, _) = cost_return_on_error!(
+                            &mut cost,
+                            secondary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &s_root_key != secondary {
+                            return Err(Error::InvalidInput(
+                                "CountIndexedTree direct insertion: provided \
+                                 secondary_root_key does not match the existing \
+                                 secondary Merk's root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        (p_hash, s_hash)
+                    };
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert_count_indexed_subtree(
                         &mut subtree_to_insert_into,
                         key,
-                        NULL_HASH,
-                        NULL_HASH,
+                        primary_root_hash,
+                        secondary_root_hash,
                         Some(options.as_merk_options()),
                         grove_version,
                     )
