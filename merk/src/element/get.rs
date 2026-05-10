@@ -408,15 +408,21 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                 })
                 .transpose()
         );
-        // Look through `NonCounted` for cost computation: the wrapper does
-        // not change which cost path applies — its inner element type does.
-        // For the catch-all (Item / Reference) path, value.len() already
-        // includes the wrapper byte. For tree- and sum-item paths that use
-        // cost-size constants, add `wrapper_overhead` to keep accounting
-        // exact.
+        // Look through wrapper variants for cost computation: the wrappers
+        // do not change which cost path applies — the inner element type
+        // does. For the catch-all (Item / Reference) path, value.len()
+        // already includes the wrapper byte. For tree- and sum-item paths
+        // that use cost-size constants, add `wrapper_overhead` to keep
+        // accounting exact.
         let wrapper_overhead = element
             .as_ref()
-            .map(|e| if e.is_non_counted() { 1u32 } else { 0 })
+            .map(|e| {
+                if e.is_non_counted() || e.is_not_summed() {
+                    1u32
+                } else {
+                    0
+                }
+            })
             .unwrap_or(0);
         let element_for_cost = element.as_ref().map(|e| e.underlying());
         match element_for_cost {
@@ -479,10 +485,10 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                         NodeType::NormalNode,
                     ) as u64
             }
-            // NonCounted wrappers are unwrapped above; reaching this arm means
+            // Wrappers are unwrapped above; reaching these arms means
             // the inner type wasn't one of the explicit arms (impossible given
             // exhaustiveness above).
-            Some(Element::NonCounted(_)) => {}
+            Some(Element::NonCounted(_)) | Some(Element::NotSummed(_)) => {}
             None => {}
         }
         Ok(element).wrap_with_cost(cost)
@@ -525,10 +531,14 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                 Error::CorruptedData(format!("unable to deserialize element: {e}"))
             })
         );
-        // Look through `NonCounted` for cost computation; see V0 path above
-        // for rationale. Capture the wrapper byte before unwrapping so the
-        // tree- and sum-item arms can include it in value_len.
-        let wrapper_overhead = if element.is_non_counted() { 1u32 } else { 0 };
+        // Look through wrapper variants for cost computation; see V0 path
+        // above for rationale. Capture the wrapper byte before unwrapping so
+        // the tree- and sum-item arms can include it in value_len.
+        let wrapper_overhead = if element.is_non_counted() || element.is_not_summed() {
+            1u32
+        } else {
+            0
+        };
         let element_for_cost = element.underlying();
         match element_for_cost {
             Element::Item(..) | Element::Reference(..) => {
@@ -594,8 +604,8 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
                         node_type,
                     ) as u64
             }
-            // NonCounted wrappers are unwrapped above.
-            Element::NonCounted(_) => {}
+            // Wrappers are unwrapped above.
+            Element::NonCounted(_) | Element::NotSummed(_) => {}
         }
         Ok(Some(element)).wrap_with_cost(cost)
     }

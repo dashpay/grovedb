@@ -207,6 +207,11 @@ impl Visualize for Element {
                     drawer = f.visualize(drawer)?;
                 }
             }
+            Element::NotSummed(inner) => {
+                drawer.write(b"not_summed(")?;
+                drawer = inner.visualize(drawer)?;
+                drawer.write(b")")?;
+            }
         }
         Ok(drawer)
     }

@@ -541,6 +541,7 @@ mod tests {
                 aggregate_data: AggregateData::NoAggregateData,
 
                 non_counted: false,
+                not_summed: false,
             },
         };
 

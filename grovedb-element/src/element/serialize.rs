@@ -5,26 +5,47 @@ use bincode::config;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
-    element::Element, element_type::NON_COUNTED_WRAPPER_DISCRIMINANT, error::ElementError,
+    element::Element,
+    element_type::{NON_COUNTED_WRAPPER_DISCRIMINANT, NOT_SUMMED_WRAPPER_DISCRIMINANT},
+    error::ElementError,
 };
 
 impl Element {
     /// Serializes self. Returns vector of u8s.
     ///
-    /// Rejects `NonCounted(NonCounted(_))` — the wrapper is not allowed to
-    /// nest. Constructed via `Element::new_non_counted` this is impossible,
-    /// but a caller could build it directly.
+    /// Rejects:
+    /// - `NonCounted(NonCounted(_))` — `NonCounted` cannot nest.
+    /// - `NotSummed(NotSummed(_))`, `NotSummed(NonCounted(_))`,
+    ///   `NonCounted(NotSummed(_))` — wrappers cannot cross-nest.
+    /// - `NotSummed(x)` where `x` is not one of the four sum-tree variants
+    ///   (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`).
+    ///
+    /// Constructed via `Element::new_non_counted` / `Element::new_not_summed`
+    /// these are impossible, but a caller could build them directly.
     pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, ElementError> {
         check_grovedb_v0!(
             "Element::serialize",
             grove_version.grovedb_versions.element.serialize
         );
         if let Element::NonCounted(inner) = self
-            && matches!(**inner, Element::NonCounted(_))
+            && matches!(**inner, Element::NonCounted(_) | Element::NotSummed(_))
         {
             return Err(ElementError::CorruptedData(
-                "NonCounted cannot wrap another NonCounted".to_string(),
+                "NonCounted cannot wrap another wrapper".to_string(),
             ));
+        }
+        if let Element::NotSummed(inner) = self {
+            match **inner {
+                Element::SumTree(..)
+                | Element::BigSumTree(..)
+                | Element::CountSumTree(..)
+                | Element::ProvableCountSumTree(..) => {}
+                _ => {
+                    return Err(ElementError::CorruptedData(
+                        "NotSummed inner must be a sum-tree variant".to_string(),
+                    ));
+                }
+            }
         }
         let config = config::standard().with_big_endian().with_no_limit();
         bincode::encode_to_vec(self, config)
@@ -43,32 +64,36 @@ impl Element {
 
     /// Deserializes given bytes and sets as self.
     ///
-    /// Pre-checks the leading bytes for a nested `NonCounted` wrapper and
+    /// Pre-checks the leading bytes for any wrapper-byte combination and
     /// rejects before invoking bincode. This closes a stack-exhaustion
-    /// vector: a hostile payload of repeated `NON_COUNTED_WRAPPER_DISCRIMINANT`
-    /// bytes would otherwise cause bincode to recursively decode the
-    /// `Box<Element>` chain (and overflow the stack) before any post-decode
-    /// check could fire. The pre-check is O(1) — only the first two bytes
-    /// matter.
+    /// vector: a hostile payload of repeated wrapper bytes would otherwise
+    /// cause bincode to recursively decode the `Box<Element>` chain (and
+    /// overflow the stack) before any post-decode check could fire. The
+    /// pre-check is O(1) — only the first two bytes matter.
+    ///
+    /// The four rejected leading byte pairs are:
+    /// - `[15, 15, ..]` — `NonCounted(NonCounted(..))`
+    /// - `[15, 16, ..]` — `NonCounted(NotSummed(..))`
+    /// - `[16, 15, ..]` — `NotSummed(NonCounted(..))`
+    /// - `[16, 16, ..]` — `NotSummed(NotSummed(..))`
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
         check_grovedb_v0!(
             "Element::deserialize",
             grove_version.grovedb_versions.element.deserialize
         );
-        // Pre-check: if the wire starts with the wrapper discriminant, the
-        // very next byte must NOT be the wrapper discriminant again. This
-        // bounds the recursion bincode will attempt.
-        if matches!(
-            bytes,
-            [
-                NON_COUNTED_WRAPPER_DISCRIMINANT,
-                NON_COUNTED_WRAPPER_DISCRIMINANT,
-                ..
-            ]
-        ) {
-            return Err(ElementError::CorruptedData(
-                "deserialized NonCounted wrapping another NonCounted".to_string(),
-            ));
+        // Pre-check: if the wire starts with a wrapper discriminant, the
+        // very next byte must NOT be ANY wrapper discriminant. This bounds
+        // the recursion bincode will attempt.
+        match bytes {
+            [NON_COUNTED_WRAPPER_DISCRIMINANT, NON_COUNTED_WRAPPER_DISCRIMINANT, ..]
+            | [NON_COUNTED_WRAPPER_DISCRIMINANT, NOT_SUMMED_WRAPPER_DISCRIMINANT, ..]
+            | [NOT_SUMMED_WRAPPER_DISCRIMINANT, NON_COUNTED_WRAPPER_DISCRIMINANT, ..]
+            | [NOT_SUMMED_WRAPPER_DISCRIMINANT, NOT_SUMMED_WRAPPER_DISCRIMINANT, ..] => {
+                return Err(ElementError::CorruptedData(
+                    "deserialized wrapper wrapping another wrapper".to_string(),
+                ));
+            }
+            _ => {}
         }
         let config = config::standard().with_big_endian().with_no_limit();
         let elem: Element = bincode::decode_from_slice(bytes, config)
@@ -80,11 +105,24 @@ impl Element {
         // bincode/discriminant changes that could let a nested wrapper
         // sneak past the pre-check).
         if let Element::NonCounted(inner) = &elem
-            && matches!(**inner, Element::NonCounted(_))
+            && matches!(**inner, Element::NonCounted(_) | Element::NotSummed(_))
         {
             return Err(ElementError::CorruptedData(
-                "deserialized NonCounted wrapping another NonCounted".to_string(),
+                "deserialized NonCounted wrapping another wrapper".to_string(),
             ));
+        }
+        if let Element::NotSummed(inner) = &elem {
+            match **inner {
+                Element::SumTree(..)
+                | Element::BigSumTree(..)
+                | Element::CountSumTree(..)
+                | Element::ProvableCountSumTree(..) => {}
+                _ => {
+                    return Err(ElementError::CorruptedData(
+                        "deserialized NotSummed with non-sum-tree inner".to_string(),
+                    ));
+                }
+            }
         }
         Ok(elem)
     }

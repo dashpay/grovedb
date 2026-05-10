@@ -382,7 +382,9 @@ impl GroveDb {
                     .map_err(Error::MerkError)
                 );
             }
-            Element::NonCounted(_) => unreachable!("underlying() unwraps NonCounted"),
+            Element::NonCounted(_) | Element::NotSummed(_) => {
+                unreachable!("underlying() unwraps wrappers")
+            }
         };
 
         // 5. Open secondary and apply the mirror update.
