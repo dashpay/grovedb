@@ -1792,6 +1792,114 @@ mod tests {
     }
 
     #[test]
+    fn batch_overwrite_cidx_rejected_with_override_protection_on() {
+        // The standard tree-override flag also rejects cidx overwrites
+        // (covers the validate_insertion_does_not_override_tree=true
+        // branch).
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::new_item(b"replaced".to_vec()),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: true,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn batch_delete_tree_on_cidx_then_recreate_in_separate_batch_works() {
+        // The recommended workaround for cidx overwrite: DeleteTree the
+        // old cidx in one batch, re-create with new state in another.
+        // Verifies the workaround is actually clean (no stale state).
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+
+        // Batch 1: DeleteTree the cidx.
+        let ops1 = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            grovedb_merk::tree_type::TreeType::CountIndexedTree,
+            crate::batch::SubelementsDeletionBehavior::DeleteChildren,
+        )];
+        db.apply_batch(ops1, None, None, grove_version)
+            .unwrap()
+            .expect("batch delete tree");
+
+        // Batch 2: Re-create the cidx.
+        let ops2 = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::empty_count_indexed_tree(),
+        )];
+        db.apply_batch(ops2, None, None, grove_version)
+            .unwrap()
+            .expect("batch recreate");
+        // Batch 3: populate the new cidx.
+        let ops3 = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            b"new".to_vec(),
+            Element::new_item(b"fresh".to_vec()),
+        )];
+        db.apply_batch(ops3, None, None, grove_version)
+            .unwrap()
+            .expect("batch populate");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1, b"new".to_vec());
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
     fn batch_overwrite_existing_cidx_with_item_is_rejected() {
         // Even with the tree-override protection flag off, the batch
         // path must refuse to overwrite an existing cidx element with
