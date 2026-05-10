@@ -21,6 +21,23 @@ pub const NON_COUNTED_FLAG: u8 = 0x80;
 /// discriminant.
 pub const NON_COUNTED_BASE_MASK: u8 = 0x7F;
 
+/// Bincode discriminant byte for `Element::NotSummed`. Tied to the
+/// declaration order of the `Element` enum (0-indexed, 17th variant).
+///
+/// Like `NON_COUNTED_WRAPPER_DISCRIMINANT`, this byte has no direct
+/// `ElementType` variant. `from_serialized_value` reads the next byte and
+/// resolves to one of the four `NotSummedXxx` synthetic twins. Only the four
+/// sum-tree base discriminants are legal as the inner byte.
+pub const NOT_SUMMED_WRAPPER_DISCRIMINANT: u8 = 16;
+
+/// Bit 6 set on every `NotSummedXxx` discriminant. Disjoint from
+/// `NON_COUNTED_FLAG` (bit 7) so the two wrappers are independently testable.
+pub const NOT_SUMMED_FLAG: u8 = 0x40;
+
+/// Mask to recover the base type discriminant from a `NotSummedXxx`
+/// discriminant.
+pub const NOT_SUMMED_BASE_MASK: u8 = 0xBF;
+
 /// Indicates which type of proof node should be used when generating proofs.
 ///
 /// This determines whether the verifier will recompute the value hash (secure)
@@ -107,6 +124,13 @@ pub enum ProofNodeType {
 /// the inner element's bytes; `from_serialized_value` synthesizes the
 /// `NonCountedXxx` variant by peeking at the second byte.
 ///
+/// Not-summed twins follow the same scheme but use bit 6 (`0x40`) and only
+/// cover the four sum-tree base discriminants (4, 5, 7, 10). The wrapper byte
+/// is `NOT_SUMMED_WRAPPER_DISCRIMINANT` (16). The bit 6 / bit 7 flags are
+/// disjoint, so the two wrappers can be tested independently — though they
+/// are mutually exclusive in practice (the constructors and (de)serializers
+/// reject any nesting).
+///
 /// IMPORTANT: Base values (0..=14) must match the order of variants in the
 /// `Element` enum. The `test_element_serialization_discriminants_match_element_type`
 /// test catches drift.
@@ -175,6 +199,14 @@ pub enum ElementType {
     NonCountedBulkAppendTree = 141,
     /// Non-counted wrapper around `DenseAppendOnlyFixedSizeTree` - discriminant 142
     NonCountedDenseAppendOnlyFixedSizeTree = 142,
+    /// Not-summed wrapper around `SumTree` - discriminant 68 (`0x40 | 4`)
+    NotSummedSumTree = 68,
+    /// Not-summed wrapper around `BigSumTree` - discriminant 69 (`0x40 | 5`)
+    NotSummedBigSumTree = 69,
+    /// Not-summed wrapper around `CountSumTree` - discriminant 71 (`0x40 | 7`)
+    NotSummedCountSumTree = 71,
+    /// Not-summed wrapper around `ProvableCountSumTree` - discriminant 74 (`0x40 | 10`)
+    NotSummedProvableCountSumTree = 74,
 }
 
 impl ElementType {
@@ -207,7 +239,8 @@ impl ElementType {
             // than NON_COUNTED_WRAPPER_DISCRIMINANT (15). Bytes 15+ are not
             // valid on-disk inner discriminants:
             //   - 15 itself is the wrapper byte (nested wrappers forbidden),
-            //   - 16..=127 are unallocated,
+            //   - 16 is the NotSummed wrapper byte (cross-nesting forbidden),
+            //   - 17..=127 are unallocated,
             //   - 128..=142 are the synthetic NonCountedXxx twins which
             //     never appear on disk; without this check, the bitwise OR
             //     below would collapse `0x80 | inner_byte` into `inner_byte`
@@ -221,6 +254,25 @@ impl ElementType {
                 )));
             }
             Self::try_from(NON_COUNTED_FLAG | inner_byte)
+        } else if first_byte == NOT_SUMMED_WRAPPER_DISCRIMINANT {
+            let inner_byte = *serialized_value.get(1).ok_or_else(|| {
+                ElementError::CorruptedData(
+                    "NotSummed wrapper has no inner element discriminant byte".to_string(),
+                )
+            })?;
+            // Only the four sum-tree base discriminants are legal here.
+            // Anything else — including the wrapper bytes 15/16, the
+            // synthetic twin ranges, and the unrelated base types — is
+            // rejected so that round-tripping `from_serialized_value` always
+            // yields a valid `NotSummedXxx` twin.
+            match inner_byte {
+                4 | 5 | 7 | 10 => Self::try_from(NOT_SUMMED_FLAG | inner_byte),
+                _ => Err(ElementError::CorruptedData(format!(
+                    "NotSummed inner discriminant must be a sum-tree base type \
+                     (4=SumTree, 5=BigSumTree, 7=CountSumTree, 10=ProvableCountSumTree), got {}",
+                    inner_byte
+                ))),
+            }
         } else {
             Self::try_from(first_byte)
         }
@@ -232,16 +284,32 @@ impl ElementType {
         (self as u8) & NON_COUNTED_FLAG != 0
     }
 
-    /// Returns the underlying base ElementType, stripping the NonCounted bit.
-    /// For base types, returns `self` unchanged.
+    /// Returns true if this is a `NotSummedXxx` discriminant (bit 6 set).
+    #[inline]
+    pub const fn is_not_summed(self) -> bool {
+        (self as u8) & NOT_SUMMED_FLAG != 0
+    }
+
+    /// Returns the underlying base ElementType, stripping any wrapper flag
+    /// bits. For base types, returns `self` unchanged.
+    ///
+    /// The `NonCounted` and `NotSummed` flag bits are disjoint (`0x80` and
+    /// `0x40`), but only one is ever set on any valid `ElementType` instance
+    /// — the constructors and (de)serializers reject any wrapper nesting.
     #[inline]
     pub fn base(self) -> ElementType {
-        if self.is_non_counted() {
+        let disc = self as u8;
+        if disc & NON_COUNTED_FLAG != 0 {
             // Safe: every NonCountedXxx is constructed from a valid base
             // discriminant 0..=14, so masking the high bit yields a valid
             // base discriminant.
-            ElementType::try_from((self as u8) & NON_COUNTED_BASE_MASK)
+            ElementType::try_from(disc & NON_COUNTED_BASE_MASK)
                 .expect("NonCounted twin always has a valid base")
+        } else if disc & NOT_SUMMED_FLAG != 0 {
+            // Safe: every NotSummedXxx is constructed from one of the four
+            // sum-tree base discriminants {4, 5, 7, 10}.
+            ElementType::try_from(disc & NOT_SUMMED_BASE_MASK)
+                .expect("NotSummed twin always has a valid base")
         } else {
             self
         }
@@ -423,6 +491,10 @@ impl ElementType {
             ElementType::NonCountedMmrTree => "non_counted mmr tree",
             ElementType::NonCountedBulkAppendTree => "non_counted bulk_append_tree",
             ElementType::NonCountedDenseAppendOnlyFixedSizeTree => "non_counted dense_tree",
+            ElementType::NotSummedSumTree => "not_summed sum tree",
+            ElementType::NotSummedBigSumTree => "not_summed big sum tree",
+            ElementType::NotSummedCountSumTree => "not_summed count sum tree",
+            ElementType::NotSummedProvableCountSumTree => "not_summed provable count sum tree",
         }
     }
 }
@@ -469,6 +541,10 @@ impl TryFrom<u8> for ElementType {
             140 => Ok(ElementType::NonCountedMmrTree),
             141 => Ok(ElementType::NonCountedBulkAppendTree),
             142 => Ok(ElementType::NonCountedDenseAppendOnlyFixedSizeTree),
+            68 => Ok(ElementType::NotSummedSumTree),
+            69 => Ok(ElementType::NotSummedBigSumTree),
+            71 => Ok(ElementType::NotSummedCountSumTree),
+            74 => Ok(ElementType::NotSummedProvableCountSumTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -1058,6 +1134,120 @@ mod tests {
                 expected_inner_disc | NON_COUNTED_FLAG,
                 "{}: NonCountedXxx = inner_disc | 0x80",
                 name
+            );
+        }
+    }
+
+    /// Pins the bincode discriminant for `Element::NotSummed` to
+    /// `NOT_SUMMED_WRAPPER_DISCRIMINANT` and the four allowed inner
+    /// discriminants. Mirrors `test_non_counted_wrapper_discriminant_pinned`.
+    #[test]
+    fn test_not_summed_wrapper_discriminant_pinned() {
+        use grovedb_version::version::GroveVersion;
+
+        use crate::element::Element;
+
+        let grove_version = GroveVersion::latest();
+
+        let cases: Vec<(Element, ElementType, u8, &str)> = vec![
+            (
+                Element::NotSummed(Box::new(Element::SumTree(None, 0, None))),
+                ElementType::NotSummedSumTree,
+                4,
+                "NotSummed(SumTree)",
+            ),
+            (
+                Element::NotSummed(Box::new(Element::BigSumTree(None, 0, None))),
+                ElementType::NotSummedBigSumTree,
+                5,
+                "NotSummed(BigSumTree)",
+            ),
+            (
+                Element::NotSummed(Box::new(Element::CountSumTree(None, 0, 0, None))),
+                ElementType::NotSummedCountSumTree,
+                7,
+                "NotSummed(CountSumTree)",
+            ),
+            (
+                Element::NotSummed(Box::new(Element::ProvableCountSumTree(None, 0, 0, None))),
+                ElementType::NotSummedProvableCountSumTree,
+                10,
+                "NotSummed(ProvableCountSumTree)",
+            ),
+        ];
+
+        for (element, expected_type, expected_inner_disc, name) in cases {
+            let serialized = element
+                .serialize(grove_version)
+                .unwrap_or_else(|e| panic!("Failed to serialize {}: {:?}", name, e));
+
+            assert!(
+                serialized.len() >= 2,
+                "Serialized {} should have at least 2 bytes",
+                name
+            );
+            assert_eq!(
+                serialized[0], NOT_SUMMED_WRAPPER_DISCRIMINANT,
+                "{}: first byte should be the wrapper discriminant (16)",
+                name
+            );
+            assert_eq!(
+                serialized[1], expected_inner_disc,
+                "{}: second byte should match the inner element's discriminant",
+                name
+            );
+
+            let parsed = ElementType::from_serialized_value(&serialized)
+                .unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", name, e));
+            assert_eq!(
+                parsed, expected_type,
+                "{}: from_serialized_value returned {:?}, expected {:?}",
+                name, parsed, expected_type
+            );
+            // The synthetic discriminant follows the 0x40|base rule.
+            assert_eq!(
+                parsed as u8,
+                expected_inner_disc | NOT_SUMMED_FLAG,
+                "{}: NotSummedXxx = inner_disc | 0x40",
+                name
+            );
+        }
+    }
+
+    /// Validate the new resolver paths around byte 16 (NotSummed wrapper).
+    #[test]
+    fn test_from_serialized_value_not_summed_paths() {
+        // Truncated wrapper (no inner byte) is rejected.
+        assert!(ElementType::from_serialized_value(&[16]).is_err());
+
+        // Each of the four legal inner discriminants resolves to the right
+        // synthetic twin.
+        assert_eq!(
+            ElementType::from_serialized_value(&[16, 4]).unwrap(),
+            ElementType::NotSummedSumTree
+        );
+        assert_eq!(
+            ElementType::from_serialized_value(&[16, 5]).unwrap(),
+            ElementType::NotSummedBigSumTree
+        );
+        assert_eq!(
+            ElementType::from_serialized_value(&[16, 7]).unwrap(),
+            ElementType::NotSummedCountSumTree
+        );
+        assert_eq!(
+            ElementType::from_serialized_value(&[16, 10]).unwrap(),
+            ElementType::NotSummedProvableCountSumTree
+        );
+
+        // All other inner bytes are rejected: non-sum-tree base types,
+        // wrapper bytes, synthetic twins, and unallocated ranges.
+        for bad in [
+            0u8, 1, 2, 3, 6, 8, 9, 11, 12, 13, 14, 15, 16, 17, 100, 128, 142, 200, 255,
+        ] {
+            assert!(
+                ElementType::from_serialized_value(&[16, bad]).is_err(),
+                "[16, {}] should be rejected",
+                bad
             );
         }
     }

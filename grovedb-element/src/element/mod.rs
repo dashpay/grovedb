@@ -133,6 +133,21 @@ pub enum Element {
     /// Invariant: a `NonCounted` may not wrap another `NonCounted`. Enforced
     /// at construction and at deserialization.
     NonCounted(Box<Element>),
+    /// Not-summed wrapper: contains a sum-bearing tree variant (`SumTree`,
+    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`) and behaves
+    /// identically to it for storage, hashing, and its own internal sum
+    /// aggregate, but contributes 0 to its parent sum tree's running sum
+    /// when inserted. Counts still propagate.
+    ///
+    /// May only be inserted into sum-bearing trees (`SumTree`, `BigSumTree`,
+    /// `CountSumTree`, `ProvableCountSumTree`).
+    ///
+    /// Invariants (enforced at construction, serialization, and
+    /// deserialization):
+    /// - The inner element MUST be one of the four sum-tree variants above.
+    /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`, or
+    ///   any non-tree element.
+    NotSummed(Box<Element>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -321,6 +336,9 @@ impl fmt::Display for Element {
             Element::NonCounted(inner) => {
                 write!(f, "NonCounted({})", inner)
             }
+            Element::NotSummed(inner) => {
+                write!(f, "NotSummed({})", inner)
+            }
         }
     }
 }
@@ -370,6 +388,17 @@ impl Element {
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
+            },
+            Element::NotSummed(inner) => match inner.element_type() {
+                ElementType::SumTree => ElementType::NotSummedSumTree,
+                ElementType::BigSumTree => ElementType::NotSummedBigSumTree,
+                ElementType::CountSumTree => ElementType::NotSummedCountSumTree,
+                ElementType::ProvableCountSumTree => ElementType::NotSummedProvableCountSumTree,
+                // Inner is always one of the 4 sum-tree variants above —
+                // construction and (de)serialization forbid anything else.
+                // Returning the inner type is the safest fallback for the
+                // unreachable case.
+                other => other,
             },
         }
     }

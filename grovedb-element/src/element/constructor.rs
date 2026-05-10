@@ -407,4 +407,39 @@ impl Element {
             other => Element::NonCounted(Box::new(other)),
         }
     }
+
+    /// Wrap a sum-tree variant in `NotSummed` so it contributes 0 to its
+    /// parent sum tree's running sum when inserted. Counts (if any) still
+    /// propagate.
+    ///
+    /// Only the four sum-tree variants are accepted: `SumTree`, `BigSumTree`,
+    /// `CountSumTree`, `ProvableCountSumTree`. Any other element — including
+    /// items, sum items, references, non-sum trees, and any wrapper
+    /// (`NonCounted`, `NotSummed`) — is rejected with `InvalidInput`.
+    pub fn new_not_summed(inner: Element) -> Result<Self, ElementError> {
+        match inner {
+            Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountSumTree(..)
+            | Element::ProvableCountSumTree(..) => Ok(Element::NotSummed(Box::new(inner))),
+            _ => Err(ElementError::InvalidInput(
+                "NotSummed inner element must be a sum-tree variant (SumTree, BigSumTree, \
+                 CountSumTree, or ProvableCountSumTree)",
+            )),
+        }
+    }
+
+    /// Wrap `self` in `NotSummed` without re-validating the inner element's
+    /// type. Panics if `self` is not a sum-tree variant. Used by batch
+    /// propagation paths that have already established the element will be
+    /// a sum-tree type.
+    pub fn into_not_summed_unchecked(self) -> Self {
+        match Self::new_not_summed(self) {
+            Ok(wrapped) => wrapped,
+            Err(_) => panic!(
+                "into_not_summed_unchecked called on non-sum-tree element — caller must ensure \
+                 the element is one of SumTree/BigSumTree/CountSumTree/ProvableCountSumTree"
+            ),
+        }
+    }
 }

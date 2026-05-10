@@ -576,7 +576,9 @@ impl GroveDb {
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
-                            Ok(Element::NonCounted(_)) => unreachable!("unwrapped above"),
+                            Ok(Element::NonCounted(_)) | Ok(Element::NotSummed(_)) => {
+                                unreachable!("unwrapped above")
+                            }
                             Err(e) => {
                                 return Err(Error::CorruptedData(format!(
                                     "failed to deserialize element during proof generation: {e}"
@@ -1440,7 +1442,9 @@ impl GroveDb {
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
-                            Ok(Element::NonCounted(_)) => unreachable!("unwrapped above"),
+                            Ok(Element::NonCounted(_)) | Ok(Element::NotSummed(_)) => {
+                                unreachable!("unwrapped above")
+                            }
                             Err(e) => {
                                 return Err(Error::CorruptedData(format!(
                                     "failed to deserialize element during proof generation: {e}"

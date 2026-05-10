@@ -170,6 +170,13 @@ impl ElementInsertToStorageExtensions for Element {
             .wrap_with_cost(Default::default());
         }
 
+        if self.is_not_summed() && !merk.tree_type.is_sum_bearing() {
+            return Err(Error::InvalidInputError(
+                "not-summed elements may only be inserted into sum-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         if !merk.tree_type.allows_sum_item() && self.is_sum_item() {
             return Err(Error::InvalidInputError(
                 "cannot add sum item to non sum tree",
@@ -441,6 +448,13 @@ impl ElementInsertToStorageExtensions for Element {
             .wrap_with_cost(Default::default());
         }
 
+        if self.is_not_summed() && !merk.tree_type.is_sum_bearing() {
+            return Err(Error::InvalidInputError(
+                "not-summed elements may only be inserted into sum-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
         let serialized = match self.serialize(grove_version) {
             Ok(s) => s,
             Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
@@ -529,6 +543,13 @@ impl ElementInsertToStorageExtensions for Element {
         if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
             return Err(Error::InvalidInputError(
                 "non-counted elements may only be inserted into count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        if self.is_not_summed() && !merk.tree_type.is_sum_bearing() {
+            return Err(Error::InvalidInputError(
+                "not-summed elements may only be inserted into sum-bearing trees",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -831,6 +852,96 @@ mod tests {
             .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
             .unwrap();
         assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
+
+    #[test]
+    fn not_summed_rejected_in_normal_tree() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("wrap ok");
+        let result = ns.insert(&mut merk, b"k", None, grove_version).unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
+
+    #[test]
+    fn not_summed_rejected_in_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::CountTree);
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("wrap ok");
+        let result = ns
+            .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
+
+    #[test]
+    fn not_summed_constructor_rejects_non_sum_tree_inner() {
+        // Items, references, plain trees, and non-sum-tree variants must all
+        // be rejected at construction time.
+        assert!(Element::new_not_summed(Element::new_item(b"x".to_vec())).is_err());
+        assert!(Element::new_not_summed(Element::new_sum_item(7)).is_err());
+        assert!(Element::new_not_summed(Element::new_tree(None)).is_err());
+        assert!(Element::new_not_summed(Element::new_count_tree(None)).is_err());
+        assert!(Element::new_not_summed(Element::new_provable_count_tree(None)).is_err());
+        // Wrappers cannot nest.
+        let nc = Element::new_non_counted(Element::new_sum_tree(None)).expect("wrap ok");
+        assert!(Element::new_not_summed(nc).is_err());
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("wrap ok");
+        assert!(Element::new_not_summed(ns).is_err());
+        // The four sum-tree variants are accepted.
+        assert!(Element::new_not_summed(Element::new_sum_tree(None)).is_ok());
+        assert!(Element::new_not_summed(Element::new_big_sum_tree(None)).is_ok());
+        assert!(Element::new_not_summed(Element::new_count_sum_tree(None)).is_ok());
+        assert!(Element::new_not_summed(Element::new_provable_count_sum_tree(None)).is_ok());
+    }
+
+    #[test]
+    fn not_summed_accepted_in_sum_tree_contributes_zero_sum() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::SumTree);
+
+        // One bare sum item contributes 7.
+        Element::new_sum_item(7)
+            .insert(&mut merk, b"k1", None, grove_version)
+            .unwrap()
+            .expect("insert k1");
+        // A bare SumTree(_, 100, _) child via insert_subtree would
+        // contribute 100. The wrapped version must contribute 0.
+        let ns_subtree = Element::new_not_summed(Element::new_sum_tree_with_flags_and_sum_value(
+            None, 100, None,
+        ))
+        .expect("wrap ok");
+        ns_subtree
+            .insert_subtree(&mut merk, b"k2", [0u8; 32], None, grove_version)
+            .unwrap()
+            .expect("insert wrapped sum tree subtree");
+
+        let agg = merk.aggregate_data().expect("aggregate ok");
+        assert_eq!(
+            agg.as_sum_i64(),
+            7,
+            "wrapped sum tree's 100 should be suppressed; only the bare sum item contributes"
+        );
+    }
+
+    #[test]
+    fn not_summed_in_provable_count_sum_tree_keeps_count_drops_sum() {
+        // A NotSummed(SumTree(_, 100, _)) inside a ProvableCountSumTree
+        // contributes count = 1, sum = 0.
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountSumTree);
+
+        let ns = Element::new_not_summed(Element::new_sum_tree_with_flags_and_sum_value(
+            None, 100, None,
+        ))
+        .expect("wrap ok");
+        ns.insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap()
+            .expect("insert wrapped sum tree");
+
+        let agg = merk.aggregate_data().expect("aggregate ok");
+        assert_eq!(agg.as_count_u64(), 1);
+        assert_eq!(agg.as_sum_i64(), 0);
     }
 
     #[test]

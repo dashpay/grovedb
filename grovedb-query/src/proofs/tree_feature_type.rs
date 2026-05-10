@@ -111,6 +111,22 @@ impl TreeFeatureType {
         }
     }
 
+    /// Force the sum component of this feature type to 0, leaving count
+    /// components untouched. No-op for variants that don't carry a sum.
+    ///
+    /// Used by the `Element::NotSummed` wrapper: when computing the parent
+    /// tree's feature type for a not-summed child, we use the inner sum-tree
+    /// element's feature type but zero out its sum so the parent's
+    /// aggregate excludes it.
+    pub fn zero_sum(&mut self) {
+        match self {
+            SummedMerkNode(sum) => *sum = 0,
+            BigSummedMerkNode(sum) => *sum = 0,
+            CountedSummedMerkNode(_, sum) | ProvableCountedSummedMerkNode(_, sum) => *sum = 0,
+            BasicMerkNode | CountedMerkNode(_) | ProvableCountedMerkNode(_) => {}
+        }
+    }
+
     /// Get the NodeType for this feature type
     pub fn node_type(&self) -> NodeType {
         match self {

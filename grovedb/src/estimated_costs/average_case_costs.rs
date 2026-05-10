@@ -326,10 +326,14 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
-        // Look through `NonCounted` for cost dispatch (the wrapper byte is
-        // accounted for via `wrapper_overhead` parallel to
+        // Look through wrapper variants for cost dispatch (the wrapper byte
+        // is accounted for via `wrapper_overhead` parallel to
         // `merk/src/element/costs.rs`).
-        let wrapper_overhead = if value.is_non_counted() { 1u32 } else { 0 };
+        let wrapper_overhead = if value.is_non_counted() || value.is_not_summed() {
+            1u32
+        } else {
+            0
+        };
         match value.underlying() {
             Element::Tree(_, flags)
             | Element::SumTree(_, _, flags)
