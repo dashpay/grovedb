@@ -5,14 +5,14 @@ pub use grovedb_query::*;
 #[cfg(test)]
 mod merk_integration_tests;
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_count;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod map;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
 
-#[cfg(feature = "minimal")]
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use aggregate_count::verify_aggregate_count_on_range_proof;
 
 #[cfg(feature = "minimal")]
