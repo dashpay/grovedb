@@ -282,4 +282,51 @@ mod tests {
             String::from_utf8_lossy(result.as_ref())
         );
     }
+
+    #[test]
+    fn test_visualize_count_indexed_tree_empty() {
+        let e = Element::CountIndexedTree(None, None, 0, None);
+        let mut result = Vec::new();
+        let drawer = Drawer::new(&mut result);
+        e.visualize(drawer).expect("visualize IO error");
+        let rendered = String::from_utf8_lossy(result.as_ref()).into_owned();
+        assert!(
+            rendered.contains("count_indexed_tree"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("count: 0"), "rendered: {rendered}");
+    }
+
+    #[test]
+    fn test_visualize_count_indexed_tree_with_keys() {
+        let e = Element::CountIndexedTree(Some(vec![0xab, 0xcd]), Some(vec![0xef]), 7, None);
+        let mut result = Vec::new();
+        let drawer = Drawer::new(&mut result);
+        e.visualize(drawer).expect("visualize IO error");
+        let rendered = String::from_utf8_lossy(result.as_ref()).into_owned();
+        assert!(
+            rendered.contains("count_indexed_tree"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("count: 7"), "rendered: {rendered}");
+    }
+
+    #[test]
+    fn test_visualize_provable_count_indexed_tree() {
+        let e = Element::ProvableCountIndexedTree(
+            Some(vec![0x11]),
+            Some(vec![0x22]),
+            42,
+            Some(vec![1]),
+        );
+        let mut result = Vec::new();
+        let drawer = Drawer::new(&mut result);
+        e.visualize(drawer).expect("visualize IO error");
+        let rendered = String::from_utf8_lossy(result.as_ref()).into_owned();
+        assert!(
+            rendered.contains("provable_count_indexed_tree"),
+            "rendered: {rendered}"
+        );
+        assert!(rendered.contains("count: 42"), "rendered: {rendered}");
+    }
 }

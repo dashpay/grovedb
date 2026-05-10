@@ -1557,4 +1557,214 @@ mod tests {
         keys.sort();
         assert_eq!(keys, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
     }
+
+    #[test]
+    fn count_indexed_count_range_with_lo_greater_than_hi_returns_empty() {
+        // Defensive early-return path: an inverted [lo, hi] interval is
+        // valid input but has no entries.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        let entries = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                10,
+                5,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("inverted bounds returns Ok with empty Vec");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn count_indexed_count_range_with_hi_count_u64_max_uses_range_from() {
+        // Exercises the RangeFrom branch in count_indexed_count_range
+        // (hi_count == u64::MAX). Without entries at that count, the
+        // result is the same as the bounded-upper-bound branch — but the
+        // code path differs.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Add one entry so the secondary has at least one key.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub count tree");
+        let entries = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("count_range with u64::MAX upper bound");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, b"k".to_vec());
+    }
+
+    #[test]
+    fn count_indexed_count_range_respects_limit() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b", b"c", b"d", b"e"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sub count tree");
+        }
+        let entries = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                100,
+                false,
+                2,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("count_range with limit");
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn count_indexed_top_k_with_zero_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate cidx");
+        let entries = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 0, true, None, grove_version)
+            .unwrap()
+            .expect("top_k with k=0");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn count_indexed_top_k_at_root_path_errors() {
+        // top_k on the empty path is invalid; needs at least one parent.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty_path: &[&[u8]] = &[];
+        let result = db
+            .count_indexed_top_k(empty_path, 3, true, None, grove_version)
+            .unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn count_indexed_count_range_at_root_path_errors() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty_path: &[&[u8]] = &[];
+        let result = db
+            .count_indexed_count_range(empty_path, 0, 100, false, 10, None, grove_version)
+            .unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_corrupt_proof_bytes() {
+        // Garbage proof bytes — bincode decode fails first.
+        let result = GroveDb::verify_count_indexed_top_k(b"not-a-valid-proof", &[b"x"]);
+        assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_path_length_mismatch() {
+        // Generate a real proof, then verify with a path of the wrong length.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate cidx");
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Use a path that has the wrong number of segments.
+        let bad_path: &[&[u8]] = &[TEST_LEAF, b"cidx", b"extra"];
+        let result = GroveDb::verify_count_indexed_top_k(&proof, bad_path);
+        assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
+    }
 }
