@@ -1489,14 +1489,17 @@ impl GroveDb {
                             println!("lower layer had key {}", hex_to_ascii(key));
                         }
                         match element {
-                            // CountIndexedTree / ProvableCountIndexedTree
-                            // V0 verifier path lands in PR 3.
+                            // V0 is a frozen wire format and does not
+                            // describe cidx descent (the prover rejects
+                            // it for the same reason). The verifier
+                            // refuses to fabricate a chain for an
+                            // envelope shape V0 cannot produce.
                             Element::CountIndexedTree(..)
                             | Element::ProvableCountIndexedTree(..) => {
                                 return Err(Error::NotSupported(
-                                    "verifying V0 proofs that descend into a CountIndexedTree / \
-                                     ProvableCountIndexedTree is not yet supported (planned in \
-                                     PR 3)"
+                                    "V0 proofs do not support descent into \
+                                     CountIndexedTree / ProvableCountIndexedTree; \
+                                     use V1 or verify_count_indexed_top_k"
                                         .to_string(),
                                 ));
                             }

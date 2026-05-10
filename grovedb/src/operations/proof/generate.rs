@@ -456,20 +456,20 @@ impl GroveDb {
                                 }
                                 has_a_result_at_level |= true;
                             }
-                            // Subquery-into-CountIndexedTree proof generation
-                            // belongs in PR 3 alongside the count-indexed
-                            // query API. PR 1 emits an explicit error so a
-                            // misuse fails loudly rather than silently
-                            // skipping the subquery.
+                            // V0 is a frozen wire format. Adding cidx
+                            // descent to it would change the proof bytes,
+                            // so V0 will not learn cidx subqueries. Use
+                            // V1 (or the dedicated `prove_count_indexed_*`
+                            // entry points) for cidx queries.
                             Ok(Element::CountIndexedTree(..))
                             | Ok(Element::ProvableCountIndexedTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 return Err(Error::NotSupported(
-                                    "subqueries into CountIndexedTree / \
-                                     ProvableCountIndexedTree are not yet supported (planned in \
-                                     PR 3)"
+                                    "V0 proofs do not support subqueries into \
+                                     CountIndexedTree / ProvableCountIndexedTree; \
+                                     use prove_query_v1 or prove_count_indexed_top_k"
                                         .to_string(),
                                 ))
                                 .wrap_with_cost(cost);
