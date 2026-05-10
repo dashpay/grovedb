@@ -2997,6 +2997,263 @@ mod tests {
     }
 
     #[test]
+    fn direct_insert_into_nested_cidx_primary_bubbles_count_up_outer_secondary() {
+        // Same shape as the batch test below, but routes through the
+        // direct insert API (`db.insert(...)`) instead of `apply_batch`.
+        // After direct insert into inner_cidx primary, outer's secondary
+        // entry for "inner_cidx" must move from (0, ...) to (1, ...).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create inner");
+
+        // Direct insert (NOT via batch).
+        db.insert(
+            [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+            b"item",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("direct insert into nested cidx primary");
+
+        let top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("outer top");
+        assert_eq!(
+            top[0],
+            (1u64, b"inner_cidx".to_vec()),
+            "outer's secondary must reflect inner's new count = 1 (direct path)"
+        );
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "verify_grovedb issues: {:?}", issues);
+    }
+
+    #[test]
+    fn batch_insert_through_cidx_then_regular_tree_then_cidx() {
+        // Layout: TEST_LEAF / outer_cidx / regular_tree / inner_cidx
+        // Mixed nesting: cidx → regular tree → cidx. The bubble-up from
+        // inner_cidx must:
+        //   1. Mirror inner's secondary inline.
+        //   2. Emit ReplaceCountIndexedTreeRootKeys to the regular_tree
+        //      level (parent is NOT a cidx primary, so no mirror runs
+        //      there, but the inner_cidx element bytes are still
+        //      updated via the H1-A handler).
+        //   3. Regular_tree's bubble-up emits ReplaceTreeRootKey to
+        //      outer_cidx — the outer's pre-state captures the
+        //      regular_tree's count (regular trees aggregate count from
+        //      children), and outer's secondary mirrors the change.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer");
+        // Insert a regular CountTree (not cidx) inside outer_cidx — must
+        // be a count-bearing tree to live inside a cidx primary, but
+        // does NOT need to be cidx itself.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"regular",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("regular");
+        db.insert(
+            [TEST_LEAF, b"outer_cidx", b"regular"].as_ref(),
+            b"inner_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"outer_cidx".to_vec(),
+                b"regular".to_vec(),
+                b"inner_cidx".to_vec(),
+            ],
+            b"item".to_vec(),
+            Element::new_item(b"v".to_vec()),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("mixed-nesting batch");
+
+        // outer_cidx's secondary should reflect "regular"'s aggregate
+        // count = 1 (the count contributed by inner_cidx → 1).
+        let outer_top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer_cidx"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("outer top");
+        assert_eq!(outer_top, vec![(1u64, b"regular".to_vec())]);
+
+        // inner_cidx's secondary has the item.
+        let inner_top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer_cidx", b"regular", b"inner_cidx"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("inner top");
+        assert_eq!(inner_top, vec![(1u64, b"item".to_vec())]);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn batch_insert_into_triple_nested_cidx_propagates_through_all_levels() {
+        // Layout: TEST_LEAF / a (cidx) / b (cidx) / c (cidx)
+        // Batch-insert one item into c's primary. After the bubble-up,
+        // every ancestor cidx's secondary must reflect the count change:
+        //   a's secondary: b under count 1 (from c's count 1)
+        //   b's secondary: c under count 1
+        //   c's secondary: item under count 1
+        //
+        // Also confirms that ReplaceCountIndexedTreeRootKeys correctly
+        // chains through multiple cidx-primary levels (each level emits
+        // it for the level above when the level was a cidx primary).
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("a");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"a"].as_ref(),
+            b"b",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("b");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"a", b"b"].as_ref(),
+            b"c",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("c");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"a".to_vec(),
+                b"b".to_vec(),
+                b"c".to_vec(),
+            ],
+            b"item".to_vec(),
+            Element::new_item(b"v".to_vec()),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("triple-nested cidx batch insert");
+
+        // Each level's secondary must reflect count = 1 for the entry
+        // representing the level below.
+        let a_top = db
+            .count_indexed_top_k([TEST_LEAF, b"a"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("a top");
+        assert_eq!(a_top, vec![(1u64, b"b".to_vec())]);
+
+        let b_top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"a", b"b"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("b top");
+        assert_eq!(b_top, vec![(1u64, b"c".to_vec())]);
+
+        let c_top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"a", b"b", b"c"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("c top");
+        assert_eq!(c_top, vec![(1u64, b"item".to_vec())]);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
     fn batch_insert_into_nested_cidx_primary_bubbles_count_up_outer_secondary() {
         // Layout: TEST_LEAF / outer_cidx / inner_cidx
         //                       (cidx)       (cidx)
