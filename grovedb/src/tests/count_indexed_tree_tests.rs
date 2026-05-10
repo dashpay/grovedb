@@ -2996,6 +2996,101 @@ mod tests {
         assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
     }
 
+    #[test]
+    fn batch_insert_into_nested_cidx_primary_bubbles_count_up_outer_secondary() {
+        // Layout: TEST_LEAF / outer_cidx / inner_cidx
+        //                       (cidx)       (cidx)
+        // Batch-inserts an item into inner_cidx's primary. The bubble-up
+        // should:
+        //   - Mirror the count change inside inner's secondary (count
+        //     for "item" goes None → 1).
+        //   - Emit ReplaceCountIndexedTreeRootKeys to outer's primary
+        //     level.
+        //   - At outer's primary level, the pre/post element bytes for
+        //     "inner_cidx" change (count_value 0 → 1), so outer's
+        //     secondary entry for "inner_cidx" must move from
+        //     (0_be ‖ inner_cidx) to (1_be ‖ inner_cidx).
+        //
+        // If outer's pre-state capture skips ReplaceCountIndexedTreeRootKeys
+        // ops, outer's secondary won't be mirrored — top-k on outer
+        // would silently return stale counts.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create inner");
+
+        // Sanity: outer's top-k should currently show inner_cidx with
+        // count = 0 (newly created, empty inner).
+        let top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("outer top before");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0], (0u64, b"inner_cidx".to_vec()));
+
+        // Now BATCH-insert an item into inner_cidx's primary.
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"outer_cidx".to_vec(),
+                b"inner_cidx".to_vec(),
+            ],
+            b"item".to_vec(),
+            Element::new_item(b"v".to_vec()),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch insert into nested cidx");
+
+        // Outer's top-k MUST now show inner_cidx with count = 1.
+        let top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("outer top after");
+        assert_eq!(top.len(), 1);
+        assert_eq!(
+            top[0],
+            (1u64, b"inner_cidx".to_vec()),
+            "outer's secondary must reflect inner's new count = 1"
+        );
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "verify_grovedb issues: {:?}", issues);
+    }
+
     // =====================================================================
     // Atomicity stress tests for batches mixing cidx + non-cidx ops.
     //

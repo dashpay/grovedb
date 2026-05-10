@@ -1914,6 +1914,17 @@ where
                         | GroveOp::InsertTreeWithRootHash { .. }
                         | GroveOp::ReplaceNonMerkTreeRoot { .. }
                         | GroveOp::InsertNonMerkTree { .. }
+                        // Nested cidx: when a child cidx primary
+                        // bubbles up to its OUTER cidx primary, the
+                        // child's element bytes (count_value field)
+                        // change as part of this op. The outer's
+                        // secondary entry for the child must move
+                        // from (old_count_be ‖ child_key) to
+                        // (new_count_be ‖ child_key). Without this
+                        // arm the outer's secondary silently reports
+                        // stale counts even though H1-A integrity
+                        // still passes.
+                        | GroveOp::ReplaceCountIndexedTreeRootKeys { .. }
                 );
                 if mutates && !pre.contains_key(&key_bytes) {
                     let maybe_bytes = cost_return_on_error!(
