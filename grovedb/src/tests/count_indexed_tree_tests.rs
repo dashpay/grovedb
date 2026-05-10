@@ -2995,4 +2995,470 @@ mod tests {
         let result = GroveDb::verify_count_indexed_top_k(&proof, bad_path);
         assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
     }
+
+    // =====================================================================
+    // Atomicity stress tests for batches mixing cidx + non-cidx ops.
+    //
+    // GroveDB batches are atomic by design: validation runs over the full
+    // op list before any writes hit storage. These tests verify that the
+    // cidx-aware paths in the batch flow preserve that invariant under
+    // mixed workloads and partial-failure scenarios.
+    // =====================================================================
+
+    #[test]
+    fn batch_mixed_cidx_and_non_cidx_ops_apply_atomically() {
+        // A single batch inserts into both a cidx primary AND a plain
+        // sibling Tree at the same depth. After commit, both subtrees
+        // reflect their respective inserts; the cidx's secondary index
+        // is consistent; verify_grovedb finds no issues.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Set up: TEST_LEAF / cidx (CountIndexedTree) and
+        //         TEST_LEAF / plain (Tree)
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"plain",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create plain tree");
+
+        // Mix four ops in one batch: two into cidx primary, two into plain
+        // tree. Order is not stable across batch internal sort but the
+        // outcome must be the union of all four.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"a".to_vec(),
+                Element::new_item(b"1".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"plain".to_vec()],
+                b"x".to_vec(),
+                Element::new_item(b"X".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"b".to_vec(),
+                Element::new_item(b"2".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"plain".to_vec()],
+                b"y".to_vec(),
+                Element::new_item(b"Y".to_vec()),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("mixed batch must succeed");
+
+        // Cidx state: count = 2, top-2 contains a and b.
+        let cidx_element = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("cidx");
+        match cidx_element {
+            Element::CountIndexedTree(_, _, count, _) => assert_eq!(count, 2),
+            other => panic!("expected cidx, got {:?}", other),
+        }
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 2);
+
+        // Plain tree state: x and y both present.
+        let x = db
+            .get([TEST_LEAF, b"plain"].as_ref(), b"x", None, grove_version)
+            .unwrap()
+            .expect("plain x");
+        assert_eq!(x, Element::new_item(b"X".to_vec()));
+        let y = db
+            .get([TEST_LEAF, b"plain"].as_ref(), b"y", None, grove_version)
+            .unwrap()
+            .expect("plain y");
+        assert_eq!(y, Element::new_item(b"Y".to_vec()));
+
+        // Integrity walk through cidx node + plain node.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "expected no issues, got {:?}", issues);
+    }
+
+    #[test]
+    fn batch_failure_in_non_cidx_op_rolls_back_cidx_mutations() {
+        // Atomicity: if validation fails on ANY op in the batch, the
+        // cidx state must remain at its pre-batch values. We trigger
+        // the failure with an InsertWithKnownToNotAlreadyExist where
+        // the key DOES already exist (asserted absence violated).
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Pre-existing item that we'll try to "insert with known to
+        // not already exist" — this op asserts the key is absent.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"old".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create existing");
+
+        // Snapshot pre-batch state.
+        let cidx_before = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("cidx before");
+        let root_before = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root before");
+
+        // Compose a batch whose first op would mutate the cidx primary,
+        // and whose later op would fail. The validation phase should
+        // reject the whole batch and leave cidx untouched.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"would_be_inserted".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![TEST_LEAF.to_vec()],
+                b"existing".to_vec(),
+                Element::new_item(b"new".to_vec()),
+            ),
+        ];
+        let opts = crate::batch::BatchApplyOptions {
+            validate_insertion_does_not_override: true,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "batch with InsertWithKnownToNotAlreadyExist on existing key must fail"
+        );
+
+        // Post-failure state must match pre-batch state exactly.
+        let cidx_after = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("cidx after");
+        assert_eq!(cidx_before, cidx_after, "cidx state must be unchanged");
+
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root after");
+        assert_eq!(
+            root_before, root_after,
+            "root hash must be unchanged on rollback"
+        );
+
+        // The would-be-inserted key is not present.
+        let result = db
+            .get(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"would_be_inserted",
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(result.is_err());
+
+        // The pre-existing item still has its original value.
+        let existing = db
+            .get([TEST_LEAF].as_ref(), b"existing", None, grove_version)
+            .unwrap()
+            .expect("existing");
+        assert_eq!(existing, Element::new_item(b"old".to_vec()));
+    }
+
+    #[test]
+    fn batch_with_multiple_cidx_primaries_each_get_updated() {
+        // Two independent cidx primaries at the same level; one batch
+        // inserts into both. Each cidx must end up with its own correct
+        // count + secondary state.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx_a",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx_a");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx_b",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx_b");
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx_a".to_vec()],
+                b"a1".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx_b".to_vec()],
+                b"b1".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx_a".to_vec()],
+                b"a2".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("multi-cidx batch");
+
+        // cidx_a has count=2 (a1, a2)
+        match db
+            .get([TEST_LEAF].as_ref(), b"cidx_a", None, grove_version)
+            .unwrap()
+            .expect("cidx_a")
+        {
+            Element::CountIndexedTree(_, _, count, _) => assert_eq!(count, 2),
+            other => panic!("expected cidx_a, got {:?}", other),
+        }
+        // cidx_b has count=1 (b1)
+        match db
+            .get([TEST_LEAF].as_ref(), b"cidx_b", None, grove_version)
+            .unwrap()
+            .expect("cidx_b")
+        {
+            Element::CountIndexedTree(_, _, count, _) => assert_eq!(count, 1),
+            other => panic!("expected cidx_b, got {:?}", other),
+        }
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn batch_cidx_delete_with_concurrent_cidx_inserts_atomic() {
+        // One batch: DeleteTree one cidx + insert items into another
+        // cidx. The DeleteTree's secondary cleanup runs in the post-
+        // apply phase; the insert's secondary mirror runs in the level
+        // execute phase. Both must apply atomically — no cross-cidx
+        // interference.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx_to_delete",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete cidx");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx_to_keep",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("keep cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx_to_delete"].as_ref(),
+            b"old",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate delete cidx");
+
+        let ops = vec![
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx_to_delete".to_vec(),
+                grovedb_merk::tree_type::TreeType::CountIndexedTree,
+                crate::batch::SubelementsDeletionBehavior::DeleteChildren,
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx_to_keep".to_vec()],
+                b"new1".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx_to_keep".to_vec()],
+                b"new2".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("delete + insert atomic");
+
+        // The deleted cidx is gone.
+        let result = db
+            .get([TEST_LEAF].as_ref(), b"cidx_to_delete", None, grove_version)
+            .unwrap();
+        assert!(result.is_err(), "deleted cidx must be absent");
+
+        // The kept cidx has the two new items.
+        match db
+            .get([TEST_LEAF].as_ref(), b"cidx_to_keep", None, grove_version)
+            .unwrap()
+            .expect("kept")
+        {
+            Element::CountIndexedTree(_, _, count, _) => assert_eq!(count, 2),
+            other => panic!("expected cidx_to_keep, got {:?}", other),
+        }
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn batch_failure_after_cidx_delete_tree_rolls_back() {
+        // Atomicity: a batch containing both a DeleteTree on cidx (which
+        // schedules secondary cleanup for the post-apply phase) and an
+        // op that fails validation must abort BEFORE either change
+        // commits — neither the DeleteTree nor the secondary cleanup
+        // should be visible.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"old".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create existing");
+
+        // Snapshot.
+        let root_before = db.root_hash(None, grove_version).unwrap().expect("root");
+        let cidx_before = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("cidx before");
+        let top_before = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top before");
+
+        // Batch: DeleteTree on cidx + violation of an existence assertion.
+        let ops = vec![
+            QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                grovedb_merk::tree_type::TreeType::CountIndexedTree,
+                crate::batch::SubelementsDeletionBehavior::DeleteChildren,
+            ),
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![TEST_LEAF.to_vec()],
+                b"existing".to_vec(),
+                Element::new_item(b"new".to_vec()),
+            ),
+        ];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override: true,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        assert!(result.is_err(), "batch with assertion violation must fail");
+
+        // Cidx and secondary state must match pre-batch — DeleteTree
+        // didn't commit, secondary cleanup didn't run.
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root after");
+        assert_eq!(root_before, root_after);
+        let cidx_after = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("cidx after");
+        assert_eq!(cidx_before, cidx_after);
+        let top_after = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top after");
+        assert_eq!(top_before, top_after);
+    }
 }

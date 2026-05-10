@@ -354,12 +354,63 @@ The user controls `k` directly: pick `CountIndexedTree` at the levels
 where you actually want count-ordered queries, and plain `CountTree` at
 intermediate levels where you don't.
 
-> **Open question (W1):** whether the cascading secondary updates should
-> all flow through the standard batch machinery (one `GroveDbOp` per
-> secondary del+put per level) or be emitted by a specialized handler
-> inside the propagation pass. The first is simpler and reuses
-> well-tested infrastructure; the second avoids re-walking the path. I'd
-> default to the first.
+## Batch path semantics
+
+The level-by-level batch path (`apply_batch`, `apply_partial_batch`)
+supports cidx primary mutations end-to-end. The bubble-up emits a
+new internal op variant `GroveOp::ReplaceCountIndexedTreeRootKeys`
+carrying both the primary's and secondary's new state, which the
+parent merk handler consumes via H1-A
+(`combine_hash_three`).
+
+### Supported batch operations on cidx
+
+| Op shape | Behaviour |
+|---|---|
+| `Insert` / `InsertOrReplace` / `Replace` / `Patch` of a leaf (`Item`, `SumItem`, `Reference`, …) at a path **inside** a cidx primary | Mirrors the count delta to the secondary inline, bubbles up via the new op so the cidx element on the parent merk recomputes its `value_hash` via H1-A. |
+| `Delete` of a leaf inside a cidx primary | Same — the count goes to `None`, secondary entry is removed. |
+| Deep `Insert` / `Delete` under a sub-tree of a cidx primary (e.g. `cidx / sub_count_tree / item`) | The cidx primary's bubble-up sees the sub-tree's new aggregate count as a `ReplaceTreeRootKey`, mirrors the count change to the secondary via the same pre/post-state capture as direct mutations. |
+| `DeleteTree` of a cidx element (any `SubelementsDeletionBehavior`) | Cleans up **both** the primary's recursive subtree storage and the secondary's storage namespace at `Blake3(primary_prefix ‖ 0x01)`. The cleanup runs unconditionally (including for `DontCheckWithNoCleanup`) because the secondary lives in a different namespace not visible to `find_subtrees`. |
+
+### Rejected batch operations on cidx
+
+| Op shape | Reason |
+|---|---|
+| `InsertOrReplace` / `Replace` / `Patch` overwriting an existing cidx element with anything | Storage-pointer semantics are ambiguous: post-apply cleanup of the old cidx's prefixes shares the prefix space with where a new non-empty cidx would point. Use the [overwrite workaround](#cidx-overwrite-workaround) below. |
+
+### Cidx overwrite workaround
+
+To replace an existing cidx with a new state (or with a different
+element type entirely):
+
+1. **Batch 1:** `DeleteTree` the existing cidx. Both primary and
+   secondary storage are cleared cleanly.
+2. **Batch 2:** `InsertOrReplace` an empty cidx (or other element)
+   at the same path.
+3. **Batch 3:** populate the new cidx via batch ops on its primary,
+   or via the dedicated `insert_into_count_indexed_tree` API.
+
+This must be three batches because deeper-path ops execute before
+shallower-path ops bubble up — a cidx creation and ops *inside* the
+cidx primary can't share a single batch.
+
+### Direct (non-batch) APIs
+
+For single-cidx workflows the dedicated APIs are usually more
+ergonomic and avoid the multi-batch dance:
+
+```rust
+// Insert / update / delete one item:
+db.insert_into_count_indexed_tree(path, key, element, tx, grove_version)?;
+db.delete_from_count_indexed_tree(path, key, tx, grove_version)?;
+
+// Direct creation of an empty cidx + populate via direct insert:
+db.insert(parent_path, cidx_key, Element::empty_count_indexed_tree(), ..., tx, gv)?;
+db.insert_into_count_indexed_tree(cidx_path, item_key, item_element, tx, gv)?;
+```
+
+`db.delete()` on a cidx element cleans up both namespaces (same
+mechanism the batch path uses).
 
 ## Read semantics
 
@@ -374,19 +425,24 @@ Merk is not touched. The verifier receives the primary's root hash plus a
 ### Top-k by count
 
 ```rust
-// Conceptual API; final field/method shape TBD.
-let result = db.query_count_indexed(
-    path,
-    CountIndexedQuery::top_k(10),
-    grove_version,
-)?;
-// result.entries: Vec<(count: u64, key: Vec<u8>)>
+// Shipped API on `GroveDb`:
+let entries: Vec<(u64, Vec<u8>)> = db
+    .count_indexed_top_k(path, k, /* descending: */ true, transaction, grove_version)?
+    .expect("top-k");
+
+// Verifiable variant — proof + verification:
+let proof_bytes = db
+    .prove_count_indexed_top_k(path, k, /* descending: */ true, transaction, grove_version)?
+    .expect("prove");
+let result = GroveDb::verify_count_indexed_top_k(&proof_bytes, &path)?;
+// result.entries: Vec<(u64, Vec<u8>)>, result.root_hash: [u8; 32]
 ```
 
-By default the query returns `(count, key)` pairs only. Resolving the
-primary value is opt-in via `resolve_values: true`, in which case each
-returned entry is `(count, key, Element)` and the proof grows with k
-primary inclusion proofs in addition to the secondary range proof.
+The query returns `(count, key)` pairs. To resolve a primary value the
+caller follows up with `db.get(path, key, ...)`; the dedicated proof
+shape carries only the secondary range proof + a 32-byte attestation
+of the primary's root hash. Workloads that don't need values
+(leaderboards, ranking views) pay nothing for data they wouldn't read.
 
 Internally:
 
@@ -408,11 +464,46 @@ data they wouldn't read.
 ### Range by count
 
 ```rust
-CountIndexedQuery::count_range(min..=max, limit)
+let entries: Vec<(u64, Vec<u8>)> = db
+    .count_indexed_count_range(
+        path,
+        min,                       // u64, inclusive
+        max,                       // u64, inclusive
+        /* descending: */ false,
+        /* limit:      */ 100,
+        transaction,
+        grove_version,
+    )?
+    .expect("count range");
 ```
 
-Backed by a Merk range query on the secondary over
-`[min_be ‖ 0x00.., max_be ‖ 0xff..]`. Same proof shape as top-k.
+Internally builds a bounded `Query::insert_range(lo_be..upper)` against
+the secondary (with `RangeFrom` for `max == u64::MAX`), so iteration
+seeks directly to the encoded count bounds — no full secondary scan.
+
+### Arbitrary count-indexed query
+
+For predicates beyond top-k / count-range — e.g. "exact count = X",
+"count >= X", multiple disjoint count windows — pass an arbitrary
+`MerkQuery` over the secondary's keyspace (keys are
+`count_value_be ‖ original_key`):
+
+```rust
+let mut q = MerkQuery::new();
+q.insert_range(3u64.to_be_bytes().to_vec()..6u64.to_be_bytes().to_vec());
+q.left_to_right = true;
+
+let proof_bytes = db
+    .prove_count_indexed_query(path, q.clone(), Some(limit), tx, grove_version)?
+    .expect("prove");
+
+// Verify with the SAME query (positional binding):
+let result = GroveDb::verify_count_indexed_query(&proof_bytes, q, &path)?;
+```
+
+`prove_count_indexed_top_k` is just a thin wrapper around
+`prove_count_indexed_query` with a full-range query and the requested
+`descending` flag.
 
 ### How many entries have count in `[a, b]`?
 
@@ -452,107 +543,39 @@ value. It can be answered by reading the primary node's feature type
 
 ### Subqueries
 
-A `CountIndexedQuery` may carry a default subquery and/or count-keyed
-conditional subqueries. These run against the **primary** Merk at each
-match — i.e. once the secondary has identified the top-k (or
-in-range) keys, those keys serve as starting points for further query
-descent into the primary subtree under each match.
+Two routes are available depending on what you need:
 
-Subqueries from the secondary are **not** supported and never will be —
-the secondary's values are `()`, and its keyspace `(count_be ‖ key)`
-is an internal index, not a user-visible structure.
+**1. Generic V1 PathQuery → cidx subquery into the primary.** When you
+build a standard `PathQuery` whose path or subquery descends into a
+cidx element, the V1 proof system handles it: the proof carries a
+fresh `ProofBytes::CountIndexedTree(secondary_root_hash ‖ primary_proof)`
+variant, the verifier chains via `combine_hash_three` at that layer
+instead of the standard `combine_hash`, and the subquery runs against
+the cidx **primary** the same way it would against any other
+count-bearing tree. The secondary is not visible to subqueries —
+secondary keys are `(count_be ‖ key)`, an internal index. Use this
+route when the cidx is just one of several layers in a larger query
+shape and you don't need count-ordered output.
 
-```rust
-pub struct CountIndexedQuery {
-    pub items: Vec<CountQueryItem>,           // top-k / count-range / etc.
-    pub left_to_right: bool,
-    pub limit: Option<u16>,
-    pub offset: Option<u16>,
-    pub resolve_values: bool,                 // Q1: default false
-
-    pub default_subquery_branch: SubqueryBranch,
-    pub conditional_subquery_branches:
-        Option<IndexMap<CountQueryItem, SubqueryBranch>>,
-}
-```
-
-`CountQueryItem` mirrors the existing `QueryItem` but operates on `u64`
-counts instead of `Vec<u8>` keys:
+**2. Dedicated `prove_count_indexed_query` → arbitrary `MerkQuery`
+over the secondary keyspace.** Use this when you do want
+count-ordered output (top-k, count ranges, count-equality predicates).
+Subquery composition with the dedicated proof shape is not exposed —
+if you need a hybrid, compose the dedicated proof with a follow-up
+`PathQuery`.
 
 ```rust
-pub enum CountQueryItem {
-    Equal(u64),
-    Range(Range<u64>),
-    RangeInclusive(RangeInclusive<u64>),
-    RangeFrom(RangeFrom<u64>),
-    RangeTo(RangeTo<u64>),
-    RangeToInclusive(RangeToInclusive<u64>),
-    GreaterThan(u64),
-    LessThan(u64),
-    RangeFull,
-}
+// Inside a PathQuery — any standard subquery shape works:
+let mut path_query = PathQuery::new(parent_path, ...);
+path_query.query.query.set_subquery(/* arbitrary inner query */);
+let proof = db.prove_query(&path_query, opts, grove_version)?;
+let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, grove_version)?;
 ```
 
-#### Branch selection
-
-For each top-k / range result with count `c`:
-
-1. Walk `conditional_subquery_branches` in **insertion order** (an
-   `IndexMap`, not a `HashMap`).
-2. The **first** branch whose `CountQueryItem` contains `c` wins; its
-   subquery is applied against the primary at the result key.
-3. If no conditional branch matches, `default_subquery_branch` is
-   applied (it may be empty, in which case no subquery runs).
-
-Insertion-order, first-match semantics are deliberately the same as a
-Rust match arm. Overlapping conditions are allowed; the earlier one in
-the IndexMap wins.
-
-#### Worked example
-
-> "Top 10 buckets by aggregate count. For buckets with count > 1000,
-> include their full content. For the rest, just `(count, key)`."
-
-```rust
-let mut conditionals = IndexMap::new();
-conditionals.insert(
-    CountQueryItem::GreaterThan(1000),
-    SubqueryBranch {
-        subquery_path: None,
-        subquery: Some(Box::new(Query::new())),    // empty Query = full descent
-    },
-);
-
-let q = CountIndexedQuery {
-    items: vec![CountQueryItem::RangeFull],
-    left_to_right: false,                          // descending
-    limit: Some(10),
-    offset: None,
-    resolve_values: false,
-    default_subquery_branch: SubqueryBranch::default(),
-    conditional_subquery_branches: Some(conditionals),
-};
-```
-
-#### Proof shape with subqueries
-
-For each match where a subquery applied, the proof carries a normal
-GroveDB layer-proof for that subquery — exactly the shape the existing
-`PathQuery` system already produces. Verifier obligations:
-
-- Verify the secondary range proof to obtain the list of `(count, key)`
-  pairs. Each pair's `count` comes from the secondary key, which is
-  hash-verified.
-- For each pair, **independently** evaluate the conditional branches
-  in insertion order against `count` to determine which subquery (if
-  any) applied. The prover cannot lie about the selected branch
-  because the verifier reproduces the choice deterministically.
-- Verify each subquery's layer-proof against the primary subtree at
-  the pair's key.
-
-The proof grows linearly with the number of matches that triggered a
-subquery. Workloads that use a no-op `default_subquery_branch` and no
-conditionals pay nothing extra over plain top-k.
+V0 generic prove/verify do **not** support cidx descent — V0 is a
+frozen wire format. Callers on V0 paths must use the dedicated
+`prove_count_indexed_top_k` / `prove_count_indexed_query` entry
+points.
 
 ### Proof shape
 
@@ -654,17 +677,24 @@ ordering. Top-k descending iteration encounters them last.
   existing non-indexed count tree cannot be promoted in place. To
   migrate, the application rebuilds the tree as a `CountIndexedTree`
   via standard batch operations.
+- **No batch overwrite of an existing cidx element.** Storage-pointer
+  semantics are ambiguous when the new element claims root keys that
+  may or may not refer to the existing on-disk data. Use the
+  [overwrite workaround](#cidx-overwrite-workaround) (delete via
+  batch, recreate in a follow-up batch).
+- **V0 generic prove/verify do not support cidx descents.** V0 is a
+  frozen wire format. Use V1 generic proofs or the dedicated
+  `prove_count_indexed_*` entry points.
 
 ## Implementation-detail items
 
-The following are not protocol-observable and may be revisited during
-implementation. The defaults are recommended; they will be confirmed or
-revised when the corresponding code is written.
+The following are not protocol-observable. They were ratified during
+implementation and are documented here for posterity.
 
-| ID | Question | Recommended default |
+| ID | Question | Resolution |
 |---|---|---|
-| C1 | Cost-tracking surface for double-Merk writes — one combined cost line item or two? | Two (one per Merk), aggregated at the element level |
-| W1 | Cascading secondary updates: route through standard batch ops, or specialized propagation handler? | Standard batch ops |
+| C1 | Cost-tracking surface for double-Merk writes — one combined cost line item or two? | Two (one per Merk), aggregated at the element level. |
+| W1 | Cascading secondary updates: route through standard batch ops, or specialized propagation handler? | Specialized propagation: `propagate_changes_with_transaction_with_initial_deferred` carries the seeded secondary state through the cidx-primary boundary; the level-by-level batch path detects cidx primaries via `is_count_indexed_primary()` and emits a dedicated `GroveOp::ReplaceCountIndexedTreeRootKeys` at the bubble-up. The standard batch ops handle nested cases without requiring callers to think about the secondary. |
 
 ## Summary
 
