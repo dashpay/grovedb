@@ -1,9 +1,13 @@
 //! `CountIndexedTree` direct operations.
 //!
 //! These dedicated APIs handle the two-Merk machinery (primary +
-//! count-ordered secondary) for direct (non-batch) access. Batch-style
-//! integration with the existing batch-propagation pass is a follow-up
-//! effort.
+//! count-ordered secondary). Direct mutations against the cidx primary
+//! must go through these APIs (`insert_into_count_indexed_tree`,
+//! `delete_from_count_indexed_tree`); the level-by-level batch path
+//! fails closed for direct cidx primary mutations until full batch
+//! integration lands. Deep ops *under* a sub-tree of a cidx primary
+//! propagate correctly through the existing
+//! `propagate_changes_with_transaction_with_initial_deferred` machinery.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -745,8 +749,8 @@ impl GroveDb {
     /// primary value is the caller's responsibility (use
     /// `db.get(path, original_key, ...)`).
     ///
-    /// Reads do not yet produce verifiable proofs — the proof system
-    /// integration for `CountIndexedQuery` is a follow-up.
+    /// For a verifiable variant, see [`Self::prove_count_indexed_top_k`]
+    /// and [`Self::verify_count_indexed_top_k`].
     pub fn count_indexed_top_k<'b, B, P>(
         &self,
         path: P,

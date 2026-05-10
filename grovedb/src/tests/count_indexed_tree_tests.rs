@@ -1,9 +1,4 @@
 //! `CountIndexedTree` and `ProvableCountIndexedTree` tests.
-//!
-//! PR 2 ships **direct** (non-batch) creation of empty count-indexed-tree
-//! elements. Insertion of items into the primary, secondary mirroring, and
-//! cascading aggregation through batch propagation land in a follow-up PR
-//! and are explicitly *not* exercised here.
 
 #[cfg(test)]
 mod tests {
