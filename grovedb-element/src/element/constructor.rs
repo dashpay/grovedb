@@ -387,24 +387,34 @@ impl Element {
     /// Wrap an element in `NonCounted` so it contributes 0 to its parent count
     /// tree's aggregate count when inserted. Sums (if any) still propagate.
     ///
-    /// Returns `InvalidInput` if `inner` is itself a `NonCounted`. Wrapping
-    /// is not idempotent at the type level — use `into_non_counted` to wrap
-    /// without that risk.
+    /// Returns `InvalidInput` if `inner` is already wrapped in any wrapper
+    /// variant (`NonCounted` or `NotSummed`) — the wrappers are mutually
+    /// exclusive and may not nest in either direction. Use
+    /// `into_non_counted` to wrap idempotently when `inner` may already be
+    /// `NonCounted`; use that helper's `Result` return for the
+    /// cross-wrapper case.
     pub fn new_non_counted(inner: Element) -> Result<Self, ElementError> {
-        if matches!(inner, Element::NonCounted(_)) {
+        if matches!(inner, Element::NonCounted(_) | Element::NotSummed(_)) {
             return Err(ElementError::InvalidInput(
-                "NonCounted cannot wrap another NonCounted",
+                "NonCounted cannot wrap another wrapper",
             ));
         }
         Ok(Element::NonCounted(Box::new(inner)))
     }
 
-    /// Wrap `self` in `NonCounted`. If `self` is already `NonCounted`, returns
-    /// `self` unchanged (idempotent).
-    pub fn into_non_counted(self) -> Self {
+    /// Wrap `self` in `NonCounted`. If `self` is already `NonCounted`,
+    /// returns it unchanged (idempotent on `NonCounted`).
+    ///
+    /// Returns `InvalidInput` if `self` is `NotSummed` — the two wrappers
+    /// are mutually exclusive. Callers that need the unconditional wrapping
+    /// path should ensure the input is a non-wrapper variant before calling.
+    pub fn into_non_counted(self) -> Result<Self, ElementError> {
         match self {
-            Element::NonCounted(_) => self,
-            other => Element::NonCounted(Box::new(other)),
+            Element::NonCounted(_) => Ok(self),
+            Element::NotSummed(_) => Err(ElementError::InvalidInput(
+                "cannot wrap NotSummed in NonCounted; wrappers are mutually exclusive",
+            )),
+            other => Ok(Element::NonCounted(Box::new(other))),
         }
     }
 

@@ -541,10 +541,28 @@ mod non_counted_tests {
     #[test]
     fn into_non_counted_is_idempotent() {
         let inner = Element::Item(b"x".to_vec(), None);
-        let once = inner.clone().into_non_counted();
-        let twice = once.clone().into_non_counted();
+        let once = inner.clone().into_non_counted().expect("wrap ok");
+        let twice = once.clone().into_non_counted().expect("rewrap ok");
         assert_eq!(once, twice);
         assert!(twice.is_non_counted());
+    }
+
+    #[test]
+    fn into_non_counted_rejects_not_summed() {
+        // The two wrappers are mutually exclusive — wrapping NotSummed in
+        // NonCounted must fail rather than silently succeed (which would
+        // produce a doubly-wrapped element that the (de)serializer rejects
+        // anyway, but earlier in the pipeline).
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("wrap ok");
+        assert!(ns.into_non_counted().is_err());
+    }
+
+    #[test]
+    fn new_non_counted_rejects_not_summed() {
+        // Symmetric to `new_not_summed_rejects_non_counted` — `new_non_counted`
+        // must reject any pre-existing wrapper inner, including NotSummed.
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("wrap ok");
+        assert!(Element::new_non_counted(ns).is_err());
     }
 
     #[test]

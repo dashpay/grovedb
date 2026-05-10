@@ -252,6 +252,46 @@ mod tests {
     }
 
     #[test]
+    fn batch_insert_rejects_cross_wrapper_non_counted_around_not_summed() {
+        // A hand-built `NonCounted(NotSummed(SumTree))` would bypass the
+        // constructor (which now rejects cross-wrapper nesting) and could
+        // reach batch execution with `is_non_counted() == true` and
+        // `underlying() == NotSummed`. The batch path must reject it
+        // explicitly rather than hitting the supposedly-unreachable
+        // wrapper arm.
+        //
+        // We assemble the cross-wrapper element directly (bypassing
+        // `new_non_counted`) to exercise the validation path. With the
+        // P1 fix, `apply_batch` rejects this with an `InvalidInput` /
+        // `InvalidBatchOperation` rather than panicking.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Need a sum-bearing parent so the standard NotSummed parent-type
+        // guard does not fire first; we want to exercise the cross-wrapper
+        // detection.
+        make_sum_tree_parent(&db, b"outer", grove_version);
+
+        let inner = Element::SumTree(None, 0, None);
+        let bad = Element::NonCounted(Box::new(Element::NotSummed(Box::new(inner))));
+        let op = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec()],
+            b"k".to_vec(),
+            bad,
+        );
+
+        // Either the bincode serialize on its way to storage or the batch
+        // parent-type guard rejects it — both are acceptable typed
+        // failures. The important thing is that we do not panic.
+        let result = db.apply_batch(vec![op], None, None, grove_version).unwrap();
+        assert!(
+            result.is_err(),
+            "cross-wrapper NonCounted(NotSummed(_)) must be rejected, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn check_subtree_exists_through_not_summed_wrapper() {
         // A NotSummed-wrapped tree at the parent path must satisfy
         // check_subtree_exists, otherwise APIs that gate on it (e.g.

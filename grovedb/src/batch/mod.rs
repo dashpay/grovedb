@@ -2317,9 +2317,14 @@ where
                     // on-disk bytes preserve the wrapper and the parent's
                     // aggregate excludes this subtree from the right
                     // dimension. The two flags are mutually exclusive — set
-                    // only one during propagation.
+                    // only one during propagation. The `element` here is a
+                    // freshly-constructed bare tree built from
+                    // `aggregate_data` above, so the conditional wrappers
+                    // never see a pre-existing wrapper input.
                     let element = if non_counted {
-                        element.into_non_counted()
+                        element
+                            .into_non_counted()
+                            .expect("into_non_counted on freshly-constructed bare tree element")
                     } else if not_summed {
                         element.into_not_summed_unchecked()
                     } else {
@@ -2350,9 +2355,13 @@ where
                     ..
                 } => {
                     let element = meta.to_element(flags);
-                    // Re-wrap as above for the non-Merk tree path.
+                    // Re-wrap as above for the non-Merk tree path. `element`
+                    // is freshly built from `meta.to_element(...)` so it is
+                    // never a pre-existing wrapper.
                     let element = if non_counted {
-                        element.into_non_counted()
+                        element
+                            .into_non_counted()
+                            .expect("into_non_counted on freshly-constructed non-Merk tree element")
                     } else {
                         element
                     };
