@@ -1959,6 +1959,12 @@ where
                         } => (true, *error_if_exists),
                         _ => (false, false),
                     };
+                    let op_could_overwrite = matches!(
+                        &op_ref,
+                        GroveOp::InsertOrReplace { .. }
+                            | GroveOp::Replace { .. }
+                            | GroveOp::Patch { .. }
+                    );
                     let element = match op_ref {
                         GroveOp::InsertWithKnownToNotAlreadyExist { element }
                         | GroveOp::InsertIfNotExists { element, .. }
@@ -2004,19 +2010,64 @@ where
                                 .wrap_with_cost(cost);
                             }
                         }
+                    } else if op_could_overwrite && !matches!(&element, Element::Reference(..)) {
+                        // Tree-override protection is OFF for this batch.
+                        // Even so, **never** allow a cidx element to be
+                        // overwritten silently: cidx owns two storage
+                        // namespaces (primary + secondary) and the batch
+                        // path has no dual-storage cleanup hook, so an
+                        // overwrite would orphan the secondary and could
+                        // collide with future inserts under the new
+                        // element's primary_root_key. Reject explicitly,
+                        // pointing callers to the dedicated APIs (empty
+                        // the cidx via `delete_from_count_indexed_tree`
+                        // and remove it via `delete_up_tree` outside the
+                        // batch first). Other tree-type overwrites
+                        // remain permitted under the existing footgun
+                        // semantics for backwards compatibility.
+                        let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                        let maybe_existing = cost_return_on_error_into!(
+                            &mut cost,
+                            merk.get(
+                                key_info.get_key_clone().as_slice(),
+                                true,
+                                Some(&Element::value_defined_cost_for_serialized_value,),
+                                grove_version,
+                            )
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to check for existing element: {e}"
+                                ))
+                            })
+                        );
+                        if let Some(existing_bytes) = maybe_existing {
+                            let existing_element = cost_return_on_error_no_add!(
+                                cost,
+                                Element::deserialize(existing_bytes.as_slice(), grove_version)
+                                    .map_err(|_| {
+                                        Error::CorruptedData(
+                                            "unable to deserialize existing element".to_string(),
+                                        )
+                                    })
+                            );
+                            if matches!(
+                                existing_element.underlying(),
+                                Element::CountIndexedTree(..)
+                                    | Element::ProvableCountIndexedTree(..)
+                            ) {
+                                return Err(Error::NotSupported(
+                                    "overwriting an existing CountIndexedTree / \
+                                     ProvableCountIndexedTree via the batch path is not \
+                                     supported (the secondary storage namespace would be \
+                                     orphaned). Empty the cidx via \
+                                     delete_from_count_indexed_tree, then remove it via \
+                                     delete_up_tree outside of a batch before re-creating"
+                                        .to_string(),
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                        }
                     }
-                    // NOTE: overwriting an existing CountIndexedTree via the
-                    // batch path when `validate_insertion_does_not_override_tree`
-                    // is `false` would orphan the secondary storage namespace
-                    // (cidx owns two storage namespaces; the batch path has
-                    // no dual-storage cleanup hook). This is the same shape
-                    // of footgun all tree types share when the override
-                    // protection is opted out — callers must enable
-                    // `validate_insertion_does_not_override_tree` (or empty
-                    // the cidx via `delete_from_count_indexed_tree` first)
-                    // to safely replace an existing cidx element. We do
-                    // not gate this with a separate disk read here because
-                    // the cost would apply on every non-reference batch op.
 
                     // Mirror the per-merk insert guard: NonCounted children
                     // are only valid inside count-bearing parents. Without

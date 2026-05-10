@@ -1498,6 +1498,62 @@ mod tests {
     }
 
     #[test]
+    fn batch_overwrite_existing_cidx_with_item_is_rejected() {
+        // Even with the tree-override protection flag off, the batch
+        // path must refuse to overwrite an existing cidx element with
+        // anything (cidx or non-cidx). Otherwise the secondary storage
+        // namespace would be orphaned.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Populate so the secondary has data we'd be orphaning.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Try to overwrite the cidx element with a plain item via batch
+        // with override-protection turned OFF.
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::new_item(b"replaced".to_vec()),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree") && msg.contains("orphaned"),
+                    "expected cidx orphan-prevention message, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn batch_delete_tree_on_cidx_is_rejected() {
         // DeleteTree on a CountIndexedTree via the batch path would
         // orphan the secondary storage namespace; the batch path rejects

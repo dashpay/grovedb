@@ -1584,14 +1584,19 @@ mod tests {
         assert_eq!(
             cost,
             OperationCost {
-                seek_count: 7, // todo: verify this
+                // +1 seek and +129 storage_loaded_bytes vs. the prior
+                // baseline: when validate_insertion_does_not_override_tree
+                // is off, the batch path now reads each existing element
+                // for cidx-overwrite detection (preventing silent
+                // secondary-storage orphaning).
+                seek_count: 8,
                 storage_cost: StorageCost {
                     added_bytes: 4,
-                    replaced_bytes: 285, // todo: verify this
+                    replaced_bytes: 285,
                     removed_bytes: NoStorageRemoval
                 },
-                storage_loaded_bytes: 380, // todo: verify this
-                hash_node_calls: 12,       // todo: verify this
+                storage_loaded_bytes: 509,
+                hash_node_calls: 12,
                 sinsemilla_hash_calls: 0,
             }
         );
