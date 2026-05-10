@@ -2320,18 +2320,27 @@ where
                     // only one during propagation. The `element` here is a
                     // freshly-constructed bare tree built from
                     // `aggregate_data` above, so the conditional wrappers
-                    // never see a pre-existing wrapper input.
+                    // should never see a pre-existing wrapper input — but
+                    // surface a typed error rather than panic if the
+                    // invariant is ever violated by a future change.
                     let element = if non_counted {
-                        element
-                            .into_non_counted()
-                            .expect("into_non_counted on freshly-constructed bare tree element")
+                        element.into_non_counted().map_err(|_| {
+                            Error::CorruptedCodeExecution(
+                                "into_non_counted called on a wrapped element during \
+                                 InsertTreeWithRootHash propagation",
+                            )
+                        })
                     } else if not_summed {
-                        element
-                            .into_not_summed()
-                            .expect("into_not_summed on freshly-constructed sum-tree element")
+                        element.into_not_summed().map_err(|_| {
+                            Error::CorruptedCodeExecution(
+                                "into_not_summed called on a non-sum-tree or wrapped element \
+                                 during InsertTreeWithRootHash propagation",
+                            )
+                        })
                     } else {
-                        element
+                        Ok(element)
                     };
+                    let element = cost_return_on_error_no_add!(cost, element);
                     let merk_feature_type = cost_return_on_error_into_no_add!(
                         cost,
                         element.get_feature_type(in_tree_type)
@@ -2359,11 +2368,16 @@ where
                     let element = meta.to_element(flags);
                     // Re-wrap as above for the non-Merk tree path. `element`
                     // is freshly built from `meta.to_element(...)` so it is
-                    // never a pre-existing wrapper.
+                    // never a pre-existing wrapper — surface a typed error
+                    // if a future change ever violates that.
                     let element = if non_counted {
-                        element
-                            .into_non_counted()
-                            .expect("into_non_counted on freshly-constructed non-Merk tree element")
+                        let wrapped = element.into_non_counted().map_err(|_| {
+                            Error::CorruptedCodeExecution(
+                                "into_non_counted called on a wrapped element during \
+                                 InsertNonMerkTree propagation",
+                            )
+                        });
+                        cost_return_on_error_no_add!(cost, wrapped)
                     } else {
                         element
                     };
