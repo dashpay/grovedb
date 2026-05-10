@@ -948,6 +948,60 @@ impl GroveDb {
         )
     }
 
+    /// Pushes to batch an operation that updates a `CountIndexedTree` /
+    /// `ProvableCountIndexedTree` element on the parent merk and recomputes
+    /// its `value_hash` via H1-A — `combine_hash_three(value_hash(cidx_bytes),
+    /// primary_root_hash, secondary_root_hash)`. Preserves the existing
+    /// element's flags. Used by the batch path's cidx primary bubble-up.
+    pub(crate) fn update_count_indexed_tree_item_preserve_flag_into_batch_operations<
+        'db,
+        K: AsRef<[u8]>,
+        S: StorageContext<'db>,
+    >(
+        parent_tree: &Merk<S>,
+        key: K,
+        primary_root_key: Option<Vec<u8>>,
+        secondary_root_key: Option<Vec<u8>>,
+        primary_aggregate_data: AggregateData,
+        primary_root_hash: Hash,
+        secondary_root_hash: Hash,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        Self::get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(
+            |element| match element.reconstruct_with_two_root_keys(
+                primary_root_key,
+                secondary_root_key,
+                primary_aggregate_data,
+            ) {
+                Some(tree) => {
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        tree.get_feature_type(parent_tree.tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
+                    tree.insert_count_indexed_subtree_into_batch_operations(
+                        key,
+                        primary_root_hash,
+                        secondary_root_hash,
+                        true,
+                        batch_operations,
+                        merk_feature_type,
+                        grove_version,
+                    )
+                    .map_err(|e| e.into())
+                }
+                None => Err(Error::InvalidPath(
+                    "update_count_indexed_tree_item_preserve_flag: existing element is not a \
+                     CountIndexedTree / ProvableCountIndexedTree"
+                        .to_owned(),
+                ))
+                .wrap_with_cost(Default::default()),
+            },
+        )
+    }
+
     /// Get element from subtree. Return CostResult.
     fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         subtree: &Merk<S>,

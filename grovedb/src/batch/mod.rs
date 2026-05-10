@@ -323,6 +323,33 @@ pub enum GroveOp {
         /// the wrapper byte on disk.
         non_counted: bool,
     },
+    /// **Internal only — do not construct directly.**
+    /// Replace both primary and secondary root keys for a CountIndexedTree
+    /// element after batch ops mutated its primary Merk. Carries both child
+    /// Merks' new (root_hash, root_key) plus the primary's aggregate count;
+    /// the parent merk node uses these in `combine_hash_three` (H1-A) to
+    /// recompute its value_hash via `Op::ReplaceLayeredCountIndexedReference`.
+    ///
+    /// Produced by `execute_ops_on_path` when a level's path resolves to
+    /// a CountIndexedTree primary; consumed at the parent level to update
+    /// the cidx element bytes consistently with both child Merks.
+    ///
+    /// This variant is `#[non_exhaustive]` and cannot be constructed outside
+    /// of this crate.
+    #[non_exhaustive]
+    ReplaceCountIndexedTreeRootKeys {
+        /// Cidx primary's new root hash.
+        primary_hash: [u8; 32],
+        /// Cidx primary's new root key.
+        primary_root_key: Option<Vec<u8>>,
+        /// Cidx primary's new aggregate (always `AggregateData::Count` or
+        /// `AggregateData::ProvableCount`).
+        primary_aggregate_data: AggregateData,
+        /// Cidx secondary's new root hash.
+        secondary_hash: [u8; 32],
+        /// Cidx secondary's new root key.
+        secondary_root_key: Option<Vec<u8>>,
+    },
     /// Refresh the reference with information provided
     /// Providing this information is necessary to be able to calculate
     /// average case and worst case costs
@@ -389,6 +416,7 @@ impl GroveOp {
             GroveOp::DenseTreeInsert { .. } => 14,
             GroveOp::ReplaceNonMerkTreeRoot { .. } => 15,
             GroveOp::InsertNonMerkTree { .. } => 16,
+            GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => 17,
         }
     }
 }
@@ -658,6 +686,9 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
             GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
             GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
+            GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => {
+                "Replace CountIndexedTree primary+secondary roots".to_string()
+            }
         };
 
         f.debug_struct("GroveDbOp")
@@ -1549,6 +1580,7 @@ where
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
                 | GroveOp::InsertNonMerkTree { .. }
+                | GroveOp::ReplaceCountIndexedTreeRootKeys { .. }
                 | GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
@@ -2506,6 +2538,35 @@ where
                     ))
                     .wrap_with_cost(cost);
                 }
+                GroveOp::ReplaceCountIndexedTreeRootKeys {
+                    primary_hash,
+                    primary_root_key,
+                    primary_aggregate_data,
+                    secondary_hash,
+                    secondary_root_key,
+                } => {
+                    // Bubble-up from a cidx primary's level. The
+                    // `path` here is the parent merk where the cidx
+                    // ELEMENT lives; key_info points at the cidx
+                    // element. Recompute the cidx element's
+                    // value_hash via H1-A using the primary's and
+                    // secondary's new root hashes.
+                    let merk = self.merks.get(path).expect("the Merk is cached");
+                    cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::update_count_indexed_tree_item_preserve_flag_into_batch_operations(
+                            merk,
+                            key_info.get_key(),
+                            primary_root_key,
+                            secondary_root_key,
+                            primary_aggregate_data,
+                            primary_hash,
+                            secondary_hash,
+                            &mut batch_operations,
+                            grove_version,
+                        )
+                    );
+                }
             }
         }
 
@@ -2793,7 +2854,10 @@ impl GroveDb {
                                                     *hash = root_hash;
                                                 }
                                                 GroveOp::InsertTreeWithRootHash { .. }
-                                                | GroveOp::InsertNonMerkTree { .. } => {
+                                                | GroveOp::InsertNonMerkTree { .. }
+                                                | GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                                    ..
+                                                } => {
                                                     return Err(Error::CorruptedCodeExecution(
                                                         "we can not do this operation twice",
                                                     ))
@@ -3442,7 +3506,8 @@ impl GroveDb {
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
-                | GroveOp::InsertNonMerkTree { .. } => {
+                | GroveOp::InsertNonMerkTree { .. }
+                | GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => {
                     return Err(Error::NotSupported(
                         "internal tree ops not supported in apply_operations_without_batching"
                             .to_string(),

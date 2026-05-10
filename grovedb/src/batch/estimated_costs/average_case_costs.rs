@@ -307,6 +307,24 @@ impl GroveOp {
                     grove_version,
                 )
             }
+            GroveOp::ReplaceCountIndexedTreeRootKeys {
+                primary_aggregate_data,
+                ..
+            } => {
+                // Cost-shape-equivalent to ReplaceTreeRootKey at this
+                // level: a single Merk node-update on the parent merk
+                // recomputing the cidx element's value_hash. The
+                // dual-Merk update on the secondary is accounted for at
+                // the cidx primary level (inside execute_ops_on_path),
+                // not here.
+                GroveDb::average_case_merk_replace_tree(
+                    key,
+                    layer_element_estimates,
+                    primary_aggregate_data.parent_tree_type(),
+                    propagate,
+                    grove_version,
+                )
+            }
         }
     }
 }
