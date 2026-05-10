@@ -1816,6 +1816,39 @@ where
             merk.tree_type
         };
 
+        // The batch path has no two-Merk propagation hook for cidx
+        // primaries: applying ops directly to the primary would update
+        // the primary's root hash but leave the secondary index stale,
+        // breaking the H1-A composition stored in the cidx element on
+        // the parent merk and the count-ordered query semantics. Reject
+        // any mutation op (insert / replace / patch / delete / refresh)
+        // that targets a path whose merk is a cidx primary. Up-bubbled
+        // ReplaceTreeRootKey / ReplaceNonMerkTreeRoot ops are allowed —
+        // those represent the parent's response to a child subtree's
+        // root change; the cidx primary itself is not the mutated tree
+        // in that case.
+        if in_tree_type.is_count_indexed_primary() {
+            for (_key, op) in ops_at_path_by_key.iter() {
+                if !matches!(
+                    op,
+                    GroveOp::ReplaceTreeRootKey { .. }
+                        | GroveOp::ReplaceNonMerkTreeRoot { .. }
+                        | GroveOp::InsertTreeWithRootHash { .. }
+                        | GroveOp::InsertNonMerkTree { .. }
+                ) {
+                    return Err(Error::NotSupported(
+                        "batch mutations targeting a CountIndexedTree primary are not \
+                         supported; use insert_into_count_indexed_tree / \
+                         delete_from_count_indexed_tree for direct cidx mutations, or \
+                         apply ops further inside a sub-tree under the primary so the \
+                         existing two-Merk propagation handles the secondary update"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+        }
+
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
             match op {

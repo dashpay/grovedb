@@ -1360,6 +1360,45 @@ mod tests {
     }
 
     #[test]
+    fn batch_insert_into_cidx_primary_is_rejected() {
+        // The batch propagation has no two-Merk hook for cidx primaries:
+        // an InsertOrReplace at a path whose merk is the cidx primary
+        // would update the primary alone, leaving the secondary index
+        // stale. Fail fast with a clear NotSupported pointing callers
+        // to the dedicated cidx APIs.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            b"item".to_vec(),
+            Element::new_item(b"v".to_vec()),
+        )];
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree primary"),
+                    "expected cidx primary message, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn batch_delete_tree_on_cidx_is_rejected() {
         // DeleteTree on a CountIndexedTree via the batch path would
         // orphan the secondary storage namespace; the batch path rejects
