@@ -1391,10 +1391,10 @@ mod tests {
     }
 
     #[test]
-    fn verify_grovedb_fails_closed_for_cidx() {
-        // Once a CountIndexedTree exists, verify_grovedb must NOT
-        // silently treat it as verified — the H1-A integrity walk is
-        // not yet wired, so we fail closed with NotSupported.
+    fn verify_grovedb_walks_cidx_h1a_chain_and_finds_no_issues() {
+        // verify_grovedb must walk a cidx node: open both child Merks,
+        // verify the H1-A combined value_hash matches the parent's
+        // recorded value_hash, then recurse into the primary.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         db.insert(
@@ -1407,8 +1407,27 @@ mod tests {
         )
         .unwrap()
         .expect("create cidx");
-        let result = db.verify_grovedb(None, false, true, grove_version);
-        assert!(matches!(result, Err(crate::Error::NotSupported(_))));
+        // Populate the cidx so both child Merks are non-empty.
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert into cidx");
+        }
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(
+            issues.is_empty(),
+            "expected no integrity issues, got {} issue(s): {:?}",
+            issues.len(),
+            issues
+        );
     }
 
     #[test]
@@ -1731,6 +1750,68 @@ mod tests {
         // Garbage proof bytes — bincode decode fails first.
         let result = GroveDb::verify_count_indexed_top_k(b"not-a-valid-proof", &[b"x"]);
         assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn prove_count_indexed_top_k_round_trips_through_nested_cidx_ancestor() {
+        // path: TEST_LEAF / outer_cidx / inner_cidx
+        // outer_cidx is a cidx whose primary contains an inner cidx.
+        // The proof envelope must carry per-ancestor secondary
+        // attestation so the verifier can chain via combine_hash_three
+        // at the outer_cidx layer.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer cidx");
+        // Insert an inner cidx into the outer_cidx primary.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create inner cidx");
+        // Populate the inner cidx so its top_k has results.
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate inner cidx");
+        }
+        let proof = db
+            .prove_count_indexed_top_k(
+                [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove nested cidx top-k");
+        let path: &[&[u8]] = &[TEST_LEAF, b"outer_cidx", b"inner_cidx"];
+        let result =
+            GroveDb::verify_count_indexed_top_k(&proof, path).expect("verify nested cidx top-k");
+        assert_eq!(result.entries.len(), 3);
+        let expected_root = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash");
+        assert_eq!(result.root_hash, expected_root);
     }
 
     #[test]

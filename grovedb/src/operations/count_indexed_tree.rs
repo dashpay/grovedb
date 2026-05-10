@@ -221,12 +221,74 @@ impl GroveDb {
         let old_count_for_secondary = existing_item.as_ref().map(|e| e.count_value_or_default());
         let new_count_for_secondary = item.count_value_or_default();
 
-        // 4. Insert into primary.
-        cost_return_on_error!(
-            &mut cost,
-            item.insert(&mut primary_merk, item_key, None, grove_version)
-                .map_err(Error::MerkError)
-        );
+        // 4. Insert into primary. Dispatch on element kind so tree
+        //    subtree entries take the layered (combine_hash) path; using
+        //    `Element::insert` for tree elements would set the merk
+        //    node's value_hash to value_hash(serialized) without the
+        //    combine_hash composition, breaking the merkle invariant
+        //    for the cidx primary until a deep insert later updates it.
+        match item.underlying() {
+            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert(&mut primary_merk, item_key, None, grove_version)
+                        .map_err(Error::MerkError)
+                );
+            }
+            Element::Reference(..) => {
+                return Err(Error::NotSupported(
+                    "inserting a Reference via insert_into_count_indexed_tree is not \
+                     supported (the reference's resolved value_hash is not yet wired \
+                     through this path); use db.insert into the primary path instead"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            Element::Tree(..)
+            | Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountTree(..)
+            | Element::CountSumTree(..)
+            | Element::ProvableCountTree(..)
+            | Element::ProvableCountSumTree(..)
+            | Element::CommitmentTree(..)
+            | Element::MmrTree(..)
+            | Element::BulkAppendTree(..)
+            | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_subtree(
+                        &mut primary_merk,
+                        item_key,
+                        grovedb_merk::tree::NULL_HASH,
+                        None,
+                        grove_version
+                    )
+                    .map_err(Error::MerkError)
+                );
+            }
+            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                // Nested cidx creation: must use the dedicated cidx
+                // subtree insert (Op::PutLayeredCountIndexedReference)
+                // so the parent's merk node uses H1-A
+                // (combine_hash_three) over the inner cidx's primary
+                // and secondary root hashes — both NULL_HASH for an
+                // empty inner cidx.
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_count_indexed_subtree(
+                        &mut primary_merk,
+                        item_key,
+                        grovedb_merk::tree::NULL_HASH,
+                        grovedb_merk::tree::NULL_HASH,
+                        None,
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+                );
+            }
+            Element::NonCounted(_) => unreachable!("underlying() unwraps NonCounted"),
+        };
 
         // 5. Open secondary and apply the mirror update.
         let mut secondary_merk = cost_return_on_error!(

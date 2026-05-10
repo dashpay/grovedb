@@ -32,7 +32,7 @@ use grovedb_merk::{
     proofs::{query::QueryProofVerify, Query as MerkQuery},
     tree::{combine_hash, combine_hash_three, value_hash, CryptoHash},
 };
-use grovedb_path::SubtreePath;
+use grovedb_path::{SubtreePath, SubtreePathBuilder};
 use grovedb_query::QueryItem as MerkQueryItem;
 use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
@@ -54,6 +54,17 @@ pub struct CountIndexedRangeProof {
     /// the proof because the verifier needs it to reconstruct the H1-A
     /// composition but does not traverse the primary itself.
     pub primary_root_hash: [u8; 32],
+    /// Per-intermediate-layer cidx secondary attestation, length =
+    /// `layer_proofs.len() - 1`. For depth `d` in
+    /// `0..layer_proofs.len() - 1`, `Some(secondary_root_hash)` means
+    /// the element at `path[..d+1]` is itself a cidx — its merk node's
+    /// `value_hash` was composed with `combine_hash_three(value_hash,
+    /// primary_root, secondary_root)`. The verifier uses
+    /// `current_layer_root` (root hash of layer `d+1`'s merk) as the
+    /// primary_root and this attestation as the secondary_root.
+    /// `None` means the layer's element is a regular tree and chains
+    /// via the standard `combine_hash`.
+    pub ancestor_cidx_secondary_root_hashes: Vec<Option<[u8; 32]>>,
     /// Encoded Merk range proof for the cidx secondary. Verified
     /// independently with the existing `Query::execute_proof` API; yields
     /// the secondary's root hash and the (count_be ‖ key) entries.
@@ -132,15 +143,15 @@ impl GroveDb {
 
         // 1. Build a single-key Merk proof at each layer (top-down).
         //
-        //    Verifier requirement: every shallower layer chains via the
-        //    standard combine_hash, so any ancestor on path[..last] being
-        //    itself a CountIndexedTree would break verification (its
-        //    value_hash uses combine_hash_three, not combine_hash). The
-        //    envelope carries primary/secondary attestation data only for
-        //    the terminal cidx — fail loudly here rather than emitting a
-        //    proof that cannot be verified.
+        //    For each intermediate depth `d` (`d < last_idx`), if the
+        //    element at `path[..d+1]` is itself a CountIndexedTree,
+        //    capture its secondary root hash as an attestation; the
+        //    verifier needs it to chain via `combine_hash_three` at that
+        //    layer (cidx ancestors compose with three inputs, not two).
         let mut layer_proofs: Vec<Vec<u8>> = Vec::with_capacity(path_keys.len());
         let last_idx = path_keys.len() - 1;
+        let mut ancestor_cidx_secondary_root_hashes: Vec<Option<[u8; 32]>> =
+            Vec::with_capacity(last_idx);
         for depth in 0..path_keys.len() {
             // The Merk at path[..depth] proves the existence of
             // path_keys[depth].
@@ -157,26 +168,47 @@ impl GroveDb {
                 )
             );
             let key = path_keys[depth].clone();
-            // Reject nested cidx: only the deepest layer (`last_idx`) is
-            // permitted to be the target CountIndexedTree element.
             if depth < last_idx {
                 let intermediate = cost_return_on_error!(
                     &mut cost,
                     Element::get(&parent_merk, key.as_slice(), true, grove_version)
                         .map_err(Error::MerkError)
                 );
-                if matches!(
-                    intermediate.underlying(),
-                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
-                ) {
-                    return Err(Error::NotSupported(
-                        "nested CountIndexedTree on the proven path is not supported by \
-                         prove_count_indexed_top_k (the envelope only carries H1-A \
-                         attestation data for the terminal cidx)"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
+                let attestation = match intermediate.underlying() {
+                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                        // Open this ancestor cidx's secondary and capture
+                        // its current root hash for the attestation.
+                        let ancestor_cidx_path_owned: SubtreePathBuilder<Vec<u8>> =
+                            SubtreePathBuilder::owned_from_iter(
+                                path_keys[..=depth].iter().cloned(),
+                            );
+                        let ancestor_cidx_path = SubtreePath::from(&ancestor_cidx_path_owned);
+                        let ancestor_secondary_root_key = match intermediate.underlying() {
+                            Element::CountIndexedTree(_, s, ..)
+                            | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                            _ => unreachable!(),
+                        };
+                        let ancestor_secondary = cost_return_on_error!(
+                            &mut cost,
+                            self.open_count_indexed_secondary_at_path(
+                                ancestor_cidx_path,
+                                ancestor_secondary_root_key,
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (sec_hash, _, _) = cost_return_on_error!(
+                            &mut cost,
+                            ancestor_secondary
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        Some(sec_hash)
+                    }
+                    _ => None,
+                };
+                ancestor_cidx_secondary_root_hashes.push(attestation);
             }
             let mut q = MerkQuery::new();
             q.insert_item(MerkQueryItem::Key(key));
@@ -248,6 +280,7 @@ impl GroveDb {
         Ok(CountIndexedRangeProof {
             layer_proofs,
             primary_root_hash,
+            ancestor_cidx_secondary_root_hashes,
             secondary_proof: sec_result.proof,
             requested_limit: k,
             descending,
@@ -374,30 +407,43 @@ impl GroveDb {
             )));
         }
 
-        // 1c. Walk shallower layers, chaining via standard combine_hash.
-        //
-        //     Nested cidx on the proven path is rejected by the prover and
-        //     cannot occur in a well-formed envelope. The verifier need
-        //     not detect nested cidx explicitly: a forged envelope that
-        //     placed a cidx ancestor would fail the chain check below
-        //     because cidx value_hash uses combine_hash_three (three-input)
-        //     while we hash with the two-input combine_hash here, so the
-        //     recorded value_hash on the parent's Merk node would not
-        //     match.
+        // 1c. Walk shallower layers. Each layer chains via either
+        //     `combine_hash` (regular tree ancestor) or
+        //     `combine_hash_three` (cidx ancestor — uses
+        //     `current_layer_root` as primary_root and the per-layer
+        //     attestation as secondary_root).
+        if envelope.ancestor_cidx_secondary_root_hashes.len() != last_idx {
+            return Err(Error::CorruptedData(format!(
+                "ancestor_cidx_secondary_root_hashes has length {} but expected {}",
+                envelope.ancestor_cidx_secondary_root_hashes.len(),
+                last_idx
+            )));
+        }
         for depth in (0..last_idx).rev() {
             let key = path[depth];
             let (value_bytes, layer_root, recorded_value_hash) =
                 execute_single_key_proof(&envelope.layer_proofs[depth], key, "intermediate layer")?;
             let val_h = value_hash(&value_bytes).value().to_owned();
-            let combined = combine_hash(&val_h, &current_layer_root).value().to_owned();
+            let combined = match envelope.ancestor_cidx_secondary_root_hashes[depth] {
+                Some(ancestor_secondary_root) => {
+                    combine_hash_three(&val_h, &current_layer_root, &ancestor_secondary_root)
+                        .value()
+                        .to_owned()
+                }
+                None => combine_hash(&val_h, &current_layer_root).value().to_owned(),
+            };
             if combined != recorded_value_hash {
+                let chain_kind = if envelope.ancestor_cidx_secondary_root_hashes[depth].is_some() {
+                    "combine_hash_three(H(value), primary_root, secondary_root)"
+                } else {
+                    "combine_hash(H(value), child_root)"
+                };
                 return Err(Error::CorruptedData(format!(
                     "intermediate layer chain mismatch at depth {}: parent recorded \
-                     value_hash {} but combine_hash(H(value), child_root) is {} (this can \
-                     occur if an ancestor on the proven path is itself a CountIndexedTree, \
-                     which is not supported by this proof envelope)",
+                     value_hash {} but {} is {}",
                     depth,
                     hex::encode(recorded_value_hash),
+                    chain_kind,
                     hex::encode(combined)
                 )));
             }

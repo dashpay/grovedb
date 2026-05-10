@@ -224,7 +224,7 @@ pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
 #[cfg(feature = "minimal")]
 use grovedb_merk::{
     self,
-    tree::{combine_hash, value_hash},
+    tree::{combine_hash, combine_hash_three, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
 #[cfg(feature = "minimal")]
@@ -1179,20 +1179,87 @@ impl GroveDb {
             // hash checks below operate on those.
             let element = Element::raw_decode(&element_value, grove_version)?.into_underlying();
             match element {
-                // CountIndexedTree / ProvableCountIndexedTree integrity
-                // verification requires walking both child Merks plus
-                // checking the H1-A three-input combine — that dedicated
-                // path is not yet wired here. Fail closed (rather than
-                // silently passing) so a corrupted cidx element is
-                // surfaced instead of being treated as verified.
+                // CountIndexedTree / ProvableCountIndexedTree integrity:
+                // open both child Merks, read their root hashes, and
+                // verify the parent's recorded value_hash equals the
+                // H1-A three-input combine of
+                // (value_hash(cidx_bytes), primary_root, secondary_root).
+                // Then recurse into the primary Merk normally; the
+                // secondary's contents are auto-mirrored from the
+                // primary, so we only check its root-hash contribution
+                // here.
                 Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
-                    return Err(Error::NotSupported(
-                        "verify_grovedb does not yet support CountIndexedTree \
-                         integrity verification (H1-A three-input combine plus \
-                         dual-Merk traversal); failing closed to avoid silently \
-                         passing on a corrupted cidx element"
-                            .to_string(),
-                    ));
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let new_path = path.derive_owned_with_child(key);
+                    let new_path_ref = SubtreePath::from(&new_path);
+
+                    let primary_merk = self
+                        .open_transactional_merk_at_path(
+                            new_path_ref.clone(),
+                            transaction,
+                            batch,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                    let primary_root_hash = primary_merk.root_hash().unwrap();
+
+                    let secondary_root_key = match element {
+                        Element::CountIndexedTree(_, ref s, ..)
+                        | Element::ProvableCountIndexedTree(_, ref s, ..) => s.clone(),
+                        _ => unreachable!("matched cidx variant above"),
+                    };
+                    let secondary_merk = self
+                        .open_count_indexed_secondary_at_path(
+                            new_path_ref.clone(),
+                            secondary_root_key,
+                            transaction,
+                            batch,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                    let secondary_root_hash = secondary_merk.root_hash().unwrap();
+
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash = combine_hash_three(
+                        &actual_value_hash,
+                        &primary_root_hash,
+                        &secondary_root_hash,
+                    )
+                    .unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        // Use the primary root hash in the issues record;
+                        // verifying the secondary separately would
+                        // double-count if the same parent had multiple
+                        // mismatches in the same scan.
+                        issues.insert(
+                            new_path.to_vec(),
+                            (primary_root_hash, combined_value_hash, element_value_hash),
+                        );
+                    }
+
+                    issues.extend(self.verify_merk_and_submerks_in_transaction(
+                        primary_merk,
+                        &new_path_ref,
+                        batch,
+                        transaction,
+                        verify_references,
+                        true,
+                        grove_version,
+                    )?);
                 }
                 Element::SumTree(..)
                 | Element::Tree(..)
