@@ -145,6 +145,12 @@ pub enum ElementType {
     DenseAppendOnlyFixedSizeTree = 14,
     // 15 is reserved as the on-disk wrapper byte and has no direct
     // ElementType variant.
+    /// Count-indexed tree (primary count tree + secondary count-ordered
+    /// index) - discriminant 16
+    CountIndexedTree = 16,
+    /// Provable count-indexed tree (primary `ProvableCountTree` + secondary
+    /// count-ordered index) - discriminant 17
+    ProvableCountIndexedTree = 17,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -175,6 +181,10 @@ pub enum ElementType {
     NonCountedBulkAppendTree = 141,
     /// Non-counted wrapper around `DenseAppendOnlyFixedSizeTree` - discriminant 142
     NonCountedDenseAppendOnlyFixedSizeTree = 142,
+    /// Non-counted wrapper around `CountIndexedTree` - discriminant 144
+    NonCountedCountIndexedTree = 144,
+    /// Non-counted wrapper around `ProvableCountIndexedTree` - discriminant 145
+    NonCountedProvableCountIndexedTree = 145,
 }
 
 impl ElementType {
@@ -203,20 +213,25 @@ impl ElementType {
                     "NonCounted wrapper has no inner element discriminant byte".to_string(),
                 )
             })?;
-            // The inner discriminant must be a base type — i.e. strictly less
-            // than NON_COUNTED_WRAPPER_DISCRIMINANT (15). Bytes 15+ are not
-            // valid on-disk inner discriminants:
+            // The inner discriminant must be an allocated base type. Bytes
+            // that are NOT valid on-disk inner discriminants:
             //   - 15 itself is the wrapper byte (nested wrappers forbidden),
-            //   - 16..=127 are unallocated,
-            //   - 128..=142 are the synthetic NonCountedXxx twins which
-            //     never appear on disk; without this check, the bitwise OR
-            //     below would collapse `0x80 | inner_byte` into `inner_byte`
-            //     and a payload like `[15, 128, ...]` would silently parse
-            //     as `NonCountedItem`.
-            if inner_byte >= NON_COUNTED_WRAPPER_DISCRIMINANT {
+            //   - bytes with the high bit set (>= 128) are the synthetic
+            //     `NonCountedXxx` twins — they never appear on disk; without
+            //     this check the bitwise OR below would collapse
+            //     `0x80 | inner_byte` into `inner_byte` and a payload like
+            //     `[15, 128, ...]` would silently parse as `NonCountedItem`.
+            //   - other unallocated bytes (e.g. 18..=127) — caught by the
+            //     trailing `Self::try_from` failing on the resulting twin
+            //     discriminant.
+            if inner_byte == NON_COUNTED_WRAPPER_DISCRIMINANT {
+                return Err(ElementError::CorruptedData(
+                    "NonCounted wrapper may not nest another NonCounted".to_string(),
+                ));
+            }
+            if inner_byte & NON_COUNTED_FLAG != 0 {
                 return Err(ElementError::CorruptedData(format!(
-                    "NonCounted inner discriminant must be a base type 0..={}, got {}",
-                    NON_COUNTED_WRAPPER_DISCRIMINANT - 1,
+                    "NonCounted inner discriminant must not be a synthetic twin, got {}",
                     inner_byte
                 )));
             }
@@ -294,7 +309,9 @@ impl ElementType {
         let parent_base = parent_tree_type.map(|t| t.base());
         let is_provable_count_tree = matches!(
             parent_base,
-            Some(ElementType::ProvableCountTree) | Some(ElementType::ProvableCountSumTree)
+            Some(ElementType::ProvableCountTree)
+                | Some(ElementType::ProvableCountSumTree)
+                | Some(ElementType::ProvableCountIndexedTree)
         );
 
         let base = self.base();
@@ -370,6 +387,19 @@ impl ElementType {
                 | ElementType::MmrTree
                 | ElementType::BulkAppendTree
                 | ElementType::DenseAppendOnlyFixedSizeTree
+                | ElementType::CountIndexedTree
+                | ElementType::ProvableCountIndexedTree
+        )
+    }
+
+    /// Returns true if this element type is a count-indexed tree (carries
+    /// both a primary count tree and a count-ordered secondary index).
+    /// Looks through the `NonCounted` wrapper.
+    #[inline]
+    pub fn is_count_indexed_tree(&self) -> bool {
+        matches!(
+            self.base(),
+            ElementType::CountIndexedTree | ElementType::ProvableCountIndexedTree
         )
     }
 
@@ -408,6 +438,8 @@ impl ElementType {
             ElementType::MmrTree => "mmr tree",
             ElementType::BulkAppendTree => "bulk_append_tree",
             ElementType::DenseAppendOnlyFixedSizeTree => "dense_tree",
+            ElementType::CountIndexedTree => "count indexed tree",
+            ElementType::ProvableCountIndexedTree => "provable count indexed tree",
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -423,6 +455,10 @@ impl ElementType {
             ElementType::NonCountedMmrTree => "non_counted mmr tree",
             ElementType::NonCountedBulkAppendTree => "non_counted bulk_append_tree",
             ElementType::NonCountedDenseAppendOnlyFixedSizeTree => "non_counted dense_tree",
+            ElementType::NonCountedCountIndexedTree => "non_counted count indexed tree",
+            ElementType::NonCountedProvableCountIndexedTree => {
+                "non_counted provable count indexed tree"
+            }
         }
     }
 }
@@ -454,6 +490,8 @@ impl TryFrom<u8> for ElementType {
             14 => Ok(ElementType::DenseAppendOnlyFixedSizeTree),
             // 15 is the raw NonCounted wrapper byte; from_serialized_value
             // resolves it by reading the inner discriminant.
+            16 => Ok(ElementType::CountIndexedTree),
+            17 => Ok(ElementType::ProvableCountIndexedTree),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -469,6 +507,8 @@ impl TryFrom<u8> for ElementType {
             140 => Ok(ElementType::NonCountedMmrTree),
             141 => Ok(ElementType::NonCountedBulkAppendTree),
             142 => Ok(ElementType::NonCountedDenseAppendOnlyFixedSizeTree),
+            144 => Ok(ElementType::NonCountedCountIndexedTree),
+            145 => Ok(ElementType::NonCountedProvableCountIndexedTree),
             _ => Err(ElementError::CorruptedData(format!(
                 "Unknown element type discriminant: {}",
                 value
@@ -525,7 +565,15 @@ mod tests {
         // 15 is the raw NonCounted wrapper byte and is rejected by TryFrom;
         // it has no direct ElementType variant (use from_serialized_value).
         assert!(ElementType::try_from(15).is_err());
-        assert!(ElementType::try_from(16).is_err());
+        assert_eq!(
+            ElementType::try_from(16).unwrap(),
+            ElementType::CountIndexedTree
+        );
+        assert_eq!(
+            ElementType::try_from(17).unwrap(),
+            ElementType::ProvableCountIndexedTree
+        );
+        assert!(ElementType::try_from(18).is_err());
 
         // High-bit twins
         assert_eq!(
@@ -540,10 +588,21 @@ mod tests {
             ElementType::try_from(142).unwrap(),
             ElementType::NonCountedDenseAppendOnlyFixedSizeTree
         );
+        assert_eq!(
+            ElementType::try_from(144).unwrap(),
+            ElementType::NonCountedCountIndexedTree
+        );
+        assert_eq!(
+            ElementType::try_from(145).unwrap(),
+            ElementType::NonCountedProvableCountIndexedTree
+        );
         // Bytes between the base and twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
-        // Bytes past the highest twin are invalid.
+        // The twin slot for inner discriminant 15 (the wrapper byte) is
+        // unallocated by construction.
         assert!(ElementType::try_from(143).is_err());
+        // Bytes past the highest twin are invalid.
+        assert!(ElementType::try_from(146).is_err());
     }
 
     #[test]
@@ -797,9 +856,19 @@ mod tests {
         // would silently parse as `NonCountedItem`.
         assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
-        // Wrapper with an unallocated mid-range inner byte (16..=127) is
-        // also rejected, even though it has no high bit set.
-        assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
+        // Wrapper around an allocated mid-range inner byte parses to the
+        // matching synthetic twin.
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 16]).unwrap(),
+            ElementType::NonCountedCountIndexedTree
+        );
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 17]).unwrap(),
+            ElementType::NonCountedProvableCountIndexedTree
+        );
+        // Wrapper around an unallocated mid-range inner byte is still
+        // rejected (the high-bit OR collides with no allocated twin slot).
+        assert!(ElementType::from_serialized_value(&[15, 18]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
     }
 
@@ -933,13 +1002,27 @@ mod tests {
                 ElementType::DenseAppendOnlyFixedSizeTree,
                 "DenseAppendOnlyFixedSizeTree",
             ),
+            // discriminant 16 (15 is the NonCounted wrapper byte)
+            (
+                Element::CountIndexedTree(None, None, 0, None),
+                ElementType::CountIndexedTree,
+                "CountIndexedTree",
+            ),
+            // discriminant 17
+            (
+                Element::ProvableCountIndexedTree(None, None, 0, None),
+                ElementType::ProvableCountIndexedTree,
+                "ProvableCountIndexedTree",
+            ),
         ];
 
-        // Verify we're testing all 15 base discriminants (0-14)
+        // 15 base discriminants 0..=14 + 2 new discriminants 16, 17
+        // (15 is reserved for the NonCounted wrapper byte and is not a
+        // direct base discriminant).
         assert_eq!(
             test_cases.len(),
-            15,
-            "Expected 15 base Element variants in test, got {}",
+            17,
+            "Expected 17 base Element variants in test, got {}",
             test_cases.len()
         );
 

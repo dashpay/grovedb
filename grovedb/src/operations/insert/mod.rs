@@ -280,6 +280,34 @@ impl GroveDb {
                     )
                 );
             }
+            // CountIndexedTree / ProvableCountIndexedTree own two child Merks
+            // (primary + secondary). On direct insertion we accept only the
+            // empty case (both root keys = None, count = 0) because there is
+            // no two-Merk batch-cascade machinery in this code path; full
+            // batch / cascading-aggregation support lives in the batch
+            // propagation work.
+            Element::CountIndexedTree(primary, secondary, count_value, _)
+            | Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
+                if primary.is_some() || secondary.is_some() || *count_value != 0 {
+                    return Err(Error::InvalidCodeExecution(
+                        "a CountIndexedTree must be empty at the moment of direct insertion (both \
+                         primary_root_key and secondary_root_key must be None and count = 0); \
+                         non-empty insertion requires batch operations",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_count_indexed_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        NULL_HASH,
+                        NULL_HASH,
+                        Some(options.as_merk_options()),
+                        grove_version,
+                    )
+                );
+            }
             Element::Tree(value, _)
             | Element::SumTree(value, ..)
             | Element::BigSumTree(value, ..)

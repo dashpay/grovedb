@@ -73,7 +73,9 @@ impl Element {
             Element::CountTree(_, count_value, _)
             | Element::CountSumTree(_, count_value, ..)
             | Element::ProvableCountTree(_, count_value, _)
-            | Element::ProvableCountSumTree(_, count_value, ..) => *count_value,
+            | Element::ProvableCountSumTree(_, count_value, ..)
+            | Element::CountIndexedTree(.., count_value, _)
+            | Element::ProvableCountIndexedTree(.., count_value, _) => *count_value,
             _ => 1,
         }
     }
@@ -95,6 +97,8 @@ impl Element {
                 (*count_value, *sum_value)
             }
             Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
+            Element::CountIndexedTree(.., count_value, _)
+            | Element::ProvableCountIndexedTree(.., count_value, _) => (*count_value, 0),
             _ => (1, 0),
         }
     }
@@ -212,6 +216,18 @@ impl Element {
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
                 | Element::DenseAppendOnlyFixedSizeTree(..)
+                | Element::CountIndexedTree(..)
+                | Element::ProvableCountIndexedTree(..)
+        )
+    }
+
+    /// Check if the element is a count-indexed tree (carries both a primary
+    /// count Merk and a secondary count-ordered Merk). Looks through
+    /// `NonCounted`.
+    pub fn is_count_indexed_tree(&self) -> bool {
+        matches!(
+            self.underlying(),
+            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
         )
     }
 
@@ -290,6 +306,10 @@ impl Element {
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
                 | Element::DenseAppendOnlyFixedSizeTree(..)
+                | Element::CountIndexedTree(Some(_), ..)
+                | Element::CountIndexedTree(_, Some(_), ..)
+                | Element::ProvableCountIndexedTree(Some(_), ..)
+                | Element::ProvableCountIndexedTree(_, Some(_), ..)
         )
     }
 
@@ -310,6 +330,10 @@ impl Element {
                 | Element::CountSumTree(Some(_), ..)
                 | Element::ProvableCountTree(Some(_), ..)
                 | Element::ProvableCountSumTree(Some(_), ..)
+                | Element::CountIndexedTree(Some(_), ..)
+                | Element::CountIndexedTree(_, Some(_), ..)
+                | Element::ProvableCountIndexedTree(Some(_), ..)
+                | Element::ProvableCountIndexedTree(_, Some(_), ..)
         )
     }
 
@@ -372,7 +396,9 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableCountIndexedTree(.., flags) => flags,
             Element::NonCounted(inner) => inner.get_flags(),
         }
     }
@@ -395,7 +421,9 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableCountIndexedTree(.., flags) => flags,
             Element::NonCounted(inner) => inner.get_flags_owned(),
         }
     }
@@ -418,7 +446,9 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableCountIndexedTree(.., flags) => flags,
             Element::NonCounted(inner) => inner.get_flags_mut(),
         }
     }
@@ -441,7 +471,9 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => *flags = new_flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableCountIndexedTree(.., flags) => *flags = new_flags,
             Element::NonCounted(inner) => inner.set_flags(new_flags),
         }
     }

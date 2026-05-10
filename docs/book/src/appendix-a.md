@@ -17,6 +17,9 @@
 | 12 | `MmrTree` | 8 | `(mmr_size: u64, flags)` | 11 | Append-only MMR log |
 | 13 | `BulkAppendTree` | 9 | `(total_count: u64, chunk_power: u8, flags)` | 12 | High-throughput append-only log |
 | 14 | `DenseAppendOnlyFixedSizeTree` | 10 | `(count: u16, height: u8, flags)` | 6 | Dense fixed-capacity Merkle storage |
+| 15 | *(NonCounted wrapper byte)* | — | inner element bytes follow | varies | On-disk wrapper for `Element::NonCounted`; `from_serialized_value` reads the next byte to resolve the inner type and returns the matching `NonCountedXxx` synthetic discriminant (high bit set). |
+| 16 | `CountIndexedTree` | 11 | `(primary_root_key, secondary_root_key, count, flags)` | 13 | CountTree-shaped primary + count-ordered secondary index — see chapter "The CountIndexedTree" |
+| 17 | `ProvableCountIndexedTree` | 12 | `(primary_root_key, secondary_root_key, count, flags)` | 13 | ProvableCountTree-shaped primary + count-ordered secondary index |
 
 **Notes:**
 - Discriminants 11–14 are **non-Merk trees**: data lives outside a child Merk subtree
@@ -26,5 +29,7 @@
 - `CommitmentTree` uses Sinsemilla hashing (Pallas curve); all others use Blake3
 - Cost behavior for non-Merk trees follows `NormalTree` (BasicMerkNode, no aggregation)
 - `DenseAppendOnlyFixedSizeTree` count is `u16` (max 65,535); heights restricted to 1..=16
+- Discriminants 16 and 17 (`CountIndexedTree` / `ProvableCountIndexedTree`) carry **two** root keys (primary + secondary) and use the three-input value-hash composition `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)` — see chapter "The CountIndexedTree"
+- `NonCounted` synthetic discriminants (`NonCountedXxx`) are 128–142 (= 0x80 | base) for inner discriminants 0–14, plus 144 (`NonCountedCountIndexedTree`) and 145 (`NonCountedProvableCountIndexedTree`). 143 is unallocated by construction (its inner-byte slot is the wrapper byte 15 itself).
 
 ---

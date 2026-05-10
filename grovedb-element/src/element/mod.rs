@@ -133,6 +133,35 @@ pub enum Element {
     /// Invariant: a `NonCounted` may not wrap another `NonCounted`. Enforced
     /// at construction and at deserialization.
     NonCounted(Box<Element>),
+    /// Count-indexed tree: a `CountTree`-style primary Merk paired with a
+    /// secondary Merk keyed by `(count_be ‖ original_key)` for ordered
+    /// count-based queries. Both Merks contribute to the element's
+    /// `combined_value_hash` via the three-input hash composition.
+    ///
+    /// Fields: `(primary_root_key, secondary_root_key, count_value, flags)`
+    /// - `primary_root_key`: root key of the primary count Merk.
+    /// - `secondary_root_key`: root key of the secondary count-ordered Merk.
+    /// - `count_value`: aggregated count of the primary Merk.
+    /// - `flags`: optional per-element metadata.
+    CountIndexedTree(
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        CountValue,
+        Option<ElementFlags>,
+    ),
+    /// Provable count-indexed tree: same as `CountIndexedTree` but the
+    /// primary Merk uses `ProvableCountedMerkNode` (count baked into node
+    /// hash). The secondary Merk's per-node feature type is
+    /// `ProvableCountedMerkNode(1)` in both variants — this lets aggregate
+    /// count queries against the secondary work uniformly.
+    ///
+    /// Fields: `(primary_root_key, secondary_root_key, count_value, flags)`
+    ProvableCountIndexedTree(
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        CountValue,
+        Option<ElementFlags>,
+    ),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -321,6 +350,43 @@ impl fmt::Display for Element {
             Element::NonCounted(inner) => {
                 write!(f, "NonCounted({})", inner)
             }
+            Element::CountIndexedTree(primary_root_key, secondary_root_key, count_value, flags) => {
+                write!(
+                    f,
+                    "CountIndexedTree(primary={}, secondary={}, count={}{})",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    secondary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ProvableCountIndexedTree(
+                primary_root_key,
+                secondary_root_key,
+                count_value,
+                flags,
+            ) => {
+                write!(
+                    f,
+                    "ProvableCountIndexedTree(primary={}, secondary={}, count={}{})",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    secondary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -349,6 +415,8 @@ impl Element {
             Element::MmrTree(..) => ElementType::MmrTree,
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
             Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
+            Element::CountIndexedTree(..) => ElementType::CountIndexedTree,
+            Element::ProvableCountIndexedTree(..) => ElementType::ProvableCountIndexedTree,
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -366,6 +434,10 @@ impl Element {
                 ElementType::BulkAppendTree => ElementType::NonCountedBulkAppendTree,
                 ElementType::DenseAppendOnlyFixedSizeTree => {
                     ElementType::NonCountedDenseAppendOnlyFixedSizeTree
+                }
+                ElementType::CountIndexedTree => ElementType::NonCountedCountIndexedTree,
+                ElementType::ProvableCountIndexedTree => {
+                    ElementType::NonCountedProvableCountIndexedTree
                 }
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.

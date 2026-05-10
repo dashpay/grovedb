@@ -144,6 +144,34 @@ pub trait ElementInsertToStorageExtensions {
         feature_type: TreeFeatureType,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
+
+    /// Insert a `CountIndexedTree` / `ProvableCountIndexedTree` element
+    /// directly into Merk under a key.
+    ///
+    /// Carries BOTH child Merk root hashes (primary + secondary) and uses
+    /// the H1-A three-input hash composition.
+    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
+
+    /// Adds a "Put" op to batch operations for a `CountIndexedTree` /
+    /// `ProvableCountIndexedTree` element and key.
+    fn insert_count_indexed_subtree_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        is_replace: bool,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>;
 }
 
 impl ElementInsertToStorageExtensions for Element {
@@ -613,6 +641,152 @@ impl ElementInsertToStorageExtensions for Element {
             (
                 key,
                 Op::PutLayeredReference(serialized, cost, subtree_root_hash, feature_type),
+            )
+        };
+        batch_operations.push(entry);
+        Ok(()).wrap_with_cost(Default::default())
+    }
+
+    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+        &self,
+        merk: &mut Merk<S>,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        options: Option<MerkOptions>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_count_indexed_subtree",
+            grove_version.grovedb_versions.element.insert_subtree
+        );
+
+        if !matches!(
+            self.underlying(),
+            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+        ) {
+            return Err(Error::InvalidInputError(
+                "insert_count_indexed_subtree only accepts CountIndexedTree or \
+                 ProvableCountIndexedTree elements",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into count-bearing trees",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        let serialized = match self.serialize(grove_version) {
+            Ok(s) => s,
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
+        };
+
+        let cost = OperationCost::default();
+        let merk_feature_type =
+            cost_return_on_error_no_add!(cost, self.get_feature_type(merk.tree_type));
+
+        let value_cost = cost_return_on_error_no_add!(
+            cost,
+            self.layered_value_defined_cost(grove_version)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "count-indexed trees should always have a layered value defined cost"
+                ))
+        );
+
+        let batch_operations = [(
+            key,
+            Op::PutLayeredCountIndexedReference(
+                serialized,
+                value_cost,
+                primary_root_hash,
+                secondary_root_hash,
+                merk_feature_type,
+            ),
+        )];
+        let tree_type = merk.tree_type;
+        merk.apply_with_specialized_costs::<_, Vec<u8>>(
+            &batch_operations,
+            &[],
+            options,
+            &|key, value| {
+                Self::specialized_costs_for_key_value(
+                    key,
+                    value,
+                    tree_type.inner_node_type(),
+                    grove_version,
+                )
+                .map_err(|e| Error::ClientCorruptionError(e.to_string()))
+            },
+            Some(&Element::value_defined_cost_for_serialized_value),
+            grove_version,
+        )
+        .map_err(|e| Error::CorruptedData(e.to_string()))
+    }
+
+    fn insert_count_indexed_subtree_into_batch_operations<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        is_replace: bool,
+        batch_operations: &mut Vec<BatchEntry<K>>,
+        feature_type: TreeFeatureType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        check_grovedb_v0_with_cost!(
+            "insert_count_indexed_subtree_into_batch_operations",
+            grove_version
+                .grovedb_versions
+                .element
+                .insert_subtree_into_batch_operations
+        );
+
+        if !matches!(
+            self.underlying(),
+            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+        ) {
+            return Err(Error::InvalidInputError(
+                "insert_count_indexed_subtree_into_batch_operations only accepts \
+                 CountIndexedTree or ProvableCountIndexedTree elements",
+            ))
+            .wrap_with_cost(Default::default());
+        }
+
+        let serialized = match self.serialize(grove_version) {
+            Ok(s) => s,
+            Err(e) => return Err(e.into()).wrap_with_cost(Default::default()),
+        };
+
+        let cost = cost_return_on_error_default!(self
+            .layered_value_defined_cost(grove_version)
+            .ok_or(Error::CorruptedCodeExecution(
+                "count-indexed trees should always have a layered value defined cost"
+            )));
+
+        let entry = if is_replace {
+            (
+                key,
+                Op::ReplaceLayeredCountIndexedReference(
+                    serialized,
+                    cost,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    feature_type,
+                ),
+            )
+        } else {
+            (
+                key,
+                Op::PutLayeredCountIndexedReference(
+                    serialized,
+                    cost,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    feature_type,
+                ),
             )
         };
         batch_operations.push(entry);

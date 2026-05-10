@@ -20,7 +20,9 @@ use crate::{
 #[cfg(feature = "minimal")]
 use crate::{
     tree::{
-        hash::{combine_hash, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2},
+        hash::{
+            combine_hash, combine_hash_three, kv_digest_to_kv_hash, value_hash, HASH_LENGTH_X2,
+        },
         tree_feature_type::{TreeFeatureType, TreeFeatureType::BasicMerkNode},
     },
     Link, HASH_LENGTH_U32, HASH_LENGTH_U32_X2,
@@ -152,6 +154,38 @@ impl KV {
             .add_cost(cost)
     }
 
+    /// Creates a new `KV` for a `CountIndexedTree` / `ProvableCountIndexedTree`
+    /// element. The value hash is
+    /// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`
+    /// (see chapter "The CountIndexedTree" in the book; H1-A composition).
+    /// `value_cost` is the layered cost size for the element type, the same
+    /// way `new_with_layered_value_hash` uses it for single-Merk subtrees.
+    pub fn new_with_layered_value_hash_three(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_cost: u32,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        feature_type: TreeFeatureType,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        let actual_value_hash = value_hash(value.as_slice()).unwrap_add_cost(&mut cost);
+        let combined_value_hash =
+            combine_hash_three(&actual_value_hash, &primary_root_hash, &secondary_root_hash)
+                .unwrap_add_cost(&mut cost);
+
+        kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash)
+            .map(|hash| Self {
+                key,
+                value,
+                feature_type,
+                value_defined_cost: Some(LayeredValueDefinedCost(value_cost)),
+                hash,
+                value_hash: combined_value_hash,
+            })
+            .add_cost(cost)
+    }
+
     /// Creates a new `KV` with the given key, value, and hash. The hash is not
     /// checked to be correct for the given key/value.
     #[inline]
@@ -207,6 +241,26 @@ impl KV {
         let actual_value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
         let combined_value_hash =
             combine_hash(&actual_value_hash, &reference_value_hash).unwrap_add_cost(&mut cost);
+        self.value_hash = combined_value_hash;
+        self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
+        self.wrap_with_cost(cost)
+    }
+
+    /// H1-A variant: updates the value/kv hashes from
+    /// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`.
+    /// Used by `CountIndexedTree` / `ProvableCountIndexedTree` elements which
+    /// point at two child Merks instead of one.
+    #[inline]
+    pub fn update_hashes_using_two_reference_value_hashes(
+        mut self,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+    ) -> CostContext<Self> {
+        let mut cost = OperationCost::default();
+        let actual_value_hash = value_hash(self.value_as_slice()).unwrap_add_cost(&mut cost);
+        let combined_value_hash =
+            combine_hash_three(&actual_value_hash, &primary_root_hash, &secondary_root_hash)
+                .unwrap_add_cost(&mut cost);
         self.value_hash = combined_value_hash;
         self.hash = kv_digest_to_kv_hash(self.key(), self.value_hash()).unwrap_add_cost(&mut cost);
         self.wrap_with_cost(cost)

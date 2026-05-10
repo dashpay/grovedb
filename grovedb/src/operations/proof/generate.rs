@@ -456,6 +456,24 @@ impl GroveDb {
                                 }
                                 has_a_result_at_level |= true;
                             }
+                            // Subquery-into-CountIndexedTree proof generation
+                            // belongs in PR 3 alongside the count-indexed
+                            // query API. PR 1 emits an explicit error so a
+                            // misuse fails loudly rather than silently
+                            // skipping the subquery.
+                            Ok(Element::CountIndexedTree(..))
+                            | Ok(Element::ProvableCountIndexedTree(..))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                return Err(Error::NotSupported(
+                                    "subqueries into CountIndexedTree / \
+                                     ProvableCountIndexedTree are not yet supported (planned in \
+                                     PR 3)"
+                                        .to_string(),
+                                ))
+                                .wrap_with_cost(cost);
+                            }
                             Ok(Element::Tree(Some(_), _))
                             | Ok(Element::SumTree(Some(_), ..))
                             | Ok(Element::BigSumTree(Some(_), ..))
@@ -536,6 +554,8 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
+                            | Ok(Element::CountIndexedTree(..))
+                            | Ok(Element::ProvableCountIndexedTree(..))
                                 if !done_with_results =>
                             {
                                 #[cfg(feature = "proof_debug")]
@@ -574,7 +594,9 @@ impl GroveDb {
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
-                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
+                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
+                            | Ok(Element::CountIndexedTree(..))
+                            | Ok(Element::ProvableCountIndexedTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_)) => unreachable!("unwrapped above"),
                             Err(e) => {
@@ -1438,7 +1460,9 @@ impl GroveDb {
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
-                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
+                            | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
+                            | Ok(Element::CountIndexedTree(..))
+                            | Ok(Element::ProvableCountIndexedTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_)) => unreachable!("unwrapped above"),
                             Err(e) => {

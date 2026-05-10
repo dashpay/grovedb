@@ -181,6 +181,32 @@ impl Visualize for Element {
                 drawer = inner.visualize(drawer)?;
                 drawer.write(b")")?;
             }
+            Element::CountIndexedTree(primary, secondary, count_value, flags) => {
+                drawer.write(b"count_indexed_tree: primary=")?;
+                drawer = primary.as_deref().visualize(drawer)?;
+                drawer.write(b", secondary=")?;
+                drawer = secondary.as_deref().visualize(drawer)?;
+                drawer.write(format!(", count: {count_value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
+            Element::ProvableCountIndexedTree(primary, secondary, count_value, flags) => {
+                drawer.write(b"provable_count_indexed_tree: primary=")?;
+                drawer = primary.as_deref().visualize(drawer)?;
+                drawer.write(b", secondary=")?;
+                drawer = secondary.as_deref().visualize(drawer)?;
+                drawer.write(format!(", count: {count_value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
         }
         Ok(drawer)
     }

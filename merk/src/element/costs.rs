@@ -11,8 +11,9 @@ use crate::{
     },
     tree_type::{
         BIG_SUM_TREE_COST_SIZE, BULK_APPEND_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE,
-        COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE, DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE,
-        SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE, TREE_COST_SIZE,
+        COUNT_INDEXED_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE,
+        DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
+        TREE_COST_SIZE,
     },
     Error,
 };
@@ -71,6 +72,8 @@ impl ElementCostPrivateExtensions for Element {
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::ProvableCountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
+            Element::CountIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
+            Element::ProvableCountIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
             Element::NonCounted(inner) => Ok(inner.get_specialized_cost(grove_version)? + 1),
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
@@ -228,6 +231,17 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
+            Element::CountIndexedTree(.., flags) | Element::ProvableCountIndexedTree(.., flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                let value_len = COUNT_INDEXED_TREE_COST_SIZE + flags_len + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
             Element::SumItem(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
@@ -301,7 +315,9 @@ impl ElementCostExtensions for Element {
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
-            | Element::DenseAppendOnlyFixedSizeTree(..) => Some(cost),
+            | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::CountIndexedTree(..)
+            | Element::ProvableCountIndexedTree(..) => Some(cost),
             _ => None,
         }
     }
@@ -328,6 +344,8 @@ impl ElementCostExtensions for Element {
             Element::CountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::CountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableCountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;

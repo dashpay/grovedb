@@ -140,6 +140,95 @@ pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
+/// Combines three hash values into one.
+///
+/// Used by `CountIndexedTree` / `ProvableCountIndexedTree` elements: the
+/// element's `combined_value_hash` is
+/// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`.
+/// Order is normative — the inputs MUST be supplied as
+/// `(value_hash, primary_root_hash, secondary_root_hash)`.
+///
+/// 96 bytes of input fits within a single Blake3 block (64 bytes per chunk
+/// header + up to 1024 bytes input), so cost is one hash call. The cost
+/// constant matches `combine_hash`.
+pub fn combine_hash_three(
+    hash_one: &CryptoHash,
+    hash_two: &CryptoHash,
+    hash_three: &CryptoHash,
+) -> CostContext<CryptoHash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(hash_one);
+    hasher.update(hash_two);
+    hasher.update(hash_three);
+
+    let res = hasher.finalize();
+    let mut hash: CryptoHash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash.wrap_with_cost(OperationCost {
+        hash_node_calls: 2, // 96 bytes spans two 64-byte blocks
+        ..Default::default()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combine_hash_three_is_deterministic() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let c = [3u8; 32];
+        let h1 = combine_hash_three(&a, &b, &c).value().to_owned();
+        let h2 = combine_hash_three(&a, &b, &c).value().to_owned();
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn combine_hash_three_is_order_sensitive() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let c = [3u8; 32];
+        let abc = combine_hash_three(&a, &b, &c).value().to_owned();
+        let acb = combine_hash_three(&a, &c, &b).value().to_owned();
+        let bac = combine_hash_three(&b, &a, &c).value().to_owned();
+        assert_ne!(abc, acb);
+        assert_ne!(abc, bac);
+    }
+
+    #[test]
+    fn combine_hash_three_distinct_from_combine_hash_of_combine_hash() {
+        // The H1-A composition is a single three-input Blake3 call. It must
+        // NOT be equivalent to combine_hash(a, combine_hash(b, c)) — that's
+        // the composition that was rejected during design review (would have
+        // doubled the hash work). This regression test guards the choice.
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let c = [3u8; 32];
+        let three = combine_hash_three(&a, &b, &c).value().to_owned();
+        let inner = combine_hash(&b, &c).value().to_owned();
+        let nested = combine_hash(&a, &inner).value().to_owned();
+        assert_ne!(three, nested);
+    }
+
+    #[test]
+    fn combine_hash_three_handles_null_hash_slots() {
+        // For a CountIndexedTree element with both child Merks empty, the
+        // composition is Blake3(value_hash || NULL_HASH || NULL_HASH).
+        // Verify it is well-defined and stable across calls.
+        let value_hash = [0xAA; 32];
+        let h1 = combine_hash_three(&value_hash, &NULL_HASH, &NULL_HASH)
+            .value()
+            .to_owned();
+        let h2 = combine_hash_three(&value_hash, &NULL_HASH, &NULL_HASH)
+            .value()
+            .to_owned();
+        assert_eq!(h1, h2);
+        assert_ne!(h1, NULL_HASH);
+    }
+}
+
+#[cfg(any(feature = "minimal", feature = "verify"))]
 /// Hashes a node for ProvableCountTree, including the aggregate count
 pub fn node_hash_with_count(
     kv: &CryptoHash,

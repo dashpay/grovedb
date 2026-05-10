@@ -71,9 +71,9 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::CommitmentTree(_), true)
             | (TreeType::MmrTree, true)
             | (TreeType::BulkAppendTree(_), true)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true) => {
-                Op::DeleteLayeredMaybeSpecialized
-            }
+            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
+            | (TreeType::CountIndexedTree, true)
+            | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
@@ -83,7 +83,9 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::CommitmentTree(_), false)
             | (TreeType::MmrTree, false)
             | (TreeType::BulkAppendTree(_), false)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
+            | (TreeType::CountIndexedTree, false)
+            | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -141,9 +143,9 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::CommitmentTree(_), true)
             | (TreeType::MmrTree, true)
             | (TreeType::BulkAppendTree(_), true)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true) => {
-                Op::DeleteLayeredMaybeSpecialized
-            }
+            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
+            | (TreeType::CountIndexedTree, true)
+            | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
@@ -153,7 +155,9 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::CommitmentTree(_), false)
             | (TreeType::MmrTree, false)
             | (TreeType::BulkAppendTree(_), false)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
+            | (TreeType::CountIndexedTree, false)
+            | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
         // todo not sure we get it again, we need to see if this is necessary
@@ -207,9 +211,9 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::CommitmentTree(_), true)
             | (TreeType::MmrTree, true)
             | (TreeType::BulkAppendTree(_), true)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true) => {
-                Op::DeleteLayeredMaybeSpecialized
-            }
+            | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
+            | (TreeType::CountIndexedTree, true)
+            | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
             | (TreeType::CountTree, false)
@@ -219,7 +223,9 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::CommitmentTree(_), false)
             | (TreeType::MmrTree, false)
             | (TreeType::BulkAppendTree(_), false)
-            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false) => Op::DeleteMaybeSpecialized,
+            | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
+            | (TreeType::CountIndexedTree, false)
+            | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let entry = (key, op);
         batch_operations.push(entry);

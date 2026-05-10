@@ -494,6 +494,19 @@ impl GroveDb {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
                         match element {
+                            // CountIndexedTree / ProvableCountIndexedTree
+                            // proof verification needs the three-input
+                            // combine and a multi-Merk lower-layer walker
+                            // — that work lands in PR 3.
+                            Element::CountIndexedTree(..)
+                            | Element::ProvableCountIndexedTree(..) => {
+                                return Err(Error::NotSupported(
+                                    "verifying proofs that descend into a CountIndexedTree / \
+                                     ProvableCountIndexedTree is not yet supported (planned in \
+                                     PR 3)"
+                                        .to_string(),
+                                ));
+                            }
                             Element::Tree(Some(_), _)
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)
@@ -1476,6 +1489,17 @@ impl GroveDb {
                             println!("lower layer had key {}", hex_to_ascii(key));
                         }
                         match element {
+                            // CountIndexedTree / ProvableCountIndexedTree
+                            // V0 verifier path lands in PR 3.
+                            Element::CountIndexedTree(..)
+                            | Element::ProvableCountIndexedTree(..) => {
+                                return Err(Error::NotSupported(
+                                    "verifying V0 proofs that descend into a CountIndexedTree / \
+                                     ProvableCountIndexedTree is not yet supported (planned in \
+                                     PR 3)"
+                                        .to_string(),
+                                ));
+                            }
                             Element::Tree(Some(_), _)
                             | Element::SumTree(Some(_), ..)
                             | Element::BigSumTree(Some(_), ..)

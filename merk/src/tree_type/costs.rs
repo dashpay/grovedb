@@ -45,6 +45,11 @@ pub const BULK_APPEND_TREE_COST_SIZE: u32 = 9 + 1 + 2; // 12
 /// height (u8) + 2 bytes overhead)
 pub const DENSE_TREE_COST_SIZE: u32 = 3 + 1 + 2; // 6
 
+/// The cost of a count-indexed tree element. Same shape as `COUNT_TREE_COST_SIZE`
+/// but with one extra byte of overhead for the second `Option<root_key>` field
+/// (the secondary root key).
+pub const COUNT_INDEXED_TREE_COST_SIZE: u32 = COUNT_TREE_COST_SIZE + 1; // 13
+
 /// Provides the serialized cost size in bytes for a tree type.
 pub trait CostSize {
     /// Returns the cost size in bytes for this value.
@@ -65,6 +70,9 @@ impl CostSize for TreeType {
             TreeType::MmrTree => MMR_TREE_COST_SIZE,
             TreeType::BulkAppendTree(_) => BULK_APPEND_TREE_COST_SIZE,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => DENSE_TREE_COST_SIZE,
+            TreeType::CountIndexedTree | TreeType::ProvableCountIndexedTree => {
+                COUNT_INDEXED_TREE_COST_SIZE
+            }
         }
     }
 }

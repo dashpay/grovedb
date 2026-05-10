@@ -16,6 +16,21 @@ pub trait ElementReconstructExtensions {
         maybe_root_key: Option<Vec<u8>>,
         aggregate_data: AggregateData,
     ) -> Option<Element>;
+
+    /// Reconstruct a `CountIndexedTree` / `ProvableCountIndexedTree` element
+    /// with updated primary and secondary root keys plus aggregate count,
+    /// preserving flags. Returns `None` for any other element type — the
+    /// regular `reconstruct_with_root_key` covers single-Merk tree
+    /// elements.
+    ///
+    /// Looks through `Element::NonCounted` and re-wraps the inner element
+    /// once reconstructed.
+    fn reconstruct_with_two_root_keys(
+        &self,
+        primary_root_key: Option<Vec<u8>>,
+        secondary_root_key: Option<Vec<u8>>,
+        aggregate_data: AggregateData,
+    ) -> Option<Element>;
 }
 
 impl ElementReconstructExtensions for Element {
@@ -74,6 +89,36 @@ impl ElementReconstructExtensions for Element {
             // its root key gets propagated upward.
             Element::NonCounted(inner) => inner
                 .reconstruct_with_root_key(maybe_root_key, aggregate_data)
+                .map(|reconstructed| Element::NonCounted(Box::new(reconstructed))),
+            _ => None,
+        }
+    }
+
+    fn reconstruct_with_two_root_keys(
+        &self,
+        primary_root_key: Option<Vec<u8>>,
+        secondary_root_key: Option<Vec<u8>>,
+        aggregate_data: AggregateData,
+    ) -> Option<Element> {
+        match self {
+            Element::CountIndexedTree(.., f) => Some(Element::CountIndexedTree(
+                primary_root_key,
+                secondary_root_key,
+                aggregate_data.as_count_u64(),
+                f.clone(),
+            )),
+            Element::ProvableCountIndexedTree(.., f) => Some(Element::ProvableCountIndexedTree(
+                primary_root_key,
+                secondary_root_key,
+                aggregate_data.as_count_u64(),
+                f.clone(),
+            )),
+            Element::NonCounted(inner) => inner
+                .reconstruct_with_two_root_keys(
+                    primary_root_key,
+                    secondary_root_key,
+                    aggregate_data,
+                )
                 .map(|reconstructed| Element::NonCounted(Box::new(reconstructed))),
             _ => None,
         }

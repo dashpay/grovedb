@@ -46,8 +46,8 @@ use grovedb_costs::{
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash,
-    CryptoHash, HASH_LENGTH, NULL_HASH,
+    combine_hash, combine_hash_three, kv_digest_to_kv_hash, kv_hash, node_hash,
+    node_hash_with_count, value_hash, CryptoHash, HASH_LENGTH, NULL_HASH,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -341,6 +341,37 @@ impl TreeNode {
                 known_storage_cost: None,
             },
         )
+    }
+
+    /// Creates a new `Tree` for a `CountIndexedTree` /
+    /// `ProvableCountIndexedTree` element. The value hash is
+    /// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`
+    /// (H1-A composition).
+    pub fn new_with_layered_value_hash_three(
+        key: Vec<u8>,
+        value: Vec<u8>,
+        value_cost: u32,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        feature_type: TreeFeatureType,
+    ) -> CostContext<Self> {
+        KV::new_with_layered_value_hash_three(
+            key,
+            value,
+            value_cost,
+            primary_root_hash,
+            secondary_root_hash,
+            feature_type,
+        )
+        .map(|kv| Self {
+            inner: Box::new(TreeNodeInner {
+                kv,
+                left: None,
+                right: None,
+            }),
+            old_value: None,
+            known_storage_cost: None,
+        })
     }
 
     /// Creates a `Tree` by supplying all the raw struct fields (mainly useful
@@ -1085,6 +1116,69 @@ impl TreeNode {
             .inner
             .kv
             .update_hashes_using_reference_value_hash(value_hash)
+            .unwrap_add_cost(&mut cost);
+        Ok(self).wrap_with_cost(cost)
+    }
+
+    /// H1-A variant: replaces the root node's value with the given value,
+    /// computing the value hash from
+    /// `Blake3(actual_value_hash ‖ primary_root_hash ‖ secondary_root_hash)`
+    /// and accounting the layered value cost. Used by `CountIndexedTree` /
+    /// `ProvableCountIndexedTree` elements.
+    #[inline]
+    pub fn put_value_with_two_reference_value_hashes_and_value_cost(
+        mut self,
+        value: Vec<u8>,
+        primary_root_hash: CryptoHash,
+        secondary_root_hash: CryptoHash,
+        value_cost: u32,
+        feature_type: TreeFeatureType,
+        old_specialized_cost: &impl Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        get_temp_new_value_with_old_flags: &impl Fn(
+            &Vec<u8>,
+            &Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, Error>,
+        update_tree_value_based_on_costs: &mut impl FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<
+            (bool, Option<ValueDefinedCostType>),
+            Error,
+        >,
+        section_removal_bytes: &mut impl FnMut(
+            &Vec<u8>,
+            u32,
+            u32,
+        ) -> Result<
+            (StorageRemovedBytes, StorageRemovedBytes),
+            Error,
+        >,
+    ) -> CostResult<Self, Error> {
+        let mut cost = OperationCost::default();
+
+        self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
+            value,
+            LayeredValueDefinedCost(value_cost),
+        );
+        self.inner.kv.feature_type = feature_type;
+
+        if self.old_value.is_some() {
+            cost_return_on_error_no_add!(
+                cost,
+                self.just_in_time_tree_node_value_update(
+                    old_specialized_cost,
+                    get_temp_new_value_with_old_flags,
+                    update_tree_value_based_on_costs,
+                    section_removal_bytes
+                )
+            );
+        }
+
+        self.inner.kv = self
+            .inner
+            .kv
+            .update_hashes_using_two_reference_value_hashes(primary_root_hash, secondary_root_hash)
             .unwrap_add_cost(&mut cost);
         Ok(self).wrap_with_cost(cost)
     }

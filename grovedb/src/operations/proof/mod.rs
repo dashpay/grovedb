@@ -3,6 +3,8 @@
 #[cfg(feature = "minimal")]
 mod aggregate_count;
 #[cfg(feature = "minimal")]
+mod count_indexed;
+#[cfg(feature = "minimal")]
 mod generate;
 /// Utility functions for proof display and conversion.
 pub mod util;

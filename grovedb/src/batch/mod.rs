@@ -1485,7 +1485,9 @@ where
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
-            | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidBatchOperation(
+            | Element::DenseAppendOnlyFixedSizeTree(..)
+            | Element::CountIndexedTree(..)
+            | Element::ProvableCountIndexedTree(..) => Err(Error::InvalidBatchOperation(
                 "references can not point to trees being updated",
             ))
             .wrap_with_cost(cost),
@@ -1637,7 +1639,9 @@ where
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
-                        | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                        | Element::DenseAppendOnlyFixedSizeTree(..)
+                        | Element::CountIndexedTree(..)
+                        | Element::ProvableCountIndexedTree(..) => {
                             Err(Error::InvalidBatchOperation(
                                 "references can not point to trees being updated",
                             ))
@@ -1682,12 +1686,12 @@ where
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
-                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
-                        Err(Error::InvalidBatchOperation(
-                            "references can not point to trees being updated",
-                        ))
-                        .wrap_with_cost(cost)
-                    }
+                    | Element::DenseAppendOnlyFixedSizeTree(..)
+                    | Element::CountIndexedTree(..)
+                    | Element::ProvableCountIndexedTree(..) => Err(Error::InvalidBatchOperation(
+                        "references can not point to trees being updated",
+                    ))
+                    .wrap_with_cost(cost),
                     // NonCounted is unwrapped via underlying() above.
                     Element::NonCounted(_) => unreachable!("unwrapped above"),
                 },
@@ -1956,6 +1960,75 @@ where
                                 element.insert_reference_into_batch_operations(
                                     key_info.get_key_clone(),
                                     referenced_element_value_hash,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
+                        }
+                        // CountIndexedTree / ProvableCountIndexedTree own two
+                        // child Merks (primary + secondary). For the batch
+                        // path we accept only the empty-creation case here:
+                        // both root keys = None, count = 0. This is
+                        // sufficient to create the element bytes correctly
+                        // (with the H1-A three-input combine and both
+                        // child hashes = NULL_HASH); subsequent item-level
+                        // mutations into the primary still need the
+                        // dedicated `insert_into_count_indexed_tree` /
+                        // `delete_from_count_indexed_tree` APIs because
+                        // the batch propagation pass does not yet cascade
+                        // through the secondary.
+                        Element::CountIndexedTree(primary, secondary, count_value, _)
+                        | Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
+                            if primary.is_some() || secondary.is_some() || *count_value != 0 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a CountIndexedTree must be empty at the moment of batch \
+                                     insertion (both primary_root_key and secondary_root_key \
+                                     must be None and count = 0); item-level mutations require \
+                                     the dedicated insert_into_count_indexed_tree API",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            // Check existence for InsertIfNotExists.
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert CountIndexedTree element that \
+                                             already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_count_indexed_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    NULL_HASH,
+                                    false,
                                     &mut batch_operations,
                                     merk_feature_type,
                                     grove_version,

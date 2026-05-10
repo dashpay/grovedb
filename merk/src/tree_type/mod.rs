@@ -44,6 +44,16 @@ pub enum TreeType {
     BulkAppendTree(u8),
     /// A dense append-only tree with fixed-size entries and a configurable height.
     DenseAppendOnlyFixedSizeTree(u8),
+    /// A count-indexed tree's primary Merk: same node shape as `CountTree`
+    /// (uses `CountedMerkNode` aggregation). The secondary Merk pointed to
+    /// by the parent element is a regular `ProvableCountTree` opened at a
+    /// derived storage prefix.
+    CountIndexedTree,
+    /// A provable count-indexed tree's primary Merk: same node shape as
+    /// `ProvableCountTree` (uses `ProvableCountedMerkNode` aggregation).
+    /// The secondary Merk pointed to by the parent element is a regular
+    /// `ProvableCountTree` opened at a derived storage prefix.
+    ProvableCountIndexedTree,
 }
 
 impl TreeType {
@@ -63,6 +73,8 @@ impl TreeType {
             TreeType::MmrTree => 8,
             TreeType::BulkAppendTree(_) => 9,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => 10,
+            TreeType::CountIndexedTree => 11,
+            TreeType::ProvableCountIndexedTree => 12,
         }
     }
 }
@@ -83,7 +95,9 @@ impl TryFrom<u8> for TreeType {
             8 => Ok(TreeType::MmrTree),
             9 => Ok(TreeType::BulkAppendTree(0)),
             10 => Ok(TreeType::DenseAppendOnlyFixedSizeTree(0)),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 10", n))),
+            11 => Ok(TreeType::CountIndexedTree),
+            12 => Ok(TreeType::ProvableCountIndexedTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 12", n))),
         }
     }
 }
@@ -102,6 +116,8 @@ impl fmt::Display for TreeType {
             TreeType::MmrTree => "MMR Tree",
             TreeType::BulkAppendTree(_) => "BulkAppendTree",
             TreeType::DenseAppendOnlyFixedSizeTree(_) => "Dense Tree",
+            TreeType::CountIndexedTree => "Count Indexed Tree",
+            TreeType::ProvableCountIndexedTree => "Provable Count Indexed Tree",
         };
         write!(f, "{}", s)
     }
@@ -132,6 +148,18 @@ impl TreeType {
                 | TreeType::CountSumTree
                 | TreeType::ProvableCountTree
                 | TreeType::ProvableCountSumTree
+                | TreeType::CountIndexedTree
+                | TreeType::ProvableCountIndexedTree
+        )
+    }
+
+    /// Returns whether this tree type is a count-indexed tree's primary
+    /// Merk. The corresponding secondary Merk lives at a derived storage
+    /// prefix and is itself a regular `ProvableCountTree`.
+    pub const fn is_count_indexed_primary(&self) -> bool {
+        matches!(
+            self,
+            TreeType::CountIndexedTree | TreeType::ProvableCountIndexedTree
         )
     }
 
@@ -149,6 +177,11 @@ impl TreeType {
             TreeType::MmrTree => false,
             TreeType::BulkAppendTree(_) => false,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => false,
+            // CountIndexedTree's primary mirrors CountTree (no sum items);
+            // ProvableCountIndexedTree's primary mirrors ProvableCountTree
+            // (no sum items either).
+            TreeType::CountIndexedTree => false,
+            TreeType::ProvableCountIndexedTree => false,
         }
     }
 
@@ -167,6 +200,11 @@ impl TreeType {
             TreeType::MmrTree => NodeType::NormalNode,
             TreeType::BulkAppendTree(_) => NodeType::NormalNode,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => NodeType::NormalNode,
+            // The primary of a CountIndexedTree mirrors a CountTree.
+            TreeType::CountIndexedTree => NodeType::CountNode,
+            // The primary of a ProvableCountIndexedTree mirrors a
+            // ProvableCountTree.
+            TreeType::ProvableCountIndexedTree => NodeType::ProvableCountNode,
         }
     }
 
@@ -184,6 +222,11 @@ impl TreeType {
             TreeType::MmrTree => TreeFeatureType::BasicMerkNode,
             TreeType::BulkAppendTree(_) => TreeFeatureType::BasicMerkNode,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => TreeFeatureType::BasicMerkNode,
+            // The primary of a CountIndexedTree mirrors a CountTree.
+            TreeType::CountIndexedTree => TreeFeatureType::CountedMerkNode(0),
+            // The primary of a ProvableCountIndexedTree mirrors a
+            // ProvableCountTree.
+            TreeType::ProvableCountIndexedTree => TreeFeatureType::ProvableCountedMerkNode(0),
         }
     }
 
@@ -208,6 +251,8 @@ impl TreeType {
             TreeType::DenseAppendOnlyFixedSizeTree(_) => {
                 Some(ElementType::DenseAppendOnlyFixedSizeTree)
             }
+            TreeType::CountIndexedTree => Some(ElementType::CountIndexedTree),
+            TreeType::ProvableCountIndexedTree => Some(ElementType::ProvableCountIndexedTree),
         }
     }
 }
@@ -241,8 +286,22 @@ mod tests {
 
     #[test]
     fn tree_type_try_from_invalid() {
-        assert!(TreeType::try_from(11u8).is_err());
+        assert!(TreeType::try_from(13u8).is_err());
         assert!(TreeType::try_from(255u8).is_err());
+    }
+
+    #[test]
+    fn count_indexed_tree_types_round_trip_through_discriminant() {
+        for v in [
+            TreeType::CountIndexedTree,
+            TreeType::ProvableCountIndexedTree,
+        ] {
+            let d = v.discriminant();
+            let back = TreeType::try_from(d).unwrap();
+            assert_eq!(v, back);
+            assert!(v.is_count_bearing());
+            assert!(v.is_count_indexed_primary());
+        }
     }
 
     #[test]

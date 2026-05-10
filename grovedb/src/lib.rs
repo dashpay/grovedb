@@ -612,12 +612,38 @@ impl GroveDb {
     /// transaction
     fn propagate_changes_with_transaction<'b, B: AsRef<[u8]>>(
         &self,
-        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+        merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
         path: SubtreePath<'b, B>,
         transaction: &Transaction,
         batch: &StorageBatch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
+        self.propagate_changes_with_transaction_with_initial_deferred(
+            merk_cache,
+            path,
+            None,
+            transaction,
+            batch,
+            grove_version,
+        )
+    }
+
+    pub(crate) fn propagate_changes_with_transaction_with_initial_deferred<'b, B: AsRef<[u8]>>(
+        &self,
+        mut merk_cache: HashMap<SubtreePath<'b, B>, Merk<PrefixedRocksDbTransactionContext>>,
+        path: SubtreePath<'b, B>,
+        initial_deferred_secondary: Option<(Hash, Option<Vec<u8>>)>,
+        transaction: &Transaction,
+        batch: &StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        use grovedb_merk::element::{
+            get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+            reconstruct::ElementReconstructExtensions,
+        };
+
+        use crate::operations::count_indexed_tree::mirror_to_secondary;
+
         let mut cost = OperationCost::default();
 
         let mut child_tree = cost_return_on_error_no_add!(
@@ -630,6 +656,18 @@ impl GroveDb {
         );
 
         let mut current_path = path.clone();
+
+        // Carries the secondary's new (root_hash, root_key) when the
+        // previous iteration's `parent_tree` was a CountIndexedTree
+        // primary and its corresponding secondary needs to be folded into
+        // the next iteration's CountIndexedTree element via the H1-A
+        // three-input combine. Cleared once consumed.
+        //
+        // Initial value is supplied by callers like the dedicated
+        // count-indexed insert/delete APIs which have already mirrored to
+        // the secondary at the boundary (so propagate doesn't have to
+        // re-open the secondary by stale root_key).
+        let mut deferred_secondary: Option<(Hash, Option<Vec<u8>>)> = initial_deferred_secondary;
 
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
@@ -647,20 +685,200 @@ impl GroveDb {
                     .root_hash_key_and_aggregate_data()
                     .map_err(Error::MerkError)
             );
-            cost_return_on_error!(
-                &mut cost,
-                Self::update_tree_item_preserve_flag(
-                    &mut parent_tree,
-                    parent_key,
-                    root_key,
-                    root_hash,
-                    aggregate_data,
-                    grove_version,
-                )
-            );
+
+            let parent_is_cidx_primary = parent_tree.tree_type.is_count_indexed_primary();
+
+            // Snapshot the old count_value of the element at parent_key
+            // BEFORE we mutate parent_tree. We need it later to compute
+            // the count delta for secondary mirroring.
+            let old_count_in_parent = if parent_is_cidx_primary {
+                let old_element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&parent_tree, parent_key, true, grove_version)
+                        .map_err(Error::MerkError)
+                );
+                Some(old_element.count_value_or_default())
+            } else {
+                None
+            };
+
+            // Whether the element at parent_key in parent_tree is a
+            // CountIndexedTree element. True if either:
+            //   - we have a `deferred_secondary` from the previous
+            //     iteration (parent's child was a CountIndexedTree
+            //     primary, so its parent-side element is the
+            //     CountIndexedTree), OR
+            //   - child_tree itself IS a CountIndexedTree primary, even
+            //     without a `deferred_secondary` from below (this happens
+            //     on the very first iteration after a direct write into
+            //     the cidx primary that bypassed the dedicated insert
+            //     API; we read the secondary state from disk).
+            let child_is_cidx_primary = child_tree.tree_type.is_count_indexed_primary();
+            if deferred_secondary.is_some() || child_is_cidx_primary {
+                let cidx_element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&parent_tree, parent_key, true, grove_version)
+                        .map_err(Error::MerkError)
+                );
+                let (sec_hash, sec_key) = if let Some(s) = deferred_secondary.take() {
+                    s
+                } else {
+                    // Read secondary's current state from on-disk root.
+                    let secondary_root_key_before = match cidx_element.underlying() {
+                        Element::CountIndexedTree(_, secondary, ..)
+                        | Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+                        _ => {
+                            return Err(Error::CorruptedData(
+                                "expected CountIndexedTree element when child_tree is a \
+                                 CountIndexedTree primary"
+                                    .to_string(),
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                    };
+                    let secondary_merk = cost_return_on_error!(
+                        &mut cost,
+                        self.open_count_indexed_secondary_at_path(
+                            current_path.clone(),
+                            secondary_root_key_before,
+                            transaction,
+                            Some(batch),
+                            grove_version,
+                        )
+                    );
+                    let (sh, sk, _) = cost_return_on_error!(
+                        &mut cost,
+                        secondary_merk
+                            .root_hash_key_and_aggregate_data()
+                            .map_err(Error::MerkError)
+                    );
+                    (sh, sk)
+                };
+                let reconstructed = cost_return_on_error_no_add!(
+                    cost,
+                    cidx_element
+                        .reconstruct_with_two_root_keys(root_key, sec_key, aggregate_data)
+                        .ok_or(Error::CorruptedCodeExecution(
+                            "reconstruct_with_two_root_keys returned None for a \
+                             CountIndexedTree element during propagation"
+                        ))
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    reconstructed
+                        .insert_count_indexed_subtree(
+                            &mut parent_tree,
+                            parent_key,
+                            root_hash,
+                            sec_hash,
+                            None,
+                            grove_version,
+                        )
+                        .map_err(Error::MerkError)
+                );
+            } else {
+                cost_return_on_error!(
+                    &mut cost,
+                    Self::update_tree_item_preserve_flag(
+                        &mut parent_tree,
+                        parent_key,
+                        root_key,
+                        root_hash,
+                        aggregate_data,
+                        grove_version,
+                    )
+                );
+            }
+
+            // If parent_tree IS a CountIndexedTree primary, mirror the
+            // count delta into its secondary and stage the new secondary
+            // state for the NEXT iteration (which will reach the element
+            // that holds primary_root_key and secondary_root_key).
+            if let Some(old_count) = old_count_in_parent {
+                let new_count = aggregate_data.as_count_u64();
+
+                // Find secondary_root_key: it lives in the
+                // CountIndexedTree element which is at grandparent[cidx_key].
+                let (grandparent_path, cidx_key) = match parent_path.derive_parent() {
+                    Some(p) => p,
+                    None => {
+                        return Err(Error::CorruptedCodeExecution(
+                            "CountIndexedTree primary requires a grandparent for the \
+                             CountIndexedTree element",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let grandparent_merk = cost_return_on_error!(
+                    &mut cost,
+                    self.open_transactional_merk_at_path(
+                        grandparent_path,
+                        transaction,
+                        Some(batch),
+                        grove_version,
+                    )
+                );
+                let cidx_element = cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&grandparent_merk, cidx_key, true, grove_version)
+                        .map_err(Error::MerkError)
+                );
+                let secondary_root_key_before = match cidx_element.underlying() {
+                    Element::CountIndexedTree(_, secondary, ..)
+                    | Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+                    _ => {
+                        return Err(Error::CorruptedData(
+                            "expected CountIndexedTree element in grandparent during cascading \
+                             aggregation"
+                                .to_string(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+
+                let mut secondary_merk = cost_return_on_error!(
+                    &mut cost,
+                    self.open_count_indexed_secondary_at_path(
+                        parent_path.clone(),
+                        secondary_root_key_before,
+                        transaction,
+                        Some(batch),
+                        grove_version,
+                    )
+                );
+
+                cost_return_on_error!(
+                    &mut cost,
+                    mirror_to_secondary(
+                        &mut secondary_merk,
+                        parent_key,
+                        Some(old_count),
+                        new_count,
+                        grove_version,
+                    )
+                );
+
+                let (sec_hash, sec_key, _) = cost_return_on_error!(
+                    &mut cost,
+                    secondary_merk
+                        .root_hash_key_and_aggregate_data()
+                        .map_err(Error::MerkError)
+                );
+                deferred_secondary = Some((sec_hash, sec_key));
+            }
+
             child_tree = parent_tree;
             current_path = parent_path;
         }
+
+        if deferred_secondary.is_some() {
+            return Err(Error::CorruptedCodeExecution(
+                "deferred secondary state was set but never consumed (loop reached the root \
+                 before updating the CountIndexedTree element above its primary)",
+            ))
+            .wrap_with_cost(cost);
+        }
+
         Ok(()).wrap_with_cost(cost)
     }
 
@@ -961,6 +1179,15 @@ impl GroveDb {
             // hash checks below operate on those.
             let element = Element::raw_decode(&element_value, grove_version)?.into_underlying();
             match element {
+                // CountIndexedTree / ProvableCountIndexedTree integrity
+                // verification requires walking both child Merks plus the
+                // three-input combine; the dedicated path lands in PR 2/3.
+                // For PR 1 we skip them so that `verify_grovedb` doesn't
+                // crash if a CountIndexedTree element is somehow present —
+                // they cannot be inserted yet, so this is defensive only.
+                Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                    continue;
+                }
                 Element::SumTree(..)
                 | Element::Tree(..)
                 | Element::BigSumTree(..)

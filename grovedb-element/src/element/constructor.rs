@@ -384,6 +384,48 @@ impl Element {
         Element::DenseAppendOnlyFixedSizeTree(count, height, flags)
     }
 
+    /// Set element to an empty count-indexed tree without flags.
+    pub fn empty_count_indexed_tree() -> Self {
+        Element::CountIndexedTree(None, None, 0, None)
+    }
+
+    /// Set element to an empty count-indexed tree with flags.
+    pub fn empty_count_indexed_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::CountIndexedTree(None, None, 0, flags)
+    }
+
+    /// Construct a count-indexed tree with given primary/secondary root keys
+    /// and aggregate count.
+    pub fn new_count_indexed_tree_with_root_keys_and_count_value(
+        primary_root_key: Option<Vec<u8>>,
+        secondary_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::CountIndexedTree(primary_root_key, secondary_root_key, count_value, flags)
+    }
+
+    /// Set element to an empty provable count-indexed tree without flags.
+    pub fn empty_provable_count_indexed_tree() -> Self {
+        Element::ProvableCountIndexedTree(None, None, 0, None)
+    }
+
+    /// Set element to an empty provable count-indexed tree with flags.
+    pub fn empty_provable_count_indexed_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::ProvableCountIndexedTree(None, None, 0, flags)
+    }
+
+    /// Construct a provable count-indexed tree with given primary/secondary
+    /// root keys and aggregate count.
+    pub fn new_provable_count_indexed_tree_with_root_keys_and_count_value(
+        primary_root_key: Option<Vec<u8>>,
+        secondary_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ProvableCountIndexedTree(primary_root_key, secondary_root_key, count_value, flags)
+    }
+
     /// Wrap an element in `NonCounted` so it contributes 0 to its parent count
     /// tree's aggregate count when inserted. Sums (if any) still propagate.
     ///

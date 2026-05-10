@@ -60,6 +60,16 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some((None, TreeType::DenseAppendOnlyFixedSizeTree(height)))
             }
+            // For count-indexed trees, return the primary root key and the
+            // new tree type. The secondary root key is part of the element
+            // bytes but is not surfaced through this single-root-key API
+            // — callers needing both must read the element bytes directly.
+            Element::CountIndexedTree(primary_root_key, ..) => {
+                Some((primary_root_key, TreeType::CountIndexedTree))
+            }
+            Element::ProvableCountIndexedTree(primary_root_key, ..) => {
+                Some((primary_root_key, TreeType::ProvableCountIndexedTree))
+            }
             Element::NonCounted(inner) => inner.root_key_and_tree_type_owned(),
             _ => None,
         }
@@ -93,6 +103,12 @@ impl ElementTreeTypeExtensions for Element {
                 &NONE_ROOT_KEY,
                 TreeType::DenseAppendOnlyFixedSizeTree(*height),
             )),
+            Element::CountIndexedTree(primary_root_key, ..) => {
+                Some((primary_root_key, TreeType::CountIndexedTree))
+            }
+            Element::ProvableCountIndexedTree(primary_root_key, ..) => {
+                Some((primary_root_key, TreeType::ProvableCountIndexedTree))
+            }
             Element::NonCounted(inner) => inner.root_key_and_tree_type(),
             _ => None,
         }
@@ -121,6 +137,10 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, flags) => {
                 Some((flags, TreeType::DenseAppendOnlyFixedSizeTree(*height)))
             }
+            Element::CountIndexedTree(.., flags) => Some((flags, TreeType::CountIndexedTree)),
+            Element::ProvableCountIndexedTree(.., flags) => {
+                Some((flags, TreeType::ProvableCountIndexedTree))
+            }
             Element::NonCounted(inner) => inner.tree_flags_and_type(),
             _ => None,
         }
@@ -147,6 +167,8 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
+            Element::CountIndexedTree(..) => Some(TreeType::CountIndexedTree),
+            Element::ProvableCountIndexedTree(..) => Some(TreeType::ProvableCountIndexedTree),
             Element::NonCounted(inner) => inner.tree_type(),
             _ => None,
         }
@@ -171,6 +193,13 @@ impl ElementTreeTypeExtensions for Element {
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
             Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
+            // CountIndexedTree's primary uses CountedMerkNode; the secondary
+            // is opened separately as a regular ProvableCountTree.
+            Element::CountIndexedTree(.., count_value, _) => Some(CountedMerkNode(*count_value)),
+            // ProvableCountIndexedTree's primary uses ProvableCountedMerkNode.
+            Element::ProvableCountIndexedTree(.., count_value, _) => {
+                Some(TreeFeatureType::ProvableCountedMerkNode(*count_value))
+            }
             Element::NonCounted(inner) => inner.tree_feature_type(),
             _ => None,
         }
@@ -196,6 +225,10 @@ impl ElementTreeTypeExtensions for Element {
             }
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree(*height))
+            }
+            Element::CountIndexedTree(..) => MaybeTree::Tree(TreeType::CountIndexedTree),
+            Element::ProvableCountIndexedTree(..) => {
+                MaybeTree::Tree(TreeType::ProvableCountIndexedTree)
             }
             Element::NonCounted(inner) => inner.maybe_tree_type(),
             _ => MaybeTree::NotTree,
@@ -231,6 +264,12 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::MmrTree => Ok(BasicMerkNode),
             TreeType::BulkAppendTree(_) => Ok(BasicMerkNode),
             TreeType::DenseAppendOnlyFixedSizeTree(_) => Ok(BasicMerkNode),
+            // CountIndexedTree's primary aggregates like CountTree.
+            TreeType::CountIndexedTree => Ok(CountedMerkNode(self.count_value_or_default())),
+            // ProvableCountIndexedTree's primary aggregates like ProvableCountTree.
+            TreeType::ProvableCountIndexedTree => Ok(TreeFeatureType::ProvableCountedMerkNode(
+                self.count_value_or_default(),
+            )),
         }
     }
 }
