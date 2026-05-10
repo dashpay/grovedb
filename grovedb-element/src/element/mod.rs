@@ -42,9 +42,15 @@ pub trait ElementCostSizeExtension {
 ///
 /// ONLY APPEND TO THIS LIST!!! Because
 /// of how serialization works.
+///
+/// `serde::Deserialize` is implemented manually (under the `serde` feature)
+/// so it can enforce the same wrapper invariants as `Element::deserialize`:
+/// `NonCounted` and `NotSummed` may not nest in any combination, and
+/// `NotSummed` may only wrap a sum-tree variant. `serde::Serialize` is
+/// derived; serialization of valid `Element` values is always safe.
 #[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
 #[cfg_attr(not(feature = "visualize"), derive(Debug))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum Element {
     /// An ordinary value
     Item(Vec<u8>, Option<ElementFlags>),
@@ -133,6 +139,21 @@ pub enum Element {
     /// Invariant: a `NonCounted` may not wrap another `NonCounted`. Enforced
     /// at construction and at deserialization.
     NonCounted(Box<Element>),
+    /// Not-summed wrapper: contains a sum-bearing tree variant (`SumTree`,
+    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`) and behaves
+    /// identically to it for storage, hashing, and its own internal sum
+    /// aggregate, but contributes 0 to its parent sum tree's running sum
+    /// when inserted. Counts still propagate.
+    ///
+    /// May only be inserted into sum-bearing trees (`SumTree`, `BigSumTree`,
+    /// `CountSumTree`, `ProvableCountSumTree`).
+    ///
+    /// Invariants (enforced at construction, serialization, and
+    /// deserialization):
+    /// - The inner element MUST be one of the four sum-tree variants above.
+    /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`, or
+    ///   any non-tree element.
+    NotSummed(Box<Element>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -321,6 +342,9 @@ impl fmt::Display for Element {
             Element::NonCounted(inner) => {
                 write!(f, "NonCounted({})", inner)
             }
+            Element::NotSummed(inner) => {
+                write!(f, "NotSummed({})", inner)
+            }
         }
     }
 }
@@ -371,10 +395,361 @@ impl Element {
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
             },
+            Element::NotSummed(inner) => match inner.element_type() {
+                ElementType::SumTree => ElementType::NotSummedSumTree,
+                ElementType::BigSumTree => ElementType::NotSummedBigSumTree,
+                ElementType::CountSumTree => ElementType::NotSummedCountSumTree,
+                ElementType::ProvableCountSumTree => ElementType::NotSummedProvableCountSumTree,
+                // Inner is always one of the 4 sum-tree variants above —
+                // construction and (de)serialization forbid anything else.
+                // Returning the inner type is the safest fallback for the
+                // unreachable case.
+                other => other,
+            },
         }
     }
 
     pub fn type_str(&self) -> &str {
         self.element_type().as_str()
+    }
+
+    /// Verify the wrapper invariants for `self`:
+    /// - `NonCounted` and `NotSummed` may not nest in any combination.
+    /// - `NotSummed` may only wrap one of the four sum-tree variants
+    ///   (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`).
+    ///
+    /// Constructors and the `serialize`/`deserialize` paths already enforce
+    /// these rules; this helper exists so external callers (most importantly
+    /// the manual `serde::Deserialize` impl) can apply the same checks.
+    ///
+    /// Only the immediate wrapper layer is checked — wrapper nesting is
+    /// forbidden by these very rules, so deeper recursion is not needed.
+    pub fn validate_wrapper_invariants(&self) -> Result<(), crate::error::ElementError> {
+        match self {
+            Element::NonCounted(inner) => {
+                if matches!(**inner, Element::NonCounted(_) | Element::NotSummed(_)) {
+                    return Err(crate::error::ElementError::InvalidInput(
+                        "NonCounted cannot wrap another wrapper",
+                    ));
+                }
+            }
+            Element::NotSummed(inner) => match **inner {
+                Element::SumTree(..)
+                | Element::BigSumTree(..)
+                | Element::CountSumTree(..)
+                | Element::ProvableCountSumTree(..) => {}
+                _ => {
+                    return Err(crate::error::ElementError::InvalidInput(
+                        "NotSummed inner element must be a sum-tree variant (SumTree, \
+                         BigSumTree, CountSumTree, or ProvableCountSumTree)",
+                    ));
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    //! Manual `serde::Deserialize` for [`Element`] that enforces the same
+    //! wrapper invariants as [`Element::deserialize`]. Without this, a serde
+    //! payload could construct invalid `NotSummed(Item)` or cross-wrapper
+    //! values that the rest of the system assumes do not exist.
+    //!
+    //! ### Why a shadow enum?
+    //!
+    //! Serde does not provide a derive-and-validate passthrough for whole
+    //! types. The relevant attributes don't fit:
+    //! - `#[serde(try_from = "...")]` needs a *separate* source type — you
+    //!   can't point it back at `Self` (infinite recursion at the type
+    //!   level).
+    //! - `#[serde(remote = "...")]` is only for foreign types you don't own.
+    //! - `#[serde(deserialize_with = "...")]` is field-level, not type-level.
+    //! - `#[serde(transparent)]` / `#[serde(flatten)]` are for single-field
+    //!   structs and field embedding respectively.
+    //!
+    //! That leaves three real options: (1) duplicate the variants in a
+    //! shadow type and convert via `From`, (2) write a manual `Visitor`
+    //! that walks all 17 variants by hand, or (3) drop the `Deserialize`
+    //! derive entirely. The shadow is the shortest of (1) and (2), and
+    //! we keep `Deserialize` because external tooling consumers may rely
+    //! on it.
+    //!
+    //! ### Approach
+    //!
+    //! A private shadow enum (`ElementShadow`) mirrors `Element` verbatim
+    //! with `#[serde(rename = "Element")]` so the wire format is identical.
+    //! The derived `Deserialize` on the shadow handles the recursive
+    //! descent; we then convert to `Element` and call
+    //! [`Element::check_recursive_wrapper_invariants`].
+    //!
+    //! Each `Box<ElementShadow>` field deserializes through the shadow's
+    //! own `Deserialize` impl, so validation fires at every level of the
+    //! tree as the conversion unwinds.
+
+    use serde::de::Error as _;
+
+    use super::{BigSumValue, CountValue, Element, ElementFlags, MaxReferenceHop, SumValue};
+    use crate::reference_path::ReferencePathType;
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename = "Element")]
+    enum ElementShadow {
+        Item(Vec<u8>, Option<ElementFlags>),
+        Reference(ReferencePathType, MaxReferenceHop, Option<ElementFlags>),
+        Tree(Option<Vec<u8>>, Option<ElementFlags>),
+        SumItem(SumValue, Option<ElementFlags>),
+        SumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
+        BigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
+        CountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
+        CountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+        ProvableCountTree(Option<Vec<u8>>, CountValue, Option<ElementFlags>),
+        ItemWithSumItem(Vec<u8>, SumValue, Option<ElementFlags>),
+        ProvableCountSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
+        CommitmentTree(u64, u8, Option<ElementFlags>),
+        MmrTree(u64, Option<ElementFlags>),
+        BulkAppendTree(u64, u8, Option<ElementFlags>),
+        DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
+        NonCounted(Box<ElementShadow>),
+        NotSummed(Box<ElementShadow>),
+    }
+
+    impl From<ElementShadow> for Element {
+        fn from(s: ElementShadow) -> Self {
+            match s {
+                ElementShadow::Item(v, f) => Element::Item(v, f),
+                ElementShadow::Reference(p, h, f) => Element::Reference(p, h, f),
+                ElementShadow::Tree(k, f) => Element::Tree(k, f),
+                ElementShadow::SumItem(v, f) => Element::SumItem(v, f),
+                ElementShadow::SumTree(k, s, f) => Element::SumTree(k, s, f),
+                ElementShadow::BigSumTree(k, s, f) => Element::BigSumTree(k, s, f),
+                ElementShadow::CountTree(k, c, f) => Element::CountTree(k, c, f),
+                ElementShadow::CountSumTree(k, c, s, f) => Element::CountSumTree(k, c, s, f),
+                ElementShadow::ProvableCountTree(k, c, f) => Element::ProvableCountTree(k, c, f),
+                ElementShadow::ItemWithSumItem(v, s, f) => Element::ItemWithSumItem(v, s, f),
+                ElementShadow::ProvableCountSumTree(k, c, s, f) => {
+                    Element::ProvableCountSumTree(k, c, s, f)
+                }
+                ElementShadow::CommitmentTree(c, p, f) => Element::CommitmentTree(c, p, f),
+                ElementShadow::MmrTree(s, f) => Element::MmrTree(s, f),
+                ElementShadow::BulkAppendTree(c, p, f) => Element::BulkAppendTree(c, p, f),
+                ElementShadow::DenseAppendOnlyFixedSizeTree(c, h, f) => {
+                    Element::DenseAppendOnlyFixedSizeTree(c, h, f)
+                }
+                ElementShadow::NonCounted(inner) => {
+                    Element::NonCounted(Box::new(Element::from(*inner)))
+                }
+                ElementShadow::NotSummed(inner) => {
+                    Element::NotSummed(Box::new(Element::from(*inner)))
+                }
+            }
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for Element {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let shadow = ElementShadow::deserialize(deserializer)?;
+            let element = Element::from(shadow);
+            // Validate immediate wrapper invariants. Inner elements were
+            // built by recursive `From<ElementShadow>` calls, so the check
+            // at each level catches a violation at any depth.
+            Self::check_recursive_wrapper_invariants(&element).map_err(D::Error::custom)?;
+            Ok(element)
+        }
+    }
+
+    impl Element {
+        /// Walk the element tree and run `validate_wrapper_invariants` at
+        /// every level. Used by the manual `serde::Deserialize`; bincode
+        /// goes through `Element::deserialize` which already validates the
+        /// outer wrapper plus a leading-byte pre-check that rejects
+        /// nesting before recursion.
+        pub(super) fn check_recursive_wrapper_invariants(
+            element: &Element,
+        ) -> Result<(), crate::error::ElementError> {
+            element.validate_wrapper_invariants()?;
+            if let Element::NonCounted(inner) | Element::NotSummed(inner) = element {
+                Self::check_recursive_wrapper_invariants(inner)?;
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Round-trip a valid `Element` through serde JSON and back.
+        #[test]
+        fn serde_round_trip_valid_elements() {
+            let cases = vec![
+                Element::Item(b"abc".to_vec(), None),
+                Element::SumTree(Some(b"r".to_vec()), 42, None),
+                Element::new_non_counted(Element::Item(b"x".to_vec(), None)).unwrap(),
+                Element::new_not_summed(Element::SumTree(None, 100, None)).unwrap(),
+            ];
+            for original in cases {
+                let json = serde_json::to_string(&original).expect("serialize");
+                let back: Element = serde_json::from_str(&json).expect("deserialize");
+                assert_eq!(back, original, "round trip mismatch for {:?}", original);
+            }
+        }
+
+        /// A serde payload that constructs a nested `NonCounted(NonCounted)`
+        /// must be rejected.
+        #[test]
+        fn serde_rejects_nested_non_counted() {
+            // Wire payload: NonCounted(NonCounted(Item))
+            let json = r#"{"NonCounted":{"NonCounted":{"Item":[[120],null]}}}"#;
+            let result: Result<Element, _> = serde_json::from_str(json);
+            assert!(
+                result.is_err(),
+                "nested NonCounted must be rejected, got {:?}",
+                result
+            );
+        }
+
+        /// `NotSummed(NotSummed(_))` must be rejected.
+        #[test]
+        fn serde_rejects_nested_not_summed() {
+            let json = r#"{"NotSummed":{"NotSummed":{"SumTree":[null,0,null]}}}"#;
+            let result: Result<Element, _> = serde_json::from_str(json);
+            assert!(result.is_err(), "got {:?}", result);
+        }
+
+        /// `NonCounted(NotSummed(_))` and `NotSummed(NonCounted(_))` must
+        /// both be rejected — wrappers are mutually exclusive.
+        #[test]
+        fn serde_rejects_cross_wrapper_nesting() {
+            let cross_a = r#"{"NonCounted":{"NotSummed":{"SumTree":[null,0,null]}}}"#;
+            let result: Result<Element, _> = serde_json::from_str(cross_a);
+            assert!(
+                result.is_err(),
+                "NonCounted(NotSummed) must be rejected; got {:?}",
+                result
+            );
+
+            let cross_b = r#"{"NotSummed":{"NonCounted":{"SumTree":[null,0,null]}}}"#;
+            let result: Result<Element, _> = serde_json::from_str(cross_b);
+            assert!(
+                result.is_err(),
+                "NotSummed(NonCounted) must be rejected; got {:?}",
+                result
+            );
+        }
+
+        /// `NotSummed(non_sum_tree)` must be rejected for every illegal
+        /// inner type.
+        #[test]
+        fn serde_rejects_not_summed_with_non_sum_tree_inner() {
+            let illegal_inners = [
+                r#"{"Item":[[120],null]}"#,
+                r#"{"SumItem":[7,null]}"#,
+                r#"{"Tree":[null,null]}"#,
+                r#"{"CountTree":[null,0,null]}"#,
+                r#"{"ProvableCountTree":[null,0,null]}"#,
+                r#"{"MmrTree":[0,null]}"#,
+            ];
+            for inner in illegal_inners {
+                let payload = format!(r#"{{"NotSummed":{}}}"#, inner);
+                let result: Result<Element, _> = serde_json::from_str(&payload);
+                assert!(
+                    result.is_err(),
+                    "NotSummed({}) must be rejected; got {:?}",
+                    inner,
+                    result
+                );
+            }
+        }
+
+        /// Deeply-nested wrapper payloads must be rejected (recursion bound).
+        /// This pairs with the bincode pre-check; for serde we rely on the
+        /// recursive `From<ElementShadow>` calls hitting validation at each
+        /// level. With the immediate-level check at every step, the top-level
+        /// `NonCounted(NonCounted(...))` rejects without recursing through
+        /// the rest.
+        #[test]
+        fn serde_rejects_deeply_nested_wrapper_chain() {
+            // Build NonCounted(NonCounted(NonCounted(...(Item)))).
+            let depth = 64;
+            let mut payload = r#"{"Item":[[120],null]}"#.to_string();
+            for _ in 0..depth {
+                payload = format!(r#"{{"NonCounted":{}}}"#, payload);
+            }
+            let result: Result<Element, _> = serde_json::from_str(&payload);
+            assert!(result.is_err(), "depth-{} chain must be rejected", depth);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_renders_not_summed_wrapper() {
+        let inner = Element::SumTree(Some(b"r".to_vec()), 100, None);
+        let wrapped = Element::new_not_summed(inner).expect("wrap ok");
+        let s = format!("{}", wrapped);
+        assert!(s.starts_with("NotSummed("), "got: {}", s);
+        assert!(s.contains("SumTree"), "got: {}", s);
+    }
+
+    #[test]
+    fn element_type_resolves_not_summed_twins() {
+        // The four sum-tree variants each map to their NotSummed twin.
+        let cases: [(Element, ElementType); 4] = [
+            (
+                Element::NotSummed(Box::new(Element::SumTree(None, 0, None))),
+                ElementType::NotSummedSumTree,
+            ),
+            (
+                Element::NotSummed(Box::new(Element::BigSumTree(None, 0, None))),
+                ElementType::NotSummedBigSumTree,
+            ),
+            (
+                Element::NotSummed(Box::new(Element::CountSumTree(None, 0, 0, None))),
+                ElementType::NotSummedCountSumTree,
+            ),
+            (
+                Element::NotSummed(Box::new(Element::ProvableCountSumTree(None, 0, 0, None))),
+                ElementType::NotSummedProvableCountSumTree,
+            ),
+        ];
+        for (element, expected) in cases {
+            assert_eq!(element.element_type(), expected);
+            assert_eq!(element.type_str(), expected.as_str());
+        }
+    }
+
+    #[test]
+    fn element_type_resolves_non_counted_twins() {
+        // Spot-check a few NonCounted twins to lock in the dispatch.
+        assert_eq!(
+            Element::NonCounted(Box::new(Element::Item(b"x".to_vec(), None))).element_type(),
+            ElementType::NonCountedItem
+        );
+        assert_eq!(
+            Element::NonCounted(Box::new(Element::SumTree(None, 0, None))).element_type(),
+            ElementType::NonCountedSumTree
+        );
+        assert_eq!(
+            Element::NonCounted(Box::new(Element::ProvableCountSumTree(None, 0, 0, None)))
+                .element_type(),
+            ElementType::NonCountedProvableCountSumTree
+        );
+    }
+
+    #[test]
+    fn display_renders_non_counted_wrapper() {
+        let inner = Element::Item(b"abc".to_vec(), None);
+        let wrapped = Element::new_non_counted(inner).expect("wrap ok");
+        let s = format!("{}", wrapped);
+        assert!(s.starts_with("NonCounted("), "got: {}", s);
     }
 }

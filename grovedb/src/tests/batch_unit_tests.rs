@@ -95,6 +95,7 @@ mod tests {
                 aggregate_data: AggregateData::NoAggregateData,
 
                 non_counted: false,
+                not_summed: false,
             },
             GroveOp::ReplaceTreeRootKey {
                 // 4
@@ -473,6 +474,7 @@ mod tests {
                 aggregate_data: AggregateData::NoAggregateData,
 
                 non_counted: false,
+                not_summed: false,
             },
         };
         let dbg = format!("{:?}", internal_op2);

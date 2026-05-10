@@ -27,3 +27,6 @@ verify = []
 constructor = []
 serde = ["dep:serde"]
 visualize = ["dep:grovedb-visualize"]
+
+[dev-dependencies]
+serde_json = "1"

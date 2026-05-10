@@ -76,6 +76,7 @@ fn test_apply_batch_rejects_insert_tree_with_root_hash() {
             aggregate_data: AggregateData::NoAggregateData,
 
             non_counted: false,
+            not_summed: false,
         },
     };
 

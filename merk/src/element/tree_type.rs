@@ -60,7 +60,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some((None, TreeType::DenseAppendOnlyFixedSizeTree(height)))
             }
-            Element::NonCounted(inner) => inner.root_key_and_tree_type_owned(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => {
+                inner.root_key_and_tree_type_owned()
+            }
             _ => None,
         }
     }
@@ -93,7 +95,9 @@ impl ElementTreeTypeExtensions for Element {
                 &NONE_ROOT_KEY,
                 TreeType::DenseAppendOnlyFixedSizeTree(*height),
             )),
-            Element::NonCounted(inner) => inner.root_key_and_tree_type(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => {
+                inner.root_key_and_tree_type()
+            }
             _ => None,
         }
     }
@@ -121,7 +125,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, flags) => {
                 Some((flags, TreeType::DenseAppendOnlyFixedSizeTree(*height)))
             }
-            Element::NonCounted(inner) => inner.tree_flags_and_type(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.tree_flags_and_type(),
             _ => None,
         }
     }
@@ -147,7 +151,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
-            Element::NonCounted(inner) => inner.tree_type(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.tree_type(),
             _ => None,
         }
     }
@@ -171,7 +175,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
             Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
-            Element::NonCounted(inner) => inner.tree_feature_type(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.tree_feature_type(),
             _ => None,
         }
     }
@@ -197,7 +201,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
-            Element::NonCounted(inner) => inner.maybe_tree_type(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.maybe_tree_type(),
             _ => MaybeTree::NotTree,
         }
     }
@@ -205,11 +209,11 @@ impl ElementTreeTypeExtensions for Element {
     /// Get the tree feature type.
     ///
     /// `count_value_or_default` and `count_sum_value_or_default` already
-    /// return 0 (resp. (0, inner_sum)) for `Element::NonCounted`, so the
-    /// existing dispatch produces the right feature type for the wrapper
-    /// without an explicit branch here. Sum-bearing parents still see the
-    /// inner element's sum because `sum_value_or_default` and
-    /// `big_sum_value_or_default` delegate through the wrapper.
+    /// return 0 (resp. (0, inner_sum)) for `Element::NonCounted`, and
+    /// `sum_value_or_default` / `big_sum_value_or_default` /
+    /// `count_sum_value_or_default` already return 0 (resp. (inner_count, 0))
+    /// for `Element::NotSummed`. So the existing dispatch produces the right
+    /// feature type for either wrapper without an explicit branch here.
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
             TreeType::NormalTree => Ok(BasicMerkNode),
@@ -282,6 +286,95 @@ mod tests {
                 assert_eq!(explicit, derived);
             }
             _ => panic!("unexpected cost type"),
+        }
+    }
+
+    #[test]
+    fn tree_type_extensions_look_through_not_summed() {
+        // All ElementTreeTypeExtensions methods must delegate through
+        // NotSummed to the inner sum-tree variant, mirroring NonCounted.
+        let inner_root = Some(b"r".to_vec());
+        let cases: [(Element, TreeType); 4] = [
+            (
+                Element::SumTree(inner_root.clone(), 100, None),
+                TreeType::SumTree,
+            ),
+            (
+                Element::BigSumTree(inner_root.clone(), 100, None),
+                TreeType::BigSumTree,
+            ),
+            (
+                Element::CountSumTree(inner_root.clone(), 7, 100, None),
+                TreeType::CountSumTree,
+            ),
+            (
+                Element::ProvableCountSumTree(inner_root.clone(), 7, 100, None),
+                TreeType::ProvableCountSumTree,
+            ),
+        ];
+
+        for (inner, expected_tree_type) in cases {
+            let wrapped = Element::new_not_summed(inner.clone()).expect("wrap ok");
+
+            // tree_type() / maybe_tree_type() / root_key_and_tree_type{,_owned}
+            // all return the inner's tree type.
+            assert_eq!(wrapped.tree_type(), Some(expected_tree_type));
+            assert_eq!(
+                wrapped.maybe_tree_type(),
+                MaybeTree::Tree(expected_tree_type)
+            );
+            let (rk, tt) = wrapped.root_key_and_tree_type().expect("Some");
+            assert_eq!(*rk, inner_root);
+            assert_eq!(tt, expected_tree_type);
+            let (rk, tt) = wrapped
+                .clone()
+                .root_key_and_tree_type_owned()
+                .expect("Some");
+            assert_eq!(rk, inner_root);
+            assert_eq!(tt, expected_tree_type);
+
+            // tree_flags_and_type returns the inner's flags (None) and type.
+            let (flags, tt) = wrapped.tree_flags_and_type().expect("Some");
+            assert!(flags.is_none());
+            assert_eq!(tt, expected_tree_type);
+
+            // tree_feature_type returns the inner's feature type unchanged
+            // (it is the per-element-type discriminant, not the parent
+            // aggregation — that's `get_feature_type` below).
+            assert!(wrapped.tree_feature_type().is_some());
+        }
+    }
+
+    #[test]
+    fn get_feature_type_zeros_sum_for_not_summed_in_sum_parents() {
+        // Every sum-bearing parent type must zero out the wrapped sum
+        // through `get_feature_type`. Counts (in CountSumTree /
+        // ProvableCountSumTree) still propagate.
+        let inner = Element::SumTree(None, 100, None);
+        let ns = Element::new_not_summed(inner).expect("wrap ok");
+
+        assert_eq!(
+            ns.get_feature_type(TreeType::SumTree).unwrap(),
+            SummedMerkNode(0)
+        );
+        assert_eq!(
+            ns.get_feature_type(TreeType::BigSumTree).unwrap(),
+            BigSummedMerkNode(0)
+        );
+
+        // CountSumTree parent: sum=0, count=1 (the wrapped tree counts as
+        // one element).
+        assert_eq!(
+            ns.get_feature_type(TreeType::CountSumTree).unwrap(),
+            CountedSummedMerkNode(1, 0)
+        );
+
+        // ProvableCountSumTree: same as above, just provable variant.
+        match ns.get_feature_type(TreeType::ProvableCountSumTree).unwrap() {
+            TreeFeatureType::ProvableCountedSummedMerkNode(c, s) => {
+                assert_eq!((c, s), (1, 0));
+            }
+            other => panic!("expected ProvableCountedSummedMerkNode, got {:?}", other),
         }
     }
 }

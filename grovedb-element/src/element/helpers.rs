@@ -19,12 +19,23 @@ impl Element {
         matches!(self, Element::NonCounted(_))
     }
 
-    /// Returns the wrapped element if `self` is `NonCounted`, else `self`.
-    /// Use this when you need to inspect the actual element type and don't
-    /// care whether it is wrapped.
+    /// Returns `true` if this element is wrapped in `Element::NotSummed`.
+    /// The wrapper suppresses sum propagation to the parent sum tree but
+    /// leaves all other behavior (storage, hashing, count propagation,
+    /// internal aggregation) unchanged.
+    pub fn is_not_summed(&self) -> bool {
+        matches!(self, Element::NotSummed(_))
+    }
+
+    /// Returns the wrapped element if `self` is a wrapper (`NonCounted` or
+    /// `NotSummed`), else `self`. Use this when you need to inspect the
+    /// actual element type and don't care whether it is wrapped.
+    ///
+    /// Only unwraps one level — the constructors and (de)serializers reject
+    /// any wrapper nesting, so a single unwrap is always sufficient.
     pub fn underlying(&self) -> &Element {
         match self {
-            Element::NonCounted(inner) => inner,
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner,
             other => other,
         }
     }
@@ -32,7 +43,7 @@ impl Element {
     /// Mutable variant of [`underlying`].
     pub fn underlying_mut(&mut self) -> &mut Element {
         match self {
-            Element::NonCounted(inner) => inner,
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner,
             other => other,
         }
     }
@@ -40,7 +51,7 @@ impl Element {
     /// Owned variant of [`underlying`].
     pub fn into_underlying(self) -> Element {
         match self {
-            Element::NonCounted(inner) => *inner,
+            Element::NonCounted(inner) | Element::NotSummed(inner) => *inner,
             other => other,
         }
     }
@@ -50,9 +61,12 @@ impl Element {
     ///
     /// `NonCounted` delegates to its inner element — sums still propagate
     /// when the wrapper is inserted into a sum-bearing parent.
+    /// `NotSummed` returns 0 — the wrapper's whole purpose is to contribute
+    /// nothing to the parent sum tree.
     pub fn sum_value_or_default(&self) -> i64 {
         match self {
             Element::NonCounted(inner) => inner.sum_value_or_default(),
+            Element::NotSummed(_) => 0,
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
@@ -67,9 +81,11 @@ impl Element {
     ///
     /// `NonCounted` returns 0 — the wrapper's whole purpose is to contribute
     /// nothing to the parent count tree.
+    /// `NotSummed` delegates to its inner — counts still propagate.
     pub fn count_value_or_default(&self) -> u64 {
         match self {
             Element::NonCounted(_) => 0,
+            Element::NotSummed(inner) => inner.count_value_or_default(),
             Element::CountTree(_, count_value, _)
             | Element::CountSumTree(_, count_value, ..)
             | Element::ProvableCountTree(_, count_value, _)
@@ -83,9 +99,12 @@ impl Element {
     ///
     /// `NonCounted` returns `(0, inner_sum)` — count is suppressed, sum still
     /// propagates.
+    /// `NotSummed` returns `(inner_count, 0)` — sum is suppressed, count
+    /// still propagates.
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
         match self {
             Element::NonCounted(inner) => (0, inner.sum_value_or_default()),
+            Element::NotSummed(inner) => (inner.count_value_or_default(), 0),
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _) => (1, *sum_value),
@@ -100,10 +119,12 @@ impl Element {
     }
 
     /// Decoded the integer value in the SumItem element type, returns 0 for
-    /// everything else. `NonCounted` delegates to its inner.
+    /// everything else. `NonCounted` delegates to its inner. `NotSummed`
+    /// returns 0.
     pub fn big_sum_value_or_default(&self) -> i128 {
         match self {
             Element::NonCounted(inner) => inner.big_sum_value_or_default(),
+            Element::NotSummed(_) => 0,
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
@@ -373,7 +394,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
-            Element::NonCounted(inner) => inner.get_flags(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags(),
         }
     }
 
@@ -396,7 +417,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
-            Element::NonCounted(inner) => inner.get_flags_owned(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags_owned(),
         }
     }
 
@@ -419,7 +440,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
-            Element::NonCounted(inner) => inner.get_flags_mut(),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags_mut(),
         }
     }
 
@@ -442,7 +463,7 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => *flags = new_flags,
-            Element::NonCounted(inner) => inner.set_flags(new_flags),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.set_flags(new_flags),
         }
     }
 
@@ -520,10 +541,28 @@ mod non_counted_tests {
     #[test]
     fn into_non_counted_is_idempotent() {
         let inner = Element::Item(b"x".to_vec(), None);
-        let once = inner.clone().into_non_counted();
-        let twice = once.clone().into_non_counted();
+        let once = inner.clone().into_non_counted().expect("wrap ok");
+        let twice = once.clone().into_non_counted().expect("rewrap ok");
         assert_eq!(once, twice);
         assert!(twice.is_non_counted());
+    }
+
+    #[test]
+    fn into_non_counted_rejects_not_summed() {
+        // The two wrappers are mutually exclusive — wrapping NotSummed in
+        // NonCounted must fail rather than silently succeed (which would
+        // produce a doubly-wrapped element that the (de)serializer rejects
+        // anyway, but earlier in the pipeline).
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("wrap ok");
+        assert!(ns.into_non_counted().is_err());
+    }
+
+    #[test]
+    fn new_non_counted_rejects_not_summed() {
+        // Symmetric to `new_not_summed_rejects_non_counted` — `new_non_counted`
+        // must reject any pre-existing wrapper inner, including NotSummed.
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("wrap ok");
+        assert!(Element::new_non_counted(ns).is_err());
     }
 
     #[test]
@@ -617,8 +656,8 @@ mod non_counted_tests {
             .expect_err("nested wrapper bytes must be rejected");
         let msg = format!("{:?}", err);
         assert!(
-            msg.contains("NonCounted") || msg.contains("non_counted"),
-            "error should mention nested NonCounted: {}",
+            msg.contains("NonCounted") || msg.contains("non_counted") || msg.contains("wrapper"),
+            "error should mention nested wrapper: {}",
             msg
         );
     }
@@ -627,6 +666,185 @@ mod non_counted_tests {
     fn serialize_rejects_nested_non_counted() {
         let inner = Element::NonCounted(Box::new(Element::Item(b"x".to_vec(), None)));
         let bad = Element::NonCounted(Box::new(inner));
+        let grove_version = GroveVersion::latest();
+        assert!(bad.serialize(grove_version).is_err());
+    }
+}
+
+#[cfg(test)]
+mod not_summed_tests {
+    use grovedb_version::version::GroveVersion;
+
+    use crate::element::Element;
+
+    #[test]
+    fn new_not_summed_wraps_sum_tree_variants() {
+        // The four sum-tree variants are accepted.
+        for inner in [
+            Element::new_sum_tree(None),
+            Element::new_big_sum_tree(None),
+            Element::new_count_sum_tree(None),
+            Element::new_provable_count_sum_tree(None),
+        ] {
+            let wrapped = Element::new_not_summed(inner.clone()).expect("wrap ok");
+            assert!(wrapped.is_not_summed());
+            assert_eq!(wrapped.underlying(), &inner);
+        }
+    }
+
+    #[test]
+    fn new_not_summed_rejects_non_sum_tree_inner() {
+        // Items, sum items, references, and non-sum trees are all rejected.
+        assert!(Element::new_not_summed(Element::new_item(b"x".to_vec())).is_err());
+        assert!(Element::new_not_summed(Element::new_sum_item(7)).is_err());
+        assert!(Element::new_not_summed(Element::new_tree(None)).is_err());
+        assert!(Element::new_not_summed(Element::new_count_tree(None)).is_err());
+        assert!(Element::new_not_summed(Element::new_provable_count_tree(None)).is_err());
+        // Wrappers cannot nest in either direction.
+        let nc = Element::new_non_counted(Element::new_sum_tree(None)).expect("nc ok");
+        assert!(Element::new_not_summed(nc).is_err());
+        let ns = Element::new_not_summed(Element::new_sum_tree(None)).expect("ns ok");
+        assert!(Element::new_not_summed(ns).is_err());
+    }
+
+    #[test]
+    fn predicates_look_through_wrapper() {
+        let st = Element::new_sum_tree_with_flags_and_sum_value(Some(b"r".to_vec()), 100, None);
+        let ns = Element::new_not_summed(st).expect("wrap ok");
+        // Tree predicates pass through.
+        assert!(ns.is_any_tree());
+        assert!(ns.is_sum_tree());
+        assert!(ns.is_non_empty_tree());
+        assert!(!ns.is_any_item());
+        assert!(!ns.is_basic_tree());
+    }
+
+    #[test]
+    fn sum_value_or_default_is_zero_for_not_summed() {
+        // Bare SumTree with internal sum 100 contributes 100.
+        let st = Element::new_sum_tree_with_flags_and_sum_value(None, 100, None);
+        assert_eq!(st.sum_value_or_default(), 100);
+
+        // NotSummed wrapper suppresses that to 0.
+        let ns = Element::new_not_summed(st).expect("wrap ok");
+        assert_eq!(ns.sum_value_or_default(), 0);
+        assert_eq!(ns.big_sum_value_or_default(), 0);
+    }
+
+    #[test]
+    fn count_value_or_default_propagates_through_not_summed() {
+        // A NotSummed-wrapped CountSumTree(_, 5, 100, _) still contributes
+        // count = 5. Only the sum is suppressed.
+        let cst =
+            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, 5, 100, None);
+        assert_eq!(cst.count_value_or_default(), 5);
+        assert_eq!(cst.sum_value_or_default(), 100);
+
+        let ns = Element::new_not_summed(cst).expect("wrap ok");
+        assert_eq!(ns.count_value_or_default(), 5);
+        assert_eq!(ns.sum_value_or_default(), 0);
+    }
+
+    #[test]
+    fn count_sum_value_or_default_zeros_sum_keeps_count() {
+        let cst = Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, 3, 42, None);
+        assert_eq!(cst.count_sum_value_or_default(), (3, 42));
+
+        let ns = Element::new_not_summed(cst).expect("wrap ok");
+        assert_eq!(ns.count_sum_value_or_default(), (3, 0));
+    }
+
+    #[test]
+    fn flags_delegate_through_wrapper() {
+        let flags = Some(vec![1, 2, 3]);
+        let st = Element::new_sum_tree_with_flags(None, flags.clone());
+        let ns = Element::new_not_summed(st).expect("wrap ok");
+        assert_eq!(ns.get_flags(), &flags);
+    }
+
+    #[test]
+    fn bincode_round_trip_through_wrapper() {
+        let grove_version = GroveVersion::latest();
+        let inner = Element::new_sum_tree_with_flags_and_sum_value(
+            Some(b"root".to_vec()),
+            42,
+            Some(vec![9, 8]),
+        );
+        let wrapped = Element::new_not_summed(inner).expect("wrap ok");
+        let bytes = wrapped.serialize(grove_version).expect("serialize ok");
+        let back = Element::deserialize(&bytes, grove_version).expect("deserialize ok");
+        assert_eq!(back, wrapped);
+    }
+
+    #[test]
+    fn deserialize_rejects_nested_wrappers() {
+        // Construct nested wrappers manually, bypassing the constructor.
+        // serialize() rejects too, but use bincode directly to test the
+        // *deserialize* path.
+        use bincode::config;
+        let cfg = config::standard().with_big_endian().with_no_limit();
+        let grove_version = GroveVersion::latest();
+
+        // NotSummed(NotSummed(SumTree)).
+        let nested_nn = Element::NotSummed(Box::new(Element::NotSummed(Box::new(
+            Element::SumTree(None, 0, None),
+        ))));
+        let bytes = bincode::encode_to_vec(&nested_nn, cfg).expect("encode");
+        assert!(Element::deserialize(&bytes, grove_version).is_err());
+
+        // NotSummed(NonCounted(SumTree)).
+        let cross = Element::NotSummed(Box::new(Element::NonCounted(Box::new(Element::SumTree(
+            None, 0, None,
+        )))));
+        let bytes = bincode::encode_to_vec(&cross, cfg).expect("encode");
+        assert!(Element::deserialize(&bytes, grove_version).is_err());
+
+        // NonCounted(NotSummed(SumTree)).
+        let cross2 = Element::NonCounted(Box::new(Element::NotSummed(Box::new(Element::SumTree(
+            None, 0, None,
+        )))));
+        let bytes = bincode::encode_to_vec(&cross2, cfg).expect("encode");
+        assert!(Element::deserialize(&bytes, grove_version).is_err());
+    }
+
+    /// The pre-check before bincode decode is the actual stack-overflow
+    /// guard: a long chain of wrapper bytes is rejected without bincode
+    /// recursing through them. Mirrors the NonCounted long-chain test.
+    #[test]
+    fn deserialize_rejects_long_nested_wrapper_chain_without_recursion() {
+        let grove_version = GroveVersion::latest();
+        // 1024 wrapper bytes (alternating NotSummed/NotSummed) followed by a
+        // base sum tree. With the post-check alone, bincode would recurse
+        // through all 1024 Box<Element> wrappers — pre-check stops it on
+        // byte 1.
+        let mut bytes = vec![16u8; 1024];
+        // Append a minimal valid SumTree (disc 4, no root key, varint sum 0,
+        // no flags).
+        bytes.extend_from_slice(&[4, 0, 0, 0]);
+        let err = Element::deserialize(&bytes, grove_version)
+            .expect_err("nested wrapper bytes must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("wrapper") || msg.contains("Wrapper"),
+            "error should mention nested wrapper: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_not_summed_with_non_sum_tree_inner() {
+        // A NotSummed wrapping a plain Item must be rejected at deserialize.
+        use bincode::config;
+        let cfg = config::standard().with_big_endian().with_no_limit();
+        let bad = Element::NotSummed(Box::new(Element::Item(b"x".to_vec(), None)));
+        let bytes = bincode::encode_to_vec(&bad, cfg).expect("encode");
+        let grove_version = GroveVersion::latest();
+        assert!(Element::deserialize(&bytes, grove_version).is_err());
+    }
+
+    #[test]
+    fn serialize_rejects_not_summed_with_non_sum_tree_inner() {
+        let bad = Element::NotSummed(Box::new(Element::Item(b"x".to_vec(), None)));
         let grove_version = GroveVersion::latest();
         assert!(bad.serialize(grove_version).is_err());
     }

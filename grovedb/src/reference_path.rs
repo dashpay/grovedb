@@ -84,7 +84,15 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
                 })
         );
 
-        match element {
+        // Look through wrapper variants so a wrapper-wrapped reference is
+        // followed instead of being returned as a value, mirroring the
+        // unwrapping in `GroveDb::follow_reference`. The wrapper byte is
+        // already part of `value_hash` (computed above from the on-disk
+        // serialized value), so dropping it from `target_element` does not
+        // affect downstream cryptographic verification. `NotSummed` cannot
+        // wrap a reference by construction (whitelist), but the unwrap is
+        // forward-safe and symmetric to `NonCounted`.
+        match element.into_underlying() {
             Element::Reference(ref_path, ..) => {
                 current_path = referred_path;
                 current_key = referred_key;

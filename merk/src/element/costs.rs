@@ -51,8 +51,9 @@ pub trait ElementCostPrivateExtensions {
 }
 
 impl ElementCostPrivateExtensions for Element {
-    /// Get tree cost for the element. For `NonCounted`, delegates to the
-    /// inner element and adds 1 byte for the wrapper discriminant.
+    /// Get tree cost for the element. For `NonCounted` and `NotSummed`,
+    /// delegates to the inner element and adds 1 byte for the wrapper
+    /// discriminant.
     fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         check_grovedb_v0!(
             "get_specialized_cost",
@@ -71,7 +72,9 @@ impl ElementCostPrivateExtensions for Element {
             Element::CountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
             Element::ProvableCountTree(..) => Ok(COUNT_TREE_COST_SIZE),
             Element::ProvableCountSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
-            Element::NonCounted(inner) => Ok(inner.get_specialized_cost(grove_version)? + 1),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => {
+                Ok(inner.get_specialized_cost(grove_version)? + 1)
+            }
             _ => Err(Error::CorruptedCodeExecution(
                 "trying to get tree cost from non tree element",
             )),
@@ -96,14 +99,14 @@ impl ElementCostExtensions for Element {
         );
         // todo: we actually don't need to deserialize the whole element
         let element = Element::deserialize(value, grove_version)?;
-        // Look through NonCounted: the wrapper has no per-variant cost
-        // semantics — the cost is determined by the inner element's type.
-        // For the catch-all (Item / Reference) path, value.len() already
-        // includes the wrapper byte. For tree- and sum-item paths that use
-        // cost-size constants, we add 1 byte of `wrapper_overhead` to keep
-        // the on-disk byte count exact.
+        // Look through wrapper variants: the wrappers have no per-variant
+        // cost semantics — the cost is determined by the inner element's
+        // type. For the catch-all (Item / Reference) path, value.len()
+        // already includes the wrapper byte. For tree- and sum-item paths
+        // that use cost-size constants, we add 1 byte of `wrapper_overhead`
+        // to keep the on-disk byte count exact.
         let (element, wrapper_overhead) = match element {
-            Element::NonCounted(inner) => (*inner, 1u32),
+            Element::NonCounted(inner) | Element::NotSummed(inner) => (*inner, 1u32),
             other => (other, 0u32),
         };
         let cost = match element {
@@ -251,9 +254,9 @@ impl ElementCostExtensions for Element {
                 let key_len = key.len() as u32;
                 KV::node_value_byte_cost_size(key_len, value_len, node_type)
             }
-            // Item / Reference / NonCounted-of-NonCounted (impossible by
-            // construction): catch-all uses raw value.len() which already
-            // includes any wrapper byte present.
+            // Item / Reference / nested wrappers (impossible by construction):
+            // catch-all uses raw value.len() which already includes any
+            // wrapper byte present.
             _ => KV::node_value_byte_cost_size(key.len() as u32, value.len() as u32, node_type),
         };
         Ok(cost)

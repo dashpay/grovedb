@@ -186,8 +186,12 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
-        // Look through `NonCounted` for cost dispatch.
-        let wrapper_overhead = if value.is_non_counted() { 1u32 } else { 0 };
+        // Look through wrapper variants for cost dispatch.
+        let wrapper_overhead = if value.is_non_counted() || value.is_not_summed() {
+            1u32
+        } else {
+            0
+        };
         match value.underlying() {
             Element::Tree(_, flags)
             | Element::SumTree(_, _, flags)
@@ -243,8 +247,12 @@ impl GroveDb {
 
         let mut cost = OperationCost::default();
         let key_len = key.max_length() as u32;
-        // Look through `NonCounted` for cost dispatch.
-        let wrapper_overhead = if value.is_non_counted() { 1u32 } else { 0 };
+        // Look through wrapper variants for cost dispatch.
+        let wrapper_overhead = if value.is_non_counted() || value.is_not_summed() {
+            1u32
+        } else {
+            0
+        };
         match value.underlying() {
             Element::Tree(_, flags) | Element::SumTree(_, _, flags) => {
                 let flags_len = flags.as_ref().map_or(0, |flags| {
