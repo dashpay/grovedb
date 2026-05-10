@@ -1848,11 +1848,10 @@ mod tests {
     }
 
     #[test]
-    fn batch_delete_tree_on_cidx_is_rejected() {
-        // DeleteTree on a CountIndexedTree via the batch path would
-        // orphan the secondary storage namespace; the batch path rejects
-        // it so callers must empty the cidx (via
-        // delete_from_count_indexed_tree) first.
+    fn batch_delete_tree_on_empty_cidx_works() {
+        // DeleteTree on an empty CountIndexedTree via the batch path
+        // succeeds and cleans up the secondary's storage so re-creating
+        // a cidx at the same path observes a fresh secondary.
         use crate::batch::QualifiedGroveDbOp;
 
         let grove_version = GroveVersion::latest();
@@ -1872,10 +1871,123 @@ mod tests {
             vec![TEST_LEAF.to_vec()],
             b"cidx".to_vec(),
             grovedb_merk::tree_type::TreeType::CountIndexedTree,
+            crate::batch::SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch delete empty cidx");
+
+        // Re-create + populate; secondary must observe only the new
+        // entry.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"fresh",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1, b"fresh".to_vec());
+    }
+
+    #[test]
+    fn batch_delete_tree_on_non_empty_cidx_works() {
+        // DeleteTree with DeleteChildren on a non-empty cidx via batch
+        // must cleanly remove both primary subtree storage and secondary
+        // storage.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sub");
+        }
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"x",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate sub");
+
+        let ops = vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            grovedb_merk::tree_type::TreeType::CountIndexedTree,
             crate::batch::SubelementsDeletionBehavior::DeleteChildren,
         )];
-        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
-        assert!(result.is_err(), "DeleteTree on cidx must be rejected");
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch delete non-empty cidx");
+
+        // Re-create + insert one item; query must see only the new item.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"only",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 1, "secondary must have only the new entry");
+        assert_eq!(top[0].1, b"only".to_vec());
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
     }
 
     #[test]

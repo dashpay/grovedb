@@ -2451,23 +2451,18 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(tree_type, _) => {
-                    // CountIndexedTree owns two child Merks (primary + secondary).
-                    // The standard DeleteTree path only cleans up one child storage,
-                    // which would leave secondary storage orphaned. Reject explicitly
-                    // until a dedicated dual-storage cleanup path is wired through
-                    // the batch propagation pass.
-                    if tree_type.is_count_indexed_primary() {
-                        return Err(Error::NotSupported(
-                            "DeleteTree on CountIndexedTree / ProvableCountIndexedTree is not \
-                             supported in the batch path; the secondary storage namespace would \
-                             be orphaned. Empty the cidx first via \
-                             delete_from_count_indexed_tree, then DeleteTree the now-empty cidx \
-                             outside of a batch"
-                                .to_string(),
-                        ))
-                        .wrap_with_cost(cost);
-                    }
+                GroveOp::DeleteTree(_tree_type, _) => {
+                    // CountIndexedTree owns two child Merks (primary +
+                    // secondary). The standard DeleteTree path runs
+                    // find_subtrees on the primary's prefix and clears
+                    // each subtree's storage, but it doesn't know about
+                    // the cidx secondary's storage namespace
+                    // (Blake3(primary_prefix ‖ 0x01)). The dedicated
+                    // post-apply secondary cleanup pass that runs in
+                    // apply_batch detects cidx primary deletes by
+                    // tree_type and clears the secondary prefix there;
+                    // here we just emit the merk-level delete the same
+                    // way as for any other tree.
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(
@@ -4018,6 +4013,11 @@ impl GroveDb {
         // nested subtrees.
         let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
         let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        // CountIndexedTree primary deletes: alongside the primary's
+        // recursive cleanup (via merk_delete_paths), the secondary's
+        // storage namespace at Blake3(primary_prefix ‖ 0x01) must be
+        // cleared explicitly — find_subtrees only walks primary keys.
+        let mut cidx_primary_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
         // Track paths skipped due to SubelementsDeletionBehavior::Skip so we can
         // filter the corresponding ops out of the batch before apply_body.
         let mut skipped_delete_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
@@ -4034,6 +4034,13 @@ impl GroveDb {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
                         // No emptiness check and no post-apply storage cleanup.
                         // The caller guarantees the subtree is already empty.
+                        // Cidx still needs the secondary cleared even when
+                        // primary cleanup is skipped, because the cidx's
+                        // secondary metadata lives in a different
+                        // namespace and is invisible to find_subtrees.
+                        if tree_type.is_count_indexed_primary() {
+                            cidx_primary_delete_paths.push(child_path);
+                        }
                         continue;
                     }
                     SubelementsDeletionBehavior::DeleteChildren => {
@@ -4141,6 +4148,9 @@ impl GroveDb {
                 if tree_type.uses_non_merk_data_storage() {
                     non_merk_delete_paths.push(child_path);
                 } else {
+                    if tree_type.is_count_indexed_primary() {
+                        cidx_primary_delete_paths.push(child_path.clone());
+                    }
                     merk_delete_paths.push(child_path);
                 }
             }
@@ -4265,6 +4275,40 @@ impl GroveDb {
             }
         }
 
+        // CountIndexedTree secondary cleanup. find_subtrees walks the
+        // primary's storage namespace via path-derived prefixes and
+        // does not see the cidx secondary at
+        // Blake3(primary_prefix ‖ 0x01). Clear it explicitly so the
+        // secondary's data does not survive a DeleteTree on its
+        // primary.
+        for primary_path in &cidx_primary_delete_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
+            let primary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
+                    .unwrap_add_cost(&mut cost);
+            let secondary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                    &primary_prefix,
+                )
+                .unwrap_add_cost(&mut cost);
+            let mut secondary_storage = self
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    secondary_prefix,
+                    Some(&storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                secondary_storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up cidx secondary storage in batch delete: {e}",
+                    ))
+                })
+            );
+        }
+
         // TODO: compute batch costs
         cost_return_on_error!(
             &mut cost,
@@ -4384,6 +4428,7 @@ impl GroveDb {
         // emptiness checks are needed (H2).
         let mut non_merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
         let mut merk_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        let mut cidx_primary_delete_paths: Vec<Vec<Vec<u8>>> = Vec::new();
 
         let mut batch_apply_options = batch_apply_options.unwrap_or_default();
         let mut skipped_delete_paths: HashSet<Vec<Vec<u8>>> = HashSet::new();
@@ -4399,6 +4444,9 @@ impl GroveDb {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
                         // No emptiness check and no post-apply storage cleanup.
                         // The caller guarantees the subtree is already empty.
+                        if tree_type.is_count_indexed_primary() {
+                            cidx_primary_delete_paths.push(child_path);
+                        }
                         continue;
                     }
                     SubelementsDeletionBehavior::DeleteChildren => {
@@ -4501,6 +4549,9 @@ impl GroveDb {
                 if tree_type.uses_non_merk_data_storage() {
                     non_merk_delete_paths.push(child_path);
                 } else {
+                    if tree_type.is_count_indexed_primary() {
+                        cidx_primary_delete_paths.push(child_path.clone());
+                    }
                     merk_delete_paths.push(child_path);
                 }
             }
@@ -4712,6 +4763,36 @@ impl GroveDb {
                     })
                 );
             }
+        }
+
+        // CountIndexedTree secondary cleanup (parallels the
+        // apply_batch_with_element_flags_update pass).
+        for primary_path in &cidx_primary_delete_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
+            let primary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
+                    .unwrap_add_cost(&mut cost);
+            let secondary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                    &primary_prefix,
+                )
+                .unwrap_add_cost(&mut cost);
+            let mut secondary_storage = self
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    secondary_prefix,
+                    Some(&continue_storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                secondary_storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up cidx secondary storage in batch delete: {e}",
+                    ))
+                })
+            );
         }
 
         // let's build the write batch
