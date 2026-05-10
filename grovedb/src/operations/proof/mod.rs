@@ -181,7 +181,7 @@ impl<'de, Context> BorrowDecode<'de, Context> for MerkOnlyLayerProof {
 }
 
 /// Encoded proof bytes for different tree backing store types.
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Clone)]
 pub enum ProofBytes {
     /// Merk (Merkle AVL) tree proof bytes.
     Merk(Vec<u8>),
@@ -194,13 +194,23 @@ pub enum ProofBytes {
     /// CommitmentTree proof: `sinsemilla_root (32 bytes) || bulk_append_proof`.
     /// Binds the Orchard anchor to the GroveDB root hash.
     CommitmentTree(Vec<u8>),
+    /// CountIndexedTree proof: `secondary_root_hash (32 bytes) || merk_proof`.
+    /// The `secondary_root_hash` is the cidx's secondary Merk root hash at
+    /// proof time (used by the verifier in `combine_hash_three` to chain
+    /// the value_hash recorded for this cidx in its parent Merk). The
+    /// `merk_proof` is a standard Merk proof against the cidx **primary**
+    /// covering the subquery result set; subqueries into cidx via the
+    /// generic V1 envelope use the primary as the descent target. Callers
+    /// who want secondary-ordered output should use the dedicated
+    /// `prove_count_indexed_top_k` proof shape instead.
+    CountIndexedTree(Vec<u8>),
 }
 
 /// A single layer of a v1 GroveDB proof supporting multiple tree types.
 ///
 /// Uses a custom `Decode` implementation that enforces [`MAX_PROOF_DEPTH`]
 /// during deserialization to prevent stack overflow from deeply nested proofs.
-#[derive(Encode)]
+#[derive(Encode, Clone)]
 pub struct LayerProof {
     /// Proof bytes for this layer (may be any supported tree type).
     pub merk_proof: ProofBytes,
@@ -606,6 +616,18 @@ impl fmt::Display for ProofBytes {
                     )
                 } else {
                     write!(f, "CommitmentTree(<invalid: {} bytes>)", bytes.len())
+                }
+            }
+            ProofBytes::CountIndexedTree(bytes) => {
+                if bytes.len() >= 32 {
+                    write!(
+                        f,
+                        "CountIndexedTree(secondary_root={}, primary_proof={})",
+                        hex::encode(&bytes[..32]),
+                        decode_merk_proof(&bytes[32..])?
+                    )
+                } else {
+                    write!(f, "CountIndexedTree(<invalid: {} bytes>)", bytes.len())
                 }
             }
         }

@@ -1327,25 +1327,91 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
-                            // Subquery-into-CountIndexedTree proof generation
-                            // belongs in the dedicated count-indexed proof
-                            // path (see prove_count_indexed_top_k). The
-                            // generic V1 proof shape cannot carry the
-                            // primary/secondary attestation needed by the
-                            // verifier. Fail loudly rather than silently
-                            // emitting an unverifiable proof.
-                            Ok(Element::CountIndexedTree(..))
-                            | Ok(Element::ProvableCountIndexedTree(..))
+                            // Subquery into CountIndexedTree: descend into
+                            // the primary like a regular tree, then wrap
+                            // the resulting Merk proof bytes with a 32-byte
+                            // attestation of the cidx's secondary root
+                            // hash. The verifier consumes
+                            // ProofBytes::CountIndexedTree(secondary ‖
+                            // primary_proof) and chains via
+                            // combine_hash_three at this layer. Callers who
+                            // want secondary-ordered output should use
+                            // prove_count_indexed_top_k.
+                            Ok(ref cidx_elem @ Element::CountIndexedTree(..))
+                            | Ok(ref cidx_elem @ Element::ProvableCountIndexedTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
-                                return Err(Error::NotSupported(
-                                    "subqueries into CountIndexedTree / \
-                                     ProvableCountIndexedTree are not supported by the generic \
-                                     V1 proof path; use prove_count_indexed_top_k instead"
-                                        .to_string(),
-                                ))
-                                .wrap_with_cost(cost);
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let mut layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path.clone(),
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )
+                                );
+
+                                // Capture the cidx's current secondary
+                                // root hash for the verifier's
+                                // combine_hash_three attestation.
+                                let secondary_root_key = match cidx_elem {
+                                    Element::CountIndexedTree(_, s, ..)
+                                    | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                                    _ => unreachable!(),
+                                };
+                                let lower_path_owned: Vec<Vec<u8>> =
+                                    lower_path.iter().map(|p| p.to_vec()).collect();
+                                let lower_path_refs: Vec<&[u8]> =
+                                    lower_path_owned.iter().map(|v| v.as_slice()).collect();
+                                let cidx_subtree_path: grovedb_path::SubtreePath<&[u8]> =
+                                    lower_path_refs.as_slice().into();
+                                let secondary_merk = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_count_indexed_secondary_at_path(
+                                        cidx_subtree_path,
+                                        secondary_root_key,
+                                        &tx,
+                                        None,
+                                        grove_version,
+                                    )
+                                );
+                                let (sec_root, _, _) = cost_return_on_error!(
+                                    &mut cost,
+                                    secondary_merk
+                                        .root_hash_key_and_aggregate_data()
+                                        .map_err(Error::MerkError)
+                                );
+
+                                // Re-wrap merk_proof bytes with the
+                                // 32-byte secondary attestation prefix.
+                                let primary_bytes = match layer_proof.merk_proof {
+                                    crate::operations::proof::ProofBytes::Merk(b) => b,
+                                    _ => {
+                                        return Err(Error::CorruptedCodeExecution(
+                                            "expected Merk proof bytes from prove_subqueries_v1 \
+                                             for cidx primary",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                };
+                                let mut wrapped = Vec::with_capacity(32 + primary_bytes.len());
+                                wrapped.extend_from_slice(&sec_root);
+                                wrapped.extend_from_slice(&primary_bytes);
+                                layer_proof.merk_proof =
+                                    crate::operations::proof::ProofBytes::CountIndexedTree(wrapped);
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
                             }
 
                             // Other tree types with subqueries → recurse into Merk

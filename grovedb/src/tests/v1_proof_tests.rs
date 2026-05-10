@@ -1297,13 +1297,13 @@ fn test_v0_proof_rejects_dense_tree_subquery() {
     }
 }
 
-/// V1 proofs reject subqueries into CountIndexedTree elements: the
-/// generic V1 envelope does not carry the H1-A primary/secondary
-/// attestation needed by the verifier; callers must use
-/// `prove_count_indexed_top_k`.
+/// V1 proofs support subqueries into CountIndexedTree elements: the
+/// generic V1 envelope wraps the cidx primary's Merk proof bytes with a
+/// 32-byte secondary-root attestation, and the verifier chains via
+/// combine_hash_three.
 #[test]
-fn test_v1_proof_rejects_count_indexed_tree_subquery() {
-    let grove_version = &GROVE_V2;
+fn test_v1_proof_supports_count_indexed_tree_subquery() {
+    let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();
 
     db.insert(
@@ -1329,15 +1329,17 @@ fn test_v1_proof_rejects_count_indexed_tree_subquery() {
     .expect("insert cidx under parent");
 
     let cidx_path: &[&[u8]] = &[b"parent", b"cidx"];
-    db.insert_into_count_indexed_tree(
-        cidx_path,
-        b"sub",
-        Element::empty_count_tree(),
-        None,
-        grove_version,
-    )
-    .unwrap()
-    .expect("populate cidx");
+    for k in [b"a".as_slice(), b"b", b"c"] {
+        db.insert_into_count_indexed_tree(
+            cidx_path,
+            k,
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate cidx");
+    }
 
     let mut inner = Query::new();
     inner.insert_all();
@@ -1359,16 +1361,21 @@ fn test_v1_proof_rejects_count_indexed_tree_subquery() {
         },
     };
 
-    let result = db.prove_query(&path_query, None, grove_version).unwrap();
-    match result {
-        Err(crate::Error::NotSupported(msg)) => {
-            assert!(
-                msg.contains("CountIndexedTree"),
-                "error should mention CountIndexedTree, got: {}",
-                msg
-            );
-        }
-        Err(other) => panic!("expected NotSupported, got: {:?}", other),
-        Ok(_) => panic!("expected NotSupported, but prove_query succeeded"),
-    }
+    let proof = db
+        .prove_query(&path_query, None, grove_version)
+        .unwrap()
+        .expect("prove_query");
+    let (root_hash, results) =
+        GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify_query");
+    assert_eq!(
+        root_hash,
+        db.root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash")
+    );
+    // Should contain the three items inserted into the cidx primary.
+    assert!(
+        !results.is_empty(),
+        "expected non-empty results from V1 cidx subquery"
+    );
 }

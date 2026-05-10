@@ -8,7 +8,7 @@ use grovedb_merk::{
         query::{PathKey, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST},
         Decoder, Node, Op, Query,
     },
-    tree::{combine_hash, value_hash, NULL_HASH},
+    tree::{combine_hash, combine_hash_three, value_hash, NULL_HASH},
     CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
@@ -427,7 +427,8 @@ impl GroveDb {
             ProofBytes::MMR(_)
             | ProofBytes::BulkAppendTree(_)
             | ProofBytes::DenseTree(_)
-            | ProofBytes::CommitmentTree(_) => {
+            | ProofBytes::CommitmentTree(_)
+            | ProofBytes::CountIndexedTree(_) => {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
@@ -494,18 +495,116 @@ impl GroveDb {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
                         match element {
-                            // CountIndexedTree / ProvableCountIndexedTree
-                            // proof verification needs the three-input
-                            // combine and a multi-Merk lower-layer walker
-                            // — that work lands in PR 3.
+                            // CountIndexedTree / ProvableCountIndexedTree:
+                            // descend into the primary as if it were a
+                            // standard Merk subtree, then chain via
+                            // combine_hash_three(value_hash, primary_root,
+                            // secondary_root) where secondary_root is the
+                            // attestation prefix on the cidx ProofBytes.
                             Element::CountIndexedTree(..)
                             | Element::ProvableCountIndexedTree(..) => {
-                                return Err(Error::NotSupported(
-                                    "verifying proofs that descend into a CountIndexedTree / \
-                                     ProvableCountIndexedTree is not yet supported (planned in \
-                                     PR 3)"
-                                        .to_string(),
-                                ));
+                                path.push(key);
+                                *last_parent_tree_type = element.tree_feature_type();
+                                if query.query_items_at_path(&path, grove_version)?.is_none() {
+                                    let path_key_optional_value =
+                                        ProvedPathKeyOptionalValue::from_proved_key_value(
+                                            path.iter().map(|p| p.to_vec()).collect(),
+                                            proved_key_value,
+                                        );
+                                    result.push(
+                                        path_key_optional_value
+                                            .try_into_versioned(grove_version)?,
+                                    );
+                                    limit_left
+                                        .iter_mut()
+                                        .for_each(|limit| *limit = limit.saturating_sub(1));
+                                    if limit_left == &Some(0) {
+                                        break;
+                                    }
+                                } else {
+                                    if query.should_add_parent_tree_at_path(
+                                        current_path,
+                                        grove_version,
+                                    )? {
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                path.iter().map(|p| p.to_vec()).collect(),
+                                                proved_key_value.clone(),
+                                            );
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                    }
+
+                                    // Lower layer must carry cidx-shaped
+                                    // proof bytes: secondary_root_hash (32)
+                                    // followed by a standard Merk proof
+                                    // against the primary.
+                                    let cidx_bytes = match &lower_layer.merk_proof {
+                                        ProofBytes::CountIndexedTree(b) => b,
+                                        _ => {
+                                            return Err(Error::InvalidProof(
+                                                query.clone(),
+                                                "V1 lower layer for CountIndexedTree element \
+                                                 must use ProofBytes::CountIndexedTree"
+                                                    .to_string(),
+                                            ));
+                                        }
+                                    };
+                                    if cidx_bytes.len() < 32 {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            "cidx proof bytes shorter than 32-byte secondary \
+                                             root attestation prefix"
+                                                .to_string(),
+                                        ));
+                                    }
+                                    let mut secondary_root: [u8; 32] = [0u8; 32];
+                                    secondary_root.copy_from_slice(&cidx_bytes[..32]);
+                                    let primary_proof_bytes = cidx_bytes[32..].to_vec();
+                                    // Synthesize a standard-Merk LayerProof
+                                    // for the primary descent and recurse.
+                                    let primary_layer = LayerProof {
+                                        merk_proof: ProofBytes::Merk(primary_proof_bytes),
+                                        lower_layers: lower_layer.lower_layers.clone(),
+                                    };
+                                    let primary_root_hash = Self::verify_layer_proof_v1(
+                                        &primary_layer,
+                                        prove_options,
+                                        query,
+                                        limit_left,
+                                        &path,
+                                        result,
+                                        last_parent_tree_type,
+                                        options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )?;
+
+                                    let combined_root_hash = combine_hash_three(
+                                        value_hash(value_bytes).value(),
+                                        &primary_root_hash,
+                                        &secondary_root,
+                                    )
+                                    .value()
+                                    .to_owned();
+
+                                    if hash != &combined_root_hash {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 mismatch in cidx lower-layer hash, \
+                                                 expected {}, got {}",
+                                                hex::encode(hash),
+                                                hex::encode(combined_root_hash)
+                                            ),
+                                        ));
+                                    }
+                                    if limit_left == &Some(0) {
+                                        break;
+                                    }
+                                }
                             }
                             Element::Tree(Some(_), _)
                             | Element::SumTree(Some(_), ..)
@@ -615,6 +714,21 @@ impl GroveDb {
                                                 query,
                                                 grove_version,
                                             )?
+                                        }
+                                        ProofBytes::CountIndexedTree(_) => {
+                                            // CountIndexedTree elements are
+                                            // dispatched in the dedicated
+                                            // arm above; reaching this point
+                                            // means the proof envelope put
+                                            // a cidx-shaped lower layer on
+                                            // a non-cidx parent element,
+                                            // which is malformed.
+                                            return Err(Error::InvalidProof(
+                                                query.clone(),
+                                                "ProofBytes::CountIndexedTree under a non-cidx \
+                                                 parent element"
+                                                    .to_string(),
+                                            ));
                                         }
                                     };
 
