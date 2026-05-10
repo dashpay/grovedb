@@ -1379,3 +1379,75 @@ fn test_v1_proof_supports_count_indexed_tree_subquery() {
         "expected non-empty results from V1 cidx subquery"
     );
 }
+
+/// V0 fallback path: the V0 prover correctly rejects cidx subqueries
+/// (frozen wire format).
+#[test]
+fn test_v0_proof_rejects_count_indexed_tree_subquery() {
+    use grovedb_version::version::v1::GROVE_V1;
+
+    let grove_version = &GROVE_V1;
+    let db = make_empty_grovedb();
+
+    db.insert(
+        EMPTY_PATH,
+        b"parent",
+        Element::empty_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert parent tree");
+
+    db.insert(
+        [b"parent"].as_ref(),
+        b"cidx",
+        Element::empty_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert cidx");
+
+    let cidx_path: &[&[u8]] = &[b"parent", b"cidx"];
+    db.insert_into_count_indexed_tree(
+        cidx_path,
+        b"item",
+        Element::new_item(b"v".to_vec()),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("populate cidx");
+
+    let mut inner = Query::new();
+    inner.insert_all();
+    let path_query = PathQuery {
+        path: vec![b"parent".to_vec()],
+        query: SizedQuery {
+            query: Query {
+                items: vec![QueryItem::Key(b"cidx".to_vec())],
+                default_subquery_branch: SubqueryBranch {
+                    subquery_path: None,
+                    subquery: Some(inner.into()),
+                },
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+            limit: None,
+            offset: None,
+        },
+    };
+
+    let result = db.prove_query(&path_query, None, grove_version).unwrap();
+    match result {
+        Err(crate::Error::NotSupported(msg)) => {
+            assert!(msg.contains("V0 proofs"), "got: {msg}");
+        }
+        Err(other) => panic!("expected NotSupported, got: {:?}", other),
+        Ok(_) => panic!("expected NotSupported, but prove_query succeeded"),
+    }
+}

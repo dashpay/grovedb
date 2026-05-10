@@ -2041,6 +2041,111 @@ mod tests {
     }
 
     #[test]
+    fn delete_from_count_indexed_tree_round_trip_with_proof() {
+        // Insert several items, delete one, verify the proof reflects
+        // the post-delete state.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        // Add one item under "a" so its count goes to 1.
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"x",
+            Element::new_item(b"d".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("deep insert");
+        let removed = db
+            .delete_from_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"b",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("delete b");
+        assert!(removed);
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("top-3 after delete");
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0], (1u64, b"a".to_vec()));
+        assert_eq!(top[1], (0u64, b"c".to_vec()));
+
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("prove top-3");
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path).expect("verify top-3");
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries[0], (1u64, b"a".to_vec()));
+        assert_eq!(result.entries[1], (0u64, b"c".to_vec()));
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_truncated_proof() {
+        let result = GroveDb::verify_count_indexed_top_k(b"\x00\x01", &[b"x"]);
+        assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn verify_grovedb_walks_provable_count_indexed_tree() {
+        // Same H1-A walk but on a ProvableCountIndexedTree variant.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create provable cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"pcidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert into pcidx");
+        }
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "expected no issues");
+    }
+
+    #[test]
     fn verify_count_indexed_top_k_rejects_path_length_mismatch() {
         // Generate a real proof, then verify with a path of the wrong length.
         let grove_version = GroveVersion::latest();
