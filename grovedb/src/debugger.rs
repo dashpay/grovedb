@@ -814,6 +814,17 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
         // The visualizer wire format has no NonCounted variant; render the
         // inner element. The wrapper is invisible at the debug-UI layer.
         crate::Element::NonCounted(inner) => element_to_grovedbg(*inner),
+        // CountIndexedTree variants are not yet represented in the
+        // grovedbg wire format; render them as a generic subtree pointing
+        // at the primary's root key. The secondary is invisible to the
+        // debug UI for now.
+        crate::Element::CountIndexedTree(primary_root_key, _, _, element_flags)
+        | crate::Element::ProvableCountIndexedTree(primary_root_key, _, _, element_flags) => {
+            grovedbg_types::Element::Subtree {
+                root_key: primary_root_key,
+                element_flags,
+            }
+        }
     }
 }
 

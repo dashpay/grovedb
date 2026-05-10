@@ -1327,6 +1327,27 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
+                            // Subquery-into-CountIndexedTree proof generation
+                            // belongs in the dedicated count-indexed proof
+                            // path (see prove_count_indexed_top_k). The
+                            // generic V1 proof shape cannot carry the
+                            // primary/secondary attestation needed by the
+                            // verifier. Fail loudly rather than silently
+                            // emitting an unverifiable proof.
+                            Ok(Element::CountIndexedTree(..))
+                            | Ok(Element::ProvableCountIndexedTree(..))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                return Err(Error::NotSupported(
+                                    "subqueries into CountIndexedTree / \
+                                     ProvableCountIndexedTree are not supported by the generic \
+                                     V1 proof path; use prove_count_indexed_top_k instead"
+                                        .to_string(),
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+
                             // Other tree types with subqueries → recurse into Merk
                             Ok(Element::Tree(Some(_), _))
                             | Ok(Element::SumTree(Some(_), ..))

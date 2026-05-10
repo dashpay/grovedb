@@ -1,10 +1,10 @@
 # The CountIndexedTree
 
-> **Status:** design ratified, awaiting implementation. All
-> protocol-observable design points (element layout, hash composition,
-> storage prefix derivation, query semantics, subquery handling) are
-> finalized below. Two implementation-detail items (C1, W1) carry
-> recommended defaults that will be confirmed during coding.
+> **Status:** implemented. All protocol-observable design points
+> (element layout, hash composition, storage prefix derivation, query
+> semantics, subquery handling) are finalized below. Two implementation-
+> detail items (C1, W1) carry recommended defaults that may be revisited
+> in follow-up work.
 
 ## Motivation
 
@@ -209,11 +209,13 @@ This has three useful properties:
   at exactly the prefix a `Tree` would have at the same path, so the
   storage layer's layout for the primary is indistinguishable from a
   normal subtree.
-- **Collision-free secondary.** The secondary prefix is a Blake3 of a
+- **Domain-separated secondary.** The secondary prefix is a Blake3 of a
   fixed-length 33-byte input that no path-derived prefix can produce
   (path-derived prefixes hash a variable-length `path_body` that always
   ends with per-segment length bytes, never with a single trailing
-  `0x01` tag after a 32-byte prefix block).
+  `0x01` tag after a 32-byte prefix block). Collision resistance still
+  rests on Blake3's preimage / 2nd-preimage assumptions, like every
+  other prefix in the database.
 - **Empty-path safety.** A root-level CountIndexedTree (unusual but
   legal) has `primary_prefix = 0x00..00` and
   `secondary_prefix = Blake3(0x00..00 ‖ 0x01)`. Both well-defined.

@@ -28,6 +28,7 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
+    element::get::ElementFetchFromStorageExtensions,
     proofs::{query::QueryProofVerify, Query as MerkQuery},
     tree::{combine_hash, combine_hash_three, value_hash, CryptoHash},
 };
@@ -130,7 +131,16 @@ impl GroveDb {
         }
 
         // 1. Build a single-key Merk proof at each layer (top-down).
+        //
+        //    Verifier requirement: every shallower layer chains via the
+        //    standard combine_hash, so any ancestor on path[..last] being
+        //    itself a CountIndexedTree would break verification (its
+        //    value_hash uses combine_hash_three, not combine_hash). The
+        //    envelope carries primary/secondary attestation data only for
+        //    the terminal cidx — fail loudly here rather than emitting a
+        //    proof that cannot be verified.
         let mut layer_proofs: Vec<Vec<u8>> = Vec::with_capacity(path_keys.len());
+        let last_idx = path_keys.len() - 1;
         for depth in 0..path_keys.len() {
             // The Merk at path[..depth] proves the existence of
             // path_keys[depth].
@@ -140,13 +150,34 @@ impl GroveDb {
             let parent_merk = cost_return_on_error!(
                 &mut cost,
                 self.open_transactional_merk_at_path(
-                    parent_path,
+                    parent_path.clone(),
                     transaction,
                     Some(batch),
                     grove_version,
                 )
             );
             let key = path_keys[depth].clone();
+            // Reject nested cidx: only the deepest layer (`last_idx`) is
+            // permitted to be the target CountIndexedTree element.
+            if depth < last_idx {
+                let intermediate = cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&parent_merk, key.as_slice(), true, grove_version)
+                        .map_err(Error::MerkError)
+                );
+                if matches!(
+                    intermediate.underlying(),
+                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+                ) {
+                    return Err(Error::NotSupported(
+                        "nested CountIndexedTree on the proven path is not supported by \
+                         prove_count_indexed_top_k (the envelope only carries H1-A \
+                         attestation data for the terminal cidx)"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
             let mut q = MerkQuery::new();
             q.insert_item(MerkQueryItem::Key(key));
             let result = cost_return_on_error!(
@@ -231,8 +262,6 @@ impl GroveDb {
         batch: Option<&'db StorageBatch>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error> {
-        use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
-
         let mut cost = OperationCost::default();
         let (parent_path, count_indexed_key) = match path.derive_parent() {
             Some(p) => p,
@@ -346,6 +375,15 @@ impl GroveDb {
         }
 
         // 1c. Walk shallower layers, chaining via standard combine_hash.
+        //
+        //     Nested cidx on the proven path is rejected by the prover and
+        //     cannot occur in a well-formed envelope. The verifier need
+        //     not detect nested cidx explicitly: a forged envelope that
+        //     placed a cidx ancestor would fail the chain check below
+        //     because cidx value_hash uses combine_hash_three (three-input)
+        //     while we hash with the two-input combine_hash here, so the
+        //     recorded value_hash on the parent's Merk node would not
+        //     match.
         for depth in (0..last_idx).rev() {
             let key = path[depth];
             let (value_bytes, layer_root, recorded_value_hash) =
@@ -355,7 +393,9 @@ impl GroveDb {
             if combined != recorded_value_hash {
                 return Err(Error::CorruptedData(format!(
                     "intermediate layer chain mismatch at depth {}: parent recorded \
-                     value_hash {} but combine_hash(H(value), child_root) is {}",
+                     value_hash {} but combine_hash(H(value), child_root) is {} (this can \
+                     occur if an ancestor on the proven path is itself a CountIndexedTree, \
+                     which is not supported by this proof envelope)",
                     depth,
                     hex::encode(recorded_value_hash),
                     hex::encode(combined)

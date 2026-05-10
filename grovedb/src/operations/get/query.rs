@@ -519,6 +519,10 @@ where {
                                             count_value,
                                             sum_value,
                                         )),
+                                        Element::CountIndexedTree(.., count_value, _)
+                                        | Element::ProvableCountIndexedTree(.., count_value, _) => {
+                                            Ok(QueryItemOrSumReturnType::CountValue(count_value))
+                                        }
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),

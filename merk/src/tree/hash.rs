@@ -148,9 +148,10 @@ pub fn combine_hash(hash_one: &CryptoHash, hash_two: &CryptoHash) -> CostContext
 /// Order is normative — the inputs MUST be supplied as
 /// `(value_hash, primary_root_hash, secondary_root_hash)`.
 ///
-/// 96 bytes of input fits within a single Blake3 block (64 bytes per chunk
-/// header + up to 1024 bytes input), so cost is one hash call. The cost
-/// constant matches `combine_hash`.
+/// Cost: Blake3 compresses input in 64-byte blocks. 96 bytes spans two
+/// blocks (one full 64-byte block plus a 32-byte partial block), so the
+/// hasher performs two block compressions — one more than `combine_hash`,
+/// which fits its 64-byte input in a single block.
 pub fn combine_hash_three(
     hash_one: &CryptoHash,
     hash_two: &CryptoHash,

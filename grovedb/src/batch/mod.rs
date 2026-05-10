@@ -1876,6 +1876,18 @@ where
                             }
                         }
                     }
+                    // NOTE: overwriting an existing CountIndexedTree via the
+                    // batch path when `validate_insertion_does_not_override_tree`
+                    // is `false` would orphan the secondary storage namespace
+                    // (cidx owns two storage namespaces; the batch path has
+                    // no dual-storage cleanup hook). This is the same shape
+                    // of footgun all tree types share when the override
+                    // protection is opted out — callers must enable
+                    // `validate_insertion_does_not_override_tree` (or empty
+                    // the cidx via `delete_from_count_indexed_tree` first)
+                    // to safely replace an existing cidx element. We do
+                    // not gate this with a separate disk read here because
+                    // the cost would apply on every non-reference batch op.
 
                     // Mirror the per-merk insert guard: NonCounted children
                     // are only valid inside count-bearing parents. Without
@@ -2259,7 +2271,23 @@ where
                         )
                     );
                 }
-                GroveOp::DeleteTree(_tree_type, _) => {
+                GroveOp::DeleteTree(tree_type, _) => {
+                    // CountIndexedTree owns two child Merks (primary + secondary).
+                    // The standard DeleteTree path only cleans up one child storage,
+                    // which would leave secondary storage orphaned. Reject explicitly
+                    // until a dedicated dual-storage cleanup path is wired through
+                    // the batch propagation pass.
+                    if tree_type.is_count_indexed_primary() {
+                        return Err(Error::NotSupported(
+                            "DeleteTree on CountIndexedTree / ProvableCountIndexedTree is not \
+                             supported in the batch path; the secondary storage namespace would \
+                             be orphaned. Empty the cidx first via \
+                             delete_from_count_indexed_tree, then DeleteTree the now-empty cidx \
+                             outside of a batch"
+                                .to_string(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     cost_return_on_error_into!(
                         &mut cost,
                         Element::delete_into_batch_operations(

@@ -790,12 +790,41 @@ impl GroveDb {
             )
         );
 
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
+        // Seek directly to the encoded count bounds in the secondary's
+        // keyspace instead of doing a full scan with post-filtering. The
+        // secondary keys are `count_be_bytes ‖ original_key`; we build a
+        // `RangeInclusive` query that brackets all encodings whose count
+        // falls in `[lo_count, hi_count]`. The lower bound is
+        // `lo_count_be ‖ <empty>`; the upper bound is
+        // `hi_count_be ‖ 0xFF*` — we use `(hi_count + 1)_be` (or
+        // `RangeFrom`-equivalent at the high end if `hi_count == u64::MAX`)
+        // to make the upper boundary exclusive on the next count, which
+        // is equivalent to inclusive on `hi_count` for any original_key
+        // suffix.
+        let mut lo_bytes = lo_count.to_be_bytes().to_vec();
+        // Lower bound has no original_key suffix → smallest possible key
+        // for `count == lo_count`.
+        let upper_bytes = if hi_count == u64::MAX {
+            // No representable next-count; use unbounded upper end.
+            None
+        } else {
+            // Exclusive upper bound at (hi_count + 1) ‖ <empty>; this
+            // includes every entry with count <= hi_count (any suffix).
+            Some((hi_count + 1).to_be_bytes().to_vec())
+        };
 
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
+        let mut q = Query::new();
+        q.left_to_right = !descending;
+        match upper_bytes {
+            Some(upper) => q.insert_range(lo_bytes..upper),
+            None => {
+                lo_bytes.shrink_to_fit();
+                q.insert_range_from(lo_bytes..);
+            }
+        }
+
+        let mut iter =
+            KVIterator::new(secondary_merk.storage.raw_iter(), &q).unwrap_add_cost(&mut cost);
 
         let mut results = Vec::new();
         while results.len() < limit as usize {
@@ -808,22 +837,10 @@ impl GroveDb {
                         )))
                         .wrap_with_cost(cost);
                     };
-                    if count < lo_count {
-                        if descending {
-                            // We walked past the lower bound; further entries
-                            // are all below it.
-                            break;
-                        }
-                        continue;
-                    }
-                    if count > hi_count {
-                        if !descending {
-                            // We walked past the upper bound; further entries
-                            // are all above it.
-                            break;
-                        }
-                        continue;
-                    }
+                    // Range bounds already filter; this is a defensive
+                    // check that catches encoding bugs without affecting
+                    // performance in the happy path.
+                    debug_assert!(count >= lo_count && count <= hi_count);
                     results.push((count, original_key));
                 }
                 None => break,

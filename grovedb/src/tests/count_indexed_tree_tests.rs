@@ -826,10 +826,14 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_rebuilds_secondary_from_scratch() {
-        // Verify reconcile can rebuild a secondary that's been "lost" —
-        // construct a CountIndexedTree, then sanity-check that top-k
-        // queries work after a no-op reconcile.
+    fn reconcile_after_query_returns_correct_top_k() {
+        // After populating via the dedicated API, reconcile should
+        // produce a consistent state and top-k queries should still
+        // return the correct order.
+        //
+        // (A future test will add explicit desync corruption via an
+        // internal API to exercise reconcile's repair path more
+        // strongly.)
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         db.insert(

@@ -1180,13 +1180,19 @@ impl GroveDb {
             let element = Element::raw_decode(&element_value, grove_version)?.into_underlying();
             match element {
                 // CountIndexedTree / ProvableCountIndexedTree integrity
-                // verification requires walking both child Merks plus the
-                // three-input combine; the dedicated path lands in PR 2/3.
-                // For PR 1 we skip them so that `verify_grovedb` doesn't
-                // crash if a CountIndexedTree element is somehow present —
-                // they cannot be inserted yet, so this is defensive only.
+                // verification requires walking both child Merks plus
+                // checking the H1-A three-input combine — that dedicated
+                // path is not yet wired here. Fail closed (rather than
+                // silently passing) so a corrupted cidx element is
+                // surfaced instead of being treated as verified.
                 Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
-                    continue;
+                    return Err(Error::NotSupported(
+                        "verify_grovedb does not yet support CountIndexedTree \
+                         integrity verification (H1-A three-input combine plus \
+                         dual-Merk traversal); failing closed to avoid silently \
+                         passing on a corrupted cidx element"
+                            .to_string(),
+                    ));
                 }
                 Element::SumTree(..)
                 | Element::Tree(..)
