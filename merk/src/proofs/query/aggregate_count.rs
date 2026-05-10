@@ -1633,7 +1633,13 @@ mod tests {
 /// `dump_verify_only_fixtures` helper above; regenerate with
 /// `cargo test -p grovedb-merk --features full -- aggregate_count::tests::dump_verify_only_fixtures --ignored --nocapture`
 /// if the proof encoding ever changes.
-#[cfg(all(test, feature = "verify"))]
+///
+/// Gated `any(minimal, verify)` (rather than `verify` only) so the
+/// default `full` CI test runs still exercise these. The verifier
+/// function is available under both gates and these tests have no
+/// prover dependency, so a `verify`-only gate would just hide them
+/// from CI.
+#[cfg(all(test, any(feature = "minimal", feature = "verify")))]
 mod verify_only_tests {
     use super::*;
 
