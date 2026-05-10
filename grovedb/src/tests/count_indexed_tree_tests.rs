@@ -1355,6 +1355,83 @@ mod tests {
     }
 
     #[test]
+    fn insert_into_count_indexed_tree_supports_reference() {
+        // Inserting a Reference via insert_into_count_indexed_tree must
+        // resolve the target's value_hash and use Element::insert_reference
+        // so the merk node carries combine_hash(value_hash(serialized),
+        // referenced_value_hash). The aggregate count goes up by 1
+        // (a Reference contributes count = 1 like any non-counted leaf).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Create a target item that the reference will point to.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"target_value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert target item");
+        // Create the cidx.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Insert a reference (cousin reference: from cidx primary back
+        // up to the target sibling at TEST_LEAF/target).
+        let reference = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::UpstreamRootHeightReference(
+                1,
+                vec![b"target".to_vec()],
+            ),
+        );
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"alias",
+            reference,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert reference into cidx primary");
+
+        // Path resolution should follow the reference and return the
+        // target's value.
+        let fetched = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"alias", None, grove_version)
+            .unwrap()
+            .expect("get reference via cidx primary");
+        assert_eq!(
+            fetched,
+            Element::new_item(b"target_value".to_vec()),
+            "reference should resolve to the target item"
+        );
+
+        // The cidx element now reflects the new state; count = 1.
+        let cidx_element = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get cidx element");
+        match cidx_element {
+            Element::CountIndexedTree(primary, secondary, count, _) => {
+                assert!(primary.is_some());
+                assert!(secondary.is_some());
+                assert_eq!(count, 1);
+            }
+            other => panic!("expected CountIndexedTree, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn batch_insert_into_cidx_primary_is_rejected() {
         // The batch propagation has no two-Merk hook for cidx primaries:
         // an InsertOrReplace at a path whose merk is the cidx primary
@@ -1846,6 +1923,121 @@ mod tests {
             .unwrap()
             .expect("root hash");
         assert_eq!(result.root_hash, expected_root);
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_with_reference_to_missing_target_errors() {
+        // Reference resolution failure: the target the reference points
+        // to does not exist. Should bubble up an error from
+        // follow_reference, not silently corrupt the cidx primary.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        let dangling = Element::new_reference(
+            grovedb_element::reference_path::ReferencePathType::UpstreamRootHeightReference(
+                1,
+                vec![b"does_not_exist".to_vec()],
+            ),
+        );
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"alias",
+                dangling,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(result.is_err(), "dangling reference must produce an error");
+    }
+
+    #[test]
+    fn deep_insert_under_nested_cidx_propagates_through_both_levels() {
+        // Layout: TEST_LEAF / outer / inner / sub
+        // outer is a CountIndexedTree containing inner (also a cidx).
+        // inner contains a sub-CountTree. Deep insert into sub must
+        // propagate counts and root hashes through BOTH cidx levels,
+        // mirroring at each level's secondary.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"inner",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create inner cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"inner"].as_ref(),
+            b"sub",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub count tree");
+
+        let outer_top1 = db
+            .count_indexed_top_k([TEST_LEAF, b"outer"].as_ref(), 1, true, None, grove_version)
+            .unwrap()
+            .expect("outer top-1");
+        // outer has one entry (inner), with count = 1 (sub is one
+        // entry inside inner).
+        assert_eq!(outer_top1.len(), 1);
+        assert_eq!(outer_top1[0].1, b"inner".to_vec());
+
+        // Deep insert into sub: TEST_LEAF/outer/inner/sub/item
+        db.insert(
+            [TEST_LEAF, b"outer", b"inner", b"sub"].as_ref(),
+            b"item",
+            Element::new_item(b"d".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("deep insert");
+        // sub's count_value is now 1; verify outer's view reflects this.
+        let inner_top1 = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer", b"inner"].as_ref(),
+                1,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("inner top-1");
+        assert_eq!(inner_top1.len(), 1);
+        assert_eq!(inner_top1[0].0, 1);
+        assert_eq!(inner_top1[0].1, b"sub".to_vec());
+
+        // verify_grovedb walks both cidx levels and finds no issues.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "expected no issues, got {:?}", issues);
     }
 
     #[test]

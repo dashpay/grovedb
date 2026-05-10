@@ -17,6 +17,7 @@ use grovedb_merk::{
         costs::ElementCostExtensions, decode::ElementDecodeExtensions,
         delete::ElementDeleteFromStorageExtensions, get::ElementFetchFromStorageExtensions,
         insert::ElementInsertToStorageExtensions, reconstruct::ElementReconstructExtensions,
+        ElementExt,
     },
     merk::KVIterator,
     proofs::Query,
@@ -239,14 +240,49 @@ impl GroveDb {
                         .map_err(Error::MerkError)
                 );
             }
-            Element::Reference(..) => {
-                return Err(Error::NotSupported(
-                    "inserting a Reference via insert_into_count_indexed_tree is not \
-                     supported (the reference's resolved value_hash is not yet wired \
-                     through this path); use db.insert into the primary path instead"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
+            Element::Reference(reference_path_type, ..) => {
+                // Resolve the reference, fetch the target's value_hash,
+                // and insert via Element::insert_reference so the merk
+                // node carries combine_hash(value_hash(serialized),
+                // referenced_value_hash). NonCounted is unwrapped above
+                // by underlying(); the outer `item` still owns the
+                // wrapper byte that goes to storage.
+                let cidx_primary_path_vec = path.to_vec();
+                let resolved_path = cost_return_on_error_no_add!(
+                    cost,
+                    grovedb_element::reference_path::path_from_reference_path_type(
+                        reference_path_type.clone(),
+                        &cidx_primary_path_vec,
+                        Some(item_key)
+                    )
+                    .map_err(Error::from)
+                );
+                let referenced_item = cost_return_on_error!(
+                    &mut cost,
+                    self.follow_reference(
+                        resolved_path.as_slice().into(),
+                        false,
+                        Some(transaction),
+                        grove_version,
+                    )
+                );
+                let referenced_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_item
+                        .value_hash(grove_version)
+                        .map_err(Error::from)
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_reference(
+                        &mut primary_merk,
+                        item_key,
+                        referenced_value_hash,
+                        None,
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+                );
             }
             Element::Tree(..)
             | Element::SumTree(..)
