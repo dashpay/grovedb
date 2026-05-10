@@ -2020,11 +2020,12 @@ where
                         // collide with future inserts under the new
                         // element's primary_root_key. Reject explicitly,
                         // pointing callers to the dedicated APIs (empty
-                        // the cidx via `delete_from_count_indexed_tree`
-                        // and remove it via `delete_up_tree` outside the
-                        // batch first). Other tree-type overwrites
-                        // remain permitted under the existing footgun
-                        // semantics for backwards compatibility.
+                        // the cidx via `delete_from_count_indexed_tree`,
+                        // DeleteTree it via batch — now supported — and
+                        // re-create in a follow-up batch). Other
+                        // tree-type overwrites remain permitted under the
+                        // existing footgun semantics for backwards
+                        // compatibility.
                         let merk = self.merks.get_mut(path).expect("the Merk is cached");
                         let maybe_existing = cost_return_on_error_into!(
                             &mut cost,
@@ -2060,8 +2061,9 @@ where
                                      ProvableCountIndexedTree via the batch path is not \
                                      supported (the secondary storage namespace would be \
                                      orphaned). Empty the cidx via \
-                                     delete_from_count_indexed_tree, then remove it via \
-                                     delete_up_tree outside of a batch before re-creating"
+                                     delete_from_count_indexed_tree, DeleteTree it via \
+                                     batch (now supported), and re-create in a follow-up \
+                                     batch"
                                         .to_string(),
                                 ))
                                 .wrap_with_cost(cost);
