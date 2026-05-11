@@ -10363,4 +10363,204 @@ mod tests {
         assert_eq!(top[0], (90, b"k1".to_vec()));
         assert_eq!(top[3], (60, b"k4".to_vec()));
     }
+
+    // =====================================================================
+    // Additional coverage for V1 proof verify cidx-error branches.
+    // =====================================================================
+
+    #[test]
+    fn v1_verify_rejects_cidx_subquery_proof_with_tampered_secondary_root() {
+        // Coverage for proof/verify.rs:593-602 — V1 cidx layer hash
+        // mismatch. Build a valid V1 cidx-subquery proof, then tamper
+        // the secondary_root prefix in the cidx_bytes so the combined
+        // root hash diverges from what the parent's value_hash claims.
+        use crate::operations::proof::{GroveDBProof, ProofBytes};
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::{
+            query::{QueryItem, SubqueryBranch},
+            Query as MerkQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let mut inner = MerkQuery::new();
+        inner.insert_all();
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: MerkQuery {
+                    items: vec![QueryItem::Key(b"cidx".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query");
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (mut proof_decoded, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode V1 proof");
+
+        // Flip the first byte of the secondary_root attestation
+        // (cidx_bytes[..32]) in the cidx layer's ProofBytes.
+        let root_layer = match &mut proof_decoded {
+            GroveDBProof::V1(v1) => &mut v1.root_layer,
+            _ => panic!("expected V1 proof"),
+        };
+        let mut found = false;
+        for (_k, lower) in root_layer.lower_layers.iter_mut() {
+            for (_kk, sublower) in lower.lower_layers.iter_mut() {
+                if let ProofBytes::CountIndexedTree(b) = &mut sublower.merk_proof {
+                    if b.len() >= 32 {
+                        b[0] ^= 0xFF;
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "expected a CountIndexedTree layer");
+
+        let tampered = bincode::encode_to_vec(&proof_decoded, config).expect("re-encode");
+        let result = GroveDb::verify_query(&tampered, &path_query, grove_version);
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, _))),
+            "tampered secondary_root must produce InvalidProof, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn v1_verify_rejects_cidx_proof_bytes_under_non_cidx_parent() {
+        // Coverage for proof/verify.rs:726-731 — when a V1 proof
+        // envelope places a `ProofBytes::CountIndexedTree(_)` layer
+        // under a parent element that is NOT a cidx, the verifier
+        // rejects with "ProofBytes::CountIndexedTree under a non-cidx
+        // parent element".
+        use crate::operations::proof::{GroveDBProof, ProofBytes};
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::{
+            query::{QueryItem, SubqueryBranch},
+            Query as MerkQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"normal_tree",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create normal tree");
+        db.insert(
+            [TEST_LEAF, b"normal_tree"].as_ref(),
+            b"x",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert leaf");
+
+        let mut inner = MerkQuery::new();
+        inner.insert_all();
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: MerkQuery {
+                    items: vec![QueryItem::Key(b"normal_tree".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (mut decoded, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode");
+
+        let root_layer = match &mut decoded {
+            GroveDBProof::V1(v1) => &mut v1.root_layer,
+            _ => panic!("expected V1"),
+        };
+        let mut tampered_any = false;
+        for (_k, lower) in root_layer.lower_layers.iter_mut() {
+            for (_kk, sublower) in lower.lower_layers.iter_mut() {
+                if let ProofBytes::Merk(b) = &sublower.merk_proof {
+                    // Prepend 32 bytes of zeros so the cidx-shape
+                    // length check passes; the parent-type mismatch
+                    // fires before the hash check.
+                    let mut cidx_b = vec![0u8; 32];
+                    cidx_b.extend_from_slice(b);
+                    sublower.merk_proof = ProofBytes::CountIndexedTree(cidx_b);
+                    tampered_any = true;
+                }
+            }
+        }
+        assert!(tampered_any, "expected a Merk layer to tamper");
+
+        let tampered = bincode::encode_to_vec(&decoded, config).expect("re-encode");
+        let result = GroveDb::verify_query(&tampered, &path_query, grove_version);
+        match result {
+            Err(crate::Error::InvalidProof(_, msg)) => {
+                assert!(
+                    msg.contains("non-cidx parent element")
+                        || msg.contains("CountIndexedTree under"),
+                    "expected non-cidx-parent error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidProof(cidx under non-cidx parent), got: {:?}",
+                other
+            ),
+        }
+    }
 }
