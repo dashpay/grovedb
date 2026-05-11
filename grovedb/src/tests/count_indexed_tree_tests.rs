@@ -6373,7 +6373,9 @@ mod tests {
         match result {
             Err(crate::Error::NotSupported(msg)) => {
                 assert!(
-                    msg.contains("non-empty cidx") || msg.contains("ambiguous"),
+                    msg.contains("EMPTY cidx")
+                        || msg.contains("non-empty cidx")
+                        || msg.contains("ambiguous"),
                     "expected non-empty cidx rejection, got: {msg}"
                 );
             }
@@ -6667,7 +6669,9 @@ mod tests {
         match result {
             Err(crate::Error::NotSupported(msg)) => {
                 assert!(
-                    msg.contains("NON-EMPTY") || msg.contains("ambiguous"),
+                    msg.contains("EMPTY tree")
+                        || msg.contains("NON-EMPTY")
+                        || msg.contains("ambiguous"),
                     "expected non-empty tree rejection, got: {msg}"
                 );
             }
@@ -6934,6 +6938,167 @@ mod tests {
             "expected InvalidInput or InvalidParentLayerPath, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_rejects_non_empty_cidx_on_brand_new_key() {
+        // The non-empty-cidx rejection must fire even when the
+        // item_key has no existing element to overwrite. Previously
+        // the check was gated inside the existing_is_tree branch, so
+        // brand-new keys slipped through and persisted inconsistent
+        // state (parent merk wrote NULL_HASH child roots while the
+        // serialized cidx element preserved the claimed root keys).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Brand-new key (cidx is empty).
+        let non_empty = Element::new_count_indexed_tree_with_root_keys_and_count_value(
+            Some(b"bogus_primary".to_vec()),
+            Some(b"bogus_secondary".to_vec()),
+            5,
+            None,
+        );
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"brand_new_key",
+                non_empty,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("EMPTY cidx") || msg.contains("Non-empty cidx claims"),
+                    "expected empty-cidx rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+
+        // Verify nothing was persisted.
+        let result = db
+            .get(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"brand_new_key",
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(crate::Error::PathKeyNotFound(_))),
+            "brand-new key must not have been persisted, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_rejects_non_empty_tree_on_brand_new_key() {
+        // Same as the cidx case but for plain non-cidx trees with a
+        // non-None root_key.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let non_empty_tree = Element::Tree(Some(b"bogus_root".to_vec()), None);
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"brand_new_tree",
+                non_empty_tree,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("EMPTY tree") || msg.contains("non-None root_key"),
+                    "expected empty-tree rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_rejects_non_empty_cidx_replacing_item() {
+        // Existing key is an ITEM (not a tree), new element is a
+        // non-empty cidx. The unconditional check must fire even when
+        // there's nothing to clean up.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        let non_empty = Element::new_count_indexed_tree_with_root_keys_and_count_value(
+            Some(b"bogus_primary".to_vec()),
+            Some(b"bogus_secondary".to_vec()),
+            5,
+            None,
+        );
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"k",
+                non_empty,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("EMPTY cidx") || msg.contains("Non-empty cidx claims"),
+                    "expected empty-cidx rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+
+        // Original Item is intact.
+        let elem = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"k", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert_eq!(elem, Element::new_item(b"v".to_vec()));
     }
 
     #[test]

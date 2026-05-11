@@ -307,6 +307,63 @@ impl GroveDb {
         //   - Existing is tree, new is non-tree OR empty tree (or
         //     non-cidx tree): ALLOW + cleanup
         //   - Existing is cidx, new is non-empty cidx: REJECT
+        // UNCONDITIONAL new-element validation.
+        //
+        // This API short-circuits to NULL_HASH child roots when
+        // inserting any tree-typed element (the new entry's content
+        // is owned by callers using insert_into_count_indexed_tree
+        // recursively to populate; cidx is the dedicated path). A
+        // non-empty tree or cidx in `item` would claim on-disk data
+        // (root_keys / count > 0) that we then DON'T validate against
+        // — the merk write uses NULL_HASH regardless. The result is a
+        // serialized element whose stored root_keys/count don't match
+        // the actual child-merk root hashes.
+        //
+        // Generic db.insert validates non-empty cidx claims by opening
+        // the existing primary/secondary Merks and comparing root
+        // keys (see grovedb/src/operations/insert/mod.rs). The cidx
+        // dedicated API doesn't perform that on-disk read because it
+        // creates the cidx fresh — so reject non-empty claims here
+        // regardless of whether anything currently exists at item_key.
+        //
+        // Applies to BRAND-NEW keys, replacements of non-tree keys
+        // (e.g., Item → Tree(Some)), and overwrites of trees alike.
+        match item.underlying() {
+            Element::CountIndexedTree(p, s, c, _)
+            | Element::ProvableCountIndexedTree(p, s, c, _) => {
+                if p.is_some() || s.is_some() || *c != 0 {
+                    return Err(Error::NotSupported(
+                        "insert_into_count_indexed_tree only accepts an EMPTY cidx \
+                         element (primary_root_key = None, secondary_root_key = None, \
+                         count_value = 0). Non-empty cidx claims must use generic \
+                         db.insert which validates root keys against on-disk state, \
+                         or insert via this API then populate with subsequent \
+                         insert_into_count_indexed_tree calls"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            Element::Tree(Some(_), _)
+            | Element::SumTree(Some(_), ..)
+            | Element::BigSumTree(Some(_), ..)
+            | Element::CountTree(Some(_), ..)
+            | Element::CountSumTree(Some(_), ..)
+            | Element::ProvableCountTree(Some(_), ..)
+            | Element::ProvableCountSumTree(Some(_), ..) => {
+                return Err(Error::NotSupported(
+                    "insert_into_count_indexed_tree only accepts EMPTY tree elements \
+                     (root_key = None) for tree variants. The dedicated cidx insert \
+                     short-circuits to NULL_HASH child roots; a non-None root_key \
+                     would persist a mismatched chain. Use generic db.insert for \
+                     non-empty tree claims, or insert empty here then populate"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            _ => {}
+        }
+
         let existing_is_tree = existing_item
             .as_ref()
             .map(|e| e.is_any_tree())
@@ -316,47 +373,11 @@ impl GroveDb {
                 existing_item.as_ref().map(|e| e.underlying()),
                 Some(Element::CountIndexedTree(..)) | Some(Element::ProvableCountIndexedTree(..))
             );
-            // Classify the new element to decide allow-vs-reject.
-            let (new_is_cidx, new_is_empty_cidx, new_is_non_empty_non_cidx_tree) =
-                match item.underlying() {
-                    Element::CountIndexedTree(p, s, c, _)
-                    | Element::ProvableCountIndexedTree(p, s, c, _) => {
-                        (true, p.is_none() && s.is_none() && *c == 0, false)
-                    }
-                    Element::Tree(root, _)
-                    | Element::SumTree(root, ..)
-                    | Element::BigSumTree(root, ..)
-                    | Element::CountTree(root, ..)
-                    | Element::CountSumTree(root, ..)
-                    | Element::ProvableCountTree(root, ..)
-                    | Element::ProvableCountSumTree(root, ..) => (false, false, root.is_some()),
-                    _ => (false, false, false),
-                };
 
-            // Reject: cidx → non-empty cidx (storage-pointer ambiguous).
-            if existing_is_cidx && new_is_cidx && !new_is_empty_cidx {
-                return Err(Error::NotSupported(
-                    "overwriting an existing CountIndexedTree with a non-empty cidx via \
-                     insert_into_count_indexed_tree is not supported (the new element's \
-                     root_keys would refer to on-disk data while the cleanup pass also \
-                     clears it; storage-pointer semantics are ambiguous). Delete the \
-                     existing cidx first, then insert the new state"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-            // Reject: non-cidx tree replacement claiming a non-None
-            // root_key. Same ambiguity — the cleanup would clear the
-            // data the new element claims is there.
-            if new_is_non_empty_non_cidx_tree {
-                return Err(Error::NotSupported(
-                    "overwriting an existing tree with a NON-EMPTY new tree via \
-                     insert_into_count_indexed_tree is not supported (storage-pointer \
-                     ambiguous). Delete first, then insert with the new state"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
+            // The unconditional check above already guarantees the new
+            // element is either non-tree OR an empty tree/cidx. Both
+            // are safe to allow with cleanup (existing tree's child
+            // storage cleared; cidx secondary cleared when applicable).
 
             // ALLOW + cleanup. Walk find_subtrees on the existing
             // entry's path and clear each subtree's storage. For cidx
