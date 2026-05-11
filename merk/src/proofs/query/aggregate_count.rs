@@ -192,6 +192,43 @@ where
         );
         Ok((ops, count)).wrap_with_cost(cost)
     }
+
+    /// Walk the tree for an `AggregateCountOnRange` query and return the
+    /// in-range count, **without** producing a proof.
+    ///
+    /// This is the no-proof counterpart of
+    /// [`Self::create_aggregate_count_on_range_proof`]. It performs the same
+    /// classification walk (Contained / Disjoint / Boundary) and reads each
+    /// node's aggregate count directly from the merk, so it is O(log n) in
+    /// the number of distinct keys under the indexed subtree — the same
+    /// complexity as the proof variant but without the proof-op allocations,
+    /// hash recomputations, or serialization round-trip.
+    ///
+    /// The result is **not** independently verifiable: the caller is trusting
+    /// their own merk read path. Callers that need a verifiable count must
+    /// use `prove_aggregate_count_on_range` + `verify_aggregate_count_on_range_proof`.
+    pub fn count_aggregate_on_range(
+        &mut self,
+        inner_range: &QueryItem,
+        tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error> {
+        if !is_provable_count_bearing(tree_type) {
+            return Err(Error::InvalidProofError(format!(
+                "AggregateCountOnRange is only valid against ProvableCountTree or \
+                 ProvableCountSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(OperationCost::default());
+        }
+
+        let mut cost = OperationCost::default();
+        let count = cost_return_on_error!(
+            &mut cost,
+            walk_count_only(self, inner_range, None, None, grove_version)
+        );
+        Ok(count).wrap_with_cost(cost)
+    }
 }
 
 /// Recursive proof emitter. Always called on a non-empty subtree.
@@ -417,6 +454,157 @@ where
 
     if right_emitted {
         ops.push_back(Op::Child);
+    }
+
+    Ok(total).wrap_with_cost(cost)
+}
+
+/// No-proof variant of [`emit_count_proof`]: walks the same classification
+/// path (Contained / Disjoint / Boundary) but only returns the running
+/// in-range count.
+///
+/// At entry, `subtree_lo_excl` / `subtree_hi_excl` are the inherited
+/// exclusive key bounds for the subtree this walker points at (both `None`
+/// at the root call). The walk reads each node's `aggregate_data()` and
+/// each child link's `aggregate_data().as_count_u64()` exactly the same way
+/// the proof emitter does, so the returned count is identical to the
+/// `count` field returned by `create_aggregate_count_on_range_proof`.
+#[cfg(feature = "minimal")]
+fn walk_count_only<S>(
+    walker: &mut RefWalker<'_, S>,
+    range: &QueryItem,
+    subtree_lo_excl: Option<&[u8]>,
+    subtree_hi_excl: Option<&[u8]>,
+    grove_version: &GroveVersion,
+) -> CostResult<u64, Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let mut cost = OperationCost::default();
+
+    // Step 1: classify the current subtree against the inner range.
+    let class = classify_subtree(subtree_lo_excl, subtree_hi_excl, range);
+
+    if matches!(
+        class,
+        SubtreeClassification::Disjoint | SubtreeClassification::Contained
+    ) {
+        // Fully outside → contributes 0; fully inside → contributes the
+        // subtree's stored aggregate count (which already excludes
+        // NonCounted entries because their stored aggregate is 0).
+        if matches!(class, SubtreeClassification::Disjoint) {
+            return Ok(0).wrap_with_cost(cost);
+        }
+        let aggregate = match walker.tree().aggregate_data() {
+            Ok(a) => a,
+            Err(e) => {
+                return Err(Error::InvalidProofError(format!("aggregate_data: {}", e)))
+                    .wrap_with_cost(cost);
+            }
+        };
+        let subtree_count = match provable_count_from_aggregate(aggregate) {
+            Ok(c) => c,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        };
+        return Ok(subtree_count).wrap_with_cost(cost);
+    }
+    // class == Boundary — descend into both children and add own_count.
+
+    // Snapshot what we need from the current node before walking. walk(...)
+    // takes &mut self.tree, so we must drop any existing borrows on
+    // walker.tree() before calling it.
+    let node_key: Vec<u8> = walker.tree().key().to_vec();
+    let node_count: u64 = match walker
+        .tree()
+        .aggregate_data()
+        .map_err(|e| Error::InvalidProofError(format!("aggregate_data: {}", e)))
+    {
+        Ok(data) => match provable_count_from_aggregate(data) {
+            Ok(c) => c,
+            Err(e) => return Err(e).wrap_with_cost(cost),
+        },
+        Err(e) => return Err(e).wrap_with_cost(cost),
+    };
+
+    let left_link_aggregate: u64 = walker
+        .tree()
+        .link(true)
+        .map(|l| l.aggregate_data().as_count_u64())
+        .unwrap_or(0);
+    let right_link_aggregate: u64 = walker
+        .tree()
+        .link(false)
+        .map(|l| l.aggregate_data().as_count_u64())
+        .unwrap_or(0);
+    let left_link_present = walker.tree().link(true).is_some();
+    let right_link_present = walker.tree().link(false).is_some();
+
+    let mut total: u64 = 0;
+
+    // LEFT child.
+    if left_link_present {
+        let left_lo = subtree_lo_excl;
+        let left_hi: Option<&[u8]> = Some(node_key.as_slice());
+        let walked = cost_return_on_error!(
+            &mut cost,
+            walker.walk(
+                true,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+        );
+        let mut left_walker = match walked {
+            Some(lw) => lw,
+            None => {
+                return Err(Error::CorruptedState(
+                    "tree.link(true) was Some but walk(true) returned None",
+                ))
+                .wrap_with_cost(cost)
+            }
+        };
+        let n = cost_return_on_error!(
+            &mut cost,
+            walk_count_only(&mut left_walker, range, left_lo, left_hi, grove_version)
+        );
+        total = total.saturating_add(n);
+    }
+
+    // Current node's own_count: 1 (or 0 for NonCounted) if its key is in
+    // range. Derived as `node_count − left_struct − right_struct` so
+    // NonCounted entries naturally fall out (their stored aggregate is 0).
+    if range.contains(&node_key) {
+        let own_count = node_count
+            .saturating_sub(left_link_aggregate)
+            .saturating_sub(right_link_aggregate);
+        total = total.saturating_add(own_count);
+    }
+
+    // RIGHT child.
+    if right_link_present {
+        let right_lo: Option<&[u8]> = Some(node_key.as_slice());
+        let right_hi = subtree_hi_excl;
+        let walked = cost_return_on_error!(
+            &mut cost,
+            walker.walk(
+                false,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+        );
+        let mut right_walker = match walked {
+            Some(rw) => rw,
+            None => {
+                return Err(Error::CorruptedState(
+                    "tree.link(false) was Some but walk(false) returned None",
+                ))
+                .wrap_with_cost(cost)
+            }
+        };
+        let n = cost_return_on_error!(
+            &mut cost,
+            walk_count_only(&mut right_walker, range, right_lo, right_hi, grove_version)
+        );
+        total = total.saturating_add(n);
     }
 
     Ok(total).wrap_with_cost(cost)
@@ -1107,6 +1295,104 @@ mod tests {
         assert_ne!(
             root, expected_root,
             "tampered count must produce a different reconstructed root hash"
+        );
+    }
+
+    // ---------- no-proof variant: count_aggregate_on_range ----------
+    //
+    // The no-proof entry point must return exactly the same count as the
+    // proof path for every range shape, without producing any proof ops.
+    // These tests cross-check the two paths on the same merk.
+
+    /// Cross-check: assert that `count_aggregate_on_range` and the count
+    /// returned by `prove_aggregate_count_on_range` agree for the given
+    /// range, and that both equal `expected_count`.
+    fn no_proof_matches_prover(
+        merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+        inner_range: QueryItem,
+        expected_count: u64,
+        grove_version: &GroveVersion,
+    ) {
+        let no_proof = merk
+            .count_aggregate_on_range(&inner_range, grove_version)
+            .unwrap()
+            .expect("count_aggregate_on_range should succeed");
+        assert_eq!(
+            no_proof, expected_count,
+            "no-proof variant returned wrong count for range {:?}",
+            inner_range
+        );
+        let (_ops, prover_count) = merk
+            .prove_aggregate_count_on_range(&inner_range, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+        assert_eq!(
+            no_proof, prover_count,
+            "no-proof variant disagrees with prover count for range {:?}",
+            inner_range
+        );
+    }
+
+    #[test]
+    fn no_proof_matches_prover_closed_range_inclusive() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        no_proof_matches_prover(
+            &merk,
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+            10,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_matches_prover_closed_range_exclusive() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        no_proof_matches_prover(&merk, QueryItem::Range(b"c".to_vec()..b"l".to_vec()), 9, v);
+    }
+
+    #[test]
+    fn no_proof_matches_prover_open_range_from() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        no_proof_matches_prover(&merk, QueryItem::RangeFrom(b"c".to_vec()..), 13, v);
+    }
+
+    #[test]
+    fn no_proof_matches_prover_range_below_all_keys() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        no_proof_matches_prover(
+            &merk,
+            QueryItem::RangeInclusive(vec![0x00]..=vec![0x10]),
+            0,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_empty_merk_returns_zero() {
+        let v = GroveVersion::latest();
+        let merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+        let count = merk
+            .count_aggregate_on_range(&QueryItem::Range(b"a".to_vec()..b"z".to_vec()), v)
+            .unwrap()
+            .expect("count_aggregate_on_range on empty merk should succeed");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn no_proof_rejected_on_normal_tree() {
+        let v = GroveVersion::latest();
+        let merk = TempMerk::new(v); // NormalTree
+        let result = merk
+            .count_aggregate_on_range(&QueryItem::Range(b"a".to_vec()..b"z".to_vec()), v)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "expected InvalidProofError on NormalTree, got Ok({:?})",
+            result.ok()
         );
     }
 
