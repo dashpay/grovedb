@@ -745,6 +745,85 @@ where {
         )
     }
 
+    /// Execute an `AggregateCountOnRange` path query without producing a
+    /// proof, returning the in-range count directly.
+    ///
+    /// This is the no-proof counterpart of
+    /// [`Self::prove_query`] +
+    /// [`Self::verify_aggregate_count_query`](GroveDb::verify_aggregate_count_query)
+    /// for `AggregateCountOnRange` queries: it performs the same merk-level
+    /// boundary walk the prover does (using each internal node's stored
+    /// aggregate count to short-circuit Contained / Disjoint subtrees) but
+    /// skips proof generation, serialization, and verification entirely.
+    ///
+    /// `path_query` must satisfy
+    /// [`PathQuery::validate_aggregate_count_on_range`] — a single
+    /// `AggregateCountOnRange(_)` item, no subqueries, no pagination, and an
+    /// inner range that isn't `Key`, `RangeFull`, or another
+    /// `AggregateCountOnRange`. Any other shape is rejected up front with
+    /// `Error::InvalidQuery` before any merk reads happen.
+    ///
+    /// The subtree at `path_query.path` must be a `ProvableCountTree` or
+    /// `ProvableCountSumTree` — the merk-level walk rejects any other tree
+    /// type. If the subtree is missing (path does not resolve), this returns
+    /// the same `PathNotFound` / `PathParentLayerNotFound` errors as other
+    /// path-based reads.
+    ///
+    /// The returned count is **not** independently verifiable — callers are
+    /// trusting their own merk read path. For a verifiable count, use
+    /// [`Self::prove_query`] +
+    /// [`Self::verify_aggregate_count_query`](GroveDb::verify_aggregate_count_query).
+    pub fn query_aggregate_count(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_aggregate_count",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_count_on_range
+        );
+
+        let mut cost = OperationCost::default();
+
+        // Up-front shape validation: same gate the prover and verifier use.
+        // Catches malformed ACOR queries (illegal inner range, ACOR-hidden-in-
+        // subquery, pagination, etc.) before any storage reads.
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query.validate_aggregate_count_on_range().cloned()
+        );
+
+        let tx = TxRef::new(&self.db, transaction);
+
+        // Open the leaf merk and ask it for the count. The merk-level entry
+        // point enforces `tree_type ∈ {ProvableCountTree, ProvableCountSumTree}`
+        // and handles the empty-merk case (returns 0).
+        let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                SubtreePath::from(path_slices.as_slice()),
+                tx.as_ref(),
+                None,
+                grove_version,
+            )
+        );
+
+        let count = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .count_aggregate_on_range(&inner_range, grove_version)
+                .map_err(Error::MerkError)
+        );
+
+        Ok(count).wrap_with_cost(cost)
+    }
+
     /// Retrieves SumItem values that match a regular [`PathQuery`], returning
     /// a `Vec<i64>` of the raw sum values and the number of skipped elements.
     ///

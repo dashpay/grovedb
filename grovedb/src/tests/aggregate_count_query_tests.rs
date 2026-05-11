@@ -1384,4 +1384,319 @@ mod tests {
             ),
         }
     }
+
+    // -------------------------------------------------------------------
+    // Tests for the no-proof variant: GroveDb::query_aggregate_count.
+    //
+    // The no-proof variant must return the same count as the proof
+    // variant for every valid PathQuery shape, but should not need to
+    // produce or verify any proof bytes. These tests mirror the proof
+    // round-trip tests above and additionally cover the failure modes
+    // unique to the no-proof path (missing path, non-provable-count
+    // tree type).
+    // -------------------------------------------------------------------
+
+    /// No-proof helper: build the path-query, call query_aggregate_count,
+    /// assert the returned count matches the expected value AND matches
+    /// what the proof round-trip returns.
+    fn no_proof_matches_proof(
+        db: &crate::tests::TempGroveDb,
+        path: Vec<Vec<u8>>,
+        inner_range: QueryItem,
+        expected_count: u64,
+        grove_version: &GroveVersion,
+    ) {
+        let path_query = PathQuery::new_aggregate_count_on_range(path, inner_range);
+
+        let direct = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, grove_version)
+            .unwrap()
+            .expect("query_aggregate_count should succeed");
+        assert_eq!(
+            direct, expected_count,
+            "no-proof variant returned wrong count"
+        );
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let (_root, proved) =
+            GroveDb::verify_aggregate_count_query(&proof, &path_query, grove_version)
+                .expect("verify should succeed");
+        assert_eq!(
+            direct, proved,
+            "no-proof variant disagrees with proof variant"
+        );
+    }
+
+    #[test]
+    fn no_proof_provable_count_tree_range_inclusive() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+            10,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_provable_count_tree_range_exclusive() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::Range(b"c".to_vec()..b"l".to_vec()),
+            9,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_provable_count_tree_range_from() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeFrom(b"c".to_vec()..),
+            13,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_provable_count_tree_range_after() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeAfter(b"b".to_vec()..),
+            13,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_provable_count_tree_range_to_inclusive() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeToInclusive(..=b"e".to_vec()),
+            5,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_range_disjoint_from_all_keys() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(vec![0x00]..=vec![0x10]),
+            0,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_provable_count_sum_tree_range_inclusive() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_sum_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"cst".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+            10,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_three_layer_path() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_three_layer_provable_count_tree(v);
+        no_proof_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"inner".to_vec()],
+            QueryItem::RangeInclusive(b"b".to_vec()..=b"d".to_vec()),
+            3,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_rejects_invalid_inner_range() {
+        // Same shape check the prover/verifier use: Key inner is invalid for
+        // an aggregate-count-on-range query.
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::Key(b"c".to_vec()),
+        );
+        let err = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect_err("Key inner must be rejected before any storage reads");
+        assert!(
+            matches!(err, crate::Error::InvalidQuery(_)),
+            "expected InvalidQuery, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn no_proof_rejects_against_normal_tree() {
+        // The merk-level entry point gates on
+        // `tree_type ∈ {ProvableCountTree, ProvableCountSumTree}`. A
+        // NormalTree must surface that as a MerkError.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"x",
+            Element::new_item(b"y".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("seed normal tree");
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec()],
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        );
+        let err = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect_err("NormalTree must be rejected by the merk-level entry");
+        // The merk-level error gets wrapped in Error::MerkError; we just
+        // require *some* error rather than asserting on the exact variant
+        // since the merk layer's InvalidProofError formatting is internal.
+        match err {
+            crate::Error::MerkError(_) => {}
+            other => panic!("expected MerkError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn no_proof_uses_provided_transaction() {
+        // Exercise the TransactionArg = Some(&tx) path of query_aggregate_count
+        // and verify the transactional read actually observes uncommitted
+        // state. The base view must NOT see the in-transaction insert.
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+
+        // Sanity check: base view sees 10 keys in [c, l].
+        let base_count = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect("base query should succeed");
+        assert_eq!(base_count, 10, "base view should see 10 keys");
+
+        // Insert a new in-range key ("k2") inside a transaction.
+        let tx = db.start_transaction();
+        db.insert(
+            [TEST_LEAF, b"ct"].as_ref(),
+            b"k2",
+            Element::new_item(b"k2".to_vec()),
+            None,
+            Some(&tx),
+            v,
+        )
+        .unwrap()
+        .expect("transactional insert should succeed");
+
+        // Transactional read must include the uncommitted insert (11).
+        let tx_count = db
+            .grove_db
+            .query_aggregate_count(&path_query, Some(&tx), v)
+            .unwrap()
+            .expect("transactional query should succeed");
+        assert_eq!(
+            tx_count, 11,
+            "transactional view must include uncommitted insert"
+        );
+
+        // Base view must still see 10 — the uncommitted insert is invisible
+        // to non-transactional reads.
+        let base_count_after = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect("base query should succeed after tx insert");
+        assert_eq!(
+            base_count_after, 10,
+            "base view must not see uncommitted insert"
+        );
+    }
+
+    #[test]
+    fn no_proof_path_not_found_returns_error() {
+        // Querying a path whose parent layer doesn't exist must surface
+        // the same path-not-found error other reads produce — exercises
+        // the open_transactional_merk_at_path error arm.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"does-not-exist".to_vec()],
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        );
+        let result = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "querying a non-existent path must fail, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    #[test]
+    fn no_proof_empty_provable_count_tree_returns_zero() {
+        // An empty provable-count tree should walk in O(1) and return 0
+        // — no proof generation, no merk traversal beyond the root open.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"empty",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty provable count tree");
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"empty".to_vec()],
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        );
+        let count = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect("query_aggregate_count on empty tree should succeed");
+        assert_eq!(count, 0, "empty tree must return 0");
+    }
 }
