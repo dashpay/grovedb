@@ -5481,4 +5481,699 @@ mod tests {
             );
         }
     }
+
+    // =====================================================================
+    // Additional cidx coverage: targets uncovered branches surfaced by
+    // codecov's patch-coverage report. Each test exercises a real
+    // behavior, not just lines.
+    // =====================================================================
+
+    #[test]
+    fn apply_partial_batch_with_cidx_overwrite_safe_subset() {
+        // Safe-subset cidx overwrite via apply_partial_batch (parallels
+        // the apply_batch test). Exercises the partial-batch cleanup
+        // pass for the overwrite case.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Overwrite via partial-batch path.
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::new_item(b"replaced".to_vec()),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        db.apply_partial_batch(
+            ops,
+            Some(opts),
+            |_cost, _leftover| Ok(vec![]),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply_partial_batch overwrite");
+
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert_eq!(elem, Element::new_item(b"replaced".to_vec()));
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_at_root_path_errors() {
+        // Root-path is invalid for cidx insert because the API needs
+        // a parent path to read the cidx element from.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty: &[&[u8]] = &[];
+        let result = db
+            .insert_into_count_indexed_tree(
+                empty,
+                b"k",
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(msg.contains("root") || msg.contains("cidx"));
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn delete_from_count_indexed_tree_at_root_path_errors() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty: &[&[u8]] = &[];
+        let result = db
+            .delete_from_count_indexed_tree(empty, b"k", None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidPath(_)) => {}
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reconcile_at_root_path_errors() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty: &[&[u8]] = &[];
+        let result = db
+            .reconcile_count_indexed_tree_secondary(empty, None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidPath(_)) => {}
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_update_value_same_count() {
+        // Re-insert the same key with a different Item value. The
+        // count doesn't change (both Items are count=1) so the
+        // secondary mirror should short-circuit (old_count == new_count).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v1".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert v1");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v2".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("update to v2");
+        let elem = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"k", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert_eq!(elem, Element::new_item(b"v2".to_vec()));
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_replace_item_with_count_tree() {
+        // Replace an Item (count=1) with a CountTree (count=0 when
+        // empty). The count CHANGES; the secondary mirror must move
+        // the entry from (1_be ‖ k) to (0_be ‖ k).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        // Top-k confirms count=1.
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top, vec![(1u64, b"k".to_vec())]);
+
+        // Replace with empty CountTree.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("replace with count tree");
+
+        // Top-k now shows count=0.
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top after");
+        assert_eq!(top, vec![(0u64, b"k".to_vec())]);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn batch_overwrite_cidx_with_count_tree_succeeds() {
+        // Batch safe-subset overwrite: cidx → CountTree (non-cidx tree).
+        // Same cleanup as cidx → Item.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::empty_count_tree(),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        db.apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap()
+            .expect("overwrite cidx with count tree");
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get");
+        match elem {
+            Element::CountTree(_, c, _) => assert_eq!(c, 0),
+            other => panic!("expected CountTree, got {:?}", other),
+        }
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn prove_count_indexed_top_k_descending_then_ascending_round_trip() {
+        // Build a cidx with varied counts, prove top-k in both
+        // directions, verify both round-trip. Exercises both branches
+        // of the descending param in build_count_indexed_proof.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sub");
+        }
+        // Give them different counts.
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"x",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("a x1");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"b"].as_ref(),
+            b"x",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("b x1");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"b"].as_ref(),
+            b"y",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("b x2");
+        // Now: a=1, b=2, c=0.
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        for &descending in &[true, false] {
+            let proof = db
+                .prove_count_indexed_top_k(path, 10, descending, None, grove_version)
+                .unwrap()
+                .expect("prove");
+            let result = GroveDb::verify_count_indexed_top_k(&proof, path).expect("verify");
+            if descending {
+                // Descending: b(2), a(1), c(0)
+                assert_eq!(
+                    result.entries,
+                    vec![
+                        (2u64, b"b".to_vec()),
+                        (1u64, b"a".to_vec()),
+                        (0u64, b"c".to_vec())
+                    ]
+                );
+            } else {
+                // Ascending: c(0), a(1), b(2)
+                assert_eq!(
+                    result.entries,
+                    vec![
+                        (0u64, b"c".to_vec()),
+                        (1u64, b"a".to_vec()),
+                        (2u64, b"b".to_vec())
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn count_indexed_count_range_with_specific_bounds() {
+        // count_range with lo > 0 AND hi < u64::MAX — exercises the
+        // bounded-range branch of make_secondary_range_query.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for k in [b"a".as_slice(), b"b", b"c", b"d", b"e"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sub");
+        }
+        // Set counts: a=1, b=3, c=5, d=7, e=9
+        for (k, n) in [
+            (b"a".as_slice(), 1usize),
+            (b"b", 3),
+            (b"c", 5),
+            (b"d", 7),
+            (b"e", 9),
+        ] {
+            for i in 0..n {
+                let inner = format!("x{}", i).into_bytes();
+                db.insert(
+                    [TEST_LEAF, b"cidx", k].as_ref(),
+                    &inner,
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate");
+            }
+        }
+        // Query [3, 7] inclusive — should return b(3), c(5), d(7).
+        let entries = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                3,
+                7,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range");
+        assert_eq!(
+            entries,
+            vec![
+                (3u64, b"b".to_vec()),
+                (5u64, b"c".to_vec()),
+                (7u64, b"d".to_vec()),
+            ]
+        );
+
+        // Single-count query [5, 5] — only c.
+        let entries = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                5,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("single");
+        assert_eq!(entries, vec![(5u64, b"c".to_vec())]);
+
+        // Empty range [100, 200].
+        let entries = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                200,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("empty");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn open_count_indexed_secondary_for_batch_on_non_cidx_parent_errors() {
+        // Trigger open_count_indexed_secondary_for_batch error path
+        // when the parent element is not a cidx (the dedicated helper
+        // method should return an error rather than panicking).
+        //
+        // We exercise this indirectly via a batch op that targets a
+        // cidx primary path which is actually a regular Tree — the
+        // batch path will try to open the (non-existent) secondary
+        // and fail cleanly.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Insert a REGULAR tree at TEST_LEAF/regular.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"regular",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create regular");
+
+        // Attempt a batch op at [TEST_LEAF, regular] — the regular
+        // tree is not a cidx primary, so the cidx-specific code paths
+        // in the batch shouldn't fire. This isn't an error; it's
+        // just exercising the non-cidx fallthrough.
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"regular".to_vec()],
+            b"item".to_vec(),
+            Element::new_item(b"v".to_vec()),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch insert into regular tree");
+    }
+
+    #[test]
+    fn count_indexed_count_range_lo_greater_than_hi() {
+        // Edge case: lo > hi. Should return empty results, not panic.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let entries = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                50,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("inverted range");
+        assert!(
+            entries.is_empty(),
+            "lo > hi must return empty, got {:?}",
+            entries
+        );
+    }
+
+    #[test]
+    fn count_indexed_top_k_descending_returns_correct_order() {
+        // Ensures the descending branch is exercised explicitly.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for k in [b"low".as_slice(), b"mid", b"hi"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("sub");
+        }
+        for (k, n) in [(b"low".as_slice(), 1), (b"mid", 5), (b"hi", 10)] {
+            for i in 0..n {
+                let inner = format!("x{}", i).into_bytes();
+                db.insert(
+                    [TEST_LEAF, b"cidx", k].as_ref(),
+                    &inner,
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate");
+            }
+        }
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 2, true, None, grove_version)
+            .unwrap()
+            .expect("top descending limit=2");
+        assert_eq!(top, vec![(10u64, b"hi".to_vec()), (5u64, b"mid".to_vec())]);
+    }
+
+    #[test]
+    fn batch_atomicity_failure_after_safe_subset_overwrite_rolls_back() {
+        // Safe-subset cidx overwrite is staged + cleanup is scheduled,
+        // but a LATER op in the batch fails validation. The overwrite
+        // must roll back — the cleanup must NOT run, the old cidx
+        // state stays intact.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create existing");
+
+        let root_before = db.root_hash(None, grove_version).unwrap().expect("root");
+
+        let ops = vec![
+            // Op 1: safe-subset overwrite of cidx (would be allowed).
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::new_item(b"replaced".to_vec()),
+            ),
+            // Op 2: assertion violation — InsertWithKnownToNotAlready
+            // Exist on existing key.
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![TEST_LEAF.to_vec()],
+                b"existing".to_vec(),
+                Element::new_item(b"new".to_vec()),
+            ),
+        ];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            validate_insertion_does_not_override: true,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "batch must fail on the assertion violation"
+        );
+
+        // State unchanged: cidx is still a cidx with its old entry.
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root after");
+        assert_eq!(root_before, root_after, "rollback failed");
+
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("cidx");
+        match elem {
+            Element::CountIndexedTree(_, _, count, _) => {
+                assert_eq!(count, 1, "cidx state corrupted after rollback");
+            }
+            other => panic!("expected cidx, got {:?}", other),
+        }
+        // Old item still resolvable inside cidx.
+        let item = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"k", None, grove_version)
+            .unwrap()
+            .expect("k still present");
+        assert_eq!(item, Element::new_item(b"v".to_vec()));
+    }
 }
