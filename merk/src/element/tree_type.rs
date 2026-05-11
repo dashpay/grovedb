@@ -416,4 +416,125 @@ mod tests {
             other => panic!("expected ProvableCountedSummedMerkNode, got {:?}", other),
         }
     }
+
+    // =====================================================================
+    // Coverage: cidx arms in ElementTreeTypeExtensions methods
+    // (L108-109, 111-112, 144-146, 174-175, 202, 204-205, 233, 235).
+    // =====================================================================
+
+    #[test]
+    fn tree_type_extensions_cover_count_indexed_tree_arms() {
+        // Build CountIndexedTree variants and verify every trait
+        // method returns the expected cidx-shaped value.
+        let primary_root = Some(b"primary_root".to_vec());
+        let secondary_root = Some(b"secondary_root".to_vec());
+        let flags = Some(vec![9, 9]);
+        let count_value: u64 = 42;
+
+        let cidx = Element::CountIndexedTree(
+            primary_root.clone(),
+            secondary_root.clone(),
+            count_value,
+            flags.clone(),
+        );
+
+        // tree_type()
+        assert_eq!(cidx.tree_type(), Some(TreeType::CountIndexedTree));
+
+        // maybe_tree_type()
+        assert_eq!(
+            cidx.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::CountIndexedTree)
+        );
+
+        // root_key_and_tree_type() — borrowed primary_root_key
+        let (rk, tt) = cidx.root_key_and_tree_type().expect("Some");
+        assert_eq!(*rk, primary_root);
+        assert_eq!(tt, TreeType::CountIndexedTree);
+
+        // root_key_and_tree_type_owned() — owned primary_root_key
+        let (rk_owned, tt) = cidx.clone().root_key_and_tree_type_owned().expect("Some");
+        assert_eq!(rk_owned, primary_root);
+        assert_eq!(tt, TreeType::CountIndexedTree);
+
+        // tree_flags_and_type()
+        let (f, tt) = cidx.tree_flags_and_type().expect("Some");
+        assert_eq!(*f, flags);
+        assert_eq!(tt, TreeType::CountIndexedTree);
+
+        // tree_feature_type() — CountedMerkNode with the cidx's
+        // count_value.
+        match cidx.tree_feature_type().expect("Some") {
+            CountedMerkNode(c) => assert_eq!(c, count_value),
+            other => panic!("expected CountedMerkNode, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tree_type_extensions_cover_provable_count_indexed_tree_arms() {
+        // Mirror of the previous test for ProvableCountIndexedTree.
+        let primary_root = Some(b"primary_root".to_vec());
+        let secondary_root = Some(b"secondary_root".to_vec());
+        let flags = Some(vec![3, 3]);
+        let count_value: u64 = 99;
+
+        let pcidx = Element::ProvableCountIndexedTree(
+            primary_root.clone(),
+            secondary_root.clone(),
+            count_value,
+            flags.clone(),
+        );
+
+        assert_eq!(pcidx.tree_type(), Some(TreeType::ProvableCountIndexedTree));
+        assert_eq!(
+            pcidx.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::ProvableCountIndexedTree)
+        );
+
+        let (rk, tt) = pcidx.root_key_and_tree_type().expect("Some");
+        assert_eq!(*rk, primary_root);
+        assert_eq!(tt, TreeType::ProvableCountIndexedTree);
+
+        let (rk_owned, tt) = pcidx.clone().root_key_and_tree_type_owned().expect("Some");
+        assert_eq!(rk_owned, primary_root);
+        assert_eq!(tt, TreeType::ProvableCountIndexedTree);
+
+        let (f, tt) = pcidx.tree_flags_and_type().expect("Some");
+        assert_eq!(*f, flags);
+        assert_eq!(tt, TreeType::ProvableCountIndexedTree);
+
+        match pcidx.tree_feature_type().expect("Some") {
+            TreeFeatureType::ProvableCountedMerkNode(c) => assert_eq!(c, count_value),
+            other => panic!("expected ProvableCountedMerkNode, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tree_type_extensions_look_through_non_counted_wrapping_cidx() {
+        // NonCounted-wrapped cidx must delegate every trait method to
+        // the inner cidx (look-through behavior at L114, 148, 176, 207,
+        // 237 / 117, 149, 178, 208, 239).
+        let primary_root = Some(b"primary_root".to_vec());
+        let secondary_root = Some(b"secondary_root".to_vec());
+        let count_value: u64 = 17;
+
+        let inner = Element::CountIndexedTree(
+            primary_root.clone(),
+            secondary_root.clone(),
+            count_value,
+            None,
+        );
+        let wrapped = Element::new_non_counted(inner).expect("wrap");
+
+        assert_eq!(wrapped.tree_type(), Some(TreeType::CountIndexedTree));
+        assert_eq!(
+            wrapped.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::CountIndexedTree)
+        );
+        let (rk, tt) = wrapped.root_key_and_tree_type().expect("Some");
+        assert_eq!(*rk, primary_root);
+        assert_eq!(tt, TreeType::CountIndexedTree);
+        // tree_feature_type delegates through the wrapper.
+        assert!(wrapped.tree_feature_type().is_some());
+    }
 }

@@ -1525,4 +1525,59 @@ mod test {
         assert_eq!(tree.child(true).expect("expected child").key(), &[31]);
         assert_eq!(tree.child(false).expect("expected child").key(), &[79]);
     }
+
+    // =====================================================================
+    // Coverage: Op::Debug formatters for cidx-specific variants
+    // (merk/src/tree/ops.rs:107-122).
+    // =====================================================================
+
+    #[test]
+    fn op_debug_formatters_cover_put_layered_count_indexed_reference() {
+        // Constructs a PutLayeredCountIndexedReference op and formats
+        // it through fmt::Debug; verifies the rendered string
+        // mentions the cidx-specific bits.
+        use crate::CryptoHash;
+        use crate::TreeFeatureType::CountedMerkNode;
+
+        let primary: CryptoHash = [0x11; 32];
+        let secondary: CryptoHash = [0x22; 32];
+        let op = Op::PutLayeredCountIndexedReference(
+            b"value".to_vec(),
+            42u32,
+            primary,
+            secondary,
+            CountedMerkNode(7),
+        );
+        let rendered = format!("{op:?}");
+        assert!(
+            rendered.contains("Put Layered Count-Indexed Reference"),
+            "expected Put Layered Count-Indexed Reference debug, got: {rendered}"
+        );
+        assert!(rendered.contains("primary="), "expected primary= label");
+        assert!(rendered.contains("secondary="), "expected secondary= label");
+    }
+
+    #[test]
+    fn op_debug_formatters_cover_replace_layered_count_indexed_reference() {
+        // Mirror of the previous test for the Replace variant.
+        use crate::CryptoHash;
+        use crate::TreeFeatureType::ProvableCountedMerkNode;
+
+        let primary: CryptoHash = [0x33; 32];
+        let secondary: CryptoHash = [0x44; 32];
+        let op = Op::ReplaceLayeredCountIndexedReference(
+            b"new_value".to_vec(),
+            99u32,
+            primary,
+            secondary,
+            ProvableCountedMerkNode(123),
+        );
+        let rendered = format!("{op:?}");
+        assert!(
+            rendered.contains("Replace Layered Count-Indexed Reference"),
+            "expected Replace Layered Count-Indexed Reference debug, got: {rendered}"
+        );
+        assert!(rendered.contains("primary="), "expected primary= label");
+        assert!(rendered.contains("secondary="), "expected secondary= label");
+    }
 }
