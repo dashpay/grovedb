@@ -9567,4 +9567,416 @@ mod tests {
         assert_eq!(top_outer.len(), 1);
         assert_eq!(top_outer[0].1, b"middle".to_vec());
     }
+
+    // =====================================================================
+    // Additional coverage for V1 proof / cidx empty-terminal / verify
+    // edge cases (proof/verify.rs).
+    // =====================================================================
+
+    #[test]
+    fn v1_proof_round_trips_for_empty_cidx_terminal_query() {
+        // Coverage for proof/verify.rs's empty-cidx terminal check
+        // (the `is_empty_cidx` block using
+        // `combine_hash_three(H(value), NULL_HASH, NULL_HASH)`). Build
+        // a query that targets an empty cidx as a terminal element
+        // (no subquery into it) and verify the proof roundtrips.
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::query::QueryItem;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"empty_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create empty cidx");
+
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: grovedb_merk::proofs::Query {
+                    items: vec![QueryItem::Key(b"empty_cidx".to_vec())],
+                    default_subquery_branch: grovedb_merk::proofs::query::SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove empty cidx terminal");
+        let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect("verify empty cidx terminal");
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, grove_version).unwrap().expect("root")
+        );
+        assert_eq!(results.len(), 1, "expected exactly the empty cidx element");
+    }
+
+    #[test]
+    fn v1_proof_round_trips_for_provable_empty_cidx_terminal_query() {
+        // Same as the previous test but for ProvableCountIndexedTree.
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::query::QueryItem;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"empty_prov_cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create empty provable cidx");
+
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: grovedb_merk::proofs::Query {
+                    items: vec![QueryItem::Key(b"empty_prov_cidx".to_vec())],
+                    default_subquery_branch: grovedb_merk::proofs::query::SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove empty provable cidx terminal");
+        let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect("verify empty provable cidx terminal");
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, grove_version).unwrap().expect("root")
+        );
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn v1_proof_query_with_limit_terminates_early_at_cidx_subquery() {
+        // Exercise the `if limit_left == &Some(0) { break; }` branch
+        // in the V1 cidx subquery handler (proof/verify.rs:521 and
+        // 604). Set a limit that triggers early termination during
+        // cidx descent.
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::query::{QueryItem, SubqueryBranch};
+        use grovedb_merk::proofs::Query as MerkQuery;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx");
+        for k in [b"a".as_slice(), b"b", b"c", b"d", b"e"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+
+        let mut inner = MerkQuery::new();
+        inner.insert_all();
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: MerkQuery {
+                    items: vec![QueryItem::Key(b"cidx".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: Some(2),
+                offset: None,
+            },
+        };
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove with limit");
+        let (_root, results) =
+            GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify with limit");
+        assert_eq!(results.len(), 2, "limit=2 must yield exactly 2 results");
+    }
+
+    #[test]
+    fn count_indexed_top_k_descending_returns_largest_counts_first() {
+        // Cover the descending top-k secondary scan path
+        // (count_indexed_tree.rs around 1055-1070). Build cidx with
+        // varied counts; descending order must return them
+        // largest-first.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for (k, c) in [
+            (b"a".as_slice(), 5u64),
+            (b"b", 12),
+            (b"c", 1),
+            (b"d", 99),
+            (b"e", 42),
+        ] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let top3 = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("top_k desc");
+        assert_eq!(top3.len(), 3);
+        assert_eq!(top3[0], (99, b"d".to_vec()));
+        assert_eq!(top3[1], (42, b"e".to_vec()));
+        assert_eq!(top3[2], (12, b"b".to_vec()));
+    }
+
+    #[test]
+    fn count_indexed_count_range_filters_to_inclusive_band() {
+        // Exercise count_indexed_count_range with concrete lo/hi
+        // bounds (not the lo=0, hi=u64::MAX case already tested).
+        // This covers the `Some(upper_bytes)` branch of the range
+        // builder at count_indexed_tree.rs:1144-1145.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for (k, c) in [
+            (b"a".as_slice(), 5u64),
+            (b"b", 10),
+            (b"c", 15),
+            (b"d", 20),
+            (b"e", 25),
+        ] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        // Range [10, 20] inclusive — should yield b, c, d.
+        let range = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                10,
+                20,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range");
+        assert_eq!(range.len(), 3);
+        assert_eq!(range[0], (10, b"b".to_vec()));
+        assert_eq!(range[1], (15, b"c".to_vec()));
+        assert_eq!(range[2], (20, b"d".to_vec()));
+    }
+
+    #[test]
+    fn count_indexed_count_range_with_limit_cuts_short() {
+        // Exercise the limit-respecting branch in
+        // count_indexed_count_range at 1156 (`results.len() < limit`).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for (k, c) in [
+            (b"a".as_slice(), 5u64),
+            (b"b", 10),
+            (b"c", 15),
+            (b"d", 20),
+            (b"e", 25),
+        ] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        // Range [0, u64::MAX] with limit 2 → only first 2 entries.
+        let range = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                false,
+                2,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range");
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0], (5, b"a".to_vec()));
+        assert_eq!(range[1], (10, b"b".to_vec()));
+    }
+
+    #[test]
+    fn cidx_top_k_with_k_larger_than_entries_returns_all() {
+        // Exercise the "loop ends because iterator returns None" path
+        // (count_indexed_tree.rs:1068).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(top.len(), 2, "k=100 > 2 entries: returns all 2");
+    }
+
+    #[test]
+    fn batch_insert_non_counted_wrapped_into_count_indexed_tree() {
+        // Exercise the wrapper-element path in cidx batch insert
+        // (batch/mod.rs:2750-2807 area). A NonCounted-wrapped CountTree
+        // is permitted via batch_op_into; the count flag must be
+        // preserved during the H1-A propagation.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Insert a NonCounted-wrapped CountTree under the cidx primary.
+        // The cidx primary stores count-bearing elements; NonCounted
+        // wraps suppress count propagation TO this cidx but the
+        // inner CountTree is still legit.
+        let inner = Element::empty_count_tree();
+        let wrapped = Element::new_non_counted(inner).expect("wrap");
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            b"wrapped".to_vec(),
+            wrapped,
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("apply batch with wrapped cidx insert");
+
+        // verify_grovedb walks the cidx layer's H1-A chain.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(
+            issues.is_empty(),
+            "wrapped-element batch insert must produce no issues: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
 }
