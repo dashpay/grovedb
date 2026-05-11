@@ -9979,4 +9979,255 @@ mod tests {
             issues.keys().collect::<Vec<_>>()
         );
     }
+
+    // =====================================================================
+    // Coverage for batch/mod.rs cidx-specific patch lines.
+    // =====================================================================
+
+    #[test]
+    fn batch_cidx_safe_subset_overwrite_with_write_under_cidx_rejected() {
+        // Coverage for batch/mod.rs:2218-2226 — a batch that both
+        // safe-subset-overwrites a cidx AND writes under that same
+        // cidx is rejected (the post-apply cleanup would silently
+        // clear the descendant write). The descendant write must
+        // already exist in `ops_by_qualified_paths` by the time the
+        // cidx overwrite is processed; in the existing cidx primary
+        // we ALSO have an existing descendant entry, and use it to
+        // anchor the descendant op being an update (which routes via
+        // the existing-tree path so the descendant op is registered
+        // before the safe-subset overwrite is decided).
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"existing",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Put the descendant write FIRST in the ops list so it
+        // populates ops_by_qualified_paths before the cidx overwrite
+        // is processed. Then the cidx overwrite's consistency scan at
+        // L2214-2227 finds the descendant and rejects.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"existing".to_vec(),
+                Element::new_item(b"updated".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::new_item(b"replaced".to_vec()),
+            ),
+        ];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        // The check at L2218 is one of several inconsistency rejections
+        // possible for this batch shape. Accept ANY InvalidBatchOperation
+        // (the precise rejection ordering is an implementation detail);
+        // what matters is the batch is REJECTED, not silently misapplied.
+        assert!(
+            matches!(result, Err(crate::Error::InvalidBatchOperation(_)))
+                || matches!(result, Err(crate::Error::NotSupported(_))),
+            "expected batch rejection (InvalidBatchOperation or NotSupported), got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn batch_insert_if_not_exists_for_existing_cidx_errors() {
+        // Coverage for batch/mod.rs:2370-2377 — InsertIfNotExists with
+        // a cidx element at a key where a cidx already exists must
+        // return InvalidBatchOperation when validate_insertion_does_not_override
+        // is true.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create existing cidx");
+
+        let ops = vec![QualifiedGroveDbOp::insert_if_not_exists_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::empty_count_indexed_tree(),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override: true,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidBatchOperation(msg)) => {
+                assert!(
+                    msg.contains("already exists") || msg.contains("CountIndexedTree"),
+                    "expected already-exists error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidBatchOperation(already exists), got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn batch_insert_multiple_items_into_same_cidx_primary_propagates_correctly() {
+        // Coverage for batch/mod.rs:3252-3267 — when a single batch
+        // contains multiple ops under the SAME cidx primary, the
+        // propagation phase processes them iteratively. The second
+        // iteration's propagation visits the cidx primary's level
+        // with an EXISTING `ReplaceTreeRootKey` op already in
+        // ops_at_level_above, and must upgrade it to
+        // `ReplaceCountIndexedTreeRootKeys`.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // All-fresh inserts under cidx primary; multiple ops in same
+        // batch force propagation to visit the cidx primary level
+        // iteratively.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"a".to_vec(),
+                Element::new_count_tree_with_flags_and_count_value(None, 100, None),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"b".to_vec(),
+                Element::new_count_tree_with_flags_and_count_value(None, 50, None),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"c".to_vec(),
+                Element::new_count_tree_with_flags_and_count_value(None, 25, None),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch with multiple cidx-primary ops");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0], (100, b"a".to_vec()));
+        assert_eq!(top[1], (50, b"b".to_vec()));
+        assert_eq!(top[2], (25, b"c".to_vec()));
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "batch produced drift: {:?}", issues);
+    }
+
+    #[test]
+    fn apply_partial_batch_with_cidx_mirror_secondary_open() {
+        // Coverage for batch/mod.rs:4902-4912 and 4987-4997 (closures
+        // that pass a primary_path into open_count_indexed_secondary_for_batch
+        // during partial-batch processing).
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            b"a".to_vec(),
+            Element::new_count_tree_with_flags_and_count_value(None, 7, None),
+        )];
+        db.apply_partial_batch(
+            ops,
+            None,
+            |_cost, _leftover| Ok(vec![]),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply_partial_batch with cidx mirror");
+
+        let initial = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            b"b".to_vec(),
+            Element::new_count_tree_with_flags_and_count_value(None, 11, None),
+        )];
+        db.apply_partial_batch(
+            initial,
+            None,
+            |_cost, _leftover| {
+                Ok(vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                    b"c".to_vec(),
+                    Element::new_count_tree_with_flags_and_count_value(None, 3, None),
+                )])
+            },
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply_partial_batch + add-on with cidx mirror");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0], (11, b"b".to_vec()));
+        assert_eq!(top[1], (7, b"a".to_vec()));
+        assert_eq!(top[2], (3, b"c".to_vec()));
+    }
 }
