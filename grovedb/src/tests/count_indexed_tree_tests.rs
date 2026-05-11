@@ -10563,4 +10563,269 @@ mod tests {
             ),
         }
     }
+
+    // =====================================================================
+    // Additional coverage: provable cidx prove/verify + execute_single_key
+    // error branches + batch+propagation chains.
+    // =====================================================================
+
+    #[test]
+    fn prove_count_indexed_top_k_for_provable_cidx_round_trips() {
+        // Covers the `ProvableCountIndexedTree(_, secondary, ..)` arm
+        // in read_count_indexed_secondary_root_key_for_proof
+        // (proof/count_indexed.rs:380). Build a Provable cidx with
+        // entries, prove top-k, verify.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"prov_cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create provable cidx");
+        for (k, c) in [(b"a".as_slice(), 5u64), (b"b", 12), (b"c", 1)] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"prov_cidx"].as_ref(),
+                k,
+                Element::new_count_tree_with_flags_and_count_value(None, c, None),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let proof = db
+            .prove_count_indexed_top_k(
+                [TEST_LEAF, b"prov_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let path: &[&[u8]] = &[TEST_LEAF, b"prov_cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path, 10, true)
+            .expect("verify provable cidx top_k");
+        assert_eq!(result.entries.len(), 3);
+        assert_eq!(result.entries[0], (12, b"b".to_vec()));
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_with_layer_proof_replaced_by_garbage() {
+        // Coverage for proof/count_indexed.rs:638-642 — when
+        // execute_single_key_proof receives layer bytes that can't be
+        // decoded as a valid Merk proof, it returns CorruptedData.
+        use crate::operations::proof::count_indexed::CountIndexedRangeProof;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (mut envelope, _): (CountIndexedRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode");
+        envelope.layer_proofs[0] = vec![0xFFu8; 64];
+        let tampered =
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).expect("re-encode");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&tampered, path, 10, true);
+        assert!(
+            matches!(result, Err(crate::Error::CorruptedData(_))),
+            "garbage layer proof must produce CorruptedData, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn cidx_batch_pipeline_exercises_propagation_and_query() {
+        // Comprehensive batch+query pipeline: 6 inserts via apply_batch
+        // followed by top-k + verify roundtrip.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let ops: Vec<_> = [
+            (b"k1".to_vec(), 7u64),
+            (b"k2".to_vec(), 99),
+            (b"k3".to_vec(), 3),
+            (b"k4".to_vec(), 22),
+            (b"k5".to_vec(), 11),
+            (b"k6".to_vec(), 55),
+        ]
+        .into_iter()
+        .map(|(k, c)| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                k,
+                Element::new_count_tree_with_flags_and_count_value(None, c, None),
+            )
+        })
+        .collect();
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch with 6 cidx inserts");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0], (99, b"k2".to_vec()));
+
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path, 3, true).expect("verify");
+        assert_eq!(result.entries.len(), 3);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "batch produced drift: {:?}", issues);
+    }
+
+    #[test]
+    fn cidx_batch_with_provable_cidx_propagation_round_trip() {
+        // Provable cidx variant of the comprehensive batch test.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"prov_cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create provable cidx");
+
+        let ops: Vec<_> = [
+            (b"x".to_vec(), 30u64),
+            (b"y".to_vec(), 60),
+            (b"z".to_vec(), 15),
+        ]
+        .into_iter()
+        .map(|(k, c)| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"prov_cidx".to_vec()],
+                k,
+                Element::new_count_tree_with_flags_and_count_value(None, c, None),
+            )
+        })
+        .collect();
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch with provable cidx inserts");
+
+        let top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"prov_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0], (60, b"y".to_vec()));
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn cidx_count_range_with_intermediate_count_filter() {
+        // Range that filters out entries on both ends.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for (k, c) in [
+            (b"a".as_slice(), 1u64),
+            (b"b", 50),
+            (b"c", 99),
+            (b"d", 150),
+            (b"e", 200),
+        ] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::new_count_tree_with_flags_and_count_value(None, c, None),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let range = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                50,
+                100,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range");
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0], (50, b"b".to_vec()));
+        assert_eq!(range[1], (99, b"c".to_vec()));
+    }
 }
