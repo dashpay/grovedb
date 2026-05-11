@@ -1440,6 +1440,48 @@ mod tests {
     }
 
     #[test]
+    fn no_proof_uses_provided_transaction() {
+        // Exercise the TransactionArg = Some(&tx) path of query_aggregate_count.
+        // A transactional read sees the committed state inside the same
+        // transaction.
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+        let tx = db.start_transaction();
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let count = db
+            .grove_db
+            .query_aggregate_count(&path_query, Some(&tx), v)
+            .unwrap()
+            .expect("query_aggregate_count with transaction should succeed");
+        assert_eq!(count, 10);
+    }
+
+    #[test]
+    fn no_proof_path_not_found_returns_error() {
+        // Querying a path whose parent layer doesn't exist must surface
+        // the same path-not-found error other reads produce — exercises
+        // the open_transactional_merk_at_path error arm.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"does-not-exist".to_vec()],
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        );
+        let result = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "querying a non-existent path must fail, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    #[test]
     fn no_proof_empty_provable_count_tree_returns_zero() {
         // An empty provable-count tree should walk in O(1) and return 0
         // — no proof generation, no merk traversal beyond the root open.

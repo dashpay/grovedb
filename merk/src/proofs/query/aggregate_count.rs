@@ -15,7 +15,9 @@
 #[cfg(feature = "minimal")]
 use std::collections::LinkedList;
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 
@@ -204,30 +206,21 @@ where
     /// complexity as the proof variant but without the proof-op allocations,
     /// hash recomputations, or serialization round-trip.
     ///
+    /// The caller (`Merk::count_aggregate_on_range`) is expected to have
+    /// already validated `tree_type` is `ProvableCountTree` or
+    /// `ProvableCountSumTree`; the per-node `provable_count_from_aggregate`
+    /// check inside the walk surfaces any disagreement between the declared
+    /// tree type and the in-memory aggregate.
+    ///
     /// The result is **not** independently verifiable: the caller is trusting
     /// their own merk read path. Callers that need a verifiable count must
     /// use `prove_aggregate_count_on_range` + `verify_aggregate_count_on_range_proof`.
     pub fn count_aggregate_on_range(
         &mut self,
         inner_range: &QueryItem,
-        tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<u64, Error> {
-        if !is_provable_count_bearing(tree_type) {
-            return Err(Error::InvalidProofError(format!(
-                "AggregateCountOnRange is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
-                tree_type
-            )))
-            .wrap_with_cost(OperationCost::default());
-        }
-
-        let mut cost = OperationCost::default();
-        let count = cost_return_on_error!(
-            &mut cost,
-            walk_count_only(self, inner_range, None, None, grove_version)
-        );
-        Ok(count).wrap_with_cost(cost)
+        walk_count_only(self, inner_range, None, None, grove_version)
     }
 }
 
@@ -459,6 +452,21 @@ where
     Ok(total).wrap_with_cost(cost)
 }
 
+/// Read the provable-count aggregate off the walker's current tree node.
+/// Shared error-mapping helper used by [`walk_count_only`] at both the
+/// Contained-leaf and Boundary positions.
+#[cfg(feature = "minimal")]
+fn provable_count_from_walker<S>(walker: &RefWalker<'_, S>) -> Result<u64, Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let aggregate = walker
+        .tree()
+        .aggregate_data()
+        .map_err(|e| Error::InvalidProofError(format!("aggregate_data: {}", e)))?;
+    provable_count_from_aggregate(aggregate)
+}
+
 /// No-proof variant of [`emit_count_proof`]: walks the same classification
 /// path (Contained / Disjoint / Boundary) but only returns the running
 /// in-range count.
@@ -482,132 +490,98 @@ where
 {
     let mut cost = OperationCost::default();
 
-    // Step 1: classify the current subtree against the inner range.
-    let class = classify_subtree(subtree_lo_excl, subtree_hi_excl, range);
-
-    if matches!(
-        class,
-        SubtreeClassification::Disjoint | SubtreeClassification::Contained
-    ) {
-        // Fully outside → contributes 0; fully inside → contributes the
-        // subtree's stored aggregate count (which already excludes
-        // NonCounted entries because their stored aggregate is 0).
-        if matches!(class, SubtreeClassification::Disjoint) {
-            return Ok(0).wrap_with_cost(cost);
+    // Classify the current subtree against the inner range.
+    match classify_subtree(subtree_lo_excl, subtree_hi_excl, range) {
+        // Disjoint: subtree contributes 0 to the in-range count.
+        SubtreeClassification::Disjoint => Ok(0).wrap_with_cost(cost),
+        // Contained: subtree contributes its full stored aggregate
+        // (NonCounted entries are already excluded — their stored
+        // aggregate is 0).
+        SubtreeClassification::Contained => {
+            let count = cost_return_on_error_no_add!(cost, provable_count_from_walker(walker));
+            Ok(count).wrap_with_cost(cost)
         }
-        let aggregate = match walker.tree().aggregate_data() {
-            Ok(a) => a,
-            Err(e) => {
-                return Err(Error::InvalidProofError(format!("aggregate_data: {}", e)))
-                    .wrap_with_cost(cost);
+        // Boundary: descend into both children and add own_count.
+        SubtreeClassification::Boundary => {
+            // Snapshot what we need from the current node before walking.
+            // walk(...) takes &mut self.tree, so we must drop any existing
+            // borrows on walker.tree() before calling it.
+            let node_key: Vec<u8> = walker.tree().key().to_vec();
+            let node_count = cost_return_on_error_no_add!(cost, provable_count_from_walker(walker));
+            let left_link_aggregate: u64 = walker
+                .tree()
+                .link(true)
+                .map(|l| l.aggregate_data().as_count_u64())
+                .unwrap_or(0);
+            let right_link_aggregate: u64 = walker
+                .tree()
+                .link(false)
+                .map(|l| l.aggregate_data().as_count_u64())
+                .unwrap_or(0);
+
+            let mut total: u64 = 0;
+
+            // LEFT child. If link is Some, walk(true) is expected to yield
+            // Some; treat the impossible None as an empty branch — the
+            // outcome (no contribution) is identical to the link being
+            // absent, so there is no need for a separate corrupted-state
+            // arm here.
+            if let Some(mut left_walker) = cost_return_on_error!(
+                &mut cost,
+                walker.walk(
+                    true,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
+            ) {
+                let n = cost_return_on_error!(
+                    &mut cost,
+                    walk_count_only(
+                        &mut left_walker,
+                        range,
+                        subtree_lo_excl,
+                        Some(node_key.as_slice()),
+                        grove_version,
+                    )
+                );
+                total = total.saturating_add(n);
             }
-        };
-        let subtree_count = match provable_count_from_aggregate(aggregate) {
-            Ok(c) => c,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        };
-        return Ok(subtree_count).wrap_with_cost(cost);
-    }
-    // class == Boundary — descend into both children and add own_count.
 
-    // Snapshot what we need from the current node before walking. walk(...)
-    // takes &mut self.tree, so we must drop any existing borrows on
-    // walker.tree() before calling it.
-    let node_key: Vec<u8> = walker.tree().key().to_vec();
-    let node_count: u64 = match walker
-        .tree()
-        .aggregate_data()
-        .map_err(|e| Error::InvalidProofError(format!("aggregate_data: {}", e)))
-    {
-        Ok(data) => match provable_count_from_aggregate(data) {
-            Ok(c) => c,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        },
-        Err(e) => return Err(e).wrap_with_cost(cost),
-    };
-
-    let left_link_aggregate: u64 = walker
-        .tree()
-        .link(true)
-        .map(|l| l.aggregate_data().as_count_u64())
-        .unwrap_or(0);
-    let right_link_aggregate: u64 = walker
-        .tree()
-        .link(false)
-        .map(|l| l.aggregate_data().as_count_u64())
-        .unwrap_or(0);
-    let left_link_present = walker.tree().link(true).is_some();
-    let right_link_present = walker.tree().link(false).is_some();
-
-    let mut total: u64 = 0;
-
-    // LEFT child.
-    if left_link_present {
-        let left_lo = subtree_lo_excl;
-        let left_hi: Option<&[u8]> = Some(node_key.as_slice());
-        let walked = cost_return_on_error!(
-            &mut cost,
-            walker.walk(
-                true,
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                grove_version,
-            )
-        );
-        let mut left_walker = match walked {
-            Some(lw) => lw,
-            None => {
-                return Err(Error::CorruptedState(
-                    "tree.link(true) was Some but walk(true) returned None",
-                ))
-                .wrap_with_cost(cost)
+            // Current node's own_count: 1 if in-range and counted, 0 for
+            // NonCounted-wrapped (which has stored aggregate 0, so the
+            // saturating subtraction yields 0).
+            if range.contains(&node_key) {
+                let own_count = node_count
+                    .saturating_sub(left_link_aggregate)
+                    .saturating_sub(right_link_aggregate);
+                total = total.saturating_add(own_count);
             }
-        };
-        let n = cost_return_on_error!(
-            &mut cost,
-            walk_count_only(&mut left_walker, range, left_lo, left_hi, grove_version)
-        );
-        total = total.saturating_add(n);
-    }
 
-    // Current node's own_count: 1 (or 0 for NonCounted) if its key is in
-    // range. Derived as `node_count − left_struct − right_struct` so
-    // NonCounted entries naturally fall out (their stored aggregate is 0).
-    if range.contains(&node_key) {
-        let own_count = node_count
-            .saturating_sub(left_link_aggregate)
-            .saturating_sub(right_link_aggregate);
-        total = total.saturating_add(own_count);
-    }
-
-    // RIGHT child.
-    if right_link_present {
-        let right_lo: Option<&[u8]> = Some(node_key.as_slice());
-        let right_hi = subtree_hi_excl;
-        let walked = cost_return_on_error!(
-            &mut cost,
-            walker.walk(
-                false,
-                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                grove_version,
-            )
-        );
-        let mut right_walker = match walked {
-            Some(rw) => rw,
-            None => {
-                return Err(Error::CorruptedState(
-                    "tree.link(false) was Some but walk(false) returned None",
-                ))
-                .wrap_with_cost(cost)
+            // RIGHT child — same pattern as LEFT.
+            if let Some(mut right_walker) = cost_return_on_error!(
+                &mut cost,
+                walker.walk(
+                    false,
+                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                    grove_version,
+                )
+            ) {
+                let n = cost_return_on_error!(
+                    &mut cost,
+                    walk_count_only(
+                        &mut right_walker,
+                        range,
+                        Some(node_key.as_slice()),
+                        subtree_hi_excl,
+                        grove_version,
+                    )
+                );
+                total = total.saturating_add(n);
             }
-        };
-        let n = cost_return_on_error!(
-            &mut cost,
-            walk_count_only(&mut right_walker, range, right_lo, right_hi, grove_version)
-        );
-        total = total.saturating_add(n);
-    }
 
-    Ok(total).wrap_with_cost(cost)
+            Ok(total).wrap_with_cost(cost)
+        }
+    }
 }
 
 /// Verify a count-only proof for an `AggregateCountOnRange` query.
@@ -1394,6 +1368,78 @@ mod tests {
             "expected InvalidProofError on NormalTree, got Ok({:?})",
             result.ok()
         );
+    }
+
+    #[test]
+    fn no_proof_matches_prover_range_after() {
+        // RangeAfter at the root pushes the left boundary exclusive to "b",
+        // which causes the walk to descend into the right subtree from the
+        // root — exercising the right-child arm of walk_count_only.
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        no_proof_matches_prover(&merk, QueryItem::RangeAfter(b"b".to_vec()..), 13, v);
+    }
+
+    #[test]
+    fn no_proof_matches_prover_range_to() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        // RangeTo(..b"e") — exclusive upper, keys a..d (4 keys).
+        no_proof_matches_prover(&merk, QueryItem::RangeTo(..b"e".to_vec()), 4, v);
+    }
+
+    #[test]
+    fn no_proof_matches_prover_range_to_inclusive() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        // RangeToInclusive(..=b"e") — keys a..=e (5 keys).
+        no_proof_matches_prover(&merk, QueryItem::RangeToInclusive(..=b"e".to_vec()), 5, v);
+    }
+
+    #[test]
+    fn no_proof_matches_prover_range_after_to_inclusive() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_count_tree(v);
+        // RangeAfterToInclusive(("c", "l")) — keys d..=l (9 keys).
+        no_proof_matches_prover(
+            &merk,
+            QueryItem::RangeAfterToInclusive(b"c".to_vec()..=b"l".to_vec()),
+            9,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_provable_count_sum_tree() {
+        // Exercise the ProvableCountSumTree branch of the tree-type gate —
+        // it should accept the walk and return the same count as a
+        // ProvableCountTree with the same key set.
+        let v = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountSumTree);
+        // ProvableCountedAndSummedMerkNode(count=1, sum=0): treats each
+        // entry as count-1 with sum-contribution 0.
+        let entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+            .enumerate()
+            .map(|(i, c)| {
+                (
+                    vec![c],
+                    Op::Put(
+                        vec![i as u8],
+                        crate::tree::TreeFeatureType::ProvableCountedSummedMerkNode(1, 0),
+                    ),
+                )
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+            .unwrap()
+            .expect("apply ProvableCountSumTree entries");
+        merk.commit(v);
+
+        let count = merk
+            .count_aggregate_on_range(&QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()), v)
+            .unwrap()
+            .expect("count_aggregate_on_range on ProvableCountSumTree should succeed");
+        assert_eq!(count, 10, "c..=l should be 10 keys");
     }
 
     // ---------- attack tests for the shape-walk verifier ----------

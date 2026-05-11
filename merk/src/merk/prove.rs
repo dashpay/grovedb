@@ -225,7 +225,7 @@ where
             None => Ok(0u64).wrap_with_cost(Default::default()),
             Some(tree) => {
                 let mut ref_walker = RefWalker::new(tree, self.source());
-                ref_walker.count_aggregate_on_range(inner_range, tree_type, grove_version)
+                ref_walker.count_aggregate_on_range(inner_range, grove_version)
             }
         })
     }
