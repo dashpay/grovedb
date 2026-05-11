@@ -11113,4 +11113,51 @@ mod tests {
             results
         );
     }
+
+    #[test]
+    fn batch_inserting_and_populating_fresh_cidx_in_same_batch_is_rejected() {
+        // Coverage for CodeRabbit finding on bb390d55. A batch that
+        // both creates a CountIndexedTree element AND writes to a
+        // descendant of it has no valid propagation path: there is
+        // no Insert-style aggregate-indexed propagation op
+        // counterpart to ReplaceAggregateIndexedTreeRootKeys, and
+        // the secondary merk cannot be opened by stale parent state.
+        // The batch path must reject this combination with a clear,
+        // actionable NotSupported message (not the confusing
+        // "insertion of element under a non tree" catch-all).
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Op 1: insert a fresh empty cidx at TEST_LEAF/cidx
+        // Op 2: insert into the (not-yet-existing) cidx
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::empty_count_indexed_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"item".to_vec(),
+                Element::empty_count_tree(),
+            ),
+        ];
+        let result = db
+            .apply_batch(ops, Some(BatchApplyOptions::default()), None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("freshly-inserted") && msg.contains("CountIndexedTree"),
+                    "expected freshly-inserted cidx rejection, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected NotSupported(freshly-inserted cidx + populate), got: {:?}",
+                other
+            ),
+        }
+    }
 }

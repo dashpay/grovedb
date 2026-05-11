@@ -86,7 +86,10 @@ pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
                         Some(&Element::value_defined_cost_for_serialized_value),
                         grove_version,
                     )
-                    .map_err(Error::MerkError)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "cidx pre-state read for key {}: {e}",
+                        hex::encode(&key_bytes)
+                    )))
             );
             let old_count = if let Some(bytes) = maybe_bytes {
                 let elem = cost_return_on_error_no_add!(
@@ -146,7 +149,10 @@ pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>
                     Some(&Element::value_defined_cost_for_serialized_value),
                     grove_version,
                 )
-                .map_err(Error::MerkError)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "cidx post-state read for key {}: {e}",
+                    hex::encode(&key)
+                )))
         );
         let new_count = if let Some(bytes) = maybe_bytes {
             let elem = cost_return_on_error_no_add!(
@@ -186,7 +192,9 @@ pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>
         &mut cost,
         secondary_merk
             .root_hash_key_and_aggregate_data()
-            .map_err(Error::MerkError)
+            .map_err(|e| Error::CorruptedData(format!(
+                "cidx secondary root hash capture after mirror: {e}"
+            )))
     );
     Ok((sec_hash, sec_root_key)).wrap_with_cost(cost)
 }

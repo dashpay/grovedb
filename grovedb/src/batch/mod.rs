@@ -1192,6 +1192,81 @@ impl QualifiedGroveDbOp {
     }
 }
 
+/// Preflight check: reject any batch that both **creates** a
+/// `CountIndexedTree` / `ProvableCountIndexedTree` element AND
+/// contains other ops targeting paths inside the freshly-created
+/// cidx in the same batch.
+///
+/// Why: cidx propagation needs both primary and secondary root state
+/// to bubble up via the H1-A `combine_hash_three` composition. There
+/// is no `InsertAggregateIndexedTreeWithRootKeys` counterpart to
+/// `ReplaceAggregateIndexedTreeRootKeys`, and the secondary merk
+/// cannot be opened during propagation because the parent's cidx
+/// element bytes aren't on disk yet. Without this preflight, callers
+/// hit a confusing `MerkError(PathKeyNotFound)` mid-batch as the
+/// secondary-merk closure tries to read the cidx element from a
+/// parent merk that doesn't yet contain it.
+///
+/// Workaround: split into two batches. First batch creates the
+/// empty cidx; second batch populates it (or call
+/// `db.insert_into_count_indexed_tree` directly for individual
+/// items).
+fn reject_freshly_inserted_cidx_with_descendants(ops: &[QualifiedGroveDbOp]) -> Result<(), Error> {
+    use grovedb_element::Element;
+    // Collect paths where a cidx element is being CREATED in this batch
+    // (via any Insert-style op carrying a cidx Element). The path of the
+    // cidx primary is `op.path + op.key`.
+    let mut fresh_cidx_paths: Vec<Vec<Vec<u8>>> = Vec::new();
+    for op in ops {
+        let elem = match &op.op {
+            GroveOp::InsertOrReplace { element }
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+            | GroveOp::InsertIfNotExists { element, .. }
+            | GroveOp::Replace { element }
+            | GroveOp::Patch { element, .. } => element,
+            _ => continue,
+        };
+        if matches!(
+            elem.underlying(),
+            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+        ) && let Some(key) = &op.key
+        {
+            let mut cidx_path = op.path.to_path();
+            cidx_path.push(key.get_key_clone());
+            fresh_cidx_paths.push(cidx_path);
+        }
+    }
+    if fresh_cidx_paths.is_empty() {
+        return Ok(());
+    }
+    // Reject any op whose effective target path is strictly under one
+    // of the fresh cidx paths. The effective path is
+    // `op.path + op.key` (keyless ops use just `op.path`). The
+    // cidx-creation op itself doesn't trigger (its target equals the
+    // cidx path exactly).
+    for op in ops {
+        let mut op_target = op.path.to_path();
+        if let Some(key) = &op.key {
+            op_target.push(key.get_key_clone());
+        }
+        for cidx_path in &fresh_cidx_paths {
+            if op_target.len() > cidx_path.len() && op_target[..cidx_path.len()] == cidx_path[..] {
+                return Err(Error::NotSupported(
+                    "populating a freshly-inserted CountIndexedTree / \
+                     ProvableCountIndexedTree in the same batch as its creation is not \
+                     supported (no Insert variant for aggregate-indexed two-Merk \
+                     propagation exists, and the secondary merk cannot be opened from \
+                     stale parent state during bubble-up). Split into two batches: \
+                     insert the empty cidx first, then populate it via \
+                     `db.insert_into_count_indexed_tree` or a follow-up batch."
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Results of a consistency check on an operation batch
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
@@ -3410,6 +3485,43 @@ impl GroveDb {
                                                                 },
                                                                 non_counted,
                                                             }
+                                                    // Cidx (`CountIndexedTree` /
+                                                    // `ProvableCountIndexedTree`) needs BOTH
+                                                    // primary and secondary root state to
+                                                    // propagate via the H1-A composition.
+                                                    // For a freshly-inserted cidx in the same
+                                                    // batch, there is no
+                                                    // `InsertAggregateIndexedTreeWithRootKeys`
+                                                    // counterpart to
+                                                    // `ReplaceAggregateIndexedTreeRootKeys`,
+                                                    // and the secondary merk cannot be opened
+                                                    // by stale parent state during bubble-up.
+                                                    // Reject this combination with a clear,
+                                                    // actionable error rather than silently
+                                                    // misapplying (the generic catch-all below
+                                                    // would otherwise surface a confusing
+                                                    // "insertion of element under a non tree"
+                                                    // message).
+                                                    } else if matches!(
+                                                        element,
+                                                        Element::CountIndexedTree(..)
+                                                            | Element::ProvableCountIndexedTree(..)
+                                                    ) {
+                                                        return Err(Error::NotSupported(
+                                                            "populating a freshly-inserted \
+                                                             CountIndexedTree / \
+                                                             ProvableCountIndexedTree in the same \
+                                                             batch as its creation is not \
+                                                             supported (no Insert variant for \
+                                                             aggregate-indexed two-Merk \
+                                                             propagation). Split into two \
+                                                             batches: insert the empty cidx \
+                                                             first, then populate it via \
+                                                             `db.insert_into_count_indexed_tree` \
+                                                             or a follow-up batch."
+                                                                .to_string(),
+                                                        ))
+                                                        .wrap_with_cost(cost);
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -4131,6 +4243,8 @@ impl GroveDb {
             }
         }
 
+        cost_return_on_error_no_add!(cost, reject_freshly_inserted_cidx_with_descendants(&ops));
+
         // `StorageBatch` collects all operations (preprocessing + apply_body)
         // for a single atomic commit at the end.
         let storage_batch = StorageBatch::new();
@@ -4620,6 +4734,8 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         }
+
+        cost_return_on_error_no_add!(cost, reject_freshly_inserted_cidx_with_descendants(&ops));
 
         // `StorageBatch` collects all operations (preprocessing + apply_body)
         // for a single atomic commit at the end.
