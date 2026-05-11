@@ -1183,4 +1183,289 @@ mod tests {
             "expected terminal-type error, got: {msg}"
         );
     }
+
+    // -------------------------------------------------------------------
+    // Tests for the no-proof variant: GroveDb::query_aggregate_sum.
+    //
+    // Mirrors PR #662's no-proof query_aggregate_count for the signed-sum
+    // side. The no-proof variant must return the same sum as the proof
+    // variant for every valid PathQuery shape but should not need to
+    // produce or verify any proof bytes.
+    // -------------------------------------------------------------------
+
+    /// No-proof helper: build the path-query, call query_aggregate_sum,
+    /// assert the returned sum matches the expected value AND matches
+    /// what the proof round-trip returns.
+    fn no_proof_sum_matches_proof(
+        db: &crate::tests::TempGroveDb,
+        path: Vec<Vec<u8>>,
+        inner_range: QueryItem,
+        expected_sum: i64,
+        grove_version: &GroveVersion,
+    ) {
+        let path_query = PathQuery::new_aggregate_sum_on_range(path, inner_range);
+
+        let direct = db
+            .grove_db
+            .query_aggregate_sum(&path_query, None, grove_version)
+            .unwrap()
+            .expect("query_aggregate_sum should succeed");
+        assert_eq!(direct, expected_sum, "no-proof variant returned wrong sum");
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let (_root, proved) =
+            GroveDb::verify_aggregate_sum_query(&proof, &path_query, grove_version)
+                .expect("verify should succeed");
+        assert_eq!(
+            direct, proved,
+            "no-proof variant disagrees with proof variant"
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_provable_sum_tree_range_inclusive() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+            75,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_provable_sum_tree_range_exclusive() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::Range(b"c".to_vec()..b"l".to_vec()),
+            63,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_provable_sum_tree_range_from() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeFrom(b"c".to_vec()..),
+            117,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_provable_sum_tree_range_after() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeAfter(b"b".to_vec()..),
+            117,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_provable_sum_tree_range_to_inclusive() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeToInclusive(..=b"e".to_vec()),
+            15,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_provable_sum_tree_disjoint_range() {
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(vec![0x00]..=vec![0x10]),
+            0,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_empty_provable_sum_tree_returns_zero() {
+        // An empty ProvableSumTree returns sum 0 — same as the merk-level
+        // empty-merk contract. Inserting nothing under the tree exercises
+        // this path through the full GroveDB stack.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert st");
+        let path_query = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let direct = db
+            .grove_db
+            .query_aggregate_sum(&path_query, None, v)
+            .unwrap()
+            .expect("query_aggregate_sum should succeed on empty");
+        assert_eq!(direct, 0);
+    }
+
+    #[test]
+    fn no_proof_sum_negative_values_matches_proof() {
+        // Cross-check no-proof and proof on a tree with mixed positive
+        // and negative sum items. This exercises both the i128
+        // accumulator and the signed own_sum subtraction in the no-proof
+        // walker.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert st");
+        let entries: [(u8, i64); 4] = [(b'a', 50), (b'b', -100), (b'c', 30), (b'd', -50)];
+        for (k, val) in entries {
+            db.insert(
+                [TEST_LEAF, b"st"].as_ref(),
+                &[k],
+                Element::new_sum_item(val),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert sum item");
+        }
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+            -70, // 50 − 100 + 30 − 50
+            v,
+        );
+        no_proof_sum_matches_proof(
+            &db,
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"b".to_vec()..=b"c".to_vec()),
+            -70, // −100 + 30 = −70
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_invalid_inner_range_rejected_before_storage_reads() {
+        // The validator runs at the top of query_aggregate_sum; an
+        // illegal inner range like `Key(_)` is rejected before any merk
+        // is opened.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let path_query = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::Key(b"a".to_vec()),
+        );
+        let err = db
+            .grove_db
+            .query_aggregate_sum(&path_query, None, v)
+            .unwrap()
+            .expect_err("Key inner must be rejected at validation");
+        match err {
+            crate::Error::InvalidQuery(_) => {}
+            other => panic!("expected InvalidQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn no_proof_sum_empty_path_rejected_at_validation() {
+        // Mirror of the verify-side empty-path rejection: the no-proof
+        // entry point must also reject empty-path queries up front, since
+        // the GroveDB root is always a NormalTree.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let path_query = PathQuery::new_aggregate_sum_on_range(
+            Vec::new(),
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = db
+            .grove_db
+            .query_aggregate_sum(&path_query, None, v)
+            .unwrap()
+            .expect_err("empty path must be rejected");
+        match err {
+            crate::Error::InvalidQuery(_) => {}
+            other => panic!("expected InvalidQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn no_proof_sum_normal_tree_rejected_at_merk() {
+        // A path that resolves to a NormalTree (not a ProvableSumTree)
+        // must be rejected by the merk-level tree-type gate.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"normal",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert normal tree");
+        // Insert a child so the merk isn't empty (an empty merk would
+        // short-circuit to 0 before hitting the tree-type check on the
+        // no-proof side, since `Merk::sum_aggregate_on_range` checks
+        // tree_type before descending — confirm by inserting something).
+        db.insert(
+            [TEST_LEAF, b"normal"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert child");
+        let path_query = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"normal".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = db
+            .grove_db
+            .query_aggregate_sum(&path_query, None, v)
+            .unwrap()
+            .expect_err("NormalTree leaf must be rejected by merk-level gate");
+        match err {
+            crate::Error::MerkError(_) => {}
+            other => panic!("expected MerkError, got {:?}", other),
+        }
+    }
 }

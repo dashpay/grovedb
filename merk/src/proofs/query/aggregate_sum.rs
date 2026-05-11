@@ -31,7 +31,9 @@
 #[cfg(feature = "minimal")]
 use std::collections::LinkedList;
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 #[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 
@@ -196,6 +198,218 @@ where
             }
         };
         Ok((ops, sum)).wrap_with_cost(cost)
+    }
+
+    /// Walk the tree for an `AggregateSumOnRange` query and return the
+    /// in-range signed sum, **without** producing a proof.
+    ///
+    /// This is the no-proof counterpart of
+    /// [`Self::create_aggregate_sum_on_range_proof`]. It performs the same
+    /// classification walk (Contained / Disjoint / Boundary) and reads each
+    /// node's aggregate sum directly from the merk, so it is O(log n) in
+    /// the number of distinct keys under the indexed subtree — the same
+    /// complexity as the proof variant but without the proof-op allocations,
+    /// hash recomputations, or serialization round-trip.
+    ///
+    /// The caller (`Merk::sum_aggregate_on_range`) is expected to have
+    /// already validated `tree_type` is `ProvableSumTree`; the per-node
+    /// `provable_sum_from_aggregate` check inside the walk surfaces any
+    /// disagreement between the declared tree type and the in-memory
+    /// aggregate.
+    ///
+    /// The accumulator carries `i128` end-to-end and narrows to `i64` at
+    /// the very last step, exactly the way the prover and verifier do.
+    /// Any value outside `i64` range is treated as corruption (a real
+    /// `ProvableSumTree` maintains every aggregate as `i64` at every
+    /// level, so the i128 path only ever holds an out-of-range value if
+    /// the tree state is internally inconsistent).
+    ///
+    /// The result is **not** independently verifiable: the caller is
+    /// trusting their own merk read path. Callers that need a verifiable
+    /// sum must use `prove_aggregate_sum_on_range` +
+    /// `verify_aggregate_sum_on_range_proof`.
+    pub fn sum_aggregate_on_range(
+        &mut self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i64, Error> {
+        let mut cost = OperationCost::default();
+        let sum_i128 = cost_return_on_error!(
+            &mut cost,
+            walk_sum_only(self, inner_range, None, None, grove_version)
+        );
+        match i64::try_from(sum_i128) {
+            Ok(v) => Ok(v).wrap_with_cost(cost),
+            Err(_) => Err(Error::CorruptedData(format!(
+                "no-proof aggregate-sum: in-range sum overflowed i64 ({})",
+                sum_i128
+            )))
+            .wrap_with_cost(cost),
+        }
+    }
+}
+
+/// Read the provable-sum aggregate off the walker's current tree node.
+/// Shared error-mapping helper used by [`walk_sum_only`] at both the
+/// Contained-leaf and Boundary positions.
+#[cfg(feature = "minimal")]
+fn provable_sum_from_walker<S>(walker: &RefWalker<'_, S>) -> Result<i64, Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let aggregate = walker
+        .tree()
+        .aggregate_data()
+        .map_err(|e| Error::CorruptedData(format!("aggregate_data: {}", e)))?;
+    provable_sum_from_aggregate(aggregate)
+}
+
+/// No-proof variant of [`emit_sum_proof`]: walks the same classification
+/// path (Contained / Disjoint / Boundary) but only returns the running
+/// in-range sum.
+///
+/// At entry, `subtree_lo_excl` / `subtree_hi_excl` are the inherited
+/// exclusive key bounds for the subtree this walker points at (both
+/// `None` at the root call). The walk reads each node's
+/// `aggregate_data()` and each child link's `aggregate_data().as_sum_i64()`
+/// exactly the same way the proof emitter does, so the returned sum is
+/// identical to the `sum` value returned by
+/// `create_aggregate_sum_on_range_proof`.
+///
+/// The accumulator is `i128` so the no-proof side never overflows
+/// mid-walk on adversarial intermediate sums (matching the prover's
+/// guarantee). Narrowing to `i64` happens in the public entry point
+/// `Merk::sum_aggregate_on_range`.
+#[cfg(feature = "minimal")]
+fn walk_sum_only<S>(
+    walker: &mut RefWalker<'_, S>,
+    range: &QueryItem,
+    subtree_lo_excl: Option<&[u8]>,
+    subtree_hi_excl: Option<&[u8]>,
+    grove_version: &GroveVersion,
+) -> CostResult<i128, Error>
+where
+    S: Fetch + Sized + Clone,
+{
+    let mut cost = OperationCost::default();
+
+    match classify_subtree(subtree_lo_excl, subtree_hi_excl, range) {
+        // Disjoint: subtree contributes 0 to the in-range sum.
+        SubtreeClassification::Disjoint => Ok(0i128).wrap_with_cost(cost),
+        // Contained: subtree contributes its full stored aggregate sum
+        // (NotSummed-wrapped entries are already excluded — their stored
+        // aggregate is 0 by the wrapper's contract).
+        SubtreeClassification::Contained => {
+            let sum = cost_return_on_error_no_add!(cost, provable_sum_from_walker(walker));
+            Ok(sum as i128).wrap_with_cost(cost)
+        }
+        // Boundary: descend into both children and add own_sum.
+        SubtreeClassification::Boundary => {
+            // Snapshot what we need from the current node before walking.
+            // walk(...) takes &mut self.tree, so we must drop any existing
+            // borrows on walker.tree() before calling it.
+            let node_key: Vec<u8> = walker.tree().key().to_vec();
+            let node_sum = cost_return_on_error_no_add!(cost, provable_sum_from_walker(walker));
+            let left_link_aggregate: i64 = walker
+                .tree()
+                .link(true)
+                .map(|l| l.aggregate_data().as_sum_i64())
+                .unwrap_or(0);
+            let right_link_aggregate: i64 = walker
+                .tree()
+                .link(false)
+                .map(|l| l.aggregate_data().as_sum_i64())
+                .unwrap_or(0);
+            let left_link_present = walker.tree().link(true).is_some();
+            let right_link_present = walker.tree().link(false).is_some();
+
+            let mut total: i128 = 0;
+
+            // LEFT child. If link is Some, walk(true) must yield Some;
+            // the proof variant has the verifier to catch silent
+            // inconsistencies, but this no-proof path returns the sum
+            // straight to the caller — so we fail loudly on impossible
+            // state rather than silently under-summing.
+            if left_link_present {
+                let walked = cost_return_on_error!(
+                    &mut cost,
+                    walker.walk(
+                        true,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                );
+                let mut left_walker = match walked {
+                    Some(lw) => lw,
+                    None => {
+                        return Err(Error::CorruptedState(
+                            "tree.link(true) was Some but walk(true) returned None",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let s = cost_return_on_error!(
+                    &mut cost,
+                    walk_sum_only(
+                        &mut left_walker,
+                        range,
+                        subtree_lo_excl,
+                        Some(node_key.as_slice()),
+                        grove_version,
+                    )
+                );
+                total = total.saturating_add(s);
+            }
+
+            // Current node's own_sum: when the key is in range, the
+            // contribution is `node_sum − left_struct − right_struct`.
+            // Signed arithmetic — unlike the count side this can be
+            // negative (and so cannot be checked-sub-vs-corruption like
+            // count's). The hash chain in the verifying variant catches
+            // tampering; here we trust the merk read path per the API
+            // contract. `i128` accumulation keeps adversarial inputs
+            // from wrapping mid-walk.
+            if range.contains(&node_key) {
+                let own_sum: i128 = (node_sum as i128)
+                    .wrapping_sub(left_link_aggregate as i128)
+                    .wrapping_sub(right_link_aggregate as i128);
+                total = total.saturating_add(own_sum);
+            }
+
+            // RIGHT child — same fail-fast pattern as LEFT.
+            if right_link_present {
+                let walked = cost_return_on_error!(
+                    &mut cost,
+                    walker.walk(
+                        false,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                );
+                let mut right_walker = match walked {
+                    Some(rw) => rw,
+                    None => {
+                        return Err(Error::CorruptedState(
+                            "tree.link(false) was Some but walk(false) returned None",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
+                let s = cost_return_on_error!(
+                    &mut cost,
+                    walk_sum_only(
+                        &mut right_walker,
+                        range,
+                        Some(node_key.as_slice()),
+                        subtree_hi_excl,
+                        grove_version,
+                    )
+                );
+                total = total.saturating_add(s);
+            }
+
+            Ok(total).wrap_with_cost(cost)
+        }
     }
 }
 
@@ -1096,5 +1310,167 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---------- no-proof variant: sum_aggregate_on_range ----------
+    //
+    // The no-proof entry point must return exactly the same sum as the
+    // proof path for every range shape, without producing any proof ops.
+    // These tests cross-check the two paths on the same merk and also
+    // cover the failure modes unique to the no-proof variant (wrong tree
+    // type, empty merk, overflow narrowing).
+
+    /// Cross-check: assert `sum_aggregate_on_range` and the sum returned
+    /// by `prove_aggregate_sum_on_range` agree for the given range, and
+    /// that both equal `expected_sum`.
+    fn no_proof_sum_matches_prover(
+        merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+        inner_range: QueryItem,
+        expected_sum: i64,
+        grove_version: &GroveVersion,
+    ) {
+        let no_proof = merk
+            .sum_aggregate_on_range(&inner_range, grove_version)
+            .unwrap()
+            .expect("sum_aggregate_on_range should succeed");
+        assert_eq!(
+            no_proof, expected_sum,
+            "no-proof variant returned wrong sum for range {:?}",
+            inner_range
+        );
+        let (_ops, prover_sum) = merk
+            .prove_aggregate_sum_on_range(&inner_range, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+        assert_eq!(
+            no_proof, prover_sum,
+            "no-proof variant disagrees with prover sum for range {:?}",
+            inner_range
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_matches_prover_closed_range_inclusive() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_sum_tree(v);
+        // sums for keys c..=l are 3..=12 → 75
+        no_proof_sum_matches_prover(
+            &merk,
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+            75,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_matches_prover_closed_range_exclusive() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_sum_tree(v);
+        // sums for keys c..l are 3..=11 → 63
+        no_proof_sum_matches_prover(&merk, QueryItem::Range(b"c".to_vec()..b"l".to_vec()), 63, v);
+    }
+
+    #[test]
+    fn no_proof_sum_matches_prover_open_range_from() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_sum_tree(v);
+        // c..o → 3+4+...+15 = 117
+        no_proof_sum_matches_prover(&merk, QueryItem::RangeFrom(b"c".to_vec()..), 117, v);
+    }
+
+    #[test]
+    fn no_proof_sum_matches_prover_range_after() {
+        // RangeAfter at the root pushes the left boundary exclusive to
+        // "b", exercising the right-child arm of walk_sum_only.
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_prover(&merk, QueryItem::RangeAfter(b"b".to_vec()..), 117, v);
+    }
+
+    #[test]
+    fn no_proof_sum_matches_prover_range_to_inclusive() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_sum_tree(v);
+        // ..=e → 1+2+3+4+5 = 15
+        no_proof_sum_matches_prover(&merk, QueryItem::RangeToInclusive(..=b"e".to_vec()), 15, v);
+    }
+
+    #[test]
+    fn no_proof_sum_matches_prover_range_below_all_keys() {
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_sum_tree(v);
+        no_proof_sum_matches_prover(
+            &merk,
+            QueryItem::RangeInclusive(vec![0x00]..=vec![0x10]),
+            0,
+            v,
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_empty_merk_returns_zero() {
+        let v = GroveVersion::latest();
+        let merk = TempMerk::new_with_tree_type(v, TreeType::ProvableSumTree);
+        let sum = merk
+            .sum_aggregate_on_range(&QueryItem::Range(b"a".to_vec()..b"z".to_vec()), v)
+            .unwrap()
+            .expect("sum_aggregate_on_range on empty merk should succeed");
+        assert_eq!(sum, 0);
+    }
+
+    #[test]
+    fn no_proof_sum_rejected_on_normal_tree() {
+        let v = GroveVersion::latest();
+        let merk = TempMerk::new(v); // NormalTree
+        let result = merk
+            .sum_aggregate_on_range(&QueryItem::Range(b"a".to_vec()..b"z".to_vec()), v)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "expected InvalidProofError on NormalTree, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_rejected_on_provable_count_tree() {
+        // Sum variant must reject ProvableCountTree too (precise tree-type
+        // match), parallel to the verify-side terminal-type gate.
+        let v = GroveVersion::latest();
+        let merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountTree);
+        let result = merk
+            .sum_aggregate_on_range(&QueryItem::Range(b"a".to_vec()..b"z".to_vec()), v)
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "expected InvalidProofError on ProvableCountTree for a sum query, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    #[test]
+    fn no_proof_sum_with_negative_values_matches_prover() {
+        // A tree with mixed positive and negative sum items must yield the
+        // same net sum from both the no-proof and proof paths.
+        let v = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableSumTree);
+        let entries: [(&[u8], i64); 4] = [(b"a", 50), (b"b", -100), (b"c", 30), (b"d", -50)];
+        let ops: Vec<(Vec<u8>, Op)> = entries
+            .iter()
+            .map(|(k, val)| (k.to_vec(), Op::Put(vec![], ProvableSummedMerkNode(*val))))
+            .collect();
+        merk.apply::<_, Vec<_>>(&ops, &[], None, v)
+            .unwrap()
+            .expect("apply mixed-sign items");
+        merk.commit(v);
+        // Full range → 50 − 100 + 30 − 50 = −70
+        no_proof_sum_matches_prover(&merk, QueryItem::RangeFrom(b"a".to_vec()..), -70, v);
+        // Subrange b..=c → −100 + 30 = −70
+        no_proof_sum_matches_prover(
+            &merk,
+            QueryItem::RangeInclusive(b"b".to_vec()..=b"c".to_vec()),
+            -70,
+            v,
+        );
     }
 }

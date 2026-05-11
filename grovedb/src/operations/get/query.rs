@@ -19,6 +19,7 @@ use crate::{
 use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
+    util::TxRef,
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 use grovedb_costs::cost_return_on_error_default;
@@ -26,6 +27,8 @@ use grovedb_costs::cost_return_on_error_default;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
+#[cfg(feature = "minimal")]
+use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
@@ -583,6 +586,87 @@ where {
 
         let results = cost_return_on_error_no_add!(cost, results_wrapped);
         Ok((results, skipped)).wrap_with_cost(cost)
+    }
+
+    /// Execute an `AggregateSumOnRange` path query without producing a
+    /// proof, returning the in-range signed sum directly.
+    ///
+    /// This is the no-proof counterpart of
+    /// [`Self::prove_query`] +
+    /// [`Self::verify_aggregate_sum_query`](GroveDb::verify_aggregate_sum_query)
+    /// for `AggregateSumOnRange` queries: it performs the same merk-level
+    /// boundary walk the prover does (using each internal node's stored
+    /// aggregate sum to short-circuit Contained / Disjoint subtrees) but
+    /// skips proof generation, serialization, and verification entirely.
+    ///
+    /// `path_query` must satisfy
+    /// [`PathQuery::validate_aggregate_sum_on_range`] — a single
+    /// `AggregateSumOnRange(_)` item, no subqueries, no pagination, a
+    /// non-empty path, and an inner range that isn't `Key`, `RangeFull`,
+    /// or another aggregate variant. Any other shape is rejected up front
+    /// with `Error::InvalidQuery` before any merk reads happen.
+    ///
+    /// The subtree at `path_query.path` must be a `ProvableSumTree` — the
+    /// merk-level walk rejects any other tree type. If the subtree is
+    /// missing (path does not resolve), this returns the same
+    /// `PathNotFound` / `PathParentLayerNotFound` errors as other
+    /// path-based reads.
+    ///
+    /// Mirrors PR #662's `query_aggregate_count` for the signed-sum side.
+    ///
+    /// The returned sum is **not** independently verifiable — callers are
+    /// trusting their own merk read path. For a verifiable sum, use
+    /// [`Self::prove_query`] +
+    /// [`Self::verify_aggregate_sum_query`](GroveDb::verify_aggregate_sum_query).
+    pub fn query_aggregate_sum(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i64, Error> {
+        check_grovedb_v0_with_cost!(
+            "query_aggregate_sum",
+            grove_version
+                .grovedb_versions
+                .operations
+                .query
+                .query_aggregate_sum_on_range
+        );
+
+        let mut cost = OperationCost::default();
+
+        // Up-front shape validation: same gate the prover and verifier use.
+        // Catches malformed ASOR queries (illegal inner range, ASOR-hidden-in-
+        // subquery, pagination, empty path, etc.) before any storage reads.
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query.validate_aggregate_sum_on_range().cloned()
+        );
+
+        let tx = TxRef::new(&self.db, transaction);
+
+        // Open the leaf merk and ask it for the sum. The merk-level entry
+        // point enforces `tree_type == ProvableSumTree` and handles the
+        // empty-merk case (returns 0).
+        let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                SubtreePath::from(path_slices.as_slice()),
+                tx.as_ref(),
+                None,
+                grove_version,
+            )
+        );
+
+        let sum = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .sum_aggregate_on_range(&inner_range, grove_version)
+                .map_err(Error::MerkError)
+        );
+
+        Ok(sum).wrap_with_cost(cost)
     }
 
     /// Retrieves SumItem values using an [`AggregateSumPathQuery`] with
