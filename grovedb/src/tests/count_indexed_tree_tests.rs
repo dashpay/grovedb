@@ -10230,4 +10230,137 @@ mod tests {
         assert_eq!(top[1], (7, b"a".to_vec()));
         assert_eq!(top[2], (3, b"c".to_vec()));
     }
+
+    // =====================================================================
+    // Additional coverage for lib.rs verify_grovedb sentinel + batch
+    // propagation paths.
+    // =====================================================================
+
+    #[test]
+    fn verify_grovedb_flags_short_secondary_key_with_sentinel() {
+        // Coverage for lib.rs:1422-1427 — verify_grovedb's cidx walk
+        // emits a `__cidx_secondary_malformed_key__` sentinel for any
+        // secondary key shorter than 8 bytes.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        corrupt_secondary_insert(&db, &[TEST_LEAF, b"cidx"], b"bad!", grove_version);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        let sentinel_path: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"cidx".to_vec(),
+            b"__cidx_secondary_malformed_key__".to_vec(),
+            b"bad!".to_vec(),
+        ];
+        assert!(
+            issues.contains_key(&sentinel_path),
+            "expected __cidx_secondary_malformed_key__ sentinel for 'bad!', \
+             got issues: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn batch_apply_two_inserts_into_cidx_propagation_visits_cidx_level() {
+        // Exercises the batch propagation that visits the cidx primary
+        // level multiple times (once per affected key). Two fresh
+        // inserts force the propagation visitor to coalesce ops at the
+        // cidx primary level.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"alpha".to_vec(),
+                Element::new_count_tree_with_flags_and_count_value(None, 42, None),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"beta".to_vec(),
+                Element::new_count_tree_with_flags_and_count_value(None, 77, None),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch with 2 cidx-primary inserts");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0], (77, b"beta".to_vec()));
+        assert_eq!(top[1], (42, b"alpha".to_vec()));
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "batch produced drift: {:?}", issues);
+    }
+
+    #[test]
+    fn batch_apply_with_multiple_inserts_descending_count() {
+        // Multiple inserts forcing the propagation queue to coalesce
+        // ops at the cidx primary level.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let ops: Vec<_> = (1u64..=4)
+            .map(|i| {
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                    format!("k{i}").into_bytes(),
+                    Element::new_count_tree_with_flags_and_count_value(None, 100 - i * 10, None),
+                )
+            })
+            .collect();
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch with 4 inserts");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(top.len(), 4);
+        assert_eq!(top[0], (90, b"k1".to_vec()));
+        assert_eq!(top[3], (60, b"k4".to_vec()));
+    }
 }
