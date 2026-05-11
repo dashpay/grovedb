@@ -330,19 +330,19 @@ impl GroveDb {
         // (e.g., Item → Tree(Some)), and overwrites of trees alike.
         match item.underlying() {
             Element::CountIndexedTree(p, s, c, _)
-            | Element::ProvableCountIndexedTree(p, s, c, _) => {
-                if p.is_some() || s.is_some() || *c != 0 {
-                    return Err(Error::NotSupported(
-                        "insert_into_count_indexed_tree only accepts an EMPTY cidx \
-                         element (primary_root_key = None, secondary_root_key = None, \
-                         count_value = 0). Non-empty cidx claims must use generic \
-                         db.insert which validates root keys against on-disk state, \
-                         or insert via this API then populate with subsequent \
-                         insert_into_count_indexed_tree calls"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
+            | Element::ProvableCountIndexedTree(p, s, c, _)
+                if p.is_some() || s.is_some() || *c != 0 =>
+            {
+                return Err(Error::NotSupported(
+                    "insert_into_count_indexed_tree only accepts an EMPTY cidx \
+                     element (primary_root_key = None, secondary_root_key = None, \
+                     count_value = 0). Non-empty cidx claims must use generic \
+                     db.insert which validates root keys against on-disk state, \
+                     or insert via this API then populate with subsequent \
+                     insert_into_count_indexed_tree calls"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
             }
             Element::Tree(Some(_), _)
             | Element::SumTree(Some(_), ..)
