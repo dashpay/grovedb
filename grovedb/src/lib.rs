@@ -1067,10 +1067,17 @@ impl GroveDb {
                                 blake3::hash(recorded_label.as_bytes()).into();
                             let actual_placeholder: CryptoHash =
                                 blake3::hash(actual_label.as_bytes()).into();
-                            issues.insert(
-                                new_path.to_vec(),
-                                (root_hash, expected_placeholder, actual_placeholder),
-                            );
+                            // Use `.entry().or_insert(...)` so we don't
+                            // clobber an earlier cryptographic
+                            // (`combined_value_hash != element_value_hash`)
+                            // entry inserted above for this same path —
+                            // the real Merk-hash chain mismatch is more
+                            // diagnostic than the aggregate placeholder.
+                            issues.entry(new_path.to_vec()).or_insert((
+                                root_hash,
+                                expected_placeholder,
+                                actual_placeholder,
+                            ));
                         }
                     }
 

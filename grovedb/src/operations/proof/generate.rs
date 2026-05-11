@@ -338,7 +338,10 @@ impl GroveDb {
                 &mut cost,
                 subtree
                     .prove_aggregate_sum_on_range(&inner_range, grove_version)
-                    .map_err(Error::MerkError)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "prove_aggregate_sum_on_range failed: {}",
+                        e
+                    )))
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(sum_ops.iter(), &mut serialized);
@@ -1170,7 +1173,10 @@ impl GroveDb {
                 &mut cost,
                 subtree
                     .prove_aggregate_sum_on_range(&inner_range, grove_version)
-                    .map_err(Error::MerkError)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "prove_aggregate_sum_on_range failed: {}",
+                        e
+                    )))
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(sum_ops.iter(), &mut serialized);

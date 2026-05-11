@@ -123,14 +123,17 @@ fn is_provable_sum_bearing(tree_type: TreeType) -> bool {
 }
 
 /// Pull the sum out of a `ProvableSum` aggregate. Returns
-/// `Err(InvalidProofError)` for any other variant — the entry point has
+/// `Err(CorruptedData)` for any other variant — the entry point has
 /// already gated `tree_type`, so reaching the error means the tree's
-/// in-memory state disagrees with its declared type.
+/// in-memory state disagrees with its declared type. This is a local
+/// invariant failure on the prover side (we are walking *our own*
+/// merk), so `CorruptedData` is the appropriate classification per the
+/// repo error-handling convention.
 #[cfg(feature = "minimal")]
 fn provable_sum_from_aggregate(data: AggregateData) -> Result<i64, Error> {
     match data {
         AggregateData::ProvableSum(s) => Ok(s),
-        other => Err(Error::InvalidProofError(format!(
+        other => Err(Error::CorruptedData(format!(
             "expected ProvableSum aggregate data on a provable sum tree, got {:?}",
             other
         ))),
@@ -240,7 +243,11 @@ where
         let aggregate = match walker.tree().aggregate_data() {
             Ok(a) => a,
             Err(e) => {
-                return Err(Error::InvalidProofError(format!("aggregate_data: {}", e)))
+                // Local prover-side walk over our own merk — if the
+                // node refuses to surface aggregate_data, that is a
+                // storage/state corruption, not a peer-supplied
+                // invalid proof.
+                return Err(Error::CorruptedData(format!("aggregate_data: {}", e)))
                     .wrap_with_cost(cost);
             }
         };
@@ -283,7 +290,10 @@ where
     let node_sum: i64 = match walker
         .tree()
         .aggregate_data()
-        .map_err(|e| Error::InvalidProofError(format!("aggregate_data: {}", e)))
+        // Local prover-side walk over our own merk — failure to read
+        // aggregate_data is local state corruption, not a peer-supplied
+        // invalid proof.
+        .map_err(|e| Error::CorruptedData(format!("aggregate_data: {}", e)))
     {
         Ok(data) => match provable_sum_from_aggregate(data) {
             Ok(s) => s,
