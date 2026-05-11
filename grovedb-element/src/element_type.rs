@@ -304,11 +304,19 @@ impl ElementType {
         }
     }
 
-    /// Returns true if this is a `NonCountedXxx` discriminant. Tested by
-    /// upper-nibble compare since `NotSummedXxx` also has bit 7 set.
+    /// Returns true if this is a `NonCountedXxx` discriminant.
+    ///
+    /// The NonCounted range is `[128, 146]` (= `0x80 | base` for bases
+    /// 0..=18, modulo unallocated slots 143/144 which correspond to
+    /// the two on-disk wrapper bytes 15/16). Discriminants ≥ 0xb0
+    /// belong to the NotSummed twin range and must NOT match here.
+    /// Upper-nibble compare `== 0x80` does not work because bases 17
+    /// and 18 map to 145 (`0x91`) and 146 (`0x92`) — different upper
+    /// nibble. So gate on bit 7 set AND below the NotSummed range.
     #[inline]
     pub const fn is_non_counted(self) -> bool {
-        (self as u8) & 0xf0 == NON_COUNTED_FLAG
+        let disc = self as u8;
+        (disc & NON_COUNTED_FLAG) != 0 && disc < NOT_SUMMED_TWIN_PREFIX
     }
 
     /// Returns true if this is a `NotSummedXxx` discriminant.
@@ -321,7 +329,8 @@ impl ElementType {
     /// bits. For base types, returns `self` unchanged.
     ///
     /// The two wrapper twin ranges share bit 7 but are distinguished by the
-    /// upper nibble (`0x80` for `NonCounted`, `0xb0` for `NotSummed`).
+    /// upper nibble (`0x80`–`0x9F` for `NonCounted`, `0xb0` for
+    /// `NotSummed`).
     /// Constructors and (de)serializers reject any wrapper nesting, so only
     /// one wrapper status is ever set on any valid `ElementType` instance.
     #[inline]
