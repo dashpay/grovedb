@@ -99,7 +99,15 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree") || msg.contains("cidx"),
+                    "expected cidx-requirement InvalidPath, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
     }
 
     #[test]
@@ -943,7 +951,13 @@ mod tests {
         )];
 
         let result = db.apply_batch(ops, None, None, grove_version).unwrap();
-        assert!(result.is_err());
+        // Batch creation of non-empty cidx is rejected: the on-disk
+        // storage at the claimed primary/secondary root_keys would not
+        // actually exist, so this is an invariant violation.
+        assert!(
+            result.is_err(),
+            "non-empty cidx batch creation must be rejected"
+        );
     }
 
     #[test]
@@ -1294,10 +1308,15 @@ mod tests {
             .unwrap()
             .expect("prove");
 
-        // Verify with a different path — should fail.
+        // Verify with a different path — should fail with CorruptedData
+        // since the path doesn't match what the proof was generated for.
         let wrong_path: &[&[u8]] = &[TEST_LEAF, b"wrong_key"];
         let result = GroveDb::verify_count_indexed_top_k(&proof_bytes, wrong_path);
-        assert!(result.is_err(), "verification with wrong path must fail");
+        assert!(
+            matches!(result, Err(crate::Error::CorruptedData(_))),
+            "verification with wrong path must fail with CorruptedData, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1326,7 +1345,19 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-        assert!(result.is_err());
+        // Opening the primary merk to validate root_keys fails earlier
+        // — with InvalidParentLayerPath — because the cidx subtree
+        // hasn't been created yet (this is its first-ever insert). The
+        // safe outcome either way is "the bogus state never lands on
+        // disk"; both variants below are acceptable.
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::InvalidInput(_) | crate::Error::InvalidParentLayerPath(_))
+            ),
+            "expected InvalidInput or InvalidParentLayerPath, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1351,7 +1382,14 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-        assert!(result.is_err());
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::InvalidInput(_) | crate::Error::InvalidParentLayerPath(_))
+            ),
+            "expected InvalidInput or InvalidParentLayerPath, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1525,7 +1563,11 @@ mod tests {
         let result = db
             .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
             .unwrap();
-        assert!(result.is_err(), "cidx element should be gone after delete");
+        assert!(
+            matches!(result, Err(crate::Error::PathKeyNotFound(_))),
+            "cidx element should be PathKeyNotFound after delete, got {:?}",
+            result
+        );
 
         // Re-create a fresh cidx at the same path; populate it. If the
         // old secondary storage wasn't cleaned, the new secondary's
@@ -1625,7 +1667,11 @@ mod tests {
         let result = db
             .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::PathKeyNotFound(_))),
+            "deleted cidx must return PathKeyNotFound, got {:?}",
+            result
+        );
 
         // Re-create + populate; query must see only the fresh entry.
         db.insert(
@@ -1960,7 +2006,15 @@ mod tests {
         let result = db
             .apply_batch(ops, Some(opts), None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidBatchOperation(msg)) => {
+                assert!(
+                    msg.contains("tree"),
+                    "expected tree-overwrite InvalidBatchOperation, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2286,19 +2340,36 @@ mod tests {
         let result = db
             .prove_count_indexed_top_k(empty_path, 3, true, None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("root") || msg.contains("layer") || msg.contains("at least"),
+                    "expected root-path InvalidPath message, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
     }
 
     #[test]
     fn prove_count_indexed_top_k_on_non_cidx_target_errors() {
-        // Proving over a path whose terminal element is not a cidx must fail.
+        // Proving over a path whose terminal element is not a cidx must
+        // fail with InvalidPath naming the cidx requirement.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         // TEST_LEAF is a Tree, not a CountIndexedTree.
         let result = db
             .prove_count_indexed_top_k([TEST_LEAF].as_ref(), 3, true, None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree") || msg.contains("cidx"),
+                    "expected cidx-requirement InvalidPath, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2308,7 +2379,15 @@ mod tests {
         let result = db
             .count_indexed_top_k([TEST_LEAF].as_ref(), 3, true, None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree") || msg.contains("cidx"),
+                    "expected cidx-requirement InvalidPath, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2318,7 +2397,15 @@ mod tests {
         let result = db
             .count_indexed_count_range([TEST_LEAF].as_ref(), 0, 100, false, 10, None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree") || msg.contains("cidx"),
+                    "expected cidx-requirement InvalidPath, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2328,7 +2415,15 @@ mod tests {
         let result = db
             .reconcile_count_indexed_tree_secondary([TEST_LEAF].as_ref(), None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree") || msg.contains("cidx"),
+                    "expected cidx-requirement InvalidPath, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2338,7 +2433,15 @@ mod tests {
         let result = db
             .delete_from_count_indexed_tree([TEST_LEAF].as_ref(), b"item", None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree") || msg.contains("cidx"),
+                    "expected cidx-requirement InvalidPath, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2577,7 +2680,11 @@ mod tests {
         let result = db
             .count_indexed_top_k(empty_path, 3, true, None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::InvalidPath(_))),
+            "root-path top_k must fail with InvalidPath, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2588,7 +2695,11 @@ mod tests {
         let result = db
             .count_indexed_count_range(empty_path, 0, 100, false, 10, None, grove_version)
             .unwrap();
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::InvalidPath(_))),
+            "root-path count_range must fail with InvalidPath, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2692,7 +2803,17 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-        assert!(result.is_err(), "dangling reference must produce an error");
+        // Reference resolution returns CorruptedReferencePathKeyNotFound
+        // when the target doesn't exist — that's the safe failure mode
+        // for dangling references documented in the delete/mod.rs docs.
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::CorruptedReferencePathKeyNotFound(_))
+            ),
+            "dangling reference must produce CorruptedReferencePathKeyNotFound, got {:?}",
+            result
+        );
     }
 
     #[test]
