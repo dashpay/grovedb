@@ -1164,7 +1164,8 @@ mod tests {
         assert!(!proof_bytes.is_empty());
 
         let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
-        let result = GroveDb::verify_count_indexed_top_k(&proof_bytes, path).expect("verify top-3");
+        let result =
+            GroveDb::verify_count_indexed_top_k(&proof_bytes, path, 3, true).expect("verify top-3");
 
         // Verifier should reconstruct the same root hash GroveDB has.
         let actual_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
@@ -1215,7 +1216,8 @@ mod tests {
             .expect("prove top-2 asc");
 
         let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
-        let result = GroveDb::verify_count_indexed_top_k(&proof_bytes, path).expect("verify");
+        let result =
+            GroveDb::verify_count_indexed_top_k(&proof_bytes, path, 2, false).expect("verify");
 
         let actual_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
         assert_eq!(result.root_hash, actual_root);
@@ -1272,7 +1274,7 @@ mod tests {
         }
 
         let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
-        let result = GroveDb::verify_count_indexed_top_k(&tampered, path);
+        let result = GroveDb::verify_count_indexed_top_k(&tampered, path, 2, true);
         assert!(
             result.is_err(),
             "tampered proof must be rejected by the verifier"
@@ -1311,7 +1313,7 @@ mod tests {
         // Verify with a different path — should fail with CorruptedData
         // since the path doesn't match what the proof was generated for.
         let wrong_path: &[&[u8]] = &[TEST_LEAF, b"wrong_key"];
-        let result = GroveDb::verify_count_indexed_top_k(&proof_bytes, wrong_path);
+        let result = GroveDb::verify_count_indexed_top_k(&proof_bytes, wrong_path, 1, true);
         assert!(
             matches!(result, Err(crate::Error::CorruptedData(_))),
             "verification with wrong path must fail with CorruptedData, got {:?}",
@@ -2850,7 +2852,7 @@ mod tests {
     #[test]
     fn verify_count_indexed_top_k_rejects_corrupt_proof_bytes() {
         // Garbage proof bytes — bincode decode fails first.
-        let result = GroveDb::verify_count_indexed_top_k(b"not-a-valid-proof", &[b"x"]);
+        let result = GroveDb::verify_count_indexed_top_k(b"not-a-valid-proof", &[b"x"], 1, true);
         assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
     }
 
@@ -2906,8 +2908,8 @@ mod tests {
             .unwrap()
             .expect("prove nested cidx top-k");
         let path: &[&[u8]] = &[TEST_LEAF, b"outer_cidx", b"inner_cidx"];
-        let result =
-            GroveDb::verify_count_indexed_top_k(&proof, path).expect("verify nested cidx top-k");
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path, 10, true)
+            .expect("verify nested cidx top-k");
         assert_eq!(result.entries.len(), 3);
         let expected_root = db
             .root_hash(None, grove_version)
@@ -3102,7 +3104,8 @@ mod tests {
             .unwrap()
             .expect("prove top-3");
         let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
-        let result = GroveDb::verify_count_indexed_top_k(&proof, path).expect("verify top-3");
+        let result =
+            GroveDb::verify_count_indexed_top_k(&proof, path, 3, true).expect("verify top-3");
         assert_eq!(result.entries.len(), 2);
         assert_eq!(result.entries[0], (1u64, b"a".to_vec()));
         assert_eq!(result.entries[1], (0u64, b"c".to_vec()));
@@ -3110,7 +3113,7 @@ mod tests {
 
     #[test]
     fn verify_count_indexed_top_k_rejects_truncated_proof() {
-        let result = GroveDb::verify_count_indexed_top_k(b"\x00\x01", &[b"x"]);
+        let result = GroveDb::verify_count_indexed_top_k(b"\x00\x01", &[b"x"], 1, true);
         assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
     }
 
@@ -3219,7 +3222,7 @@ mod tests {
 
         let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
         let result =
-            GroveDb::verify_count_indexed_query(&proof, q, path).expect("verify arbitrary");
+            GroveDb::verify_count_indexed_query(&proof, q, None, path).expect("verify arbitrary");
         // Should yield c (count=3) and d (count=5); b (count=2) and e
         // (count=8) are outside the [3, 5] window.
         assert_eq!(result.entries.len(), 2);
@@ -3258,7 +3261,7 @@ mod tests {
 
         // Use a path that has the wrong number of segments.
         let bad_path: &[&[u8]] = &[TEST_LEAF, b"cidx", b"extra"];
-        let result = GroveDb::verify_count_indexed_top_k(&proof, bad_path);
+        let result = GroveDb::verify_count_indexed_top_k(&proof, bad_path, 3, true);
         assert!(matches!(result, Err(crate::Error::CorruptedData(_))));
     }
 
@@ -5015,7 +5018,7 @@ mod tests {
             // The contract: never panic, always return Err for invalid
             // input. Genuinely valid proofs are vanishingly unlikely
             // from random bytes, so we expect Err in all cases.
-            let result = GroveDb::verify_count_indexed_top_k(&bytes, path);
+            let result = GroveDb::verify_count_indexed_top_k(&bytes, path, 10, true);
             assert!(
                 result.is_err(),
                 "iteration {iteration}: random {size}-byte buffer parsed as valid proof"
@@ -5047,7 +5050,7 @@ mod tests {
             // Randomize direction so both code paths are exercised.
             q.left_to_right = rng.next_u64() & 1 == 0;
 
-            let result = GroveDb::verify_count_indexed_query(&bytes, q, path);
+            let result = GroveDb::verify_count_indexed_query(&bytes, q, None, path);
             assert!(
                 result.is_err(),
                 "iteration {iteration}: random {size}-byte buffer parsed as valid query proof"
@@ -5136,8 +5139,8 @@ mod tests {
                 ),
             };
 
-            let verified =
-                GroveDb::verify_count_indexed_query(&proof, q, path).unwrap_or_else(|e| {
+            let verified = GroveDb::verify_count_indexed_query(&proof, q, limit, path)
+                .unwrap_or_else(|e| {
                     panic!(
                         "iteration {iteration}: verify failed (lo={lo}, hi={hi}, limit={:?}): \
                          {:?}",
@@ -5824,7 +5827,8 @@ mod tests {
                 .prove_count_indexed_top_k(path, 10, descending, None, grove_version)
                 .unwrap()
                 .expect("prove");
-            let result = GroveDb::verify_count_indexed_top_k(&proof, path).expect("verify");
+            let result =
+                GroveDb::verify_count_indexed_top_k(&proof, path, 10, descending).expect("verify");
             if descending {
                 // Descending: b(2), a(1), c(0)
                 assert_eq!(
@@ -7111,11 +7115,17 @@ mod tests {
             primary_root_hash: [0u8; 32],
             ancestor_cidx_secondary_root_hashes: Vec::new(),
             secondary_proof: Vec::new(),
-            requested_limit: 0,
+            // Match the test's expected_k=1, expected_descending=false
+            // below so the new envelope-matches-expected check passes
+            // and the zero-layer guard is reached. Without this match
+            // the test would fail on the direction/limit guard instead
+            // (which is also correct rejection, but a different code
+            // path).
+            requested_limit: Some(1),
             descending: false,
         };
         let bytes = bincode::encode_to_vec(&envelope, bincode::config::standard()).unwrap();
-        let result = GroveDb::verify_count_indexed_top_k(&bytes, &[]);
+        let result = GroveDb::verify_count_indexed_top_k(&bytes, &[], 1, false);
         match result {
             Err(crate::Error::CorruptedData(msg)) => {
                 assert!(
@@ -7289,5 +7299,524 @@ mod tests {
             .verify_grovedb(None, false, true, grove_version)
             .expect("verify");
         assert!(issues.is_empty());
+    }
+
+    // =====================================================================
+    // Audit fix tests (PR comment 4422941255).
+    //
+    // P1: verify_count_indexed_top_k / verify_count_indexed_query must bind
+    //     caller intent (expected_k / expected_descending / expected_limit)
+    //     and reject envelopes whose parameters do not match. Also,
+    //     `requested_limit` must distinguish `None` from `Some(0)`.
+    //
+    // P2: reconcile_count_indexed_tree_secondary must refuse to synthesize a
+    //     secondary key from a primary key whose length exceeds the cidx
+    //     ceiling. verify_grovedb must also flag oversized primary keys via
+    //     the `__cidx_primary_key_oversize__` sentinel.
+    // =====================================================================
+
+    /// Injects an `Element::new_item` directly into the cidx primary at
+    /// `raw_key`, bypassing the cidx insert wrapper's length check, and
+    /// propagates the primary's new root_key/root_hash into the parent's
+    /// cidx element so the layered merk pointer stays consistent. The
+    /// secondary is left untouched — used to simulate legacy/corrupt
+    /// states (oversize keys, primary entries with no secondary mirror).
+    /// Only use with `raw_key.len() < 256` since merk still enforces its
+    /// own key-length invariant.
+    fn corrupt_primary_insert_oversized(
+        db: &crate::GroveDb,
+        cidx_primary_path: &[&[u8]],
+        raw_key: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        use grovedb_merk::element::{
+            get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+            reconstruct::ElementReconstructExtensions,
+        };
+        use grovedb_path::SubtreePath;
+        use grovedb_storage::{Storage, StorageBatch};
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path_vec: Vec<&[u8]> = cidx_primary_path.to_vec();
+        let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+        let (parent_path, cidx_key) = path.derive_parent().expect("non-root cidx");
+
+        // 1. Read the current cidx element from the parent so we can
+        //    reconstruct it with the post-insert root_key/aggregate.
+        let cidx_element = {
+            let parent_merk = db
+                .open_transactional_merk_at_path(
+                    parent_path.clone(),
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open parent");
+            Element::get(&parent_merk, cidx_key, true, grove_version)
+                .unwrap()
+                .expect("cidx element")
+        };
+
+        // 2. Insert the bogus item into the primary. Item is non-counted
+        //    + non-summed, which is acceptable in a count-bearing tree.
+        let (primary_root_hash, primary_root_key, primary_aggregate_data) = {
+            let mut primary_merk = db
+                .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), grove_version)
+                .unwrap()
+                .expect("open primary");
+            let bogus = Element::new_item(b"v".to_vec());
+            bogus
+                .insert(&mut primary_merk, raw_key, None, grove_version)
+                .unwrap()
+                .expect("insert oversize key into primary");
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("snapshot primary post-insert")
+        };
+
+        // Pull the current secondary_root_key off the cidx element
+        // once for use in both the secondary open and the reconstruct.
+        let secondary_root_key_now = match cidx_element.underlying() {
+            Element::CountIndexedTree(_, s, ..) | Element::ProvableCountIndexedTree(_, s, ..) => {
+                s.clone()
+            }
+            _ => panic!("not a cidx element"),
+        };
+
+        // 3. Reconstruct parent's cidx element with the new primary
+        //    root_key/aggregate; keep secondary_root_key as-is, then
+        //    write it back. The parent's pointer is now consistent with
+        //    the primary's new tree, so verify_grovedb's recursion can
+        //    walk into the primary and observe the oversize key.
+        let secondary_root_hash = {
+            let secondary_merk = db
+                .open_count_indexed_secondary_at_path(
+                    path.clone(),
+                    secondary_root_key_now.clone(),
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open secondary");
+            let (h, _, _) = secondary_merk
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("snapshot secondary");
+            h
+        };
+
+        let reconstructed = cidx_element
+            .reconstruct_with_two_root_keys(
+                primary_root_key,
+                secondary_root_key_now,
+                primary_aggregate_data,
+            )
+            .expect("reconstruct cidx element");
+        {
+            let mut parent_merk = db
+                .open_transactional_merk_at_path(parent_path, &tx, Some(&batch), grove_version)
+                .unwrap()
+                .expect("open parent (write)");
+            reconstructed
+                .insert_count_indexed_subtree(
+                    &mut parent_merk,
+                    cidx_key,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("rewrite parent cidx element");
+        }
+
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("commit transaction");
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_wrong_expected_descending() {
+        // P1: a valid descending=true proof must NOT verify when the caller
+        // requested descending=false. A malicious prover could otherwise
+        // answer a top-N-largest request with a top-N-smallest proof that
+        // chains to the same root.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let proof = db
+            .prove_count_indexed_top_k(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                10,
+                true, // prove descending
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        // Same k, opposite direction — must be rejected.
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path, 10, false);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("direction mismatch"),
+                    "expected direction-mismatch error, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData direction mismatch, got: {other:?}"),
+        }
+        // Sanity: original (matching) parameters still verify.
+        GroveDb::verify_count_indexed_top_k(&proof, path, 10, true)
+            .expect("matching params should verify");
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_wrong_expected_k() {
+        // P1: a valid k=5 proof must NOT verify when the caller requested
+        // k=10. Different k changes how many entries the verifier is
+        // willing to accept from the underlying merk proof.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let proof = db
+            .prove_count_indexed_top_k(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5, // prover used k=5
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path, 10, true);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("limit mismatch"),
+                    "expected limit-mismatch error, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData limit mismatch, got: {other:?}"),
+        }
+        GroveDb::verify_count_indexed_top_k(&proof, path, 5, true)
+            .expect("matching k should verify");
+    }
+
+    #[test]
+    fn verify_count_indexed_query_rejects_wrong_expected_limit() {
+        // P1: prove with limit=Some(5), verify with limit=Some(10) — reject.
+        use grovedb_merk::proofs::Query as MerkQuery;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b", b"c"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let mut q = MerkQuery::new();
+        q.insert_all();
+        q.left_to_right = false;
+        let proof = db
+            .prove_count_indexed_query(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                q.clone(),
+                Some(5),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_query(&proof, q.clone(), Some(10), path);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("limit mismatch"),
+                    "expected limit-mismatch error, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData limit mismatch, got: {other:?}"),
+        }
+        GroveDb::verify_count_indexed_query(&proof, q, Some(5), path)
+            .expect("matching limit should verify");
+    }
+
+    #[test]
+    fn verify_count_indexed_query_distinguishes_none_from_some_zero() {
+        // P1: requested_limit is Option<u16>; a proof produced with
+        // limit=None must not verify when the caller asks for Some(0)
+        // (and vice-versa). Without the Option, `0` was conflated with
+        // "no limit".
+        use grovedb_merk::proofs::Query as MerkQuery;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Need at least one entry so the prove path exercises secondary
+        // proof generation rather than the empty-cidx short-circuit.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+        let mut q = MerkQuery::new();
+        q.insert_all();
+        q.left_to_right = true;
+
+        // Prove with None, verify with Some(0).
+        let proof_none = db
+            .prove_count_indexed_query(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                q.clone(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove with None");
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_query(&proof_none, q.clone(), Some(0), path);
+        assert!(
+            matches!(result, Err(crate::Error::CorruptedData(_))),
+            "Some(0) verify of a None proof should reject, got: {result:?}"
+        );
+        // And the inverse: prove with Some(0), verify with None.
+        let proof_zero = db
+            .prove_count_indexed_query(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                q.clone(),
+                Some(0),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove with Some(0)");
+        let result = GroveDb::verify_count_indexed_query(&proof_zero, q.clone(), None, path);
+        assert!(
+            matches!(result, Err(crate::Error::CorruptedData(_))),
+            "None verify of a Some(0) proof should reject, got: {result:?}"
+        );
+        // Sanity: matching None ↔ None and Some(0) ↔ Some(0) verify.
+        GroveDb::verify_count_indexed_query(&proof_none, q.clone(), None, path)
+            .expect("None ↔ None verify");
+        GroveDb::verify_count_indexed_query(&proof_zero, q, Some(0), path)
+            .expect("Some(0) ↔ Some(0) verify");
+    }
+
+    #[test]
+    fn reconcile_rejects_oversized_primary_key() {
+        // P2: an oversize primary key (> 247 bytes) injected by a code
+        // path that bypassed the cidx-key length check must cause
+        // reconcile to fail closed with CorruptedData rather than build
+        // a secondary key that violates Merk's < 256 invariant.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // 248 = MAX_CIDX_ITEM_KEY_LEN + 1, well under merk's 256-byte
+        // ceiling. Different first byte from any cidx_item_key we ever
+        // use to keep this isolated.
+        let oversize_key = vec![0xAAu8; 248];
+        corrupt_primary_insert_oversized(&db, &[TEST_LEAF, b"cidx"], &oversize_key, grove_version);
+
+        let result = db
+            .reconcile_count_indexed_tree_secondary(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("248 bytes") && msg.contains("247"),
+                    "expected oversize-key error, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData for oversize primary key, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn corrupt_primary_insert_helper_roundtrips_short_key() {
+        // Sanity-check the helper: inserting a SHORT key directly into
+        // the cidx primary via Element::insert + parent-rewrite must
+        // produce a primary whose verify_grovedb recurses cleanly. The
+        // resulting state is intentionally drifty (the secondary wasn't
+        // mirrored), so verify_grovedb still flags drift — but the
+        // recursion itself must not error with "expected merk to
+        // contain value at key ... for item", which would indicate the
+        // helper failed to keep the parent's primary_root_key in sync
+        // with the primary's new root.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        corrupt_primary_insert_oversized(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            b"short", // 5 bytes, well under the ceiling
+            grove_version,
+        );
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb must succeed (recursion-level)");
+        // Expect at least a primary_orphan sentinel for "short" (the
+        // secondary lacks the mirror) — confirms the recursion got
+        // through the cidx walk.
+        let primary_orphan_path: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"cidx".to_vec(),
+            b"__cidx_primary_orphan__".to_vec(),
+            b"short".to_vec(),
+        ];
+        assert!(
+            issues.contains_key(&primary_orphan_path),
+            "expected __cidx_primary_orphan__ for 'short' (helper sanity), \
+             got issues: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn verify_grovedb_flags_oversized_primary_key() {
+        // P2: verify_grovedb must surface oversize cidx primary keys via
+        // the `__cidx_primary_key_oversize__` sentinel so operators can
+        // discover the corruption without having to run reconcile.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let oversize_key = vec![0xBBu8; 250];
+        corrupt_primary_insert_oversized(&db, &[TEST_LEAF, b"cidx"], &oversize_key, grove_version);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        let oversize_sentinel: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"cidx".to_vec(),
+            b"__cidx_primary_key_oversize__".to_vec(),
+            oversize_key.clone(),
+        ];
+        assert!(
+            issues.contains_key(&oversize_sentinel),
+            "expected __cidx_primary_key_oversize__ sentinel for the {}-byte key, \
+             got issues: {:?}",
+            oversize_key.len(),
+            issues.keys().collect::<Vec<_>>()
+        );
+        // Diagnostic: the length is encoded in the last 8 bytes of the
+        // third hash slot.
+        let len_slot = issues.get(&oversize_sentinel).expect("sentinel present").2;
+        let encoded_len =
+            u64::from_be_bytes(len_slot[24..32].try_into().expect("8 bytes")) as usize;
+        assert_eq!(
+            encoded_len,
+            oversize_key.len(),
+            "oversize sentinel should encode the actual key length"
+        );
     }
 }

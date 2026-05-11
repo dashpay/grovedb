@@ -69,15 +69,20 @@ pub struct CountIndexedRangeProof {
     /// independently with the existing `Query::execute_proof` API; yields
     /// the secondary's root hash and the (count_be ‖ key) entries.
     pub secondary_proof: Vec<u8>,
-    /// Echoed query limit. Used by the verifier to interpret /
-    /// validate the secondary proof. Encoded as 0 when the prover
-    /// supplied `None` for the limit; the verifier maps 0 back to
-    /// `None`.
-    pub requested_limit: u16,
+    /// Echoed query limit. The verifier uses this to interpret the
+    /// secondary proof's bounded-vs-unbounded shape, AND the caller
+    /// must supply an expected limit so the verifier rejects an
+    /// envelope whose limit doesn't match the requested semantics.
+    /// `None` is distinct from `Some(0)`: `None` means "no limit"
+    /// while `Some(0)` means "limit zero results" (degenerate).
+    pub requested_limit: Option<u16>,
     /// Echoed iteration direction. `false` = ascending (left-to-right
     /// over secondary keys, lowest counts first); `true` = descending
-    /// (highest counts first). Must match the prover's direction or
-    /// the merk proof's positional binding fails verification.
+    /// (highest counts first). The caller-facing verify entry points
+    /// take an `expected_descending` argument; the verifier rejects
+    /// any envelope whose direction doesn't match, so a malicious
+    /// prover cannot answer a top-k request with a valid bottom-k
+    /// proof (same root, same path, different semantics).
     pub descending: bool,
 }
 
@@ -320,12 +325,12 @@ impl GroveDb {
                 grove_version,
             )
         );
-        // Echo the user-supplied query parameters needed by the verifier
-        // to interpret the secondary proof. `requested_limit` is the
-        // resolved u16 (0 means "no limit"); `descending` is just
-        // !left_to_right echoed for the existing top-k convenience field.
+        // Echo the user-supplied query parameters into the envelope.
+        // The verifier authenticates these against the caller's
+        // expected_limit / expected_descending; we preserve Option
+        // semantics for the limit (no None↔0 conflation).
         let descending = !secondary_query.left_to_right;
-        let requested_limit = limit.unwrap_or(0);
+        let requested_limit = limit;
         let sec_result = cost_return_on_error!(
             &mut cost,
             secondary_merk
@@ -385,9 +390,18 @@ impl GroveDb {
     /// Verify a count-indexed top-k / range proof produced by
     /// [`Self::prove_count_indexed_top_k`]. Returns the GroveDB root
     /// hash this proof reconstructs together with the proven entries.
+    ///
+    /// The caller MUST supply `expected_k` and `expected_descending`
+    /// matching the request that produced the proof. The verifier
+    /// authenticates these against the envelope so a malicious prover
+    /// cannot answer a `(k=10, descending=true)` request with a valid
+    /// `(k=5, descending=false)` proof — both could chain to the same
+    /// GroveDB root via the same path but expose different content.
     pub fn verify_count_indexed_top_k(
         proof_bytes: &[u8],
         path: &[&[u8]],
+        expected_k: u16,
+        expected_descending: bool,
     ) -> Result<CountIndexedQueryResult, Error> {
         // Bound the decode to a sane upper limit so adversarial input
         // claiming a huge Vec length can't trigger a capacity-overflow
@@ -399,6 +413,21 @@ impl GroveDb {
         let (envelope, _): (CountIndexedRangeProof, _) =
             bincode::decode_from_slice(proof_bytes, config)
                 .map_err(|e| Error::CorruptedData(format!("decoding cidx proof: {e}")))?;
+        // Authenticate caller intent. Reject envelopes whose semantics
+        // don't match the request before doing any further work.
+        if envelope.descending != expected_descending {
+            return Err(Error::CorruptedData(format!(
+                "cidx top_k proof direction mismatch: expected descending={}, envelope \
+                 carries descending={}",
+                expected_descending, envelope.descending
+            )));
+        }
+        if envelope.requested_limit != Some(expected_k) {
+            return Err(Error::CorruptedData(format!(
+                "cidx top_k proof limit mismatch: expected Some({}), envelope carries {:?}",
+                expected_k, envelope.requested_limit
+            )));
+        }
         let mut full_range = MerkQuery::new();
         full_range.insert_all();
         full_range.left_to_right = !envelope.descending;
@@ -406,12 +435,16 @@ impl GroveDb {
     }
 
     /// Verify a proof produced by [`Self::prove_count_indexed_query`].
+    ///
     /// `secondary_query` must match the query supplied at proof time
     /// (positional binding: the merk proof's encoded sequence is
-    /// query-shape-dependent).
+    /// query-shape-dependent). `expected_limit` must match the limit
+    /// supplied at proof time; an envelope claiming a different limit
+    /// is rejected. `None` and `Some(0)` are distinct.
     pub fn verify_count_indexed_query(
         proof_bytes: &[u8],
         secondary_query: MerkQuery,
+        expected_limit: Option<u16>,
         path: &[&[u8]],
     ) -> Result<CountIndexedQueryResult, Error> {
         // Bound the decode to a sane upper limit so adversarial input
@@ -424,6 +457,26 @@ impl GroveDb {
         let (envelope, _): (CountIndexedRangeProof, _) =
             bincode::decode_from_slice(proof_bytes, config)
                 .map_err(|e| Error::CorruptedData(format!("decoding cidx proof: {e}")))?;
+        // Authenticate the limit. (Direction is authenticated by the
+        // secondary_query's `left_to_right` field through merk's
+        // positional binding — the envelope's `descending` is
+        // informational here. We still check it for symmetry with
+        // top_k so subtle bugs in the caller-supplied query don't
+        // silently pass.)
+        if envelope.requested_limit != expected_limit {
+            return Err(Error::CorruptedData(format!(
+                "cidx query proof limit mismatch: expected {:?}, envelope carries {:?}",
+                expected_limit, envelope.requested_limit
+            )));
+        }
+        let expected_descending = !secondary_query.left_to_right;
+        if envelope.descending != expected_descending {
+            return Err(Error::CorruptedData(format!(
+                "cidx query proof direction mismatch: secondary_query implies \
+                 descending={}, envelope carries descending={}",
+                expected_descending, envelope.descending
+            )));
+        }
         Self::verify_count_indexed_inner(envelope, secondary_query, path)
     }
 
@@ -467,11 +520,9 @@ impl GroveDb {
         //    `combine_hash(H(child_bytes), child_root_hash)`.
 
         // 1a. Verify the secondary range proof first (no chain dep).
-        let limit_for_verify = if envelope.requested_limit == 0 {
-            None
-        } else {
-            Some(envelope.requested_limit)
-        };
+        // `requested_limit` is now an explicit Option<u16>; pass it
+        // through unchanged (no None↔0 conflation).
+        let limit_for_verify = envelope.requested_limit;
         let left_to_right = secondary_query.left_to_right;
         let (secondary_root_hash, sec_result) = secondary_query
             .execute_proof(

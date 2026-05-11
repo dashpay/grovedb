@@ -817,6 +817,25 @@ impl GroveDb {
             KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap_add_cost(&mut cost);
         let mut entries: Vec<(u64, Vec<u8>)> = Vec::new();
         while let Some((key, value_bytes)) = iter.next_kv().unwrap_add_cost(&mut cost) {
+            // Reject oversized primary keys before they can drive
+            // make_secondary_key to synthesize a secondary key that
+            // violates Merk's < 256-byte invariant. The cidx write
+            // paths now enforce this (commit 978dc2d9), but reconcile
+            // operates over EXISTING storage which may contain legacy
+            // or externally-injected oversize keys; fail closed
+            // rather than corrupting the secondary.
+            if key.len() > MAX_CIDX_ITEM_KEY_LEN {
+                return Err(Error::CorruptedData(format!(
+                    "reconcile_count_indexed_tree_secondary found a primary key of length \
+                     {} bytes which exceeds the cidx ceiling of {} bytes; refusing to \
+                     synthesize an oversize secondary key. The cidx primary at this path \
+                     was written by a code path that bypassed the cidx-key length check \
+                     and is corrupt — investigate the source before re-running reconcile",
+                    key.len(),
+                    MAX_CIDX_ITEM_KEY_LEN
+                )))
+                .wrap_with_cost(cost);
+            }
             let element = cost_return_on_error_no_add!(
                 cost,
                 Element::raw_decode(&value_bytes, grove_version).map_err(|e| {

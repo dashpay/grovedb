@@ -1378,6 +1378,28 @@ impl GroveDb {
                     let mut content_iter =
                         KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap();
                     while let Some((p_key, p_value)) = content_iter.next_kv().unwrap() {
+                        // Cidx primary keys must be ≤ 247 bytes so the
+                        // derived secondary key (count_be ‖ key) fits
+                        // under Merk's < 256-byte invariant. Oversize
+                        // keys can only enter the primary via a code
+                        // path that bypassed the cidx-key length check
+                        // (legacy data, corruption, external storage
+                        // injection). Flag explicitly via a sentinel
+                        // path so the cause is visible.
+                        if p_key.len()
+                            > crate::operations::count_indexed_tree::MAX_CIDX_ITEM_KEY_LEN
+                        {
+                            let mut p = new_path.to_vec();
+                            p.push(b"__cidx_primary_key_oversize__".to_vec());
+                            p.push(p_key.clone());
+                            // Encode the key's actual length in the
+                            // last 8 bytes of the third hash slot for
+                            // diagnostic.
+                            let mut len_slot = [0u8; 32];
+                            let len_be = (p_key.len() as u64).to_be_bytes();
+                            len_slot[24..32].copy_from_slice(&len_be);
+                            issues.insert(p, ([0u8; 32], [0u8; 32], len_slot));
+                        }
                         let p_elem = Element::raw_decode(&p_value, grove_version)?;
                         primary_entries.insert(p_key, p_elem.count_value_or_default());
                     }
