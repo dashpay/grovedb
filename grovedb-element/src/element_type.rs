@@ -928,6 +928,28 @@ mod tests {
     }
 
     #[test]
+    fn test_as_str_for_phase2_variants() {
+        // Phase 2: cover the as_str / Display path for the new ProvableSumTree
+        // variant and its synthetic NonCountedProvableSumTree / NotSummed
+        // twins. The Display impl delegates to `as_str`, so we go through it
+        // to make the test resilient.
+        assert_eq!(ElementType::ProvableSumTree.as_str(), "provable sum tree");
+        assert_eq!(
+            ElementType::NonCountedProvableSumTree.as_str(),
+            "non_counted provable sum tree"
+        );
+        assert_eq!(
+            ElementType::NotSummedProvableSumTree.as_str(),
+            "not_summed provable sum tree"
+        );
+        // Display delegation.
+        assert_eq!(
+            format!("{}", ElementType::NonCountedProvableSumTree),
+            "non_counted provable sum tree"
+        );
+    }
+
+    #[test]
     fn test_proof_node_type_regular_tree() {
         use super::ProofNodeType;
 
@@ -1052,6 +1074,54 @@ mod tests {
         assert_eq!(
             ElementType::Tree.proof_node_type(pcst),
             ProofNodeType::KvValueHashFeatureType
+        );
+    }
+
+    #[test]
+    fn test_proof_node_type_provable_sum_tree() {
+        // Phase 2: inside a ProvableSumTree parent, items map to KvSum and
+        // references map to KvRefValueHashSum. Subtrees still use
+        // KvValueHashFeatureType (the embedded TreeFeatureType carries the
+        // aggregate). This exercises the `is_provable_sum_tree` branches in
+        // `proof_node_type`.
+        use super::ProofNodeType;
+
+        let pst = Some(ElementType::ProvableSumTree);
+
+        assert_eq!(ElementType::Item.proof_node_type(pst), ProofNodeType::KvSum);
+        assert_eq!(
+            ElementType::SumItem.proof_node_type(pst),
+            ProofNodeType::KvSum
+        );
+        assert_eq!(
+            ElementType::ItemWithSumItem.proof_node_type(pst),
+            ProofNodeType::KvSum
+        );
+
+        assert_eq!(
+            ElementType::Reference.proof_node_type(pst),
+            ProofNodeType::KvRefValueHashSum
+        );
+
+        // Subtrees still go through KvValueHashFeatureType.
+        assert_eq!(
+            ElementType::Tree.proof_node_type(pst),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::SumTree.proof_node_type(pst),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::ProvableSumTree.proof_node_type(pst),
+            ProofNodeType::KvValueHashFeatureType
+        );
+
+        // NotSummed-wrapped ProvableSumTree parents normalize to the same
+        // base — the wrapper is transparent here.
+        assert_eq!(
+            ElementType::Item.proof_node_type(Some(ElementType::NotSummedProvableSumTree)),
+            ProofNodeType::KvSum
         );
     }
 

@@ -536,3 +536,79 @@ fn convert_if_reference_to_absolute_reference_converts_and_preserves_other_types
         ElementError::InvalidInput("reference stored path cannot satisfy reference constraints")
     ));
 }
+
+/// Phase 2 (ProvableSumTree): exercise every constructor and helper added for
+/// the new variant. Mirrors `constructors_create_expected_provable_tree_variants`
+/// plus the relevant sections of `value_helpers_and_conversion_errors_work`.
+#[test]
+fn provable_sum_tree_constructors_and_helpers() {
+    // --- Constructors ---
+    assert_eq!(
+        Element::empty_provable_sum_tree(),
+        Element::ProvableSumTree(None, 0, None)
+    );
+    assert_eq!(
+        Element::empty_provable_sum_tree_with_flags(sample_flags()),
+        Element::ProvableSumTree(None, 0, sample_flags())
+    );
+    assert_eq!(
+        Element::new_provable_sum_tree(Some(vec![20])),
+        Element::ProvableSumTree(Some(vec![20]), 0, None)
+    );
+    assert_eq!(
+        Element::new_provable_sum_tree_with_flags(Some(vec![20]), sample_flags()),
+        Element::ProvableSumTree(Some(vec![20]), 0, sample_flags())
+    );
+    let with_sum = Element::new_provable_sum_tree_with_flags_and_sum_value(
+        Some(vec![20]),
+        -123,
+        sample_flags(),
+    );
+    assert_eq!(
+        with_sum,
+        Element::ProvableSumTree(Some(vec![20]), -123, sample_flags())
+    );
+
+    // --- Type predicates / classification ---
+    assert!(with_sum.is_provable_sum_tree());
+    assert!(with_sum.is_any_tree());
+    assert!(!with_sum.is_sum_tree());
+    assert!(!with_sum.is_basic_tree());
+    assert!(!with_sum.is_commitment_tree());
+    assert!(!with_sum.is_mmr_tree());
+    assert!(!with_sum.is_bulk_append_tree());
+    assert!(!with_sum.is_dense_tree());
+    assert!(!with_sum.uses_non_merk_data_storage());
+    assert_eq!(with_sum.non_merk_entry_count(), None);
+
+    // --- Value accessors (borrowed) ---
+    assert_eq!(with_sum.as_provable_sum_tree_value().unwrap(), -123);
+    assert_eq!(with_sum.sum_value_or_default(), -123);
+    assert_eq!(with_sum.big_sum_value_or_default(), -123);
+
+    // Wrong-element error paths for as_provable_sum_tree_value / into_provable_sum_tree_value.
+    let item = Element::new_item(vec![1, 2, 3]);
+    assert!(matches!(
+        item.as_provable_sum_tree_value(),
+        Err(ElementError::WrongElementType(
+            "expected a provable sum tree"
+        ))
+    ));
+    assert!(matches!(
+        item.clone().into_provable_sum_tree_value(),
+        Err(ElementError::WrongElementType(
+            "expected a provable sum tree"
+        ))
+    ));
+
+    // --- Value accessor (owned) ---
+    assert_eq!(
+        with_sum.clone().into_provable_sum_tree_value().unwrap(),
+        -123
+    );
+
+    // is_provable_sum_tree returns false for non-ProvableSumTree variants.
+    assert!(!Element::empty_tree().is_provable_sum_tree());
+    assert!(!Element::empty_sum_tree().is_provable_sum_tree());
+    assert!(!Element::empty_provable_count_tree().is_provable_sum_tree());
+}

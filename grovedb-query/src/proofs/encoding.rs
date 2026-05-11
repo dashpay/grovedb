@@ -2865,4 +2865,63 @@ mod test {
             assert_eq!(bytes[0], *expected_tag, "wrong tag byte for {:?}", op);
         }
     }
+
+    // Phase 2: large-value (>= 65536 bytes) round-trip tests for ProvableSumTree
+    // proof-node variants. Each KV-style variant has a "small value" (u16 length)
+    // and a "large value" (u32 length) encoding path. The small-value path is
+    // exercised by `phase2_sum_node_variants_round_trip_at_*` above; here we cover
+    // the large-value path for the four KV variants that carry a value field
+    // (`KVSum`, `KVRefValueHashSum` in both Push and PushInverted directions).
+
+    /// Helper: encode → decode → assert byte-for-byte and structural equality.
+    fn large_value_round_trip(op: Op, expected_tag: u8) {
+        let mut bytes = vec![];
+        op.encode_into(&mut bytes).unwrap();
+        assert_eq!(bytes[0], expected_tag, "wrong tag byte for {:?}", op);
+        assert_eq!(bytes.len(), op.encoding_length());
+        let decoded = Op::decode(&bytes[..]).expect("decode failed");
+        assert_eq!(decoded, op);
+    }
+
+    #[test]
+    fn phase2_kvsum_push_large_value_round_trip() {
+        // 0x31 = Push KVSum with u32 value length (value.len() >= 65536).
+        let large_value = vec![0xAB; 70_000];
+        let op = Op::Push(Node::KVSum(vec![1, 2, 3], large_value, 42));
+        large_value_round_trip(op, 0x31);
+    }
+
+    #[test]
+    fn phase2_kvsum_pushinverted_large_value_round_trip() {
+        // 0x38 = PushInverted KVSum with u32 value length.
+        let large_value = vec![0xCD; 70_000];
+        let op = Op::PushInverted(Node::KVSum(vec![9, 8, 7], large_value, -99));
+        large_value_round_trip(op, 0x38);
+    }
+
+    #[test]
+    fn phase2_kvrefvaluehashsum_push_large_value_round_trip() {
+        // 0x34 = Push KVRefValueHashSum with u32 value length.
+        let large_value = vec![0xEF; 70_000];
+        let op = Op::Push(Node::KVRefValueHashSum(
+            vec![1, 2, 3],
+            large_value,
+            [0x55; HASH_LENGTH],
+            i64::MAX,
+        ));
+        large_value_round_trip(op, 0x34);
+    }
+
+    #[test]
+    fn phase2_kvrefvaluehashsum_pushinverted_large_value_round_trip() {
+        // 0x3b = PushInverted KVRefValueHashSum with u32 value length.
+        let large_value = vec![0x12; 70_000];
+        let op = Op::PushInverted(Node::KVRefValueHashSum(
+            vec![4, 5, 6],
+            large_value,
+            [0x77; HASH_LENGTH],
+            i64::MIN,
+        ));
+        large_value_round_trip(op, 0x3b);
+    }
 }

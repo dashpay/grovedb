@@ -379,4 +379,91 @@ mod tests {
             display
         );
     }
+
+    // Phase 2: Display tests for the new ProvableSumTree proof-node variants.
+    // Each variant has its own match arm in the Display impl, so we exercise
+    // them individually to ensure they don't accidentally fall through to a
+    // wildcard that would mask future drift.
+
+    #[test]
+    fn display_kv_sum() {
+        let node = Node::KVSum(b"k".to_vec(), b"v".to_vec(), -7);
+        let display = node.to_string();
+        assert!(display.starts_with("KVSum("), "got: {}", display);
+        assert!(
+            display.contains("-7"),
+            "expected sum in output: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn display_kv_hash_sum() {
+        let node = Node::KVHashSum([0xAB; HASH_LENGTH], 123);
+        let display = node.to_string();
+        assert!(display.starts_with("KVHashSum("), "got: {}", display);
+        assert!(display.contains("123"), "expected sum: {}", display);
+        assert!(
+            display.contains(&hex::encode([0xAB; HASH_LENGTH])),
+            "expected kv_hash hex: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn display_kv_ref_value_hash_sum() {
+        let node =
+            Node::KVRefValueHashSum(b"k".to_vec(), b"v".to_vec(), [0xCD; HASH_LENGTH], i64::MIN);
+        let display = node.to_string();
+        assert!(
+            display.starts_with("KVRefValueHashSum("),
+            "got: {}",
+            display
+        );
+        assert!(
+            display.contains(&i64::MIN.to_string()),
+            "expected i64::MIN: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn display_kv_digest_sum() {
+        let node = Node::KVDigestSum(b"k".to_vec(), [0xEF; HASH_LENGTH], i64::MAX);
+        let display = node.to_string();
+        assert!(display.starts_with("KVDigestSum("), "got: {}", display);
+        assert!(
+            display.contains(&i64::MAX.to_string()),
+            "expected i64::MAX: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn display_hash_with_sum() {
+        let node = Node::HashWithSum(
+            [0x11; HASH_LENGTH],
+            [0x22; HASH_LENGTH],
+            [0x33; HASH_LENGTH],
+            -42,
+        );
+        let display = node.to_string();
+        assert!(display.starts_with("HashWithSum("), "got: {}", display);
+        assert!(display.contains("sum=-42"), "expected sum=-42: {}", display);
+        assert!(
+            display.contains(&hex::encode([0x11; HASH_LENGTH])),
+            "expected kv_hash hex: {}",
+            display
+        );
+        assert!(
+            display.contains(&hex::encode([0x22; HASH_LENGTH])),
+            "expected left hex: {}",
+            display
+        );
+        assert!(
+            display.contains(&hex::encode([0x33; HASH_LENGTH])),
+            "expected right hex: {}",
+            display
+        );
+    }
 }

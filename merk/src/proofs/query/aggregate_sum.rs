@@ -952,6 +952,95 @@ mod tests {
         }
     }
 
+    /// Regular `Merk::prove` on a `ProvableSumTree` must emit the sum-bearing
+    /// proof node variants. Queried items yield `KVSum` (via `to_kv_sum_node`),
+    /// non-queried path nodes yield `KVHashSum` (via `to_kvhash_sum_node`).
+    /// This exercises the sum-node helper functions whose only callers are
+    /// inside `create_proof_internal`.
+    #[test]
+    fn regular_prove_on_provable_sum_tree_emits_kv_sum_and_kvhash_sum() {
+        use crate::proofs::{query::Query, Decoder, Node, Op as ProofOp};
+
+        let v = GroveVersion::latest();
+        let (merk, _root) = make_15_key_provable_sum_tree(v);
+
+        // Query a few keys, leaving most unqueried so we get both queried
+        // (KVSum) and path (KVHashSum) nodes.
+        let mut q = Query::new();
+        q.insert_key(b"a".to_vec());
+        q.insert_key(b"h".to_vec()); // middle
+        q.insert_key(b"o".to_vec());
+
+        let proof_result = merk.prove(q, None, v).unwrap().expect("regular prove");
+        let proof_bytes = proof_result.proof;
+
+        let ops: Vec<ProofOp> = Decoder::new(&proof_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode");
+
+        let mut saw_kvsum = false;
+        let mut saw_kvhashsum = false;
+        for op in &ops {
+            match op {
+                ProofOp::Push(node) | ProofOp::PushInverted(node) => match node {
+                    Node::KVSum(..) => saw_kvsum = true,
+                    Node::KVHashSum(..) => saw_kvhashsum = true,
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        assert!(
+            saw_kvsum,
+            "expected at least one KVSum node from queried Items on a ProvableSumTree"
+        );
+        assert!(
+            saw_kvhashsum,
+            "expected at least one KVHashSum node on the proof path"
+        );
+    }
+
+    /// Querying an out-of-range absent key on a `ProvableSumTree` must emit a
+    /// boundary `KVDigestSum` node — i.e. the result of `to_kvdigest_sum_node`.
+    /// We do this on a single-key tree so that one of the absence-flank keys
+    /// IS on the tree's boundary, forcing the `on_boundary_not_found` branch.
+    #[test]
+    fn regular_prove_on_provable_sum_tree_emits_kvdigest_sum() {
+        use crate::proofs::{query::Query, Decoder, Node, Op as ProofOp};
+
+        let v = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableSumTree);
+        // Single-key tree: querying any absent key forces a boundary emission.
+        merk.apply::<_, Vec<_>>(
+            &[(b"m".to_vec(), Op::Put(vec![0], ProvableSummedMerkNode(7)))],
+            &[],
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("apply");
+        merk.commit(v);
+
+        let mut q = Query::new();
+        q.insert_key(b"zz".to_vec()); // absent, above the single key
+        let proof_result = merk.prove(q, None, v).unwrap().expect("regular prove");
+        let ops: Vec<ProofOp> = Decoder::new(&proof_result.proof)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode");
+
+        let saw_kvdigestsum = ops.iter().any(|op| {
+            matches!(
+                op,
+                ProofOp::Push(Node::KVDigestSum(..)) | ProofOp::PushInverted(Node::KVDigestSum(..))
+            )
+        });
+        assert!(
+            saw_kvdigestsum,
+            "expected KVDigestSum boundary node for absent-key proof, got ops: {:?}",
+            ops
+        );
+    }
+
     /// Two i64::MAX children sum to 2*i64::MAX, which exceeds i64. The
     /// verifier's final i64-narrowing check must surface this as a
     /// proof-error. This exercises the i128 accumulator + overflow gate.

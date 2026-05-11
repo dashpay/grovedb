@@ -236,6 +236,10 @@ fn element_display_without_flags_covers_none_branches() {
             Element::DenseAppendOnlyFixedSizeTree(17, 18, None),
             "DenseAppendOnlyFixedSizeTree(count: 17, height: 18)",
         ),
+        (
+            Element::ProvableSumTree(None, 19, None),
+            "ProvableSumTree(None, 19)",
+        ),
     ];
 
     for (element, expected_display) in values {
