@@ -10828,4 +10828,144 @@ mod tests {
         assert_eq!(range[0], (50, b"b".to_vec()));
         assert_eq!(range[1], (99, b"c".to_vec()));
     }
+
+    // =====================================================================
+    // Reproductions of suspicious behaviors uncovered while writing
+    // coverage tests. These tests document the current behavior; if any
+    // FAIL the assertion, the behavior is a real bug worth flagging.
+    // =====================================================================
+
+    #[test]
+    #[ignore = "Repro for suspect: batch delete_op on cidx primary entry"]
+    fn repro_batch_delete_op_on_cidx_primary_entry_should_mirror_to_secondary() {
+        // Pre-populate cidx with one entry, use REGULAR batch
+        // delete_op (NOT the cidx-aware delete_from_count_indexed_tree)
+        // to remove it, then insert a new one in the same batch. If
+        // regular delete doesn't mirror to the secondary, top_k will
+        // show both old and new.
+        //
+        // OBSERVED (flaky, fails ~80% of parallel runs):
+        //   top_k returns [(77, "new"), (42, "old")] — the deleted
+        //   "old" still appears in the secondary mirror at count=42.
+        //
+        // get on the primary returns PathKeyNotFound for "old" (the
+        // primary delete succeeds), so the bug is specifically that
+        // the regular batch Delete op does not propagate to the cidx
+        // secondary mirror.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"old",
+            Element::new_count_tree_with_flags_and_count_value(None, 42, None),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("preload old");
+
+        let ops = vec![
+            QualifiedGroveDbOp::delete_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"old".to_vec(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                b"new".to_vec(),
+                Element::new_count_tree_with_flags_and_count_value(None, 77, None),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch delete + insert under cidx");
+
+        // Sanity 1: primary delete actually happened — "old" is gone.
+        let old_result = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"old", None, grove_version)
+            .unwrap();
+        assert!(
+            matches!(old_result, Err(crate::Error::PathKeyNotFound(_))),
+            "primary delete must have removed 'old' from the cidx primary; \
+             got: {:?}",
+            old_result
+        );
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(
+            top.len(),
+            1,
+            "regular batch delete_op on a cidx primary entry must mirror to \
+             the secondary; observed top_k contents: {:?}",
+            top
+        );
+        assert_eq!(top[0], (77, b"new".to_vec()));
+    }
+
+    #[test]
+    #[ignore = "Repro for suspect: batch insert_or_replace overwriting cidx entry"]
+    fn repro_batch_insert_or_replace_overwriting_cidx_entry_should_drop_old_mirror() {
+        // Pre-populate cidx with "a" at count=0. Then batch-replace
+        // "a" with count=100. The OLD secondary mirror at count=0
+        // must be removed, leaving only count=100.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("preload a@count=0");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            b"a".to_vec(),
+            Element::new_count_tree_with_flags_and_count_value(None, 100, None),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch replace existing cidx entry");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top_k");
+        assert_eq!(
+            top.len(),
+            1,
+            "batch insert_or_replace_op on existing cidx entry must replace \
+             both primary and secondary mirror; observed top_k contents: {:?}",
+            top
+        );
+        assert_eq!(top[0], (100, b"a".to_vec()));
+    }
 }
