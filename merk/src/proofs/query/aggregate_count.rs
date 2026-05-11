@@ -569,11 +569,9 @@ where
                 let own_count = node_count
                     .checked_sub(left_link_aggregate)
                     .and_then(|n| n.checked_sub(right_link_aggregate))
-                    .ok_or_else(|| {
-                        Error::CorruptedState(
-                            "child structural counts exceed parent's aggregate count",
-                        )
-                    });
+                    .ok_or(Error::CorruptedState(
+                        "child structural counts exceed parent's aggregate count",
+                    ));
                 let own_count = cost_return_on_error_no_add!(cost, own_count);
                 total = total.saturating_add(own_count);
             }
