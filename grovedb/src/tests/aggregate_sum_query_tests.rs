@@ -581,12 +581,26 @@ mod tests {
             vec![TEST_LEAF.to_vec(), b"st".to_vec()],
             QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
         );
-        // Sneak in a subquery — the validator must reject.
+        // Sneak in a subquery — the validator must reject on the
+        // verifier side.
         pq.query
             .query
             .set_subquery(grovedb_merk::proofs::Query::new_range_full());
         let dummy_proof = vec![0u8; 16];
         assert!(GroveDb::verify_aggregate_sum_query(&dummy_proof, &pq, v).is_err());
+
+        // Defense-in-depth: the *prover* must also refuse a malformed
+        // ASOR path query. Without this assertion a regression in
+        // `prove_query_non_serialized` could silently produce a proof
+        // for a malformed shape while the verifier-side test still
+        // passed on the dummy bytes. We need an actual db to call
+        // prove_query; reuse the standard 15-key fixture.
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let prove_result = db.grove_db.prove_query(&pq, None, v).unwrap();
+        assert!(
+            prove_result.is_err(),
+            "prover must refuse to run ASOR with a hidden subquery, got Ok"
+        );
     }
 
     // ---------- 12. Empty range (start > end is structurally invalid; use range above all keys → 0) ----------

@@ -243,9 +243,11 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::MmrTree => Ok(BasicMerkNode),
             TreeType::BulkAppendTree(_) => Ok(BasicMerkNode),
             TreeType::DenseAppendOnlyFixedSizeTree(_) => Ok(BasicMerkNode),
-            // Phase 1: ProvableSumTree aggregates the same i64 sum as a
-            // plain SumTree but uses the new `ProvableSummedMerkNode`
-            // feature type. Phase 2 will diverge the hash.
+            // ProvableSumTree aggregates an i64 sum (same arithmetic
+            // shape as plain SumTree) but carries it via
+            // `ProvableSummedMerkNode` so the sum is baked into every
+            // node's hash via `node_hash_with_sum` — making sum
+            // tampering catchable through proof verification.
             TreeType::ProvableSumTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
                 self.sum_value_or_default(),
             )),
@@ -389,6 +391,15 @@ mod tests {
                 assert_eq!((c, s), (1, 0));
             }
             other => panic!("expected ProvableCountedSummedMerkNode, got {:?}", other),
+        }
+
+        // Phase 2 sum-bearing parent: ProvableSumTree must also zero
+        // out the wrapped sum so the wrapper semantics stay consistent
+        // across the new family. The sum-bearing branch uses the
+        // `ProvableSummedMerkNode(0)` feature type.
+        match ns.get_feature_type(TreeType::ProvableSumTree).unwrap() {
+            TreeFeatureType::ProvableSummedMerkNode(s) => assert_eq!(s, 0),
+            other => panic!("expected ProvableSummedMerkNode(0), got {:?}", other),
         }
     }
 }

@@ -46,6 +46,7 @@ mod tests {
         .expect("should insert provable sum tree");
 
         // Mix of SumItem values: 7, 13, 20. Aggregate = 40.
+        let mut expected_sum: i64 = 0;
         for (key, value) in [(b"a".as_slice(), 7i64), (b"b", 13), (b"c", 20)] {
             db.insert(
                 &[b"psum".as_slice()],
@@ -58,6 +59,8 @@ mod tests {
             .unwrap()
             .expect("should insert sum item");
 
+            expected_sum += value;
+
             let fetched = db
                 .get(&[] as &[&[u8]], b"psum", None, grove_version)
                 .unwrap()
@@ -66,7 +69,13 @@ mod tests {
             // running total of inserted children.
             // (The first iteration: 7; second: 20; third: 40.)
             assert!(matches!(fetched, Element::ProvableSumTree(_, _, _)));
-            let _ = fetched.as_provable_sum_tree_value().expect("psum value");
+            let running = fetched.as_provable_sum_tree_value().expect("psum value");
+            assert_eq!(
+                running,
+                expected_sum,
+                "ProvableSumTree aggregate must equal running total after inserting {:?}",
+                std::str::from_utf8(key).unwrap_or("<non-utf8>")
+            );
         }
 
         let parent = db
@@ -642,12 +651,48 @@ mod tests {
             .get(&[] as &[&[u8]], b"template", None, grove_version)
             .unwrap()
             .expect("get template");
-        match template {
-            Element::ProvableSumTree(root_key, sum, _) => {
+        let (captured_root_key, captured_sum) = match template {
+            Element::ProvableSumTree(root_key, sum, flags) => {
                 assert!(root_key.is_some());
                 assert_eq!(sum, 6);
+                (root_key, sum)
             }
             other => panic!("expected ProvableSumTree, got {:?}", other),
+        };
+
+        // Phase 2: actually exercise the direct-insert path with the
+        // captured root_key + sum. The non-batch insert path forbids
+        // inserting a Tree element that already declares a root_key
+        // ("a tree should be empty at the moment of insertion when not
+        // using batches"), so the documented "direct-insert" semantics
+        // are reachable only via the batch path. Use an
+        // `insert_only_known_to_not_already_exist_op` over a populated
+        // ProvableSumTree element at a fresh top-level key and apply
+        // the batch.
+        use crate::batch::QualifiedGroveDbOp;
+        let direct = Element::ProvableSumTree(captured_root_key.clone(), captured_sum, None);
+        let op = QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            vec![],
+            b"direct".to_vec(),
+            direct,
+        );
+        db.apply_batch(vec![op], None, None, grove_version)
+            .unwrap()
+            .expect("batch direct-insert provable sum tree with captured root_key and sum");
+
+        let round_tripped = db
+            .get(&[] as &[&[u8]], b"direct", None, grove_version)
+            .unwrap()
+            .expect("get direct-inserted element");
+        match round_tripped {
+            Element::ProvableSumTree(rk, s, _) => {
+                assert_eq!(rk, captured_root_key, "root_key must round-trip");
+                assert_eq!(s, captured_sum, "sum must round-trip");
+            }
+            other => panic!(
+                "expected ProvableSumTree after direct insert, got {:?}",
+                other
+            ),
         }
     }
 

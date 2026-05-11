@@ -924,4 +924,48 @@ mod test {
         let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
         assert_eq!(link.aggregate_data(), AggregateData::NoAggregateData);
     }
+
+    /// Phase 2 wire-format regression: `AggregateData::ProvableSum` is
+    /// encoded with tag byte 7 followed by a varint-encoded i64. Pin
+    /// down both the tag byte and the round-trip so any drift in the
+    /// link encoding surface is caught immediately. Uses a negative
+    /// value to also exercise the i64 varint encoding (ProvableSum is
+    /// signed).
+    #[test]
+    fn round_trip_aggregate_data_provable_sum_negative() {
+        let original = Link::Reference {
+            hash: [55; 32],
+            aggregate_data: AggregateData::ProvableSum(-42),
+            child_heights: (1, 2),
+            key: vec![9, 9, 9],
+        };
+        let mut bytes = vec![];
+        original
+            .encode_into(&mut bytes)
+            .expect("encode ProvableSum link");
+        // Tag byte 7 lives at the end of the encoded record, just before
+        // the varint sum. We don't pin the exact varint bytes (they
+        // depend on the integer encoding), but we do pin tag 7's
+        // presence.
+        assert!(
+            bytes.contains(&7u8),
+            "ProvableSum encoding must include tag byte 7, got {:?}",
+            bytes
+        );
+        let decoded = Link::decode(bytes.as_slice()).expect("decode ProvableSum link");
+        assert_eq!(decoded.aggregate_data(), AggregateData::ProvableSum(-42));
+        if let Link::Reference {
+            hash,
+            child_heights,
+            key,
+            ..
+        } = decoded
+        {
+            assert_eq!(hash, [55; 32]);
+            assert_eq!(child_heights, (1, 2));
+            assert_eq!(key, vec![9, 9, 9]);
+        } else {
+            panic!("expected Link::Reference after decode");
+        }
+    }
 }
