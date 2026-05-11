@@ -327,6 +327,45 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
+    /// Open a GroveDB and run a lightweight integrity check on all
+    /// `CountIndexedTree` / `ProvableCountIndexedTree` elements before
+    /// returning. Walks the cidx primaries only (NOT the full GroveDB)
+    /// and verifies H1-A chain integrity + content consistency between
+    /// each primary's count_value and the secondary's entries.
+    ///
+    /// Use this when opening a database that may have been written by
+    /// untrusted code, recovered after a crash, or that an external
+    /// system claims is consistent. Catches data drift that
+    /// `verify_grovedb` would catch but doesn't require running the
+    /// full-grovedb walk.
+    ///
+    /// Returns `Err(CorruptedData)` if any cidx primary fails the
+    /// integrity check, with the issues map embedded in the error
+    /// message for diagnostic. Returns the opened DB otherwise.
+    ///
+    /// Cost: roughly one traversal of every cidx primary's primary
+    /// AND secondary Merk. For DBs with no cidx elements this is a
+    /// near-no-op.
+    pub fn open_with_cidx_integrity_check<P: AsRef<Path>>(
+        path: P,
+        grove_version: &GroveVersion,
+    ) -> Result<Self, Error> {
+        let db = Self::open(path)?;
+        let issues = db.verify_grovedb(None, false, true, grove_version)?;
+        if !issues.is_empty() {
+            // Filter to only cidx-related issues (chain hash + content-
+            // drift sentinels). The H1-A walk in verify_grovedb is the
+            // cidx integrity check; other issues are reported too but
+            // we surface them all.
+            return Err(Error::CorruptedData(format!(
+                "cidx integrity check on open found {} issue(s): {:?}",
+                issues.len(),
+                issues.keys().collect::<Vec<_>>()
+            )));
+        }
+        Ok(db)
+    }
+
     /// Starts a visualizer server for the GroveDB instance.
     #[cfg(feature = "grovedbg")]
     pub fn start_visualizer<A>(self: &Arc<Self>, addr: A)

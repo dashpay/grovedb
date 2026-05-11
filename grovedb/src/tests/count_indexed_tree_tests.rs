@@ -5179,6 +5179,87 @@ mod tests {
         (db, grove_version)
     }
 
+    // =====================================================================
+    // Integrity check on database open.
+    // =====================================================================
+
+    #[test]
+    fn open_with_cidx_integrity_check_passes_on_clean_db() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let grove_version = GroveVersion::latest();
+        {
+            let db = crate::GroveDb::open(tmp.path()).expect("open");
+            // Use the root path directly; no test-leaf scaffolding for
+            // this minimal corruption-detection test.
+            db.insert(
+                grovedb_path::SubtreePath::<[u8; 0]>::empty(),
+                b"cidx",
+                Element::empty_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create cidx");
+            db.insert_into_count_indexed_tree(
+                [b"cidx".as_slice()].as_ref(),
+                b"k",
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let _db = crate::GroveDb::open_with_cidx_integrity_check(tmp.path(), grove_version)
+            .expect("open with integrity check");
+    }
+
+    #[test]
+    fn open_with_cidx_integrity_check_fails_on_corrupted_secondary() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let grove_version = GroveVersion::latest();
+        {
+            let db = crate::GroveDb::open(tmp.path()).expect("open");
+            db.insert(
+                grovedb_path::SubtreePath::<[u8; 0]>::empty(),
+                b"cidx",
+                Element::empty_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create cidx");
+            db.insert_into_count_indexed_tree(
+                [b"cidx".as_slice()].as_ref(),
+                b"a",
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+            corrupt_secondary_insert(
+                &db,
+                &[b"cidx"],
+                &make_secondary_key(99, b"ghost"),
+                grove_version,
+            );
+        }
+        let result = crate::GroveDb::open_with_cidx_integrity_check(tmp.path(), grove_version);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("cidx integrity"),
+                    "expected cidx integrity violation, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected CorruptedData, got {:?}", other),
+            Ok(_) => panic!("expected CorruptedData err, got Ok(GroveDb)"),
+        }
+    }
+
     #[test]
     fn cost_insert_into_count_indexed_tree_first_item() {
         let (db, grove_version) = make_grovedb_with_cidx();
