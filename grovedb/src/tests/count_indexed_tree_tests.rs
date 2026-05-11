@@ -4193,4 +4193,285 @@ mod tests {
         assert_eq!(&entry.1[24..32], &1u64.to_be_bytes());
         assert_eq!(&entry.2[24..32], &99u64.to_be_bytes());
     }
+
+    // =====================================================================
+    // Property-based stress tests for cidx invariants.
+    //
+    // Generates long random sequences of operations against a 2-level
+    // cidx layout (outer cidx contains CountTrees as values, each
+    // CountTree can grow and shrink) and asserts after every op:
+    //
+    //   1. verify_grovedb() reports no issues — H1-A chain integrity
+    //      AND content consistency between primary and secondary.
+    //   2. count_indexed_top_k() returns the same set the property
+    //      model says should be there, in the right count order.
+    //
+    // Random op generation uses a hand-rolled SplitMix64 PRNG so
+    // failing seeds are reproducible — no external dep, no test
+    // flakiness. Each test has a hard-coded seed; if you discover a
+    // failure on a different seed, hard-code it as a regression case.
+    //
+    // These tests are the structural answer to the audit-found
+    // nested-cidx bug class: any future code change that drifts the
+    // secondary fails CI here, not in production.
+    // =====================================================================
+
+    /// SplitMix64 — small, deterministic, no allocation. Good enough
+    /// for property generation.
+    #[derive(Clone)]
+    struct Prng(u64);
+    impl Prng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn next_usize(&mut self, exclusive_max: usize) -> usize {
+            (self.next_u64() as usize) % exclusive_max.max(1)
+        }
+    }
+
+    /// Property model: the in-memory ground truth the test maintains in
+    /// parallel with the database. After each op, we run a verify pass
+    /// AND assert the database's top-k matches the model's view.
+    #[derive(Clone, Default)]
+    struct CidxModel {
+        /// cidx_entry_key → number of items inside its CountTree
+        entries: std::collections::BTreeMap<Vec<u8>, u64>,
+    }
+    impl CidxModel {
+        fn top_k_ascending(&self) -> Vec<(u64, Vec<u8>)> {
+            // Same ordering as the secondary: (count_be, key) ascending.
+            let mut v: Vec<(u64, Vec<u8>)> =
+                self.entries.iter().map(|(k, c)| (*c, k.clone())).collect();
+            v.sort();
+            v
+        }
+    }
+
+    /// Apply one random op to both the live database and the in-memory
+    /// model, then assert invariants. Returns `true` if the op was
+    /// applied (some random selections become no-ops, e.g. delete
+    /// against an absent key — we count those but don't fail).
+    fn apply_random_op_and_check(
+        rng: &mut Prng,
+        db: &crate::GroveDb,
+        cidx_path: &[&[u8]],
+        model: &mut CidxModel,
+        grove_version: &GroveVersion,
+        iteration: usize,
+    ) {
+        // Key space is small so updates dominate over inserts —
+        // exercises count transitions rather than only fresh creates.
+        const KEY_SPACE: usize = 8;
+        let key_idx = rng.next_usize(KEY_SPACE);
+        let key = format!("k{:02}", key_idx).into_bytes();
+
+        // 5 op kinds in roughly equal proportion.
+        let op_kind = rng.next_usize(5);
+
+        match op_kind {
+            0 => {
+                // Ensure CountTree exists at this key, then add 1 item
+                // inside it (raises its count by 1).
+                if !model.entries.contains_key(&key) {
+                    db.insert_into_count_indexed_tree(
+                        cidx_path,
+                        &key,
+                        Element::empty_count_tree(),
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("create CountTree");
+                    model.entries.insert(key.clone(), 0);
+                }
+                let inner_key = format!("i{:08}", iteration).into_bytes();
+                let mut path_vec: Vec<&[u8]> = cidx_path.to_vec();
+                path_vec.push(&key);
+                db.insert(
+                    path_vec.as_slice(),
+                    &inner_key,
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert into CountTree");
+                *model.entries.get_mut(&key).unwrap() += 1;
+            }
+            1 => {
+                // Delete the cidx entry entirely (if it exists).
+                if model.entries.contains_key(&key) {
+                    db.delete_from_count_indexed_tree(cidx_path, &key, None, grove_version)
+                        .unwrap()
+                        .expect("delete cidx entry");
+                    model.entries.remove(&key);
+                }
+            }
+            2 => {
+                // Re-insert the same cidx entry as a fresh empty
+                // CountTree. Allowed because
+                // insert_into_count_indexed_tree handles the existing-
+                // entry case (via the dedicated API; not the direct
+                // db.insert path which is rejected for cidx primaries).
+                // If the key exists, we delete then re-create to keep
+                // the model simple.
+                if model.entries.contains_key(&key) {
+                    db.delete_from_count_indexed_tree(cidx_path, &key, None, grove_version)
+                        .unwrap()
+                        .expect("delete before re-create");
+                    model.entries.remove(&key);
+                }
+                db.insert_into_count_indexed_tree(
+                    cidx_path,
+                    &key,
+                    Element::empty_count_tree(),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("create empty CountTree");
+                model.entries.insert(key.clone(), 0);
+            }
+            3 => {
+                // Batch: insert one item into an existing CountTree (if
+                // any exist), via the batch path — exercises the
+                // bubble-up + nested cidx mirror.
+                use crate::batch::QualifiedGroveDbOp;
+                if let Some((existing_key, count)) =
+                    model.entries.iter().next().map(|(k, c)| (k.clone(), *c))
+                {
+                    let inner_key = format!("b{:08}", iteration).into_bytes();
+                    let mut inner_path: Vec<Vec<u8>> =
+                        cidx_path.iter().map(|s| s.to_vec()).collect();
+                    inner_path.push(existing_key.clone());
+                    let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+                        inner_path,
+                        inner_key,
+                        Element::new_item(b"v".to_vec()),
+                    )];
+                    db.apply_batch(ops, None, None, grove_version)
+                        .unwrap()
+                        .expect("batch insert into existing CountTree");
+                    *model.entries.get_mut(&existing_key).unwrap() = count + 1;
+                }
+            }
+            _ => {
+                // Idle iteration — random selection might land on a
+                // model state where this kind has nothing to do (e.g.
+                // delete with no entries). That's fine; the iteration
+                // count is preserved.
+            }
+        }
+
+        // INVARIANT 1: verify_grovedb finds no issues (chain + content).
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(
+            issues.is_empty(),
+            "iteration {iteration}: verify_grovedb issues: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+
+        // INVARIANT 2: top-k (ascending) matches the model's view.
+        let top = db
+            .count_indexed_top_k(cidx_path, 100, false, None, grove_version)
+            .unwrap()
+            .expect("top-k");
+        let model_top = model.top_k_ascending();
+        assert_eq!(
+            top, model_top,
+            "iteration {iteration}: top-k drift\n  db:    {:?}\n  model: {:?}",
+            top, model_top
+        );
+    }
+
+    #[test]
+    fn property_random_ops_preserve_cidx_invariant_single_level() {
+        // 300 random ops against a single-level cidx. Each op is
+        // followed by a full verify_grovedb scan and a top-k diff
+        // against the in-memory model. Fixed seed; if you find a
+        // failing seed in CI, hard-code it as a regression test.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let cidx_path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let mut model = CidxModel::default();
+        let mut rng = Prng::new(0xC1DC_5EED_C0FFEE);
+
+        for iteration in 0..300 {
+            apply_random_op_and_check(
+                &mut rng,
+                &db,
+                cidx_path,
+                &mut model,
+                grove_version,
+                iteration,
+            );
+        }
+    }
+
+    #[test]
+    fn property_random_ops_preserve_cidx_invariant_nested_two_levels() {
+        // Same shape but against a NESTED cidx layout
+        //   TEST_LEAF / outer_cidx / inner_cidx
+        // with random ops applied to inner_cidx. Exercises the
+        // nested-bubble-up path — the bug class found in commit
+        // a8bb34fb. 200 iterations because each verify_grovedb walks
+        // both cidx primaries' content.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner");
+
+        let cidx_path: &[&[u8]] = &[TEST_LEAF, b"outer_cidx", b"inner_cidx"];
+        let mut model = CidxModel::default();
+        let mut rng = Prng::new(0xDEADBEEF_CAFEBABE);
+
+        for iteration in 0..200 {
+            apply_random_op_and_check(
+                &mut rng,
+                &db,
+                cidx_path,
+                &mut model,
+                grove_version,
+                iteration,
+            );
+        }
+    }
 }

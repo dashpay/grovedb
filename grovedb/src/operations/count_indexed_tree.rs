@@ -1190,6 +1190,94 @@ impl GroveDb {
             .map_err(Error::MerkError)
         );
 
+        // Storage cleanup for tree entries.
+        //
+        // If the deleted cidx entry is a tree (CountTree, SumTree, etc.),
+        // its child storage at `cidx_primary_path + item_key` is now
+        // orphaned — the entry is gone from the primary Merk but its
+        // children still occupy the storage namespace. Without cleanup,
+        // a future insert at the same item_key would observe stale data
+        // (orphaned entries surface to `verify_grovedb`'s raw_iter pass
+        // even though they're invisible to the Merk tree at the new
+        // root). Same class of bug as the direct `db.delete` cidx
+        // primary cleanup (commit 6b7ec21d).
+        //
+        // For nested cidx entries (the deleted item is itself a cidx
+        // primary), we also need to clear the secondary's storage at
+        // the derived prefix.
+        //
+        // NOTE: we do NOT drop+reopen primary_merk around this block —
+        // dropping the merk without explicit apply would lose the
+        // staged Element::delete. The cleanup calls below only use
+        // `&self` (via find_subtrees and get_transactional_storage_*),
+        // which coexist with the owned primary_merk.
+        if is_layered_target {
+            let entry_path = path.derive_owned_with_child(item_key.to_vec());
+            let entry_path_ref = SubtreePath::from(&entry_path);
+
+            // Detect whether the deleted entry was itself a cidx
+            // primary (nested cidx). Use the existing element snapshot.
+            let deleted_was_cidx_primary = matches!(
+                existing.underlying(),
+                Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+            );
+
+            // Recursively clear all primary subtree storage under
+            // `entry_path` via the same find_subtrees walk used by
+            // db.delete.
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&entry_path_ref, Some(transaction), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(p, Some(batch), transaction)
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to cleanup subtree storage during cidx delete: {e}",
+                        ))
+                    })
+                );
+            }
+
+            // Nested cidx: also clear the deleted entry's secondary
+            // storage namespace at Blake3(primary_prefix ‖ 0x01).
+            if deleted_was_cidx_primary {
+                let primary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+                        entry_path_ref.clone(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(batch),
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to cleanup nested cidx secondary during \
+                             delete_from_count_indexed_tree: {e}",
+                        ))
+                    })
+                );
+            }
+        }
+
         // Open and update secondary.
         let mut secondary_merk = cost_return_on_error!(
             &mut cost,
