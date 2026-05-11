@@ -184,51 +184,6 @@ where
             }
         })
     }
-
-    /// Execute an `AggregateCountOnRange` query without producing a proof,
-    /// returning just the in-range count.
-    ///
-    /// This is the no-proof counterpart of
-    /// [`Self::prove_aggregate_count_on_range`]. It walks the same
-    /// classification path the proof emitter does — using each internal
-    /// node's stored aggregate count to short-circuit Contained / Disjoint
-    /// subtrees — but skips the proof-op emission and serialization. The
-    /// merk-level cost is O(log n) in the number of distinct keys, the same
-    /// as the proof variant.
-    ///
-    /// The merk's `tree_type` must be one of `ProvableCountTree` or
-    /// `ProvableCountSumTree`; any other tree type is rejected with
-    /// `Error::InvalidProofError` before any walking happens. On an empty
-    /// merk this returns `count = 0`.
-    ///
-    /// The returned count is **not** independently verifiable — callers
-    /// trust the merk's reads. Use `prove_aggregate_count_on_range` +
-    /// `verify_aggregate_count_on_range_proof` for a verifiable count.
-    pub fn count_aggregate_on_range(
-        &self,
-        inner_range: &QueryItem,
-        grove_version: &GroveVersion,
-    ) -> CostResult<u64, Error> {
-        let tree_type = self.tree_type;
-        if !matches!(
-            tree_type,
-            crate::TreeType::ProvableCountTree | crate::TreeType::ProvableCountSumTree
-        ) {
-            return Err(Error::InvalidProofError(format!(
-                "AggregateCountOnRange is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
-                tree_type
-            )))
-            .wrap_with_cost(Default::default());
-        }
-        self.use_tree_mut(|maybe_tree| match maybe_tree {
-            None => Ok(0u64).wrap_with_cost(Default::default()),
-            Some(tree) => {
-                let mut ref_walker = RefWalker::new(tree, self.source());
-                ref_walker.count_aggregate_on_range(inner_range, grove_version)
-            }
-        })
-    }
 }
 
 type Proof = (LinkedList<ProofOp>, Option<u16>);
