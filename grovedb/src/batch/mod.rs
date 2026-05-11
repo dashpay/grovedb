@@ -1991,6 +1991,22 @@ where
         let cidx_pre_state: Option<HashMap<Vec<u8>, Option<u64>>> = if in_tree_type
             .is_count_indexed_primary()
         {
+            // Bound the item key length so the derived secondary key
+            // (count_be ‖ item_key) stays under Merk's 256-byte limit.
+            // Generic batch validation only enforces the 255-byte cap;
+            // cidx primaries need 247 bytes to leave room for the 8-byte
+            // count prefix in the secondary.
+            for (key_info, _) in ops_at_path_by_key.iter() {
+                let k_len = key_info.get_key_clone().len();
+                if k_len > crate::operations::count_indexed_tree::MAX_CIDX_ITEM_KEY_LEN {
+                    return Err(Error::InvalidInput(
+                        "item key for a CountIndexedTree primary must be at most 247 \
+                         bytes in batch ops (the secondary index prepends an 8-byte \
+                         count, and Merk requires keys < 256 bytes)",
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
             let merk = self.merks.get(path).expect("the Merk is cached");
             let mut pre: HashMap<Vec<u8>, Option<u64>> = HashMap::new();
             for (key_info, op) in ops_at_path_by_key.iter() {
@@ -2180,6 +2196,37 @@ where
                                 // `path + key_info`.
                                 let mut cidx_path = path.to_vec();
                                 cidx_path.push(key_info.get_key_clone());
+
+                                // CONSISTENCY CHECK: writes UNDER the
+                                // cidx's path in the same batch would
+                                // be silently lost when the post-apply
+                                // cleanup clears the prefix. The
+                                // generic consistency check
+                                // (verify_consistency_of_operations)
+                                // only blocks writes under Delete /
+                                // DeleteTree paths; it doesn't know
+                                // about safe-subset cidx-overwrite
+                                // cleanup. Scan ops_by_qualified_paths
+                                // for any qualified path strictly
+                                // beneath this cidx's path and reject
+                                // if found.
+                                let cidx_path_len = cidx_path.len();
+                                for q_path in ops_by_qualified_paths.keys() {
+                                    if q_path.len() > cidx_path_len
+                                        && q_path[..cidx_path_len] == cidx_path[..]
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "batch contains a write under a cidx primary \
+                                             path that is being safe-subset-overwritten \
+                                             in the same batch; the post-apply cleanup \
+                                             would silently clear the descendant write. \
+                                             Split into two batches: delete + recreate \
+                                             first, then populate.",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                }
+
                                 self.cidx_overwrite_cleanup_paths.push(cidx_path);
                             }
                         }

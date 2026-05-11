@@ -6176,4 +6176,339 @@ mod tests {
             .expect("k still present");
         assert_eq!(item, Element::new_item(b"v".to_vec()));
     }
+
+    // =====================================================================
+    // Audit fixes: P1 + P2 findings on commit cc4db742.
+    // =====================================================================
+
+    #[test]
+    fn cidx_item_key_247_byte_ceiling_direct_path() {
+        // Item keys for cidx primary writes must be ≤ 247 bytes — the
+        // secondary key (count_be ‖ item_key) must fit in Merk's
+        // < 256-byte ceiling (8 + 247 = 255).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // 247-byte key: OK.
+        let max_ok_key = vec![b'a'; 247];
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            &max_ok_key,
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("247-byte key must be accepted");
+
+        // 248-byte key: rejected.
+        let too_long_key = vec![b'a'; 248];
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                &too_long_key,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("247"),
+                    "expected 247-byte ceiling message, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cidx_item_key_247_byte_ceiling_batch_path() {
+        // Same ceiling on the batch path.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let too_long_key = vec![b'a'; 248];
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            too_long_key,
+            Element::new_item(b"v".to_vec()),
+        )];
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        match result {
+            Err(crate::Error::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("247"),
+                    "expected 247-byte ceiling message, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_overwriting_tree_cleans_up_storage() {
+        // Insert a CountTree at cidx_key/sub, populate it with items,
+        // then overwrite that CountTree with an Item via the
+        // dedicated API. The old CountTree's children must be cleaned
+        // up; verify_grovedb finds no issues afterward.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub");
+        for i in 0..5 {
+            let inner = format!("inner_{}", i).into_bytes();
+            db.insert(
+                [TEST_LEAF, b"cidx", b"sub"].as_ref(),
+                &inner,
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate sub");
+        }
+
+        // Overwrite the CountTree with an Item via the dedicated API.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::new_item(b"replaced".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("overwrite tree with item");
+
+        // Old children are gone; verify finds no orphans.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "expected no issues, got {:?}", issues);
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_overwriting_cidx_with_non_empty_cidx_rejected() {
+        // Direct-API counterpart to the batch rejection: cidx → non-empty
+        // cidx is ambiguous and must be rejected.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create nested cidx");
+
+        // Try to overwrite with a non-empty cidx claim.
+        let non_empty = Element::new_count_indexed_tree_with_root_keys_and_count_value(
+            Some(b"bogus_primary".to_vec()),
+            Some(b"bogus_secondary".to_vec()),
+            5,
+            None,
+        );
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"sub",
+                non_empty,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("non-empty cidx") || msg.contains("ambiguous"),
+                    "expected non-empty cidx rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn batch_safe_subset_overwrite_with_descendant_write_in_same_batch_rejected() {
+        // A safe-subset cidx overwrite + a write under the same cidx
+        // path in the SAME batch is rejected: the post-apply cleanup
+        // would silently drop the descendant write. Two rejection
+        // paths exist:
+        //   1. cidx → non-tree element (e.g. Item) — existing
+        //      "insertion under non-tree" rejection fires during
+        //      bubble-up (the deep write can't be wrapped into the
+        //      new element).
+        //   2. cidx → empty cidx (still a tree) — the deep write
+        //      can be wrapped, but my new check in
+        //      execute_ops_on_path detects the cleanup-vs-write
+        //      conflict and rejects.
+        // This test exercises path 2 specifically.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub for descendant write target");
+
+        // Batch: overwrite cidx with EMPTY cidx (still a tree, so the
+        // existing "insertion under non-tree" check doesn't fire) AND
+        // write under cidx's path. The cleanup would silently drop
+        // the descendant write.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::empty_count_indexed_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"sub".to_vec()],
+                b"would_be_lost".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+        ];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        let result = db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap();
+        // The batch must be rejected — by ANY check. Multiple
+        // existing checks in the batch pipeline (propagation lookup,
+        // tree-shape validation, etc.) catch various flavors of this
+        // inconsistency. Our new check in execute_ops_on_path adds
+        // defense in depth + clearer error attribution. The audit's
+        // worry was a silent cleanup-drop; what matters here is that
+        // the batch FAILS rather than silently losing the descendant.
+        assert!(
+            result.is_err(),
+            "batch with safe-subset overwrite + descendant write must be \
+             rejected (any error is acceptable); got Ok"
+        );
+    }
+
+    #[test]
+    fn verify_grovedb_detects_duplicate_secondary_rows() {
+        // Two secondary entries for the same primary key at different
+        // counts. The previous HashMap<key, u64> shape silently
+        // collapsed the duplicates; the Vec<u64> shape catches it via
+        // __cidx_secondary_duplicate__.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+
+        // Inject a duplicate secondary entry at a wrong count without
+        // removing the correct one. Now the secondary has BOTH (1, k)
+        // and (99, k) — drift the previous check would miss because
+        // one would overwrite the other in the HashMap.
+        corrupt_secondary_insert(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(99, b"k"),
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        let dup_path: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"cidx".to_vec(),
+            b"__cidx_secondary_duplicate__".to_vec(),
+            b"k".to_vec(),
+        ];
+        assert!(
+            issues.contains_key(&dup_path),
+            "expected __cidx_secondary_duplicate__ for 'k', got: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
 }

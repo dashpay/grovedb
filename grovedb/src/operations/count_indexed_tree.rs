@@ -212,6 +212,10 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
+        // Bound the item key length so the derived secondary key
+        // (count_be ‖ item_key) stays under Merk's 256-byte limit.
+        cost_return_on_error_no_add!(cost, validate_cidx_item_key_len(item_key));
+
         let (parent_path, count_indexed_key) = match path.derive_parent() {
             Some(p) => p,
             None => {
@@ -280,6 +284,129 @@ impl GroveDb {
         );
         let old_count_for_secondary = existing_item.as_ref().map(|e| e.count_value_or_default());
         let new_count_for_secondary = item.count_value_or_default();
+
+        // 3a. Tree-overwrite cleanup.
+        //
+        // If the existing entry at `item_key` is a tree (Tree, SumTree,
+        // CountTree, cidx, etc.), replacing it with a new element
+        // would orphan the old tree's child storage:
+        //   - Replace existing tree with non-tree (Item/Ref): old
+        //     children stay in storage but are unreachable.
+        //   - Replace existing tree with empty new tree (root_key=None):
+        //     same orphan; new tree starts fresh while old data stays
+        //     at the same storage prefix.
+        //   - Replace existing cidx with anything: the secondary
+        //     namespace at Blake3(prefix ‖ 0x01) also needs cleanup.
+        //
+        // For cidx-overwrite specifically, the batch path uses the
+        // same SAFE-SUBSET semantics: cidx → non-empty cidx is
+        // rejected because the new element's root_keys could refer
+        // to on-disk data while the cleanup pass also clears it.
+        //
+        // Apply identical semantics here:
+        //   - Existing is tree, new is non-tree OR empty tree (or
+        //     non-cidx tree): ALLOW + cleanup
+        //   - Existing is cidx, new is non-empty cidx: REJECT
+        let existing_is_tree = existing_item
+            .as_ref()
+            .map(|e| e.is_any_tree())
+            .unwrap_or(false);
+        if existing_is_tree {
+            let existing_is_cidx = matches!(
+                existing_item.as_ref().map(|e| e.underlying()),
+                Some(Element::CountIndexedTree(..)) | Some(Element::ProvableCountIndexedTree(..))
+            );
+            // Classify the new element to decide allow-vs-reject.
+            let (new_is_cidx, new_is_empty_cidx, new_is_non_empty_non_cidx_tree) =
+                match item.underlying() {
+                    Element::CountIndexedTree(p, s, c, _)
+                    | Element::ProvableCountIndexedTree(p, s, c, _) => {
+                        (true, p.is_none() && s.is_none() && *c == 0, false)
+                    }
+                    Element::Tree(root, _)
+                    | Element::SumTree(root, ..)
+                    | Element::BigSumTree(root, ..)
+                    | Element::CountTree(root, ..)
+                    | Element::CountSumTree(root, ..)
+                    | Element::ProvableCountTree(root, ..)
+                    | Element::ProvableCountSumTree(root, ..) => (false, false, root.is_some()),
+                    _ => (false, false, false),
+                };
+
+            // Reject: cidx → non-empty cidx (storage-pointer ambiguous).
+            if existing_is_cidx && new_is_cidx && !new_is_empty_cidx {
+                return Err(Error::NotSupported(
+                    "overwriting an existing CountIndexedTree with a non-empty cidx via \
+                     insert_into_count_indexed_tree is not supported (the new element's \
+                     root_keys would refer to on-disk data while the cleanup pass also \
+                     clears it; storage-pointer semantics are ambiguous). Delete the \
+                     existing cidx first, then insert the new state"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            // Reject: non-cidx tree replacement claiming a non-None
+            // root_key. Same ambiguity — the cleanup would clear the
+            // data the new element claims is there.
+            if new_is_non_empty_non_cidx_tree {
+                return Err(Error::NotSupported(
+                    "overwriting an existing tree with a NON-EMPTY new tree via \
+                     insert_into_count_indexed_tree is not supported (storage-pointer \
+                     ambiguous). Delete first, then insert with the new state"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+
+            // ALLOW + cleanup. Walk find_subtrees on the existing
+            // entry's path and clear each subtree's storage. For cidx
+            // existing, also clear the secondary namespace.
+            let entry_path = path.derive_owned_with_child(item_key.to_vec());
+            let entry_path_ref = SubtreePath::from(&entry_path);
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&entry_path_ref, Some(transaction), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(p, Some(batch), transaction)
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up old subtree storage in \
+                             insert_into_count_indexed_tree overwrite: {e}",
+                        ))
+                    })
+                );
+            }
+            if existing_is_cidx {
+                let primary_prefix =
+                    RocksDbStorage::build_prefix(entry_path_ref.clone()).unwrap_add_cost(&mut cost);
+                let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix)
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(batch),
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up nested cidx secondary in \
+                             insert_into_count_indexed_tree overwrite: {e}",
+                        ))
+                    })
+                );
+            }
+        }
 
         // 4. Insert into primary. Dispatch on element kind so tree
         //    subtree entries take the layered (combine_hash) path; using
@@ -1533,6 +1660,37 @@ pub(crate) fn mirror_to_secondary<'db, S: StorageContext<'db>>(
     );
 
     Ok(()).wrap_with_cost(cost)
+}
+
+/// Maximum allowed length for a key inserted directly into a cidx
+/// primary's content (the item key the secondary will mirror).
+///
+/// The secondary key is `count_be (8 bytes) ‖ item_key`. Merk's internal
+/// invariant requires Merk-tree keys to be `< 256` bytes (enforced by
+/// `debug_assert!` in `merk/src/tree/link.rs`), so the secondary key
+/// must be at most 255 bytes — i.e. `item_key.len() <= 247`. Generic
+/// GroveDB allows 255-byte keys, so cidx primaries have an additional
+/// 8-byte ceiling relative to the generic limit.
+///
+/// Every cidx primary write path (direct insert, batch insert) MUST
+/// enforce this on the item key before the merk write. A violation
+/// would corrupt the secondary Merk via the debug-assert in production
+/// builds (where assertions are disabled) by silently writing a key
+/// the Merk format does not support, leading to invariant breaks on
+/// later reads.
+pub const MAX_CIDX_ITEM_KEY_LEN: usize = 247;
+
+/// Returns `Err(Error::InvalidInput)` if `item_key.len() > 247`.
+/// Used by every cidx primary write path to bound the secondary key.
+#[inline]
+pub(crate) fn validate_cidx_item_key_len(item_key: &[u8]) -> Result<(), Error> {
+    if item_key.len() > MAX_CIDX_ITEM_KEY_LEN {
+        return Err(Error::InvalidInput(
+            "item key for a CountIndexedTree primary must be at most 247 bytes (the \
+             secondary index prepends an 8-byte count, and Merk requires keys < 256 bytes)",
+        ));
+    }
+    Ok(())
 }
 
 #[inline]

@@ -1379,7 +1379,14 @@ impl GroveDb {
                     }
                     drop(content_iter);
 
-                    let mut secondary_entries: HashMap<Vec<u8>, u64> = HashMap::new();
+                    // Use Vec<u64> rather than u64 so duplicate
+                    // secondary rows for the same original_key (a real
+                    // drift class — two count buckets pointing to the
+                    // same item key) don't get silently collapsed.
+                    // After collection, every original_key must have
+                    // exactly one count; more = duplicate; zero =
+                    // orphan.
+                    let mut secondary_entries: HashMap<Vec<u8>, Vec<u64>> = HashMap::new();
                     let mut sec_iter =
                         KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap();
                     while let Some((sec_key, _sec_value)) = sec_iter.next_kv().unwrap() {
@@ -1397,14 +1404,40 @@ impl GroveDb {
                         count_bytes.copy_from_slice(&sec_key[..8]);
                         let sec_count = u64::from_be_bytes(count_bytes);
                         let original_key = sec_key[8..].to_vec();
-                        secondary_entries.insert(original_key, sec_count);
+                        secondary_entries
+                            .entry(original_key)
+                            .or_default()
+                            .push(sec_count);
                     }
                     drop(sec_iter);
 
+                    // Surface duplicate-count entries explicitly. Each
+                    // (key, [count_a, count_b, ...]) with more than one
+                    // count is a duplicate-row drift — the cidx
+                    // invariant is "exactly one secondary entry per
+                    // primary entry".
+                    for (s_key, counts) in &secondary_entries {
+                        if counts.len() > 1 {
+                            let mut p = new_path.to_vec();
+                            p.push(b"__cidx_secondary_duplicate__".to_vec());
+                            p.push(s_key.clone());
+                            // Encode the duplicate count value in slot 2
+                            // (just one of them; the consumer can scan
+                            // the secondary to enumerate all).
+                            let mut dup = [0u8; 32];
+                            dup[24..32].copy_from_slice(&counts[0].to_be_bytes());
+                            issues.insert(p, ([0u8; 32], [0u8; 32], dup));
+                        }
+                    }
+
                     // For each primary entry, the secondary must have
-                    // a matching entry at the same count_value.
+                    // a matching entry at the same count_value. We use
+                    // `.first()` on the Vec — if there are multiple
+                    // entries that's a duplicate (already flagged
+                    // above); the first one is sufficient for the
+                    // count-mismatch comparison here.
                     for (p_key, p_count) in &primary_entries {
-                        match secondary_entries.get(p_key) {
+                        match secondary_entries.get(p_key).and_then(|v| v.first()) {
                             None => {
                                 let mut p = new_path.to_vec();
                                 p.push(b"__cidx_primary_orphan__".to_vec());
