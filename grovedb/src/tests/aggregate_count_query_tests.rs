@@ -1231,6 +1231,42 @@ mod tests {
         }
     }
 
+    /// Security regression: empty-path aggregate-count queries are
+    /// rejected at validation time, before any proof handling.
+    ///
+    /// `verify_aggregate_count_query` calls
+    /// `path_query.validate_aggregate_count_on_range()` at its entry. If
+    /// the path is empty, validation must fail — otherwise both
+    /// `verify_v0_layer` and `verify_v1_layer` would hit the
+    /// `depth == path_keys.len()` short-circuit at depth 0 and go
+    /// straight to the merk-level leaf verifier, never invoking the
+    /// terminal-type gate in `enforce_lower_chain`. The GroveDB root
+    /// merk is always a `NormalTree` by API construction, so a root
+    /// aggregate-count query has no valid target.
+    #[test]
+    fn empty_path_aggregate_count_rejected_at_validation() {
+        let v = GroveVersion::latest();
+        let pq = PathQuery::new_aggregate_count_on_range(
+            Vec::new(),
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = pq
+            .validate_aggregate_count_on_range()
+            .expect_err("empty path must be rejected at validation");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("root")
+                && (msg.contains("ProvableCountTree") || msg.contains("ProvableCountSumTree")),
+            "expected message naming root + ProvableCountTree, got: {msg}"
+        );
+
+        let result = GroveDb::verify_aggregate_count_query(&[0u8; 4], &pq, v);
+        assert!(
+            result.is_err(),
+            "verify_aggregate_count_query must reject empty-path queries"
+        );
+    }
+
     /// Security regression: empty-leaf type-confusion forgery
     /// (parallel of `empty_leaf_type_confusion_forgery_rejected` on the
     /// sum side).

@@ -222,16 +222,48 @@ impl PathQuery {
     /// `AggregateCountOnRange` query. On success, returns a reference to the
     /// inner range item.
     ///
+    /// Rejects empty paths up-front. The GroveDB root merk is always a
+    /// `NormalTree` by API construction (and never a `ProvableCountTree`),
+    /// so a root-level aggregate-count query has no valid target —
+    /// `verify_v0_layer` and `verify_v1_layer` would otherwise hit the
+    /// `depth == path_keys.len()` short-circuit at depth 0, going
+    /// straight to the merk-level count verifier without ever invoking
+    /// the terminal-type gate in `enforce_lower_chain`. Although the
+    /// merk-level hash-divergence between `node_hash` and
+    /// `node_hash_with_count` makes a numeric forgery infeasible, an
+    /// up-front rejection gives a clear error and removes the gate
+    /// dependency on cryptographic hash analysis.
+    ///
     /// Forwards to [`SizedQuery::validate_aggregate_count_on_range`].
     pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountOnRange queries may not target the root merk: \
+                 the GroveDB root is always a NormalTree, never a \
+                 ProvableCountTree / ProvableCountSumTree, so a count \
+                 aggregate at the root layer has no valid target",
+            ));
+        }
         self.query.validate_aggregate_count_on_range()
     }
 
     /// Validates that this `PathQuery` is a well-formed
     /// `AggregateSumOnRange` query. On success, returns a reference to the
-    /// inner range item. Forwards to
-    /// [`SizedQuery::validate_aggregate_sum_on_range`].
+    /// inner range item.
+    ///
+    /// Rejects empty paths up-front for the same reason as
+    /// [`Self::validate_aggregate_count_on_range`] — the GroveDB root
+    /// merk is always a `NormalTree`, never a `ProvableSumTree`. Forwards
+    /// to [`SizedQuery::validate_aggregate_sum_on_range`].
     pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateSumOnRange queries may not target the root merk: \
+                 the GroveDB root is always a NormalTree, never a \
+                 ProvableSumTree, so a sum aggregate at the root layer has \
+                 no valid target",
+            ));
+        }
         self.query.validate_aggregate_sum_on_range()
     }
 

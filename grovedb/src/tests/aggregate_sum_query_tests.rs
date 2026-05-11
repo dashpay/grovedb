@@ -1050,6 +1050,45 @@ mod tests {
         }
     }
 
+    /// Security regression: empty-path aggregate-sum queries are
+    /// rejected at validation time, before any proof handling.
+    ///
+    /// `verify_aggregate_sum_query` calls
+    /// `path_query.validate_aggregate_sum_on_range()` at its entry. If
+    /// the path is empty, validation must fail — otherwise both
+    /// `verify_v0_layer` and `verify_v1_layer` would hit the
+    /// `depth == path_keys.len()` short-circuit at depth 0 and go
+    /// straight to the merk-level leaf verifier, never invoking the
+    /// terminal-type gate in `enforce_lower_chain`. The GroveDB root
+    /// merk is always a `NormalTree` by API construction, so a root
+    /// aggregate-sum query has no valid target.
+    #[test]
+    fn empty_path_aggregate_sum_rejected_at_validation() {
+        let v = GroveVersion::latest();
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            Vec::new(), // empty path → must be rejected
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = pq
+            .validate_aggregate_sum_on_range()
+            .expect_err("empty path must be rejected at validation");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("root") && msg.contains("ProvableSumTree"),
+            "expected message naming root + ProvableSumTree, got: {msg}"
+        );
+
+        // Also confirm the verifier surface rejects with the same error
+        // (the validator is called first inside verify_aggregate_sum_query).
+        // We don't need a real proof — any bytes go in; validation runs
+        // before proof decode.
+        let result = GroveDb::verify_aggregate_sum_query(&[0u8; 4], &pq, v);
+        assert!(
+            result.is_err(),
+            "verify_aggregate_sum_query must reject empty-path queries"
+        );
+    }
+
     /// Same forgery shape, but the honest leaf is an empty
     /// `ProvableCountTree` (the wrong PROVABLE tree type for a sum
     /// query). Confirms the terminal-type gate enforces the precise
