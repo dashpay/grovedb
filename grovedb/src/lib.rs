@@ -1305,6 +1305,99 @@ impl GroveDb {
                         );
                     }
 
+                    // Cidx content-consistency check.
+                    //
+                    // The H1-A check above verifies *chain* integrity —
+                    // the cidx element's recorded value_hash matches
+                    // `combine_hash_three(value_hash(bytes),
+                    // primary_root, secondary_root)`. That binds the
+                    // two Merks' root hashes into the parent's hash,
+                    // but it does NOT verify the secondary's contents
+                    // match what the primary says they should be.
+                    //
+                    // A bug like nested-cidx batch bubble-up forgetting
+                    // to mirror the count change (caught at audit in
+                    // a8bb34fb) leaves the secondary internally
+                    // consistent — its root hash is the correct hash
+                    // of its on-disk content — but its content is
+                    // stale relative to the primary. H1-A passes;
+                    // queries return wrong results.
+                    //
+                    // Walk both Merks here and assert per-entry
+                    // consistency: every primary entry with
+                    // count_value=c at key=k must correspond to
+                    // exactly one secondary entry at
+                    // (c.to_be_bytes() ‖ k). Each mismatch is recorded
+                    // in `issues` with a sentinel path suffix so the
+                    // existing `VerificationIssues` type doesn't need
+                    // to change.
+                    let mut primary_entries: HashMap<Vec<u8>, u64> = HashMap::new();
+                    let mut content_iter =
+                        KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap();
+                    while let Some((p_key, p_value)) = content_iter.next_kv().unwrap() {
+                        let p_elem = Element::raw_decode(&p_value, grove_version)?;
+                        primary_entries.insert(p_key, p_elem.count_value_or_default());
+                    }
+                    drop(content_iter);
+
+                    let mut secondary_entries: HashMap<Vec<u8>, u64> = HashMap::new();
+                    let mut sec_iter =
+                        KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap();
+                    while let Some((sec_key, _sec_value)) = sec_iter.next_kv().unwrap() {
+                        // Secondary keys are (count_be ‖ original_key);
+                        // a malformed key short of 8 bytes is itself a
+                        // drift indicator.
+                        if sec_key.len() < 8 {
+                            let mut p = new_path.to_vec();
+                            p.push(b"__cidx_secondary_malformed_key__".to_vec());
+                            p.push(sec_key.clone());
+                            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+                            continue;
+                        }
+                        let mut count_bytes = [0u8; 8];
+                        count_bytes.copy_from_slice(&sec_key[..8]);
+                        let sec_count = u64::from_be_bytes(count_bytes);
+                        let original_key = sec_key[8..].to_vec();
+                        secondary_entries.insert(original_key, sec_count);
+                    }
+                    drop(sec_iter);
+
+                    // For each primary entry, the secondary must have
+                    // a matching entry at the same count_value.
+                    for (p_key, p_count) in &primary_entries {
+                        match secondary_entries.get(p_key) {
+                            None => {
+                                let mut p = new_path.to_vec();
+                                p.push(b"__cidx_primary_orphan__".to_vec());
+                                p.push(p_key.clone());
+                                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+                            }
+                            Some(s_count) if s_count != p_count => {
+                                let mut p = new_path.to_vec();
+                                p.push(b"__cidx_count_mismatch__".to_vec());
+                                p.push(p_key.clone());
+                                let mut expected = [0u8; 32];
+                                expected[24..32].copy_from_slice(&p_count.to_be_bytes());
+                                let mut actual = [0u8; 32];
+                                actual[24..32].copy_from_slice(&s_count.to_be_bytes());
+                                issues.insert(p, ([0u8; 32], expected, actual));
+                            }
+                            Some(_) => { /* matches */ }
+                        }
+                    }
+                    // For each secondary entry, the primary must have
+                    // a matching entry at that exact key (count match
+                    // is already checked above; here we look for
+                    // orphans in the secondary).
+                    for s_key in secondary_entries.keys() {
+                        if !primary_entries.contains_key(s_key) {
+                            let mut p = new_path.to_vec();
+                            p.push(b"__cidx_secondary_orphan__".to_vec());
+                            p.push(s_key.clone());
+                            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+                        }
+                    }
+
                     issues.extend(self.verify_merk_and_submerks_in_transaction(
                         primary_merk,
                         &new_path_ref,

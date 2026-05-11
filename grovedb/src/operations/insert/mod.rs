@@ -201,6 +201,30 @@ impl GroveDb {
                 grove_version
             )
         );
+
+        // Inserting an item directly into a CountIndexedTree primary
+        // via `db.insert()` would update the primary's content but
+        // leave the secondary stale — `add_element_on_transaction`
+        // has no secondary-mirror hook. The dedicated
+        // `insert_into_count_indexed_tree` exists precisely for this
+        // case and handles the dual-Merk write. Reject early with a
+        // pointer to the right API to prevent silent data drift.
+        // (References — which carry no count change at the cidx
+        // level — are still allowed; the cidx primary handles them via
+        // `insert_into_count_indexed_tree`'s reference resolution
+        // path, but the path used here goes through generic merk
+        // insertion only and does not need the cidx mirror.)
+        if subtree_to_insert_into.tree_type.is_count_indexed_primary() {
+            return Err(Error::NotSupported(
+                "direct `db.insert` into a CountIndexedTree primary is not supported \
+                 (the secondary index would not be mirrored). Use \
+                 `db.insert_into_count_indexed_tree(...)` for element insertion or \
+                 `db.delete_from_count_indexed_tree(...)` for removal"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
         // if we don't allow a tree override then we should check
 
         if options.checks_for_override() {

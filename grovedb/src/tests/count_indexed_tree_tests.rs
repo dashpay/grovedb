@@ -2999,9 +2999,10 @@ mod tests {
     #[test]
     fn direct_insert_into_nested_cidx_primary_bubbles_count_up_outer_secondary() {
         // Same shape as the batch test below, but routes through the
-        // direct insert API (`db.insert(...)`) instead of `apply_batch`.
-        // After direct insert into inner_cidx primary, outer's secondary
-        // entry for "inner_cidx" must move from (0, ...) to (1, ...).
+        // dedicated `insert_into_count_indexed_tree` API (NOT batch).
+        // After inserting an item into inner_cidx primary, outer's
+        // secondary entry for "inner_cidx" must move from (0, ...) to
+        // (1, ...) via the propagation's auto-mirror.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         db.insert(
@@ -3024,17 +3025,19 @@ mod tests {
         .unwrap()
         .expect("create inner");
 
-        // Direct insert (NOT via batch).
-        db.insert(
+        // Direct insert into inner cidx primary via dedicated API
+        // (the only safe way; raw `db.insert` is rejected for cidx
+        // primary targets — see `db.insert` guard in
+        // operations/insert/mod.rs).
+        db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
             b"item",
             Element::new_item(b"v".to_vec()),
             None,
-            None,
             grove_version,
         )
         .unwrap()
-        .expect("direct insert into nested cidx primary");
+        .expect("insert into nested cidx primary");
 
         let top = db
             .count_indexed_top_k(
@@ -3056,6 +3059,53 @@ mod tests {
             .verify_grovedb(None, false, true, grove_version)
             .expect("verify_grovedb");
         assert!(issues.is_empty(), "verify_grovedb issues: {:?}", issues);
+    }
+
+    #[test]
+    fn direct_db_insert_into_cidx_primary_is_rejected() {
+        // The direct `db.insert()` path has no secondary-mirror hook —
+        // inserting into a cidx primary via it would leave the secondary
+        // stale. Reject with a pointer to `insert_into_count_indexed_tree`.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let result = db
+            .insert(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"item",
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree primary")
+                        && msg.contains("insert_into_count_indexed_tree"),
+                    "expected cidx-primary rejection with API pointer, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+
+        // Confirm verify_grovedb stays clean after the rejected insert
+        // (nothing should have been written).
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
     }
 
     #[test]
@@ -3812,5 +3862,335 @@ mod tests {
             .unwrap()
             .expect("top after");
         assert_eq!(top_before, top_after);
+    }
+
+    // =====================================================================
+    // verify_grovedb cidx CONTENT consistency checks.
+    //
+    // The H1-A walk only verifies *chain* integrity — that the cidx
+    // element's recorded value_hash matches combine_hash_three of the two
+    // child Merks' root hashes. It does NOT check that the secondary's
+    // contents are consistent with the primary's count_values. The
+    // content-consistency pass (added alongside these tests) walks both
+    // Merks and asserts every primary entry has exactly one matching
+    // secondary entry at (count_be ‖ key), and vice versa.
+    //
+    // The tests below deliberately corrupt the secondary via direct
+    // storage manipulation, then assert verify_grovedb reports the
+    // expected sentinel-path issue. Without the content-consistency
+    // pass, all three tests would silently pass an integrity check while
+    // queries returned wrong results.
+    // =====================================================================
+
+    fn make_secondary_key(count: u64, item_key: &[u8]) -> Vec<u8> {
+        // Mirrors the private helper in operations/count_indexed_tree.rs.
+        let mut k = Vec::with_capacity(8 + item_key.len());
+        k.extend_from_slice(&count.to_be_bytes());
+        k.extend_from_slice(item_key);
+        k
+    }
+
+    /// Manually applies an `Element::delete` to the cidx primary's
+    /// secondary at the given secondary key, then commits. The
+    /// secondary's root_key changes on disk, but the parent's cidx
+    /// element bytes are NOT updated, so the H1-A check will see a
+    /// chain mismatch — that's fine; we're testing the CONTENT check.
+    fn corrupt_secondary_delete(
+        db: &crate::GroveDb,
+        cidx_primary_path: &[&[u8]],
+        secondary_key: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        use grovedb_merk::element::{
+            delete::ElementDeleteFromStorageExtensions, get::ElementFetchFromStorageExtensions,
+        };
+        use grovedb_merk::tree_type::TreeType;
+        use grovedb_path::SubtreePath;
+        use grovedb_storage::{Storage, StorageBatch};
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path_vec: Vec<&[u8]> = cidx_primary_path.to_vec();
+        let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+
+        // Read the parent's cidx element to get the current secondary
+        // root_key.
+        let (parent_path, cidx_key) = path.derive_parent().expect("non-root cidx");
+        let secondary_root_key = {
+            let parent_merk = db
+                .open_transactional_merk_at_path(parent_path, &tx, Some(&batch), grove_version)
+                .unwrap()
+                .expect("open parent");
+            let cidx_element = Element::get(&parent_merk, cidx_key, true, grove_version)
+                .unwrap()
+                .expect("cidx element");
+            match cidx_element.underlying() {
+                Element::CountIndexedTree(_, s, ..)
+                | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                _ => panic!("not a cidx element"),
+            }
+        };
+
+        {
+            let mut secondary_merk = db
+                .open_count_indexed_secondary_at_path(
+                    path,
+                    secondary_root_key,
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open secondary");
+            Element::delete(
+                &mut secondary_merk,
+                secondary_key,
+                None,
+                false,
+                TreeType::ProvableCountTree,
+                grove_version,
+            )
+            .unwrap()
+            .expect("delete secondary entry");
+        }
+
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("commit transaction");
+    }
+
+    /// Manually inserts a bogus entry into the cidx primary's
+    /// secondary. Same caveat about chain mismatch.
+    fn corrupt_secondary_insert(
+        db: &crate::GroveDb,
+        cidx_primary_path: &[&[u8]],
+        secondary_key: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        use grovedb_merk::element::{
+            get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+        };
+        use grovedb_path::SubtreePath;
+        use grovedb_storage::{Storage, StorageBatch};
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path_vec: Vec<&[u8]> = cidx_primary_path.to_vec();
+        let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+
+        let (parent_path, cidx_key) = path.derive_parent().expect("non-root cidx");
+        let secondary_root_key = {
+            let parent_merk = db
+                .open_transactional_merk_at_path(parent_path, &tx, Some(&batch), grove_version)
+                .unwrap()
+                .expect("open parent");
+            let cidx_element = Element::get(&parent_merk, cidx_key, true, grove_version)
+                .unwrap()
+                .expect("cidx element");
+            match cidx_element.underlying() {
+                Element::CountIndexedTree(_, s, ..)
+                | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                _ => panic!("not a cidx element"),
+            }
+        };
+
+        {
+            let mut secondary_merk = db
+                .open_count_indexed_secondary_at_path(
+                    path,
+                    secondary_root_key,
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open secondary");
+            let bogus = Element::new_item(Vec::new());
+            bogus
+                .insert(&mut secondary_merk, secondary_key, None, grove_version)
+                .unwrap()
+                .expect("insert orphan");
+        }
+
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("commit transaction");
+    }
+
+    #[test]
+    fn verify_grovedb_catches_secondary_missing_entry_for_primary() {
+        // Primary has "a" at count=1 but the secondary's entry is
+        // deleted under us. The content-consistency pass must flag
+        // `__cidx_primary_orphan__` for "a".
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert a");
+
+        // Sanity: clean integrity.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify pre-corruption");
+        assert!(issues.is_empty(), "pre-corruption clean: {:?}", issues);
+
+        // Delete the secondary entry for "a" (at count=1) WITHOUT
+        // touching the primary. Drift introduced.
+        corrupt_secondary_delete(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(1, b"a"),
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify post-corruption");
+        let primary_orphan_path: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"cidx".to_vec(),
+            b"__cidx_primary_orphan__".to_vec(),
+            b"a".to_vec(),
+        ];
+        assert!(
+            issues.contains_key(&primary_orphan_path),
+            "expected __cidx_primary_orphan__ for 'a', got issues: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn verify_grovedb_catches_orphan_in_secondary() {
+        // Primary is clean (no entry "ghost"), but the secondary has a
+        // bogus entry at count=99 / key="ghost". Content-consistency
+        // pass must flag `__cidx_secondary_orphan__` for "ghost".
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"real",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert real");
+
+        // Inject an orphan into the secondary.
+        corrupt_secondary_insert(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(99, b"ghost"),
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify post-corruption");
+        let secondary_orphan_path: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"cidx".to_vec(),
+            b"__cidx_secondary_orphan__".to_vec(),
+            b"ghost".to_vec(),
+        ];
+        assert!(
+            issues.contains_key(&secondary_orphan_path),
+            "expected __cidx_secondary_orphan__ for 'ghost', got: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn verify_grovedb_catches_count_mismatch_between_primary_and_secondary() {
+        // Primary has "a" at count=1. Manually delete the (count=1, "a")
+        // secondary entry AND insert a (count=99, "a") secondary entry.
+        // Both Merks have an entry for "a" but at different counts.
+        // Content-consistency pass must flag `__cidx_count_mismatch__`
+        // for "a".
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert a");
+
+        // Remove the legitimate (1, "a") and add a bogus (99, "a").
+        corrupt_secondary_delete(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(1, b"a"),
+            grove_version,
+        );
+        corrupt_secondary_insert(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(99, b"a"),
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify post-corruption");
+        let mismatch_path: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"cidx".to_vec(),
+            b"__cidx_count_mismatch__".to_vec(),
+            b"a".to_vec(),
+        ];
+        let entry = issues.get(&mismatch_path).unwrap_or_else(|| {
+            panic!(
+                "expected __cidx_count_mismatch__ for 'a', got: {:?}",
+                issues.keys().collect::<Vec<_>>()
+            )
+        });
+        // The expected (slot 1) hash encodes count=1 in its last 8
+        // bytes; the actual (slot 2) hash encodes count=99.
+        assert_eq!(&entry.1[24..32], &1u64.to_be_bytes());
+        assert_eq!(&entry.2[24..32], &99u64.to_be_bytes());
     }
 }
