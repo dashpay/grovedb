@@ -591,6 +591,18 @@ mod serde_impl {
         DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
         NonCounted(Box<ElementShadow>),
         NotSummed(Box<ElementShadow>),
+        CountIndexedTree(
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            CountValue,
+            Option<ElementFlags>,
+        ),
+        ProvableCountIndexedTree(
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            CountValue,
+            Option<ElementFlags>,
+        ),
     }
 
     impl From<ElementShadow> for Element {
@@ -620,6 +632,12 @@ mod serde_impl {
                 }
                 ElementShadow::NotSummed(inner) => {
                     Element::NotSummed(Box::new(Element::from(*inner)))
+                }
+                ElementShadow::CountIndexedTree(pk, sk, c, f) => {
+                    Element::CountIndexedTree(pk, sk, c, f)
+                }
+                ElementShadow::ProvableCountIndexedTree(pk, sk, c, f) => {
+                    Element::ProvableCountIndexedTree(pk, sk, c, f)
                 }
             }
         }

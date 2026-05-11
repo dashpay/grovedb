@@ -1373,10 +1373,15 @@ fn test_v1_proof_supports_count_indexed_tree_subquery() {
             .unwrap()
             .expect("root_hash")
     );
-    // Should contain the three items inserted into the cidx primary.
-    assert!(
-        !results.is_empty(),
-        "expected non-empty results from V1 cidx subquery"
+    // Should contain exactly the three items inserted into the cidx
+    // primary. Length-only check is sufficient here — the proof
+    // verifier already binds the root hash to the items, so a
+    // size-3 match means every inserted item is present.
+    assert_eq!(
+        results.len(),
+        3,
+        "expected 3 results from V1 cidx subquery, got {}",
+        results.len()
     );
 }
 

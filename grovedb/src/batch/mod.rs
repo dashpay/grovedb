@@ -2969,7 +2969,9 @@ where
                                     | Element::CommitmentTree(..)
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
-                                    | Element::DenseAppendOnlyFixedSizeTree(..) => {
+                                    | Element::DenseAppendOnlyFixedSizeTree(..)
+                                    | Element::CountIndexedTree(..)
+                                    | Element::ProvableCountIndexedTree(..) => {
                                         let tree_type = new_element
                                             .tree_type()
                                             .expect("tree_type guaranteed by match arm");

@@ -5339,8 +5339,8 @@ mod tests {
         match result {
             Err(crate::Error::CorruptedData(msg)) => {
                 assert!(
-                    msg.contains("cidx integrity"),
-                    "expected cidx integrity violation, got: {msg}"
+                    msg.contains("integrity check"),
+                    "expected integrity violation message, got: {msg}"
                 );
             }
             Err(other) => panic!("expected CorruptedData, got {:?}", other),
@@ -6863,6 +6863,212 @@ mod tests {
             .unwrap()
             .expect("get");
         assert_eq!(item, Element::new_item(b"v".to_vec()));
+    }
+
+    // =====================================================================
+    // Tests for the audit-fix patch landed in this commit:
+    //   - Direct insert rejects partially-initialized cidx claims
+    //   - proof/count_indexed.rs guards zero-layer envelopes
+    //   - proof verify handles empty-cidx terminal proofs
+    //   - delete clears nested cidx secondaries
+    // =====================================================================
+
+    #[test]
+    fn direct_insert_rejects_cidx_with_count_but_no_roots() {
+        // (None, None, count > 0) is partially initialized — the cidx
+        // claims entries exist but provides no root keys. Reject.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let bogus =
+            Element::new_count_indexed_tree_with_root_keys_and_count_value(None, None, 5, None);
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"key",
+                bogus,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("partial") || msg.contains("BOTH"),
+                    "expected partial-state rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn direct_insert_rejects_cidx_with_primary_only() {
+        // (Some, None, count > 0): asymmetric, only primary supplied.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let bogus = Element::new_count_indexed_tree_with_root_keys_and_count_value(
+            Some(b"primary".to_vec()),
+            None,
+            5,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"key",
+                bogus,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        // Accept either the new partial-state rejection or the existing
+        // InvalidParentLayerPath (depending on which check fires first
+        // — both are correct rejections).
+        assert!(
+            matches!(
+                result,
+                Err(crate::Error::InvalidInput(_) | crate::Error::InvalidParentLayerPath(_))
+            ),
+            "expected InvalidInput or InvalidParentLayerPath, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_zero_layer_envelope() {
+        // An adversarial envelope with 0 layers + 0 path elements
+        // previously panicked via underflow at `last_idx = len - 1`.
+        // The guard now rejects with CorruptedData.
+        let envelope = crate::operations::proof::count_indexed::CountIndexedRangeProof {
+            layer_proofs: Vec::new(),
+            primary_root_hash: [0u8; 32],
+            ancestor_cidx_secondary_root_hashes: Vec::new(),
+            secondary_proof: Vec::new(),
+            requested_limit: 0,
+            descending: false,
+        };
+        let bytes = bincode::encode_to_vec(&envelope, bincode::config::standard()).unwrap();
+        let result = GroveDb::verify_count_indexed_top_k(&bytes, &[]);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("zero layers") || msg.contains("at least one"),
+                    "expected zero-layer rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn direct_delete_clears_nested_cidx_secondary() {
+        // Layout: TEST_LEAF / outer (regular Tree) / nested_cidx (cidx)
+        // Delete the outer Tree. find_subtrees walks the outer's
+        // children and clears each subtree's PRIMARY storage; the
+        // nested_cidx's SECONDARY namespace must also be cleaned up by
+        // the audit-fix patch.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer tree");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"nested_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create nested cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"nested_cidx"].as_ref(),
+            b"item",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate nested cidx");
+
+        // Delete the outer Tree (with allow_deleting_non_empty_trees).
+        use crate::operations::delete::DeleteOptions;
+        let opts = DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            ..Default::default()
+        };
+        db.delete(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Some(opts),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete outer tree");
+
+        // Re-create the same layout at the same path. The nested cidx
+        // must observe a clean secondary (no orphan from the prior
+        // incarnation).
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("recreate outer");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"nested_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("recreate nested cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"nested_cidx"].as_ref(),
+            b"new_item",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert into fresh nested cidx");
+
+        // Top-k must see only the new_item, no orphan from the old
+        // nested cidx's secondary.
+        let top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer", b"nested_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("top-k after recreate");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1, b"new_item".to_vec());
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
     }
 
     #[test]

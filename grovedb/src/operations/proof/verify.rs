@@ -786,7 +786,38 @@ impl GroveDb {
                         // SumTree→Tree) in KVValueHash nodes without breaking
                         // the merk proof, since the value bytes are not part of
                         // the KVValueHash tree hash computation.
-                        if element.is_any_tree() && !element.is_non_empty_tree() {
+                        //
+                        // Cidx elements have TWO child Merks (primary +
+                        // secondary), so empty cidx terminal proofs use
+                        // `combine_hash_three(H(value), NULL_HASH, NULL_HASH)`
+                        // instead. Without the cidx-specific arm, valid
+                        // empty-cidx terminal proofs fail verification.
+                        let is_empty_cidx = matches!(
+                            element,
+                            Element::CountIndexedTree(None, None, 0, _)
+                                | Element::ProvableCountIndexedTree(None, None, 0, _)
+                        );
+                        if is_empty_cidx {
+                            let expected_value_hash = combine_hash_three(
+                                value_hash(value_bytes).value(),
+                                &NULL_HASH,
+                                &NULL_HASH,
+                            )
+                            .value()
+                            .to_owned();
+                            if hash != &expected_value_hash {
+                                return Err(Error::InvalidProof(
+                                    query.clone(),
+                                    format!(
+                                        "V1 empty cidx value hash mismatch at key {}: \
+                                         expected {}, got {}",
+                                        hex::encode(key),
+                                        hex::encode(hash),
+                                        hex::encode(expected_value_hash)
+                                    ),
+                                ));
+                            }
+                        } else if element.is_any_tree() && !element.is_non_empty_tree() {
                             let expected_value_hash =
                                 combine_hash(value_hash(value_bytes).value(), &NULL_HASH)
                                     .value()

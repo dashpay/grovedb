@@ -1072,6 +1072,8 @@ mod tests {
         assert!(ElementType::MmrTree.is_tree());
         assert!(ElementType::BulkAppendTree.is_tree());
         assert!(ElementType::DenseAppendOnlyFixedSizeTree.is_tree());
+        assert!(ElementType::CountIndexedTree.is_tree());
+        assert!(ElementType::ProvableCountIndexedTree.is_tree());
 
         // The wrapper is transparent: NonCountedTree is a tree, NonCountedItem is not.
         assert!(!ElementType::NonCountedItem.is_tree());
@@ -1080,6 +1082,17 @@ mod tests {
         assert!(ElementType::NonCountedSumTree.is_tree());
         assert!(ElementType::NonCountedProvableCountTree.is_tree());
         assert!(ElementType::NonCountedDenseAppendOnlyFixedSizeTree.is_tree());
+        assert!(ElementType::NonCountedCountIndexedTree.is_tree());
+        assert!(ElementType::NonCountedProvableCountIndexedTree.is_tree());
+
+        // is_count_indexed_tree only matches the two cidx variants (and their
+        // NonCounted twins via base()).
+        assert!(ElementType::CountIndexedTree.is_count_indexed_tree());
+        assert!(ElementType::ProvableCountIndexedTree.is_count_indexed_tree());
+        assert!(ElementType::NonCountedCountIndexedTree.is_count_indexed_tree());
+        assert!(ElementType::NonCountedProvableCountIndexedTree.is_count_indexed_tree());
+        assert!(!ElementType::Tree.is_count_indexed_tree());
+        assert!(!ElementType::ProvableCountTree.is_count_indexed_tree());
 
         // is_item / is_reference also see through the wrapper.
         assert!(ElementType::NonCountedItem.is_item());

@@ -508,23 +508,29 @@ let result = GroveDb::verify_count_indexed_query(&proof_bytes, q, &path)?;
 ### How many entries have count in `[a, b]`?
 
 Because the secondary is a `ProvableCountTree`, this is answered in
-`O(log n)` via the existing `AggregateCountOnRange` machinery applied
-directly to the secondary — no per-entry enumeration is needed.
+`O(log n + k)` via the existing range query against the secondary,
+using the same `prove_count_indexed_query` /
+`verify_count_indexed_query` shape as count-range reads — the
+returned entry list's length is the count, and the proof binds it to
+the GroveDB root hash. No per-entry enumeration is needed beyond
+what the secondary Merk's range proof already encodes.
 
 ```rust
-let (root_hash, count) = db.verify_aggregate_count_query_on_secondary(
-    proof,
-    path,
-    a..=b,                                     // count range, in count_be_bytes
-    grove_version,
-)?;
+let mut q = MerkQuery::new();
+q.insert_range(a.to_be_bytes().to_vec()..=b.to_be_bytes().to_vec());
+
+let proof = db.prove_count_indexed_query(path, q.clone(), None, tx, grove_version)?;
+let result = GroveDb::verify_count_indexed_query(&proof, q, &path)?;
+
+let count = result.entries.len();
+let root_hash = result.root_hash;
 ```
 
-The verifier returns the matched count and the GroveDB root hash. The
-trivial "total entries" query (`a = 0`, `b = u64::MAX`) collapses to a
-single hash-bound read of the secondary's root node and is also
-answered in `O(1)` via the parent's `Element::CountIndexedTree`
-`count_value` field, which already commits the size.
+The verifier returns the matched entries (size = count) and the
+GroveDB root hash. The trivial "total entries" query (`a = 0`,
+`b = u64::MAX`) is also answered in `O(1)` via the parent's
+`Element::CountIndexedTree` `count_value` field, which already commits
+the size.
 
 ### Direction
 

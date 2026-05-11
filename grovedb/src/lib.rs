@@ -327,25 +327,27 @@ impl GroveDb {
         Ok(GroveDb { db })
     }
 
-    /// Open a GroveDB and run a lightweight integrity check on all
-    /// `CountIndexedTree` / `ProvableCountIndexedTree` elements before
-    /// returning. Walks the cidx primaries only (NOT the full GroveDB)
-    /// and verifies H1-A chain integrity + content consistency between
-    /// each primary's count_value and the secondary's entries.
+    /// Open a GroveDB and run `verify_grovedb` before returning,
+    /// surfacing any integrity issues — including the H1-A chain and
+    /// primary↔secondary content-consistency checks that
+    /// `verify_grovedb` performs for each `CountIndexedTree` /
+    /// `ProvableCountIndexedTree` element.
     ///
     /// Use this when opening a database that may have been written by
     /// untrusted code, recovered after a crash, or that an external
-    /// system claims is consistent. Catches data drift that
-    /// `verify_grovedb` would catch but doesn't require running the
-    /// full-grovedb walk.
+    /// system claims is consistent.
     ///
-    /// Returns `Err(CorruptedData)` if any cidx primary fails the
-    /// integrity check, with the issues map embedded in the error
-    /// message for diagnostic. Returns the opened DB otherwise.
+    /// Returns `Err(CorruptedData)` if any integrity issues were
+    /// found, with the issue keys embedded in the error message for
+    /// diagnostic. Returns the opened DB otherwise.
     ///
-    /// Cost: roughly one traversal of every cidx primary's primary
-    /// AND secondary Merk. For DBs with no cidx elements this is a
-    /// near-no-op.
+    /// **Cost**: a full `verify_grovedb` traversal of every subtree —
+    /// including each cidx primary's primary AND secondary Merk. Not
+    /// a no-op even when the DB contains no cidx elements; budget
+    /// accordingly. For an open path that bypasses the integrity
+    /// check, use [`open`] and call `verify_grovedb` selectively.
+    ///
+    /// [`open`]: GroveDb::open
     pub fn open_with_cidx_integrity_check<P: AsRef<Path>>(
         path: P,
         grove_version: &GroveVersion,
@@ -353,12 +355,14 @@ impl GroveDb {
         let db = Self::open(path)?;
         let issues = db.verify_grovedb(None, false, true, grove_version)?;
         if !issues.is_empty() {
-            // Filter to only cidx-related issues (chain hash + content-
-            // drift sentinels). The H1-A walk in verify_grovedb is the
-            // cidx integrity check; other issues are reported too but
-            // we surface them all.
+            // verify_grovedb returns ALL integrity issues it found
+            // (cidx H1-A chain mismatches, cidx content-drift
+            // sentinels, AND any non-cidx issues — value-hash
+            // mismatches, dangling references, etc.). Surface them
+            // all in the error rather than filtering; the caller may
+            // want to know about non-cidx issues too.
             return Err(Error::CorruptedData(format!(
-                "cidx integrity check on open found {} issue(s): {:?}",
+                "integrity check on open found {} issue(s): {:?}",
                 issues.len(),
                 issues.keys().collect::<Vec<_>>()
             )));

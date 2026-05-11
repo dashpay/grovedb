@@ -74,7 +74,11 @@ fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
 }
 
 /// Populate a fresh plain CountTree with `n` empty child CountTrees.
+/// Currently unused (the matching top-k baseline bench is disabled
+/// pending a meaningful implementation), but kept for the
+/// `bench_insert_into_plain_count_tree` insert-latency baseline.
 #[cfg(feature = "minimal")]
+#[allow(dead_code)]
 fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
@@ -144,28 +148,15 @@ fn bench_cidx_top_k(c: &mut Criterion) {
 
 /// top_k via plain CountTree: full O(n) scan + sort.
 ///
-/// Implemented as `count_indexed_count_range` over a CountTree's
-/// content is not possible (no secondary). Equivalent operation: open
-/// the count tree, iterate every child, read its count_value, sort,
-/// take top k. Below uses a path query for a fair comparison.
-#[cfg(feature = "minimal")]
-fn bench_plain_count_tree_top_k(c: &mut Criterion) {
-    let mut group = c.benchmark_group("plain_count_tree_top_k");
-    for &n in &[100usize, 1_000, 10_000] {
-        let (_dir, db, _gv) = populate_plain_count_tree(n);
-        group.bench_function(format!("n={}_k=10", n), |b| {
-            b.iter(|| {
-                // Iterate the plain CountTree: open and read every entry.
-                // This is what users have to do TODAY without cidx.
-                // For the bench we just measure the open + scan cost via
-                // raw_iter; full sort would compound this.
-                let _ = db; // No equivalent typed API; the cost is dominated by
-                            // the iteration which the test below verifies.
-            });
-        });
-    }
-    group.finish();
-}
+// NOTE: a true matched baseline for "plain CountTree top-k" would
+// iterate every child via raw_iter, decode each entry's count_value,
+// and sort to take top-k. That code lives in user code rather than
+// the GroveDB API surface (no equivalent typed API exists today).
+// Re-enable this benchmark when a meaningful plain-CountTree
+// implementation lands; until then, leave the cidx benches as a
+// standalone characterization (the asymptotic claim is supported by
+// the cidx code structure — secondary range scan is O(log n + k)
+// while iterating every CountTree child would be O(n) by inspection).
 
 /// Insert latency: dedicated cidx API vs plain CountTree insert.
 #[cfg(feature = "minimal")]
@@ -249,7 +240,8 @@ fn bench_insert_into_plain_count_tree(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_cidx_top_k,
-    bench_plain_count_tree_top_k,
+    // bench_plain_count_tree_top_k — removed until a meaningful
+    // plain-CountTree implementation lands (see note above).
     bench_insert_into_cidx,
     bench_insert_into_plain_count_tree,
 );

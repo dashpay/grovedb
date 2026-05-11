@@ -826,7 +826,7 @@ impl GroveDb {
                         let p: SubtreePath<_> = subtree_path.as_slice().into();
                         let mut storage = self
                             .db
-                            .get_transactional_storage_context(p, Some(batch), transaction)
+                            .get_transactional_storage_context(p.clone(), Some(batch), transaction)
                             .unwrap_add_cost(&mut cost);
 
                         cost_return_on_error!(
@@ -834,6 +834,45 @@ impl GroveDb {
                             storage.clear().map_err(|e| {
                                 Error::CorruptedData(format!(
                                     "unable to cleanup tree from storage: {e}",
+                                ))
+                            })
+                        );
+
+                        // NESTED CIDX SECONDARY CLEANUP. find_subtrees
+                        // enumerates every nested subtree under the
+                        // deletion target, but only the primary's
+                        // storage namespace is reachable via the
+                        // path-prefix walk. Any nested cidx primary
+                        // inside the deleted subtree has a separate
+                        // secondary namespace at
+                        // Blake3(its_prefix ‖ 0x01) that find_subtrees
+                        // cannot see; clear it too.
+                        //
+                        // Clearing the secondary prefix is idempotent
+                        // on non-cidx subtrees (their secondary
+                        // namespace is empty), so we run it
+                        // unconditionally rather than decoding each
+                        // subtree's root element to check the tree
+                        // type — cheaper and removes a class of
+                        // missed-decoding bugs.
+                        let primary_prefix =
+                            RocksDbStorage::build_prefix(p).unwrap_add_cost(&mut cost);
+                        let secondary_prefix =
+                            RocksDbStorage::secondary_prefix_for(&primary_prefix)
+                                .unwrap_add_cost(&mut cost);
+                        let mut secondary_storage = self
+                            .db
+                            .get_transactional_storage_context_by_subtree_prefix(
+                                secondary_prefix,
+                                Some(batch),
+                                transaction,
+                            )
+                            .unwrap_add_cost(&mut cost);
+                        cost_return_on_error!(
+                            &mut cost,
+                            secondary_storage.clear().map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "unable to cleanup nested cidx secondary in delete: {e}",
                                 ))
                             })
                         );

@@ -1339,8 +1339,19 @@ impl GroveDb {
                             // combine_hash_three at this layer. Callers who
                             // want secondary-ordered output should use
                             // prove_count_indexed_top_k.
-                            Ok(ref cidx_elem @ Element::CountIndexedTree(..))
-                            | Ok(ref cidx_elem @ Element::ProvableCountIndexedTree(..))
+                            // Cidx descent only for NON-EMPTY primary
+                            // (Some(_)): mirrors the regular-tree
+                            // pattern above. An empty cidx primary
+                            // (None) is handled by the empty-tree arm
+                            // below, which decrements the limit
+                            // without recursing — emitting a wrapped
+                            // ProofBytes::CountIndexedTree for an
+                            // empty primary would carry a degenerate
+                            // (zero-secondary-hash + empty merk proof)
+                            // payload that the verifier handles via
+                            // the matching empty-cidx terminal arm.
+                            Ok(ref cidx_elem @ Element::CountIndexedTree(Some(_), ..))
+                            | Ok(ref cidx_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -1524,6 +1535,8 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(None, ..))
                             | Ok(Element::CountSumTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
+                            | Ok(Element::CountIndexedTree(None, ..))
+                            | Ok(Element::ProvableCountIndexedTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {

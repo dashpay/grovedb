@@ -315,14 +315,36 @@ impl GroveDb {
             | Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
                 let (primary_root_hash, secondary_root_hash) =
                     if primary.is_none() && secondary.is_none() && *count_value == 0 {
+                        // Empty cidx: both root keys absent AND count
+                        // is zero. NULL_HASH for both Merks.
                         (NULL_HASH, NULL_HASH)
                     } else {
-                        // Non-empty cidx: open the existing primary and
-                        // secondary Merks and verify their root keys match
-                        // the values the caller is asserting in the
-                        // element bytes. Mismatch ⇒ the element bytes
-                        // would diverge from on-disk state; refuse rather
-                        // than persist an inconsistent root_hash chain.
+                        // Non-empty cidx: REQUIRE both root_keys to be
+                        // Some(_) AND validate them against on-disk
+                        // state. Reject partially-initialized claims
+                        // explicitly:
+                        //   - (None, None, count > 0): a cidx claiming
+                        //     entries but with no roots — would persist
+                        //     a count_value disconnected from any real
+                        //     index content.
+                        //   - (Some, None, _) / (None, Some, _): only
+                        //     one of the two Merks claimed; would
+                        //     persist asymmetric roots that fail H1-A
+                        //     reconstruction.
+                        if primary.is_none() || secondary.is_none() {
+                            return Err(Error::InvalidInput(
+                                "CountIndexedTree direct insertion: non-empty cidx must \
+                                 have BOTH primary_root_key and secondary_root_key set \
+                                 to Some(_); partial state (one None, one Some, or \
+                                 count>0 with no roots) is not permitted",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Both roots are Some(_); open and verify they
+                        // match the on-disk state. Mismatch ⇒ the
+                        // element bytes would diverge from on-disk
+                        // state; refuse rather than persist an
+                        // inconsistent root_hash chain.
                         let child_path_owned = path.derive_owned_with_child(key.to_vec());
                         let child_path = SubtreePath::from(&child_path_owned);
                         let primary_merk = cost_return_on_error!(

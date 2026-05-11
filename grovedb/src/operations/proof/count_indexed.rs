@@ -69,9 +69,15 @@ pub struct CountIndexedRangeProof {
     /// independently with the existing `Query::execute_proof` API; yields
     /// the secondary's root hash and the (count_be ‖ key) entries.
     pub secondary_proof: Vec<u8>,
-    /// Echoed query parameters (used by the verifier to interpret /
-    /// validate the secondary proof).
+    /// Echoed query limit. Used by the verifier to interpret /
+    /// validate the secondary proof. Encoded as 0 when the prover
+    /// supplied `None` for the limit; the verifier maps 0 back to
+    /// `None`.
     pub requested_limit: u16,
+    /// Echoed iteration direction. `false` = ascending (left-to-right
+    /// over secondary keys, lowest counts first); `true` = descending
+    /// (highest counts first). Must match the prover's direction or
+    /// the merk proof's positional binding fails verification.
     pub descending: bool,
 }
 
@@ -432,6 +438,22 @@ impl GroveDb {
                 envelope.layer_proofs.len(),
                 path.len()
             )));
+        }
+        // Guard against an adversarial envelope claiming zero layers
+        // (path also empty by the equality check above). `last_idx =
+        // layer_proofs.len() - 1` would underflow on usize; the
+        // resulting `usize::MAX` indexing into `path` / `layer_proofs`
+        // panics. This is a DoS vector against any process calling
+        // verify_count_indexed_top_k / verify_count_indexed_query on
+        // attacker-controlled bytes (caught by the fuzz harness in
+        // the cidx coverage tests; same class as the
+        // capacity-overflow DoS fixed via `with_limit::<16 MiB>()`).
+        if envelope.layer_proofs.is_empty() {
+            return Err(Error::CorruptedData(
+                "cidx proof has zero layers; expected at least one (the path to the \
+                 cidx element)"
+                    .to_string(),
+            ));
         }
 
         // 1. Walk layer proofs bottom-up.
