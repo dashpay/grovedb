@@ -1609,6 +1609,88 @@ mod tests {
     }
 
     #[test]
+    fn direct_delete_empty_cidx_with_drifted_secondary_clears_namespace() {
+        // Regression test for the `is_empty` branch in
+        // GroveDb::delete_internal: a drifted cidx (primary empty,
+        // secondary holds an orphan) used to leave the secondary
+        // namespace untouched on delete. With the cidx-secondary
+        // cleanup hoisted out of the `if !is_empty` block, this case
+        // is now covered. We verify via a raw storage scan over the
+        // S2-B prefix.
+        use grovedb_storage::{
+            rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Inject an orphan into the secondary so the cidx is empty in
+        // the primary but has drift in the secondary.
+        corrupt_secondary_insert(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(0, b"orphan"),
+            grove_version,
+        );
+
+        // Compute the secondary prefix for the cidx path so we can
+        // scan it directly via raw_iter both before and after delete.
+        let cidx_path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let path_vec: Vec<&[u8]> = cidx_path.to_vec();
+        let subtree_path: grovedb_path::SubtreePath<&[u8]> = path_vec.as_slice().into();
+        let primary_prefix = RocksDbStorage::build_prefix(subtree_path).unwrap();
+        let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix).unwrap();
+
+        // Sanity: drift is real — secondary namespace has at least
+        // one entry before delete.
+        {
+            let tx = db.start_transaction();
+            let ctx = db
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(secondary_prefix, None, &tx)
+                .unwrap();
+            let mut iter = ctx.raw_iter();
+            iter.seek_to_first().unwrap();
+            assert!(
+                iter.valid().unwrap(),
+                "drift sanity: secondary namespace must be non-empty before delete"
+            );
+        }
+
+        // Delete the (primary-)empty cidx. Before the hoist fix, this
+        // would leave the drifted orphan in storage. After the fix,
+        // the cidx secondary cleanup runs unconditionally.
+        db.delete([TEST_LEAF].as_ref(), b"cidx", None, None, grove_version)
+            .unwrap()
+            .expect("delete empty (drifted) cidx");
+
+        // Verify the secondary namespace is now empty.
+        {
+            let tx = db.start_transaction();
+            let ctx = db
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(secondary_prefix, None, &tx)
+                .unwrap();
+            let mut iter = ctx.raw_iter();
+            iter.seek_to_first().unwrap();
+            assert!(
+                !iter.valid().unwrap(),
+                "secondary namespace must be empty after cidx delete; drift cleared"
+            );
+        }
+    }
+
+    #[test]
     fn direct_delete_non_empty_cidx_cleans_up_both_namespaces() {
         // Non-empty cidx: must allow_deleting_non_empty_trees, must clean
         // up BOTH primary subtree storage and secondary storage.

@@ -792,6 +792,48 @@ impl GroveDb {
                 };
             }
 
+            // CountIndexedTree owns a second storage namespace (the
+            // count-ordered secondary index) at a prefix derived from
+            // the primary's prefix via S2-B (`Blake3(primary_prefix ‖
+            // 0x01)`). `find_subtrees` only walks the primary's
+            // namespace, so without this explicit clear the
+            // secondary's storage would be orphaned: future inserts
+            // under the same path could collide with stale entries,
+            // and the secondary index would be unreachable but would
+            // still consume disk. Run unconditionally on every cidx
+            // primary delete — including the `is_empty` branch below,
+            // since a stale (drifted) secondary can co-exist with an
+            // empty primary (e.g. a bug that mirrors deletions into
+            // the primary but fails to mirror into the secondary
+            // would leave orphans here; defend against it by
+            // clearing the namespace at delete time). The per-prefix
+            // cleanup inside the `find_subtrees` loop below also
+            // clears this same namespace for the target prefix, but
+            // both clears are idempotent on an empty namespace so
+            // the redundancy is intentional defense-in-depth.
+            if tree_type.is_count_indexed_primary() {
+                let primary_prefix = RocksDbStorage::build_prefix(subtree_merk_path_ref.clone())
+                    .unwrap_add_cost(&mut cost);
+                let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix)
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(batch),
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to cleanup count-indexed-tree secondary from storage: {e}",
+                        ))
+                    })
+                );
+            }
+
             if !is_empty {
                 if non_merk_data {
                     // Non-Merk data trees: clear the subtree storage directly.
@@ -877,41 +919,6 @@ impl GroveDb {
                             })
                         );
                     }
-                }
-                // CountIndexedTree owns a second storage namespace (the
-                // count-ordered secondary index) at a prefix derived
-                // from the primary's prefix via S2-B
-                // (`Blake3(primary_prefix ‖ 0x01)`). `find_subtrees`
-                // only walks the primary's namespace, so without this
-                // explicit clear the secondary's storage would be
-                // orphaned: future inserts under the same path could
-                // collide with stale entries, and the secondary index
-                // would be unreachable but would still consume disk.
-                // Run unconditionally on cidx primary deletes (cleanup
-                // is idempotent on an already-empty namespace).
-                if tree_type.is_count_indexed_primary() {
-                    let primary_prefix =
-                        RocksDbStorage::build_prefix(subtree_merk_path_ref.clone())
-                            .unwrap_add_cost(&mut cost);
-                    let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix)
-                        .unwrap_add_cost(&mut cost);
-                    let mut secondary_storage = self
-                        .db
-                        .get_transactional_storage_context_by_subtree_prefix(
-                            secondary_prefix,
-                            Some(batch),
-                            transaction,
-                        )
-                        .unwrap_add_cost(&mut cost);
-                    cost_return_on_error!(
-                        &mut cost,
-                        secondary_storage.clear().map_err(|e| {
-                            Error::CorruptedData(format!(
-                                "unable to cleanup count-indexed-tree secondary from storage: \
-                                 {e}",
-                            ))
-                        })
-                    );
                 }
                 // todo: verify why we need to open the same? merk again
                 let storage = self

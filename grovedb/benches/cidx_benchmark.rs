@@ -13,6 +13,10 @@
 //!     under matched workloads.
 //!
 //! Run with: `cargo bench --features minimal --bench cidx_benchmark`
+//!
+//! Setup/measurement uses `.expect("...")` rather than naked `.unwrap()`
+//! so a panic in the bench harness surfaces *which* operation failed
+//! rather than just a backtrace-only "called Option::unwrap on a None".
 
 #[cfg(feature = "minimal")]
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
@@ -32,8 +36,8 @@ const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::empty();
 #[cfg(feature = "minimal")]
 fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
     let grove_version = GroveVersion::latest();
-    let dir = TempDir::new().unwrap();
-    let db = GroveDb::open(dir.path()).unwrap();
+    let dir = TempDir::new().expect("populate_cidx: create tempdir");
+    let db = GroveDb::open(dir.path()).expect("populate_cidx: open db");
     db.insert(
         EMPTY_PATH,
         b"cidx",
@@ -43,7 +47,7 @@ fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
         grove_version,
     )
     .unwrap()
-    .unwrap();
+    .expect("populate_cidx: insert root cidx");
     for i in 0..n {
         let key = format!("k{:08}", i).into_bytes();
         db.insert_into_count_indexed_tree(
@@ -54,7 +58,7 @@ fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
             grove_version,
         )
         .unwrap()
-        .unwrap();
+        .expect("populate_cidx: insert key cidx-child");
         // Insert i items inside so the count varies.
         for j in 0..(i % 10) {
             let inner = format!("c{:04}", j).into_bytes();
@@ -67,7 +71,7 @@ fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
                 grove_version,
             )
             .unwrap()
-            .unwrap();
+            .expect("populate_cidx: insert inner item");
         }
     }
     (dir, db, grove_version)
@@ -81,8 +85,8 @@ fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
 #[allow(dead_code)]
 fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
     let grove_version = GroveVersion::latest();
-    let dir = TempDir::new().unwrap();
-    let db = GroveDb::open(dir.path()).unwrap();
+    let dir = TempDir::new().expect("populate_plain_count_tree: create tempdir");
+    let db = GroveDb::open(dir.path()).expect("populate_plain_count_tree: open db");
     db.insert(
         EMPTY_PATH,
         b"ct",
@@ -92,7 +96,7 @@ fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersi
         grove_version,
     )
     .unwrap()
-    .unwrap();
+    .expect("populate_plain_count_tree: insert root ct");
     for i in 0..n {
         let key = format!("k{:08}", i).into_bytes();
         db.insert(
@@ -104,7 +108,7 @@ fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersi
             grove_version,
         )
         .unwrap()
-        .unwrap();
+        .expect("populate_plain_count_tree: insert key ct");
         for j in 0..(i % 10) {
             let inner = format!("c{:04}", j).into_bytes();
             db.insert(
@@ -116,7 +120,7 @@ fn populate_plain_count_tree(n: usize) -> (TempDir, GroveDb, &'static GroveVersi
                 grove_version,
             )
             .unwrap()
-            .unwrap();
+            .expect("populate_plain_count_tree: insert inner item");
         }
     }
     (dir, db, grove_version)
@@ -132,14 +136,14 @@ fn bench_cidx_top_k(c: &mut Criterion) {
             b.iter(|| {
                 db.count_indexed_top_k([b"cidx".as_slice()].as_ref(), 10, true, None, gv)
                     .unwrap()
-                    .unwrap()
+                    .expect("bench_cidx_top_k: count_indexed_top_k k=10")
             });
         });
         group.bench_function(format!("n={}_k=100", n), |b| {
             b.iter(|| {
                 db.count_indexed_top_k([b"cidx".as_slice()].as_ref(), 100, true, None, gv)
                     .unwrap()
-                    .unwrap()
+                    .expect("bench_cidx_top_k: count_indexed_top_k k=100")
             });
         });
     }
@@ -166,8 +170,8 @@ fn bench_insert_into_cidx(c: &mut Criterion) {
     group.bench_function("single_insert_into_empty_cidx", |b| {
         b.iter_batched(
             || {
-                let dir = TempDir::new().unwrap();
-                let db = GroveDb::open(dir.path()).unwrap();
+                let dir = TempDir::new().expect("bench_insert_into_cidx: create tempdir");
+                let db = GroveDb::open(dir.path()).expect("bench_insert_into_cidx: open db");
                 db.insert(
                     EMPTY_PATH,
                     b"cidx",
@@ -177,7 +181,7 @@ fn bench_insert_into_cidx(c: &mut Criterion) {
                     gv,
                 )
                 .unwrap()
-                .unwrap();
+                .expect("bench_insert_into_cidx: insert root cidx");
                 (dir, db)
             },
             |(_dir, db)| {
@@ -189,7 +193,7 @@ fn bench_insert_into_cidx(c: &mut Criterion) {
                     gv,
                 )
                 .unwrap()
-                .unwrap();
+                .expect("bench_insert_into_cidx: insert into cidx (measured)");
             },
             BatchSize::SmallInput,
         );
@@ -204,8 +208,10 @@ fn bench_insert_into_plain_count_tree(c: &mut Criterion) {
     group.bench_function("single_insert_into_empty_count_tree", |b| {
         b.iter_batched(
             || {
-                let dir = TempDir::new().unwrap();
-                let db = GroveDb::open(dir.path()).unwrap();
+                let dir =
+                    TempDir::new().expect("bench_insert_into_plain_count_tree: create tempdir");
+                let db =
+                    GroveDb::open(dir.path()).expect("bench_insert_into_plain_count_tree: open db");
                 db.insert(
                     EMPTY_PATH,
                     b"ct",
@@ -215,7 +221,7 @@ fn bench_insert_into_plain_count_tree(c: &mut Criterion) {
                     gv,
                 )
                 .unwrap()
-                .unwrap();
+                .expect("bench_insert_into_plain_count_tree: insert root ct");
                 (dir, db)
             },
             |(_dir, db)| {
@@ -228,7 +234,7 @@ fn bench_insert_into_plain_count_tree(c: &mut Criterion) {
                     gv,
                 )
                 .unwrap()
-                .unwrap();
+                .expect("bench_insert_into_plain_count_tree: insert into ct (measured)");
             },
             BatchSize::SmallInput,
         );
