@@ -1020,6 +1020,60 @@ impl GroveDb {
                         );
                     }
 
+                    // Software-consistency check: the aggregate fields
+                    // stored in the parent's tree element (e.g.
+                    // `sum_value` in `ProvableSumTree(_, sum_value, _)`)
+                    // must agree with the inner Merk's actual
+                    // `aggregate_data()`. This is distinct from the
+                    // cryptographic check above: for the provable
+                    // variants, both the recorded aggregate field AND
+                    // the actual inner aggregate are bound into
+                    // element_value_hash, but they are independently
+                    // representable on disk and could disagree if a
+                    // propagation bug (or storage corruption) drifts
+                    // them out of sync. For non-provable variants, the
+                    // aggregate field is stored alongside but not bound
+                    // into the hash; an out-of-sync field is therefore
+                    // a pure software bug, and the cryptographic check
+                    // would not catch it.
+                    //
+                    // Non-Merk data trees (CommitmentTree, MmrTree,
+                    // BulkAppendTree, DenseTree) keep an empty inner
+                    // Merk by design, so their `aggregate_data()` is
+                    // always `NoAggregateData`. Skip them here; the
+                    // recursion below is already skipped for them via
+                    // `uses_non_merk_data_storage`.
+                    //
+                    // For aggregate-mismatch logging we reuse the
+                    // existing `VerificationIssues` shape
+                    // (HashMap<path, (CryptoHash, CryptoHash,
+                    // CryptoHash)>) by packing the recorded vs. actual
+                    // aggregate values into a deterministic placeholder
+                    // hash via blake3. This avoids breaking the type
+                    // signature and all callers (including
+                    // `visualize_verify_grovedb`), at the cost of the
+                    // hex output being a placeholder rather than a
+                    // real Merk hash. The recorded-aggregate hash is
+                    // placed in the "expected" slot and the
+                    // actual-aggregate hash in the "actual" slot; the
+                    // "root" slot reuses the inner-Merk root hash for
+                    // path-locality.
+                    if !element.uses_non_merk_data_storage() {
+                        let actual_aggregate = inner_merk.aggregate_data().map_err(MerkError)?;
+                        if let Some((recorded_label, actual_label)) =
+                            aggregate_consistency_labels(&element, &actual_aggregate)
+                        {
+                            let expected_placeholder: CryptoHash =
+                                blake3::hash(recorded_label.as_bytes()).into();
+                            let actual_placeholder: CryptoHash =
+                                blake3::hash(actual_label.as_bytes()).into();
+                            issues.insert(
+                                new_path.to_vec(),
+                                (root_hash, expected_placeholder, actual_placeholder),
+                            );
+                        }
+                    }
+
                     // Non-Merk data trees (CommitmentTree, MmrTree,
                     // BulkAppendTree, DenseTree) store data in the data
                     // namespace as non-Element entries.  Recursing into
@@ -1200,6 +1254,187 @@ impl GroveDb {
             }
             _ => merk_root_hash,
         }
+    }
+}
+
+/// Inspect a tree-bearing Element together with the actual aggregate data of
+/// its inner Merk. Returns `Some((recorded_label, actual_label))` if the
+/// aggregate field(s) stored in the element disagree with `actual`, or
+/// `None` if they match (or if `element` is not a tree variant that carries
+/// an aggregate field reflecting the inner Merk's `aggregate_data()`).
+///
+/// The string labels are intended to be hashed into deterministic placeholder
+/// `CryptoHash` values for inclusion in `VerificationIssues`.
+///
+/// Coverage:
+/// - `SumTree(_, n, _)` vs. `AggregateData::Sum(m)`.
+/// - `ProvableSumTree(_, n, _)` vs. `AggregateData::ProvableSum(m)`.
+/// - `BigSumTree(_, n, _)` vs. `AggregateData::BigSum(m)`.
+/// - `CountTree(_, n, _)` vs. `AggregateData::Count(m)`.
+/// - `CountSumTree(_, c, s, _)` vs. `AggregateData::CountAndSum(cm, sm)`.
+/// - `ProvableCountTree(_, n, _)` vs. `AggregateData::ProvableCount(m)`.
+/// - `ProvableCountSumTree(_, c, s, _)` vs.
+///   `AggregateData::ProvableCountAndSum(cm, sm)`.
+///
+/// A plain `Element::Tree(..)` has no aggregate field; the inner Merk's
+/// `aggregate_data` is `NoAggregateData` by construction, and any other
+/// value would be a separate corruption (caught by the type/feature checks
+/// elsewhere). We return `None` for it here.
+///
+/// A variant/aggregate-shape mismatch (e.g. `ProvableSumTree` whose inner
+/// Merk reports `AggregateData::Count(_)` instead of `ProvableSum(_)`) is
+/// also reported, because the inner Merk's tree-type has drifted from what
+/// the parent element claims.
+#[cfg(feature = "minimal")]
+fn aggregate_consistency_labels(
+    element: &Element,
+    actual: &AggregateData,
+) -> Option<(String, String)> {
+    match (element, actual) {
+        // --- Plain Tree: no aggregate, never reports a mismatch.
+        (Element::Tree(..), AggregateData::NoAggregateData) => None,
+
+        // --- SumTree variants ---
+        (Element::SumTree(_, recorded, _), AggregateData::Sum(actual_sum)) => {
+            if recorded == actual_sum {
+                None
+            } else {
+                Some((
+                    format!("SumTree recorded sum {}", recorded),
+                    format!("inner aggregate Sum {}", actual_sum),
+                ))
+            }
+        }
+        (Element::ProvableSumTree(_, recorded, _), AggregateData::ProvableSum(actual_sum)) => {
+            if recorded == actual_sum {
+                None
+            } else {
+                Some((
+                    format!("ProvableSumTree recorded sum {}", recorded),
+                    format!("inner aggregate ProvableSum {}", actual_sum),
+                ))
+            }
+        }
+        (Element::BigSumTree(_, recorded, _), AggregateData::BigSum(actual_sum)) => {
+            if recorded == actual_sum {
+                None
+            } else {
+                Some((
+                    format!("BigSumTree recorded sum {}", recorded),
+                    format!("inner aggregate BigSum {}", actual_sum),
+                ))
+            }
+        }
+        (Element::CountTree(_, recorded, _), AggregateData::Count(actual_count)) => {
+            if recorded == actual_count {
+                None
+            } else {
+                Some((
+                    format!("CountTree recorded count {}", recorded),
+                    format!("inner aggregate Count {}", actual_count),
+                ))
+            }
+        }
+        (
+            Element::CountSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::CountAndSum(actual_count, actual_sum),
+        ) => {
+            if recorded_count == actual_count && recorded_sum == actual_sum {
+                None
+            } else {
+                Some((
+                    format!(
+                        "CountSumTree recorded count {} sum {}",
+                        recorded_count, recorded_sum
+                    ),
+                    format!(
+                        "inner aggregate CountAndSum count {} sum {}",
+                        actual_count, actual_sum
+                    ),
+                ))
+            }
+        }
+        (
+            Element::ProvableCountTree(_, recorded, _),
+            AggregateData::ProvableCount(actual_count),
+        ) => {
+            if recorded == actual_count {
+                None
+            } else {
+                Some((
+                    format!("ProvableCountTree recorded count {}", recorded),
+                    format!("inner aggregate ProvableCount {}", actual_count),
+                ))
+            }
+        }
+        (
+            Element::ProvableCountSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::ProvableCountAndSum(actual_count, actual_sum),
+        ) => {
+            if recorded_count == actual_count && recorded_sum == actual_sum {
+                None
+            } else {
+                Some((
+                    format!(
+                        "ProvableCountSumTree recorded count {} sum {}",
+                        recorded_count, recorded_sum
+                    ),
+                    format!(
+                        "inner aggregate ProvableCountAndSum count {} sum {}",
+                        actual_count, actual_sum
+                    ),
+                ))
+            }
+        }
+
+        // --- Empty-merk edge case: an empty Merk returns NoAggregateData
+        // for any tree type. This is the correct initial state for a
+        // freshly-inserted tree element. Treat as not-mismatching as long
+        // as the recorded aggregate is the identity for that variant
+        // (zero / zero counts). Anything else is a real mismatch. ---
+        (Element::SumTree(_, recorded, _), AggregateData::NoAggregateData) if *recorded == 0 => {
+            None
+        }
+        (Element::ProvableSumTree(_, recorded, _), AggregateData::NoAggregateData)
+            if *recorded == 0 =>
+        {
+            None
+        }
+        (Element::BigSumTree(_, recorded, _), AggregateData::NoAggregateData) if *recorded == 0 => {
+            None
+        }
+        (Element::CountTree(_, recorded, _), AggregateData::NoAggregateData) if *recorded == 0 => {
+            None
+        }
+        (
+            Element::CountSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::NoAggregateData,
+        ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+        (Element::ProvableCountTree(_, recorded, _), AggregateData::NoAggregateData)
+            if *recorded == 0 =>
+        {
+            None
+        }
+        (
+            Element::ProvableCountSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::NoAggregateData,
+        ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+
+        // --- Non-Merk data trees: caller skips us via
+        // `uses_non_merk_data_storage`; if we end up here anyway, do not
+        // report. ---
+        (Element::CommitmentTree(..), _)
+        | (Element::MmrTree(..), _)
+        | (Element::BulkAppendTree(..), _)
+        | (Element::DenseAppendOnlyFixedSizeTree(..), _) => None,
+
+        // --- Anything else is a variant/aggregate-shape mismatch (e.g.
+        // the inner Merk's tree-type has drifted from what the parent
+        // claims). Report with descriptive labels. ---
+        (element, actual) => Some((
+            format!("element variant {}", element.type_str()),
+            format!("inner aggregate variant {:?}", actual),
+        )),
     }
 }
 

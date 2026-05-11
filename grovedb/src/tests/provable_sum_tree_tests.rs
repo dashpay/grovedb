@@ -710,4 +710,631 @@ mod tests {
             other => panic!("expected NonCounted, got {:?}", other),
         }
     }
+
+    /// Phase 4: integrity walk tests for `verify_grovedb`.
+    ///
+    /// `verify_grovedb` performs two kinds of check on every tree-bearing
+    /// element it walks:
+    ///
+    /// 1. A **cryptographic** check:
+    ///    `combine_hash(value_hash(parent_bytes), inner_merk_root) ==
+    ///     stored_element_value_hash`.
+    ///
+    ///    This catches every form of *byte-level* tampering: if any value
+    ///    in the inner Merk is altered (and stored value_hash not also
+    ///    fixed up), the inner Merk's root hash changes, and the parent's
+    ///    binding hash no longer matches its stored
+    ///    `element_value_hash`. For SumItems, tampering only the stored
+    ///    value bytes (leaving the stored `value_hash` field alone) is
+    ///    caught at the SumItem arm by `value_hash(bytes) !=
+    ///    stored_value_hash`.
+    ///
+    /// 2. A **software-consistency** check (new in Phase 4):
+    ///    the parent's recorded aggregate field (e.g. `sum_value` in
+    ///    `ProvableSumTree(_, sum_value, _)`) must equal the inner Merk's
+    ///    actual `aggregate_data()`.
+    ///
+    ///    This catches a class of bugs not visible to the crypto check: a
+    ///    parent element whose stored bytes are *internally consistent* but
+    ///    whose claimed aggregate disagrees with reality.
+    ///
+    /// The tests below exercise both, covering ProvableSumTree (the Phase
+    /// 1–3 feature) and ProvableCountTree (a sanity check that the new
+    /// general check works for all variants the helper covers).
+    #[cfg(test)]
+    mod integrity_walk_tests {
+        use grovedb_merk::{
+            tree::{combine_hash, kv_digest_to_kv_hash, value_hash, TreeNode},
+            CryptoHash,
+        };
+        use grovedb_storage::{Storage, StorageContext};
+        use grovedb_version::version::GroveVersion;
+
+        use crate::{tests::make_empty_grovedb, Element};
+
+        // Helper: read raw TreeNode bytes for `key` from the prefixed
+        // storage at `path`, patch in `new_element` as the value bytes
+        // *without* updating the stored value_hash on the node, and
+        // write back via the immediate storage context.
+        //
+        // This simulates byte-level tampering of a leaf value (e.g. a
+        // SumItem) that leaves the stored value_hash stale. The
+        // verifier's value_hash check is expected to catch it.
+        fn tamper_value_no_hash_update(
+            db: &crate::GroveDb,
+            path: &[&[u8]],
+            key: &[u8],
+            new_element: &Element,
+            grove_version: &GroveVersion,
+        ) {
+            let tx = db.start_transaction();
+            let storage_ctx = db
+                .db
+                .get_immediate_storage_context(path.into(), &tx)
+                .unwrap();
+
+            let raw = storage_ctx
+                .get(key)
+                .unwrap()
+                .expect("storage_ctx get")
+                .expect("tampered key must exist on disk");
+
+            let mut tree_node = TreeNode::decode_raw(
+                &raw,
+                key.to_vec(),
+                None::<
+                    &fn(
+                        &[u8],
+                        &GroveVersion,
+                    )
+                        -> Option<grovedb_merk::tree::kv::ValueDefinedCostType>,
+                >,
+                grove_version,
+            )
+            .expect("decode raw tree node");
+            let new_bytes = new_element
+                .serialize(grove_version)
+                .expect("serialize replacement element");
+            // `set_value` mutates only the value field; hash and
+            // value_hash on the KV are left untouched.
+            tree_node.set_value(new_bytes);
+            let encoded = tree_node.encode();
+
+            storage_ctx
+                .put(key, &encoded, None, None)
+                .unwrap()
+                .expect("put corrupted tree node");
+            db.commit_transaction(tx).unwrap().expect("commit tamper");
+        }
+
+        // Helper: rewrite the parent's stored tree element bytes to
+        // claim a *different* aggregate, AND fix up the stored
+        // hash/value_hash to remain consistent with the inner Merk's
+        // existing root_hash. The inner Merk is untouched; only the
+        // parent's view of it changes.
+        //
+        // After this tamper, the cryptographic check (combine_hash of
+        // parent value_hash with inner Merk root_hash equals stored
+        // element_value_hash) passes, because we update the stored
+        // hashes to match the new bytes. The new aggregate-consistency
+        // check is expected to fire because the new bytes claim a sum
+        // (or count) that disagrees with the inner Merk's
+        // `aggregate_data()`.
+        //
+        // Implementation:
+        //
+        //   TreeNodeInner encoding is:
+        //     [option_byte u8] left_link?    (variable)
+        //     [option_byte u8] right_link?   (variable)
+        //     [feature_type encoding]        (variable)
+        //     [hash 32 bytes]
+        //     [value_hash 32 bytes]
+        //     [value bytes: rest]
+        //
+        //   We use `TreeNode::decode_raw` to learn the original value
+        //   length; the offset of `hash` is then `total_len - value_len
+        //   - 64`. We splice in:
+        //
+        //     raw[..hash_off] + new_kv_hash + new_value_hash + new_bytes
+        //
+        //   where:
+        //     new_value_hash = combine_hash(value_hash(new_bytes),
+        //                                   inner_root_hash)
+        //     new_kv_hash    = kv_digest_to_kv_hash(key, new_value_hash)
+        //
+        //   This matches what `KV::new_with_layered_value_hash` produces
+        //   on a real insert (see `merk/src/tree/kv.rs`).
+        fn tamper_parent_element_with_consistent_hashes(
+            db: &crate::GroveDb,
+            path: &[&[u8]],
+            key: &[u8],
+            new_element: &Element,
+            inner_root_hash: CryptoHash,
+            grove_version: &GroveVersion,
+        ) {
+            let tx = db.start_transaction();
+            let storage_ctx = db
+                .db
+                .get_immediate_storage_context(path.into(), &tx)
+                .unwrap();
+
+            let raw = storage_ctx
+                .get(key)
+                .unwrap()
+                .expect("storage_ctx get")
+                .expect("tampered key must exist on disk");
+
+            let decoded = TreeNode::decode_raw(
+                &raw,
+                key.to_vec(),
+                None::<
+                    &fn(
+                        &[u8],
+                        &GroveVersion,
+                    )
+                        -> Option<grovedb_merk::tree::kv::ValueDefinedCostType>,
+                >,
+                grove_version,
+            )
+            .expect("decode raw tree node");
+
+            let original_value_len = decoded.value_as_slice().len();
+            let total_len = raw.len();
+            let hash_off = total_len - original_value_len - 32 - 32;
+
+            let new_bytes = new_element
+                .serialize(grove_version)
+                .expect("serialize replacement element");
+            let raw_value_hash = value_hash(&new_bytes).unwrap();
+            let new_combined_value_hash = combine_hash(&raw_value_hash, &inner_root_hash).unwrap();
+            let new_kv_hash = kv_digest_to_kv_hash(key, &new_combined_value_hash).unwrap();
+
+            let mut new_raw = Vec::with_capacity(hash_off + 64 + new_bytes.len());
+            new_raw.extend_from_slice(&raw[..hash_off]);
+            new_raw.extend_from_slice(&new_kv_hash);
+            new_raw.extend_from_slice(&new_combined_value_hash);
+            new_raw.extend_from_slice(&new_bytes);
+
+            storage_ctx
+                .put(key, &new_raw, None, None)
+                .unwrap()
+                .expect("put consistently-rebound tampered tree node");
+            db.commit_transaction(tx).unwrap().expect("commit tamper");
+        }
+
+        // ==============================================================
+        // Test 1: cryptographic tampering of an inner SumItem is
+        // caught by verify_grovedb.
+        // ==============================================================
+        #[test]
+        fn verify_grovedb_catches_inner_sum_item_value_tamper() {
+            let grove_version = GroveVersion::latest();
+            let db = make_empty_grovedb();
+
+            db.insert(
+                &[] as &[&[u8]],
+                b"psum",
+                Element::empty_provable_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert provable sum tree");
+
+            for (k, v) in [(b"a".as_slice(), 7i64), (b"b", 13), (b"c", 20)] {
+                db.insert(
+                    &[b"psum".as_slice()],
+                    k,
+                    Element::new_sum_item(v),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert sum item");
+            }
+
+            // Sanity: clean tree verifies clean.
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify clean");
+            assert!(
+                issues.is_empty(),
+                "clean tree should verify clean, got: {:?}",
+                issues
+            );
+
+            // Tamper: rewrite SumItem(b"a") -> different SumItem WITHOUT
+            // updating the stored value_hash. The SumItem arm of the
+            // verifier reads stored value_hash and compares against
+            // value_hash(bytes); the comparison must now fail.
+            tamper_value_no_hash_update(
+                &db,
+                &[b"psum"],
+                b"a",
+                &Element::new_sum_item(99),
+                grove_version,
+            );
+
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify tampered");
+            // Expect exactly the tampered path to be reported.
+            assert!(
+                !issues.is_empty(),
+                "expected verify_grovedb to detect inner SumItem tamper"
+            );
+            let tampered_path: Vec<Vec<u8>> = vec![b"psum".to_vec(), b"a".to_vec()];
+            assert!(
+                issues.contains_key(&tampered_path),
+                "expected issue at tampered path {:?}, got: {:?}",
+                tampered_path,
+                issues
+            );
+        }
+
+        // ==============================================================
+        // Test 2: cryptographic tampering of an inner SumItem with a
+        // value the same length as the original is still caught (this
+        // is a sanity check that hashes — not lengths — are what get
+        // verified).
+        // ==============================================================
+        #[test]
+        fn verify_grovedb_catches_inner_sum_item_same_length_tamper() {
+            let grove_version = GroveVersion::latest();
+            let db = make_empty_grovedb();
+
+            db.insert(
+                &[] as &[&[u8]],
+                b"psum",
+                Element::empty_provable_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert provable sum tree");
+
+            db.insert(
+                &[b"psum".as_slice()],
+                b"a",
+                Element::new_sum_item(7),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum item");
+
+            // SumItem(7) -> SumItem(8); same encoded length.
+            let old_bytes = Element::new_sum_item(7).serialize(grove_version).unwrap();
+            let new_bytes = Element::new_sum_item(8).serialize(grove_version).unwrap();
+            assert_eq!(
+                old_bytes.len(),
+                new_bytes.len(),
+                "same-length tamper requires equal serialized sizes"
+            );
+
+            tamper_value_no_hash_update(
+                &db,
+                &[b"psum"],
+                b"a",
+                &Element::new_sum_item(8),
+                grove_version,
+            );
+
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify tampered");
+            assert!(
+                !issues.is_empty(),
+                "expected verify_grovedb to detect same-length SumItem tamper"
+            );
+        }
+
+        // ==============================================================
+        // Test 3: the new aggregate-consistency check fires when the
+        // parent's stored sum_value disagrees with the inner Merk's
+        // actual aggregate, even though the cryptographic binding is
+        // still consistent.
+        // ==============================================================
+        #[test]
+        fn verify_grovedb_catches_parent_aggregate_mismatch_provable_sum_tree() {
+            let grove_version = GroveVersion::latest();
+            let db = make_empty_grovedb();
+
+            db.insert(
+                &[] as &[&[u8]],
+                b"psum",
+                Element::empty_provable_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert provable sum tree");
+
+            for (k, v) in [(b"a".as_slice(), 7i64), (b"b", 13), (b"c", 20)] {
+                db.insert(
+                    &[b"psum".as_slice()],
+                    k,
+                    Element::new_sum_item(v),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert sum item");
+            }
+
+            // Read the inner Merk's actual root hash + the parent's
+            // current ProvableSumTree element to reuse the root key.
+            let parent = db
+                .get(&[] as &[&[u8]], b"psum", None, grove_version)
+                .unwrap()
+                .expect("get parent");
+            let (root_key, _real_sum, flags) = match parent {
+                Element::ProvableSumTree(rk, s, f) => (rk, s, f),
+                other => panic!("expected ProvableSumTree, got {:?}", other),
+            };
+
+            // Compute the actual inner Merk root hash by opening the
+            // inner Merk and reading it.
+            let inner_root = {
+                let tx = db.start_transaction();
+                let inner_merk = db
+                    .open_transactional_merk_at_path(
+                        [b"psum".as_slice()].as_ref().into(),
+                        &tx,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("open inner merk");
+                inner_merk.root_hash().unwrap()
+            };
+
+            // Craft a corrupted parent that claims sum=999 while the
+            // inner Merk actually sums to 40.
+            let corrupted_parent = Element::ProvableSumTree(root_key.clone(), 999, flags.clone());
+
+            tamper_parent_element_with_consistent_hashes(
+                &db,
+                &[],
+                b"psum",
+                &corrupted_parent,
+                inner_root,
+                grove_version,
+            );
+
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify tampered");
+            // The parent path should appear in issues because of the
+            // aggregate-consistency check.
+            let tampered_path: Vec<Vec<u8>> = vec![b"psum".to_vec()];
+            assert!(
+                issues.contains_key(&tampered_path),
+                "expected aggregate-consistency issue at {:?}, got: {:?}",
+                tampered_path,
+                issues
+            );
+        }
+
+        // ==============================================================
+        // Test 4: clean ProvableSumTree verifies clean.
+        // ==============================================================
+        #[test]
+        fn verify_grovedb_clean_provable_sum_tree_reports_no_issues() {
+            let grove_version = GroveVersion::latest();
+            let db = make_empty_grovedb();
+
+            db.insert(
+                &[] as &[&[u8]],
+                b"psum",
+                Element::empty_provable_sum_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert provable sum tree");
+
+            for (k, v) in [(b"a".as_slice(), 1i64), (b"b", -2), (b"c", 0), (b"d", 100)] {
+                db.insert(
+                    &[b"psum".as_slice()],
+                    k,
+                    Element::new_sum_item(v),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert sum item");
+            }
+
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify");
+            assert!(
+                issues.is_empty(),
+                "clean ProvableSumTree should verify clean, got: {:?}",
+                issues
+            );
+        }
+
+        // ==============================================================
+        // Test 5: same general check works for ProvableCountTree.
+        // (One positive case + one aggregate-mismatch case.)
+        // ==============================================================
+        #[test]
+        fn verify_grovedb_clean_provable_count_tree_reports_no_issues() {
+            let grove_version = GroveVersion::latest();
+            let db = make_empty_grovedb();
+
+            db.insert(
+                &[] as &[&[u8]],
+                b"pcount",
+                Element::empty_provable_count_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert provable count tree");
+
+            for k in [b"a".as_slice(), b"b", b"c", b"d", b"e"] {
+                db.insert(
+                    &[b"pcount".as_slice()],
+                    k,
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert item");
+            }
+
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify");
+            assert!(
+                issues.is_empty(),
+                "clean ProvableCountTree should verify clean, got: {:?}",
+                issues
+            );
+        }
+
+        #[test]
+        fn verify_grovedb_catches_parent_aggregate_mismatch_provable_count_tree() {
+            let grove_version = GroveVersion::latest();
+            let db = make_empty_grovedb();
+
+            db.insert(
+                &[] as &[&[u8]],
+                b"pcount",
+                Element::empty_provable_count_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert provable count tree");
+
+            for k in [b"a".as_slice(), b"b", b"c"] {
+                db.insert(
+                    &[b"pcount".as_slice()],
+                    k,
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert item");
+            }
+
+            let parent = db
+                .get(&[] as &[&[u8]], b"pcount", None, grove_version)
+                .unwrap()
+                .expect("get parent");
+            let (root_key, _real_count, flags) = match parent {
+                Element::ProvableCountTree(rk, c, f) => (rk, c, f),
+                other => panic!("expected ProvableCountTree, got {:?}", other),
+            };
+
+            let inner_root = {
+                let tx = db.start_transaction();
+                let inner_merk = db
+                    .open_transactional_merk_at_path(
+                        [b"pcount".as_slice()].as_ref().into(),
+                        &tx,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("open inner merk");
+                inner_merk.root_hash().unwrap()
+            };
+
+            // Parent claims 9999 items; inner Merk actually has 3.
+            let corrupted_parent =
+                Element::ProvableCountTree(root_key.clone(), 9999, flags.clone());
+            tamper_parent_element_with_consistent_hashes(
+                &db,
+                &[],
+                b"pcount",
+                &corrupted_parent,
+                inner_root,
+                grove_version,
+            );
+
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify tampered");
+            let tampered_path: Vec<Vec<u8>> = vec![b"pcount".to_vec()];
+            assert!(
+                issues.contains_key(&tampered_path),
+                "expected aggregate-consistency issue at {:?}, got: {:?}",
+                tampered_path,
+                issues
+            );
+        }
+
+        // ==============================================================
+        // Test 6: reload-after-write determinism. Insert, drop the
+        // db handle, reopen, run verify_grovedb. Zero issues.
+        // ==============================================================
+        #[test]
+        fn verify_grovedb_persists_clean_across_reopen() {
+            let grove_version = GroveVersion::latest();
+            let tmp_dir = tempfile::TempDir::new().expect("temp dir");
+
+            {
+                let db = crate::GroveDb::open(tmp_dir.path()).expect("open db");
+                db.insert(
+                    &[] as &[&[u8]],
+                    b"psum",
+                    Element::empty_provable_sum_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert provable sum tree");
+                for (k, v) in [(b"a".as_slice(), 5i64), (b"b", 7), (b"c", 11)] {
+                    db.insert(
+                        &[b"psum".as_slice()],
+                        k,
+                        Element::new_sum_item(v),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("insert sum item");
+                }
+            } // db dropped here
+
+            // Reopen + verify.
+            let db = crate::GroveDb::open(tmp_dir.path()).expect("reopen db");
+            let issues = db
+                .verify_grovedb(None, true, false, grove_version)
+                .expect("verify after reopen");
+            assert!(
+                issues.is_empty(),
+                "freshly-reopened DB should verify clean, got: {:?}",
+                issues
+            );
+
+            // And the parent's stored aggregate sum is intact.
+            let parent = db
+                .get(&[] as &[&[u8]], b"psum", None, grove_version)
+                .unwrap()
+                .expect("get parent");
+            assert_eq!(parent.as_provable_sum_tree_value().expect("psum value"), 23);
+        }
+    }
 }
