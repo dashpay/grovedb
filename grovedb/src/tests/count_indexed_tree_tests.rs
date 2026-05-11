@@ -8706,4 +8706,566 @@ mod tests {
             }
         }
     }
+
+    // =====================================================================
+    // Coverage for the direct-insertion non-empty cidx path
+    // (insert/mod.rs:314-410). Direct `db.insert(...)` of a cidx element
+    // with concrete root_keys is the migration / restore-from-backup
+    // path: the parent's value_hash must reflect the actual on-disk
+    // child Merk root hashes, so insert() opens both child Merks and
+    // validates the provided root_keys match. Reject branches:
+    //   - non-empty cidx with one root None (asymmetric state).
+    //   - non-empty cidx where the provided primary_root_key disagrees
+    //     with the actual primary Merk's on-disk root.
+    //   - non-empty cidx where the provided secondary_root_key
+    //     disagrees with the actual secondary Merk's on-disk root.
+    // =====================================================================
+
+    /// Reads the parent-stored cidx element bytes so we can re-insert
+    /// them directly via `db.insert(...)` to exercise the non-empty
+    /// path.
+    fn snapshot_cidx_element_for_direct_reinsert(
+        db: &crate::GroveDb,
+        parent_path: &[&[u8]],
+        cidx_key: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Element {
+        db.get(parent_path, cidx_key, None, grove_version)
+            .unwrap()
+            .expect("get cidx for snapshot")
+    }
+
+    #[test]
+    fn direct_insert_non_empty_cidx_with_matching_roots_succeeds() {
+        // Build a cidx with content via the normal API, snapshot its
+        // bytes, then re-insert the same cidx element bytes at the
+        // same path. The direct-insert path opens both child Merks,
+        // validates the provided root_keys match, reads root hashes
+        // off disk, and stores the parent element with the correct
+        // H1-A composition.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        let snapshot =
+            snapshot_cidx_element_for_direct_reinsert(&db, &[TEST_LEAF], b"cidx", grove_version);
+        match snapshot.underlying() {
+            Element::CountIndexedTree(Some(_), Some(_), _, _) => {
+                // count_value reflects the aggregate count of the
+                // inserted CountTrees, which are empty (count=0 each).
+                // The non-empty state we care about is Some(_) on
+                // both root_keys — that signals the child Merks have
+                // concrete on-disk structure.
+            }
+            other => panic!("expected cidx with both roots Some, got: {:?}", other),
+        }
+
+        use crate::operations::insert::InsertOptions;
+        let opts = InsertOptions {
+            validate_insertion_does_not_override_tree: false,
+            validate_insertion_does_not_override: false,
+            base_root_storage_is_free: false,
+        };
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            snapshot,
+            Some(opts),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("direct re-insert with matching roots must succeed");
+
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top_k after direct re-insert");
+        assert_eq!(top.len(), 2);
+    }
+
+    #[test]
+    fn direct_insert_partial_cidx_with_one_root_none_rejected() {
+        // Non-empty cidx requires BOTH primary_root_key and
+        // secondary_root_key to be Some(_); asymmetric state (one
+        // None, one Some) must be rejected with InvalidInput. Also
+        // (None, None, count > 0) must be rejected.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let bad_primary_only = Element::CountIndexedTree(Some(vec![1u8; 8]), None, 0, None);
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"a",
+                bad_primary_only,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(crate::Error::InvalidInput(_))),
+            "(Some, None) must be rejected, got: {:?}",
+            result
+        );
+
+        let bad_secondary_only = Element::CountIndexedTree(None, Some(vec![2u8; 8]), 0, None);
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"b",
+                bad_secondary_only,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(crate::Error::InvalidInput(_))),
+            "(None, Some) must be rejected, got: {:?}",
+            result
+        );
+
+        let bad_count_no_roots = Element::CountIndexedTree(None, None, 5, None);
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"c",
+                bad_count_no_roots,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(crate::Error::InvalidInput(_))),
+            "(None, None, count>0) must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn direct_insert_cidx_with_mismatched_primary_root_key_rejected() {
+        // Provided primary_root_key doesn't match the actual primary
+        // Merk's on-disk root → InvalidInput.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let real =
+            snapshot_cidx_element_for_direct_reinsert(&db, &[TEST_LEAF], b"cidx", grove_version);
+        let (real_primary, real_secondary, real_count) = match real.underlying() {
+            Element::CountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected cidx, got: {:?}", other),
+        };
+        let mut bad_primary = real_primary.clone().unwrap();
+        bad_primary[0] ^= 0xFF;
+        let tampered =
+            Element::CountIndexedTree(Some(bad_primary), real_secondary, real_count, None);
+
+        use crate::operations::insert::InsertOptions;
+        let opts = InsertOptions {
+            validate_insertion_does_not_override_tree: false,
+            validate_insertion_does_not_override: false,
+            base_root_storage_is_free: false,
+        };
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                tampered,
+                Some(opts),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("primary_root_key"),
+                    "expected primary_root_key mismatch error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInput(primary_root_key mismatch), got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn direct_insert_cidx_with_mismatched_secondary_root_key_rejected() {
+        // Mirror of the previous test but tampering secondary_root_key.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let real =
+            snapshot_cidx_element_for_direct_reinsert(&db, &[TEST_LEAF], b"cidx", grove_version);
+        let (real_primary, real_secondary, real_count) = match real.underlying() {
+            Element::CountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected cidx, got: {:?}", other),
+        };
+        let mut bad_secondary = real_secondary.clone().unwrap();
+        bad_secondary[0] ^= 0xFF;
+        let tampered =
+            Element::CountIndexedTree(real_primary, Some(bad_secondary), real_count, None);
+
+        use crate::operations::insert::InsertOptions;
+        let opts = InsertOptions {
+            validate_insertion_does_not_override_tree: false,
+            validate_insertion_does_not_override: false,
+            base_root_storage_is_free: false,
+        };
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                tampered,
+                Some(opts),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("secondary_root_key"),
+                    "expected secondary_root_key mismatch error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInput(secondary_root_key mismatch), got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn v1_verify_rejects_cidx_subquery_proof_with_non_cidx_lower_layer_bytes() {
+        // Coverage for proof/verify.rs:546-553 — when a V1 subquery
+        // descent hits a CountIndexedTree element, the lower_layer's
+        // merk_proof MUST be `ProofBytes::CountIndexedTree(_)`. If a
+        // malicious prover replaces it with `ProofBytes::Merk(_)`, the
+        // verifier rejects with "V1 lower layer for CountIndexedTree
+        // element must use ProofBytes::CountIndexedTree".
+        use crate::operations::proof::{GroveDBProof, ProofBytes};
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::{
+            query::{QueryItem, SubqueryBranch},
+            Query as MerkQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+
+        let mut inner = MerkQuery::new();
+        inner.insert_all();
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: MerkQuery {
+                    items: vec![QueryItem::Key(b"cidx".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query");
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode V1 proof");
+
+        // Walk the layers to find the cidx layer and replace its
+        // ProofBytes::CountIndexedTree(inner) with ProofBytes::Merk(inner).
+        let mut tampered = proof;
+        let root_layer = match &mut tampered {
+            GroveDBProof::V1(v1) => &mut v1.root_layer,
+            _ => panic!("expected V1 proof"),
+        };
+        let mut found = false;
+        for (_k, lower) in root_layer.lower_layers.iter_mut() {
+            for (_kk, sublower) in lower.lower_layers.iter_mut() {
+                if let ProofBytes::CountIndexedTree(b) = &sublower.merk_proof {
+                    sublower.merk_proof = ProofBytes::Merk(b.clone());
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "expected a CountIndexedTree layer in the proof");
+
+        let tampered_bytes =
+            bincode::encode_to_vec(&tampered, config).expect("re-encode tampered proof");
+        let result = GroveDb::verify_query(&tampered_bytes, &path_query, grove_version);
+        match result {
+            Err(crate::Error::InvalidProof(_, msg)) => {
+                assert!(
+                    msg.contains("ProofBytes::CountIndexedTree")
+                        || msg.contains("CountIndexedTree element"),
+                    "expected cidx-proof-bytes-mismatch error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidProof(cidx proof bytes mismatch), got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn v1_verify_rejects_cidx_subquery_proof_with_short_cidx_bytes() {
+        // Coverage for proof/verify.rs:555-561 — the cidx proof bytes
+        // must be >= 32 bytes (the secondary_root attestation prefix).
+        // Tamper to truncate the inner bytes.
+        use crate::operations::proof::{GroveDBProof, ProofBytes};
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::{
+            query::{QueryItem, SubqueryBranch},
+            Query as MerkQuery,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let mut inner = MerkQuery::new();
+        inner.insert_all();
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: MerkQuery {
+                    items: vec![QueryItem::Key(b"cidx".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query");
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (mut proof, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode V1 proof");
+
+        // Truncate the cidx layer's bytes to < 32.
+        let root_layer = match &mut proof {
+            GroveDBProof::V1(v1) => &mut v1.root_layer,
+            _ => panic!("expected V1 proof"),
+        };
+        let mut found = false;
+        for (_k, lower) in root_layer.lower_layers.iter_mut() {
+            for (_kk, sublower) in lower.lower_layers.iter_mut() {
+                if let ProofBytes::CountIndexedTree(b) = &mut sublower.merk_proof {
+                    *b = vec![0u8; 16]; // 16 < 32
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "expected a CountIndexedTree layer in the proof");
+
+        let tampered_bytes =
+            bincode::encode_to_vec(&proof, config).expect("re-encode tampered proof");
+        let result = GroveDb::verify_query(&tampered_bytes, &path_query, grove_version);
+        match result {
+            Err(crate::Error::InvalidProof(_, msg)) => {
+                assert!(
+                    msg.contains("shorter than 32-byte secondary root"),
+                    "expected short-cidx-bytes error, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof(short cidx bytes), got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn direct_insert_provable_count_indexed_tree_with_matching_roots_succeeds() {
+        // Exercises the ProvableCountIndexedTree arm of the direct
+        // insert pattern (insert/mod.rs:315). Mirrors the
+        // CountIndexedTree happy-path test but with the provable
+        // variant.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"prov_cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create provable cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"prov_cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let snapshot = snapshot_cidx_element_for_direct_reinsert(
+            &db,
+            &[TEST_LEAF],
+            b"prov_cidx",
+            grove_version,
+        );
+        match snapshot.underlying() {
+            Element::ProvableCountIndexedTree(Some(_), Some(_), _, _) => {}
+            other => panic!(
+                "expected provable cidx with both roots Some, got: {:?}",
+                other
+            ),
+        }
+
+        use crate::operations::insert::InsertOptions;
+        let opts = InsertOptions {
+            validate_insertion_does_not_override_tree: false,
+            validate_insertion_does_not_override: false,
+            base_root_storage_is_free: false,
+        };
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"prov_cidx",
+            snapshot,
+            Some(opts),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("direct re-insert of provable cidx with matching roots must succeed");
+
+        let top = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"prov_cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("top_k after direct re-insert");
+        assert_eq!(top.len(), 1);
+    }
 }
