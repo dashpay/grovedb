@@ -6511,4 +6511,412 @@ mod tests {
             issues.keys().collect::<Vec<_>>()
         );
     }
+
+    // =====================================================================
+    // Coverage push: extra tests around the new overwrite-cleanup
+    // branches and V1 generic verify cidx subqueries.
+    // =====================================================================
+
+    #[test]
+    fn insert_into_count_indexed_tree_overwrites_count_tree_with_empty_tree() {
+        // Replace existing CountTree with empty Tree (different tree
+        // type). Exercises the existing-tree-→-empty-tree branch.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"sub"].as_ref(),
+            b"inner",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate sub");
+
+        // Overwrite CountTree with empty Tree.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("overwrite CountTree with Tree");
+
+        let elem = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"sub", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert!(matches!(elem, Element::Tree(None, _)));
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_overwrites_empty_count_tree_with_item() {
+        // Replace an EMPTY existing CountTree with Item. Both count=0
+        // and count=1 respectively, so the secondary mirror updates
+        // from (0_be‖sub) → (1_be‖sub). Cleanup runs but doesn't
+        // touch anything substantive (empty tree has no children).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub");
+
+        // Overwrite empty CountTree with Item.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::new_item(b"replaced".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("overwrite empty count tree with item");
+
+        let elem = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"sub", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert_eq!(elem, Element::new_item(b"replaced".to_vec()));
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
+    #[test]
+    fn insert_into_count_indexed_tree_rejects_overwrite_with_non_empty_tree() {
+        // existing CountTree, new Tree with root_key=Some(...) →
+        // REJECT (non-empty tree with claimed root_key).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"sub",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub");
+
+        // Try non-empty Tree (claims root_key).
+        let non_empty_tree = Element::Tree(Some(b"bogus".to_vec()), None);
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"sub",
+                non_empty_tree,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("NON-EMPTY") || msg.contains("ambiguous"),
+                    "expected non-empty tree rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn batch_safe_subset_overwrite_replaces_cidx_with_sum_tree() {
+        // Batch safe-subset overwrite: cidx → SumTree (non-cidx,
+        // non-empty count-bearing-or-sum-bearing tree). The new tree
+        // has count_value=0 / sum_value=0 by default.
+        //
+        // Wait — for a non-cidx tree, "empty" means root_key=None.
+        // SumTree::empty has root_key=None and sum_value=0 — empty.
+        // So this exercises the existing-cidx → empty-SumTree branch.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Batch overwrite cidx with empty SumTree.
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::empty_sum_tree(),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        db.apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap()
+            .expect("overwrite cidx with SumTree");
+
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get");
+        assert!(matches!(elem, Element::SumTree(None, 0, _)));
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn batch_atomicity_failure_with_safe_subset_overwrite_preserves_cidx() {
+        // Variant of the existing atomicity test: a safe-subset
+        // overwrite + a failing op. The CIDX's pre-overwrite state
+        // must be intact after rollback, AND verify_grovedb finds no
+        // orphan from a partial cleanup.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"b",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate b");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing",
+            Element::new_item(b"original".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create existing");
+
+        let root_before = db.root_hash(None, grove_version).unwrap().expect("root");
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"cidx".to_vec(),
+                Element::new_item(b"replaced".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+                vec![TEST_LEAF.to_vec()],
+                b"existing".to_vec(),
+                Element::new_item(b"new".to_vec()),
+            ),
+        ];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            validate_insertion_does_not_override: true,
+            ..Default::default()
+        };
+        assert!(db
+            .apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap()
+            .is_err());
+        assert_eq!(
+            root_before,
+            db.root_hash(None, grove_version)
+                .unwrap()
+                .expect("root after"),
+            "rollback failed"
+        );
+
+        // Cidx still functional + state intact.
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top");
+        assert_eq!(top.len(), 2);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn cidx_item_key_exactly_at_247_byte_boundary_batch() {
+        // The 247-byte ceiling is INCLUSIVE — exactly 247 is allowed.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        let max_ok_key = vec![b'a'; 247];
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+            max_ok_key.clone(),
+            Element::new_item(b"v".to_vec()),
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("247-byte key must be accepted in batch");
+        let item = db
+            .get(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                &max_ok_key,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        assert_eq!(item, Element::new_item(b"v".to_vec()));
+    }
+
+    #[test]
+    fn delete_from_count_indexed_tree_handles_overwrite_remnant() {
+        // After an overwrite (existing tree → Item via dedicated API
+        // with cleanup), delete the new Item. Exercises the
+        // delete-after-overwrite-with-cleanup path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create tree");
+        // Overwrite tree with Item.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("overwrite tree with item");
+        // Delete the Item.
+        db.delete_from_count_indexed_tree([TEST_LEAF, b"cidx"].as_ref(), b"k", None, grove_version)
+            .unwrap()
+            .expect("delete after overwrite");
+        // Cidx is now empty.
+        match db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get cidx")
+        {
+            Element::CountIndexedTree(_, _, count, _) => assert_eq!(count, 0),
+            other => panic!("expected cidx, got {:?}", other),
+        }
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty());
+    }
 }
