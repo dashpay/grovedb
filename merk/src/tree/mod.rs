@@ -46,8 +46,8 @@ use grovedb_costs::{
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
-    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count, value_hash,
-    CryptoHash, HASH_LENGTH, NULL_HASH,
+    combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count,
+    node_hash_with_sum, value_hash, CryptoHash, HASH_LENGTH, NULL_HASH,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -470,6 +470,7 @@ impl TreeNode {
                     AggregateData::ProvableCountAndSum(c, s) => {
                         s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32
                     }
+                    AggregateData::ProvableSum(s) => s.encode_var_vec().len() as u32,
                 },
             )
         })
@@ -549,6 +550,12 @@ impl TreeNode {
                 AggregateData::CountAndSum(_, s) => Ok(s),
                 AggregateData::ProvableCount(_) => Ok(0),
                 AggregateData::ProvableCountAndSum(_, s) => Ok(s),
+                // `ProvableSum` contributes to sum aggregation exactly like
+                // `Sum`. GroveDB enforces homogeneous feature types per Merk
+                // tree, so a sum-bearing parent will only see sum-bearing
+                // children (Sum or ProvableSum) — this arm is reached when
+                // the tree itself is a ProvableSumTree.
+                AggregateData::ProvableSum(s) => Ok(s),
             },
             _ => Ok(0),
         }
@@ -578,6 +585,8 @@ impl TreeNode {
                 AggregateData::CountAndSum(c, _) => Ok(c),
                 AggregateData::ProvableCount(c) => Ok(c),
                 AggregateData::ProvableCountAndSum(c, _) => Ok(c),
+                // `ProvableSum` carries no count; behaves like `Sum`.
+                AggregateData::ProvableSum(_) => Ok(0),
             },
             _ => Ok(0),
         }
@@ -605,6 +614,8 @@ impl TreeNode {
                 AggregateData::CountAndSum(_, s) => s as i128,
                 AggregateData::ProvableCount(_) => 0,
                 AggregateData::ProvableCountAndSum(_, s) => s as i128,
+                // `ProvableSum` widens to i128 the same way `Sum` does.
+                AggregateData::ProvableSum(s) => s as i128,
             },
             _ => 0,
         }
@@ -622,7 +633,7 @@ impl TreeNode {
     }
 
     /// Computes and returns the hash of the root node, including aggregate data
-    /// for ProvableCountTree and ProvableCountSumTree.
+    /// for ProvableCountTree, ProvableCountSumTree, and ProvableSumTree.
     #[inline]
     pub fn hash_for_link(&self, tree_type: TreeType) -> CostContext<CryptoHash> {
         match tree_type {
@@ -654,6 +665,26 @@ impl TreeNode {
                         self.child_hash(true),
                         self.child_hash(false),
                         count,
+                    )
+                } else {
+                    // Fallback to regular hash if aggregate data is unexpected
+                    self.hash()
+                }
+            }
+            TreeType::ProvableSumTree => {
+                // For ProvableSumTree, include the aggregate sum in the hash
+                // via `node_hash_with_sum`. Phase 2: this is what makes the
+                // root hash diverge from a plain SumTree containing the
+                // same elements.
+                let aggregate_data = self
+                    .aggregate_data()
+                    .unwrap_or(AggregateData::NoAggregateData);
+                if let AggregateData::ProvableSum(sum) = aggregate_data {
+                    node_hash_with_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        sum,
                     )
                 } else {
                     // Fallback to regular hash if aggregate data is unexpected
@@ -762,18 +793,20 @@ impl TreeNode {
                     aggregated_sum_value,
                 ))
             }
-            // Phase 1: `ProvableSummedMerkNode` aggregates identically to a
-            // plain `SummedMerkNode`. Phase 2 will diverge the hash so the
-            // sum participates in the node hash, but the aggregation
-            // arithmetic stays the same.
+            // Phase 2: `ProvableSummedMerkNode` aggregates exactly like a
+            // plain `SummedMerkNode` arithmetically, but yields a distinct
+            // `AggregateData::ProvableSum` so the hash dispatch can route
+            // through `node_hash_with_sum` (which bakes the sum into the
+            // node hash). The child helpers above treat `ProvableSum`
+            // identically to `Sum` for sum collection.
             TreeFeatureType::ProvableSummedMerkNode(value) => {
                 let left = self.child_aggregate_sum_data_as_i64(true)?;
                 let right = self.child_aggregate_sum_data_as_i64(false)?;
                 value
                     .checked_add(left)
                     .and_then(|a| a.checked_add(right))
-                    .ok_or(Overflow("sum is overflowing"))
-                    .map(AggregateData::Sum)
+                    .ok_or(Overflow("provable sum is overflowing"))
+                    .map(AggregateData::ProvableSum)
             }
         }
     }
@@ -1196,7 +1229,8 @@ impl TreeNode {
                 cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
 
-                // Use special hash for ProvableCountTree and ProvableCountSumTree
+                // Use special hash for ProvableCountTree, ProvableCountSumTree,
+                // and ProvableSumTree (Phase 2).
                 let hash = match &aggregate_data {
                     AggregateData::ProvableCount(count) => node_hash_with_count(
                         tree.inner.kv.hash(),
@@ -1210,6 +1244,13 @@ impl TreeNode {
                         tree.child_hash(true),
                         tree.child_hash(false),
                         *count,
+                    )
+                    .unwrap_add_cost(&mut cost),
+                    AggregateData::ProvableSum(sum) => node_hash_with_sum(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *sum,
                     )
                     .unwrap_add_cost(&mut cost),
                     _ => tree.hash().unwrap_add_cost(&mut cost),
@@ -1236,7 +1277,8 @@ impl TreeNode {
                 // println!("key is {}", std::str::from_utf8(tree.key()).unwrap());
                 cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
-                // Use special hash for ProvableCountTree and ProvableCountSumTree
+                // Use special hash for ProvableCountTree, ProvableCountSumTree,
+                // and ProvableSumTree (Phase 2).
                 let hash = match &aggregate_data {
                     AggregateData::ProvableCount(count) => node_hash_with_count(
                         tree.inner.kv.hash(),
@@ -1250,6 +1292,13 @@ impl TreeNode {
                         tree.child_hash(true),
                         tree.child_hash(false),
                         *count,
+                    )
+                    .unwrap_add_cost(&mut cost),
+                    AggregateData::ProvableSum(sum) => node_hash_with_sum(
+                        tree.inner.kv.hash(),
+                        tree.child_hash(true),
+                        tree.child_hash(false),
+                        *sum,
                     )
                     .unwrap_add_cost(&mut cost),
                     _ => tree.hash().unwrap_add_cost(&mut cost),
@@ -1589,6 +1638,96 @@ mod test {
             AggregateData::Sum(8),
             tree.aggregate_data()
                 .expect("expected to get sum from tree")
+        );
+    }
+
+    /// Phase 2: a `ProvableSumTree`-style tree (built from
+    /// `ProvableSummedMerkNode` features) aggregates to `ProvableSum(N)`
+    /// where N is the sum of its node values + children. The root hash for
+    /// such a tree, computed via `hash_for_link(TreeType::ProvableSumTree)`,
+    /// must equal `node_hash_with_sum(kv_hash, l, r, N)` rather than the
+    /// plain `node_hash`.
+    #[test]
+    fn provable_sum_tree_aggregates_and_hashes_sum() {
+        use crate::tree::{
+            hash::{node_hash, node_hash_with_sum, NULL_HASH},
+            tree_feature_type::TreeFeatureType::ProvableSummedMerkNode,
+        };
+        use crate::TreeType;
+
+        let mut tree = TreeNode::new(vec![0], vec![1], None, ProvableSummedMerkNode(3))
+            .unwrap()
+            .attach(
+                false,
+                Some(TreeNode::new(vec![2], vec![3], None, ProvableSummedMerkNode(5)).unwrap()),
+            )
+            .unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        // Phase 2: aggregate is `ProvableSum` (not plain `Sum`), so the
+        // hash dispatch routes through `node_hash_with_sum`.
+        assert_eq!(
+            AggregateData::ProvableSum(8),
+            tree.aggregate_data()
+                .expect("expected to get provable sum from tree")
+        );
+
+        // The root hash via the ProvableSumTree dispatch matches
+        // `node_hash_with_sum(kv, l, r, 8)`. It does NOT match the plain
+        // `node_hash` — that's the cryptographic divergence Phase 2 adds.
+        let kv_hash = *tree.inner.kv.hash();
+        let l = *tree.child_hash(true);
+        let r = *tree.child_hash(false);
+
+        let expected_with_sum = node_hash_with_sum(&kv_hash, &l, &r, 8).unwrap();
+        let expected_without_sum = node_hash(&kv_hash, &l, &r).unwrap();
+        assert_ne!(expected_with_sum, expected_without_sum);
+
+        let actual = tree.hash_for_link(TreeType::ProvableSumTree).unwrap();
+        assert_eq!(actual, expected_with_sum);
+
+        // Sanity: the plain `Tree::hash()` method still produces the
+        // sum-less hash. Only `hash_for_link(ProvableSumTree)` baked the
+        // sum in.
+        assert_eq!(tree.hash().unwrap(), expected_without_sum);
+        assert_ne!(tree.hash().unwrap(), actual);
+    }
+
+    /// Phase 2: mutating any node's sum changes the root hash for a
+    /// ProvableSumTree. This is the proof-tampering detection at the
+    /// Merk-tree level.
+    #[test]
+    fn provable_sum_tree_root_hash_changes_on_sum_mutation() {
+        use crate::tree::tree_feature_type::TreeFeatureType::ProvableSummedMerkNode;
+        use crate::TreeType;
+
+        let make_tree = |right_sum: i64| -> TreeNode {
+            let mut t = TreeNode::new(vec![0], vec![1], None, ProvableSummedMerkNode(3))
+                .unwrap()
+                .attach(
+                    false,
+                    Some(
+                        TreeNode::new(vec![2], vec![3], None, ProvableSummedMerkNode(right_sum))
+                            .unwrap(),
+                    ),
+                )
+                .unwrap();
+            t.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+                .unwrap()
+                .expect("commit failed");
+            t
+        };
+
+        let tree_a = make_tree(5);
+        let tree_b = make_tree(6); // right child's sum bumped by 1
+
+        let hash_a = tree_a.hash_for_link(TreeType::ProvableSumTree).unwrap();
+        let hash_b = tree_b.hash_for_link(TreeType::ProvableSumTree).unwrap();
+        assert_ne!(
+            hash_a, hash_b,
+            "mutating a node's sum must change the ProvableSumTree root hash"
         );
     }
 }

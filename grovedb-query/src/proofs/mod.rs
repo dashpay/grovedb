@@ -151,6 +151,50 @@ pub enum Node {
     ///
     /// Contains: `(kv_hash, left_child_hash, right_child_hash, count)`
     HashWithCount(CryptoHash, CryptoHash, CryptoHash, u64),
+
+    /// Key, value, and sum. For queried Items in ProvableSumTree.
+    ///
+    /// Sum analogue of `KVCount`: the verifier recomputes
+    /// `node_hash = node_hash_with_sum(kv_hash, left, right, sum)` so a
+    /// forged sum produces a hash divergence at the parent boundary.
+    ///
+    /// Contains: `(key, value, sum)`
+    KVSum(Vec<u8>, Vec<u8>, i64),
+
+    /// KV hash and sum. For non-queried nodes in ProvableSumTree.
+    ///
+    /// Sum analogue of `KVHashCount`.
+    ///
+    /// Contains: `(kv_hash, sum)`
+    KVHashSum(CryptoHash, i64),
+
+    /// Key, referenced value, reference element hash, and sum.
+    /// For queried References in ProvableSumTree.
+    ///
+    /// Sum analogue of `KVRefValueHashCount`.
+    ///
+    /// Contains: `(key, referenced_value, reference_element_hash, sum)`
+    KVRefValueHashSum(Vec<u8>, Vec<u8>, CryptoHash, i64),
+
+    /// Key, value_hash, and sum. For proving absence in ProvableSumTree.
+    ///
+    /// Sum analogue of `KVDigestCount`.
+    ///
+    /// Contains: `(key, value_hash, sum)`
+    KVDigestSum(Vec<u8>, CryptoHash, i64),
+
+    /// A self-verifying compressed subtree for `AggregateSumOnRange` proofs
+    /// against a `ProvableSumTree`.
+    ///
+    /// Sum analogue of `HashWithCount` — encodes the subtree's *root* node as
+    /// `(kv_hash, left_child_hash, right_child_hash, sum)`. The verifier
+    /// reconstructs the subtree's root `node_hash` as
+    /// `node_hash_with_sum(kv_hash, left_child_hash, right_child_hash, sum)`
+    /// and uses that hash exactly as `Hash(...)` would. The sum is
+    /// cryptographically committed by the parent's hash chain.
+    ///
+    /// Contains: `(kv_hash, left_child_hash, right_child_hash, sum)`
+    HashWithSum(CryptoHash, CryptoHash, CryptoHash, i64),
 }
 
 use std::fmt;
@@ -229,6 +273,35 @@ impl fmt::Display for Node {
                 hex::encode(value_hash),
                 feature_type,
                 hex::encode(child_hash)
+            ),
+            Node::KVSum(key, value, sum) => format!(
+                "KVSum({}, {}, {})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                sum
+            ),
+            Node::KVHashSum(kv_hash, sum) => {
+                format!("KVHashSum(HASH[{}], {})", hex::encode(kv_hash), sum)
+            }
+            Node::KVRefValueHashSum(key, value, value_hash, sum) => format!(
+                "KVRefValueHashSum({}, {}, HASH[{}], {})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                sum
+            ),
+            Node::KVDigestSum(key, value_hash, sum) => format!(
+                "KVDigestSum({}, HASH[{}], {})",
+                hex_to_ascii(key),
+                hex::encode(value_hash),
+                sum
+            ),
+            Node::HashWithSum(kv_hash, left_child_hash, right_child_hash, sum) => format!(
+                "HashWithSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], sum={})",
+                hex::encode(kv_hash),
+                hex::encode(left_child_hash),
+                hex::encode(right_child_hash),
+                sum
             ),
         };
         write!(f, "{}", node_string)

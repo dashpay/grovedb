@@ -122,6 +122,21 @@ pub enum ProofNodeType {
     ///
     /// Used for: Reference (inside ProvableCountTree)
     KvRefValueHashCount,
+
+    /// Use `Node::KVSum` - sum analogue of `KvCount`. The verifier
+    /// recomputes `value_hash = H(value)` and includes the i64 sum in the
+    /// node hash via `node_hash_with_sum`. Phase 2.
+    ///
+    /// Used for: Item, SumItem, ItemWithSumItem (inside ProvableSumTree)
+    KvSum,
+
+    /// Use `Node::KVRefValueHashSum` - sum analogue of `KvRefValueHashCount`.
+    /// At the merk layer, this generates `KVValueHashFeatureType` (since
+    /// merk doesn't know about references). GroveDB post-processes these
+    /// nodes to `Node::KVRefValueHashSum` with the dereferenced value.
+    ///
+    /// Used for: Reference (inside ProvableSumTree)
+    KvRefValueHashSum,
 }
 
 /// Element type discriminants.
@@ -405,42 +420,53 @@ impl ElementType {
     pub fn proof_node_type(&self, parent_tree_type: Option<ElementType>) -> ProofNodeType {
         let parent_base = parent_tree_type.map(|t| t.base());
         // "Provable aggregate parents" are those that bake the per-node
-        // aggregate (count or sum) into the node hash. Items inside them
-        // must carry the feature in the proof, and subtrees inside them
-        // must use the feature-aware proof-node variant.
+        // aggregate into the node hash. The count family
+        // (`ProvableCountTree`, `ProvableCountSumTree`) hashes the count;
+        // the sum family (`ProvableSumTree`, Phase 2) hashes the sum.
         //
-        // Phase 1: `ProvableSumTree` joins this family. It mirrors
-        // `ProvableCountTree`'s proof shape for now; Phase 2 will diverge
-        // the actual hash computation but keep the proof-node-type
-        // selection identical.
+        // Phase 2: the dispatch now distinguishes the two families. Item /
+        // Reference proof variants diverge (KvSum / KvRefValueHashSum vs
+        // KvCount / KvRefValueHashCount). Subtrees inside either family
+        // still use `KvValueHashFeatureType` — the feature_type field on
+        // that variant carries both the count and sum in their respective
+        // tagged TreeFeatureType variants, so a single proof-node variant
+        // suffices for the subtree case.
         let is_provable_count_tree = matches!(
             parent_base,
-            Some(ElementType::ProvableCountTree)
-                | Some(ElementType::ProvableCountSumTree)
-                | Some(ElementType::ProvableSumTree)
+            Some(ElementType::ProvableCountTree) | Some(ElementType::ProvableCountSumTree)
         );
+        let is_provable_sum_tree = matches!(parent_base, Some(ElementType::ProvableSumTree));
+        let is_provable_aggregate_tree = is_provable_count_tree || is_provable_sum_tree;
 
         let base = self.base();
         if base.has_simple_value_hash() {
             // Items (Item, SumItem, ItemWithSumItem)
             if is_provable_count_tree {
                 ProofNodeType::KvCount
+            } else if is_provable_sum_tree {
+                ProofNodeType::KvSum
             } else {
                 ProofNodeType::Kv
             }
         } else if base.is_reference() {
             // References need combined hash (for reference resolution).
-            // In ProvableCountTree, they also need the count in node_hash.
-            // GroveDB post-processes these to KVRefValueHash/KVRefValueHashCount.
+            // In ProvableCountTree they additionally need the count in
+            // node_hash; in ProvableSumTree they need the sum.
+            // GroveDB post-processes these to KVRefValueHash /
+            // KVRefValueHashCount / KVRefValueHashSum.
             if is_provable_count_tree {
                 ProofNodeType::KvRefValueHashCount
+            } else if is_provable_sum_tree {
+                ProofNodeType::KvRefValueHashSum
             } else {
                 ProofNodeType::KvRefValueHash
             }
         } else {
             // Subtrees (Tree, SumTree, BigSumTree, CountTree, CountSumTree,
-            // ProvableCountTree, ProvableSumTree)
-            if is_provable_count_tree {
+            // ProvableCountTree, ProvableSumTree). KvValueHashFeatureType
+            // works for both Count and Sum families because the embedded
+            // `TreeFeatureType` carries the aggregate.
+            if is_provable_aggregate_tree {
                 ProofNodeType::KvValueHashFeatureType
             } else {
                 ProofNodeType::KvValueHash

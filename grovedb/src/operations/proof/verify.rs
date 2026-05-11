@@ -2679,14 +2679,19 @@ impl GroveDb {
             | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)
             | Node::KVRefValueHash(key, value, ..)
-            | Node::KVRefValueHashCount(key, value, ..) => Some((key.clone(), value.clone())),
+            | Node::KVRefValueHashCount(key, value, ..)
+            | Node::KVSum(key, value, ..)
+            | Node::KVRefValueHashSum(key, value, ..) => Some((key.clone(), value.clone())),
             // These nodes don't have values, only key+hash or just hash
             Node::KVDigest(..)
             | Node::KVDigestCount(..)
+            | Node::KVDigestSum(..)
             | Node::Hash(_)
             | Node::KVHash(_)
             | Node::KVHashCount(..)
-            | Node::HashWithCount(..) => None,
+            | Node::HashWithCount(..)
+            | Node::KVHashSum(..)
+            | Node::HashWithSum(..) => None,
         }
     }
 

@@ -353,14 +353,18 @@ impl GroveDb {
             done_with_results |= overall_limit == &Some(0);
             // Check if node should preserve its special type before destructuring
             // We need this flag to avoid converting it to Node::KV later
-            // - KVValueHashFeatureType: used by ProvableCountTree for trees/references
+            // - KVValueHashFeatureType: used by ProvableCountTree / ProvableSumTree for
+            //   trees/references
             // - KVCount: used by ProvableCountTree for Items (tamper-resistant with count)
+            // - KVSum: used by ProvableSumTree for Items (tamper-resistant with sum)
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
                     | Op::PushInverted(Node::KVValueHashFeatureType(..))
                     | Op::Push(Node::KVCount(..))
                     | Op::PushInverted(Node::KVCount(..))
+                    | Op::Push(Node::KVSum(..))
+                    | Op::PushInverted(Node::KVSum(..))
             );
             // Extract count if present for ProvableCountTree references
             let count_for_ref = match op {
@@ -371,11 +375,25 @@ impl GroveDb {
                 },
                 _ => None,
             };
+            // Phase 2: extract sum if present for ProvableSumTree references.
+            // Mirror count_for_ref — the merk layer emits
+            // `KVValueHashFeatureType` with a `ProvableSummedMerkNode(sum)`
+            // feature for references; the GroveDB layer rewrites that to
+            // `KVRefValueHashSum` with the dereferenced value.
+            let sum_for_ref = match op {
+                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
+                    TreeFeatureType::ProvableSummedMerkNode(sum) => Some(*sum),
+                    _ => None,
+                },
+                _ => None,
+            };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
+                    | Node::KVSum(key, value, _)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
@@ -415,9 +433,23 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                // Use KVRefValueHashCount if in ProvableCountTree,
-                                // otherwise use KVRefValueHash
-                                *node = if let Some(count) = count_for_ref {
+                                // Phase 2 dispatch priority:
+                                //   ProvableSumTree references -> KVRefValueHashSum
+                                //   ProvableCountTree references -> KVRefValueHashCount
+                                //   regular references          -> KVRefValueHash
+                                // The two ref-aggregate flags are mutually
+                                // exclusive (a ref child sees one parent
+                                // tree type), but Sum takes priority if both
+                                // are erroneously set — Sum-in-hash is the
+                                // newer and stricter invariant.
+                                *node = if let Some(sum) = sum_for_ref {
+                                    Node::KVRefValueHashSum(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        sum,
+                                    )
+                                } else if let Some(count) = count_for_ref {
                                     Node::KVRefValueHashCount(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
@@ -448,6 +480,7 @@ impl GroveDb {
                                 // Only convert to Node::KV if not already a special node type
                                 // - KVValueHashFeatureType: preserves feature_type for trees/refs
                                 // - KVCount: preserves count for Items in ProvableCountTree
+                                // - KVSum: preserves sum for Items in ProvableSumTree
                                 if !should_preserve_node_type {
                                     *node = Node::KV(key.to_owned(), value.to_owned());
                                 }
@@ -1110,17 +1143,29 @@ impl GroveDb {
 
         for op in merk_proof.proof.iter_mut() {
             done_with_results |= overall_limit == &Some(0);
+            // Phase 2: mirror generate.rs's first ref-rewriting loop —
+            // preserve ProvableSumTree special nodes too.
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
                     | Op::PushInverted(Node::KVValueHashFeatureType(..))
                     | Op::Push(Node::KVCount(..))
                     | Op::PushInverted(Node::KVCount(..))
+                    | Op::Push(Node::KVSum(..))
+                    | Op::PushInverted(Node::KVSum(..))
             );
             let count_for_ref = match op {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
                 | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
                     TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let sum_for_ref = match op {
+                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
+                    TreeFeatureType::ProvableSummedMerkNode(sum) => Some(*sum),
                     _ => None,
                 },
                 _ => None,
@@ -1131,6 +1176,7 @@ impl GroveDb {
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
+                    | Node::KVSum(key, value, _)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
@@ -1170,7 +1216,14 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                *node = if let Some(count) = count_for_ref {
+                                *node = if let Some(sum) = sum_for_ref {
+                                    Node::KVRefValueHashSum(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        sum,
+                                    )
+                                } else if let Some(count) = count_for_ref {
                                     Node::KVRefValueHashCount(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),

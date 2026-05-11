@@ -2316,6 +2316,11 @@ where
                         AggregateData::ProvableCountAndSum(count_value, sum_value) => {
                             Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
                         }
+                        AggregateData::ProvableSum(sum_value) => {
+                            Element::new_provable_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
                     };
                     // Re-wrap if the original element was wrapped, so the
                     // on-disk bytes preserve the wrapper and the parent's

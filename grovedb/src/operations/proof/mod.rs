@@ -747,6 +747,36 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex::encode(right_child_hash),
             count
         ),
+        // Phase 2: ProvableSumTree proof variants.
+        Node::KVSum(key, value, sum) => format!(
+            "KVSum({}, {}, {})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            sum
+        ),
+        Node::KVHashSum(kv_hash, sum) => {
+            format!("KVHashSum(HASH[{}], {})", hex::encode(kv_hash), sum)
+        }
+        Node::KVRefValueHashSum(key, value, value_hash, sum) => format!(
+            "KVRefValueHashSum({}, {}, HASH[{}], {})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(value_hash),
+            sum
+        ),
+        Node::KVDigestSum(key, value_hash, sum) => format!(
+            "KVDigestSum({}, HASH[{}], {})",
+            hex_to_ascii(key),
+            hex::encode(value_hash),
+            sum
+        ),
+        Node::HashWithSum(kv_hash, left_child_hash, right_child_hash, sum) => format!(
+            "HashWithSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], sum={})",
+            hex::encode(kv_hash),
+            hex::encode(left_child_hash),
+            hex::encode(right_child_hash),
+            sum
+        ),
     };
     Ok(s)
 }

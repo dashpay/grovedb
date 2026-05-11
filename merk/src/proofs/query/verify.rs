@@ -476,7 +476,7 @@ impl QueryProofVerify for Query {
                     }
                     execute_node(key, Some(value), *node_value_hash, true)?;
                 }
-                Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) => {
+                Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) | Node::KVHashSum(..) => {
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
                             "Proof is missing data for query range. Encountered unexpected node \
@@ -503,6 +503,38 @@ impl QueryProofVerify for Query {
                          encountered in regular query verification"
                             .to_string(),
                     ));
+                }
+                Node::HashWithSum(..) => {
+                    // Phase 2: same fail-fast rationale as `HashWithCount`
+                    // above. `HashWithSum` is reserved for the dedicated
+                    // aggregate-sum verifier (Phase 5); it must never reach
+                    // the regular query verifier.
+                    return Err(Error::InvalidProofError(
+                        "HashWithSum node is only valid in aggregate-sum proofs; \
+                         encountered in regular query verification"
+                            .to_string(),
+                    ));
+                }
+                Node::KVSum(key, value, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVSum node");
+                    }
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
+                }
+                Node::KVDigestSum(key, value_hash, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigestSum node");
+                    }
+                    execute_node(key, None, *value_hash, false)?;
+                }
+                Node::KVRefValueHashSum(key, value, value_hash, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHashSum node");
+                    }
+                    execute_node(key, Some(value), *value_hash, false)?;
                 }
             }
 
@@ -537,6 +569,11 @@ impl QueryProofVerify for Query {
                     Some(Node::KVValueHashFeatureType(..)) => {}
                     Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                     Some(Node::KVRefValueHashCount(..)) => {}
+                    // Phase 2: ProvableSumTree key-bearing nodes are also
+                    // acceptable absence-proof boundaries.
+                    Some(Node::KVSum(..)) => {}
+                    Some(Node::KVDigestSum(..)) => {}
+                    Some(Node::KVRefValueHashSum(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items
