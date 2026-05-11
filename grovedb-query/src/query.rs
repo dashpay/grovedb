@@ -411,7 +411,15 @@ impl Query {
             return true;
         }
         if let Some(branches) = &self.conditional_subquery_branches {
-            for branch in branches.values() {
+            for (selector, branch) in branches {
+                // The selector is itself a `QueryItem` and could carry an
+                // `AggregateSumOnRange` tag (the type permits it even
+                // though it would not be a meaningful conditional
+                // matcher). Reject defensively so a hidden ASOR in a
+                // selector cannot slip past the aggregate-shape check.
+                if selector.is_aggregate_sum_on_range() {
+                    return true;
+                }
                 if let Some(sub) = branch.subquery.as_deref()
                     && sub.has_aggregate_sum_on_range_anywhere()
                 {
@@ -1413,6 +1421,64 @@ mod tests {
         assert!(
             conditional.has_aggregate_count_on_range_anywhere(),
             "ACOR hidden in conditional subquery branch must be detected"
+        );
+    }
+
+    /// Sum-side mirror of `has_aggregate_count_on_range_anywhere_walks_subqueries`,
+    /// with one extra case: an `AggregateSumOnRange` tag appearing as the
+    /// *selector* (map key) of a conditional subquery branch. The selector
+    /// is itself a `QueryItem` and the type permits ASOR there even though
+    /// it would never be a meaningful matcher; the walker must surface it
+    /// so the prove_query entry-point gate can reject the malformed shape.
+    #[test]
+    fn has_aggregate_sum_on_range_anywhere_walks_subqueries_and_selectors() {
+        // No ASOR anywhere → false.
+        let plain = Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        assert!(!plain.has_aggregate_sum_on_range_anywhere());
+
+        // Top-level ASOR → true.
+        let top = Query::new_aggregate_sum_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        assert!(top.has_aggregate_sum_on_range_anywhere());
+
+        // ASOR hidden inside default_subquery_branch.subquery.
+        let inner =
+            Query::new_aggregate_sum_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let mut hidden =
+            Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        hidden.set_subquery(inner);
+        assert!(hidden.aggregate_sum_on_range().is_none());
+        assert!(
+            hidden.has_aggregate_sum_on_range_anywhere(),
+            "ASOR hidden in default subquery branch must be detected"
+        );
+
+        // ASOR hidden inside a conditional subquery branch's subquery.
+        let inner2 =
+            Query::new_aggregate_sum_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let mut conditional =
+            Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        conditional.add_conditional_subquery(QueryItem::Key(b"k".to_vec()), None, Some(inner2));
+        assert!(
+            conditional.has_aggregate_sum_on_range_anywhere(),
+            "ASOR hidden in conditional subquery branch must be detected"
+        );
+
+        // ASOR appearing as the SELECTOR of a conditional branch. The
+        // selector itself is a `QueryItem` and could carry an ASOR tag —
+        // pre-fix this slipped past the walker because the iteration
+        // looked only at `branch.subquery` and ignored the map key.
+        let mut selector =
+            Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        selector.add_conditional_subquery(
+            QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+                b"a".to_vec()..b"z".to_vec(),
+            ))),
+            None,
+            None,
+        );
+        assert!(
+            selector.has_aggregate_sum_on_range_anywhere(),
+            "ASOR appearing as a conditional-branch selector must be detected"
         );
     }
 }
