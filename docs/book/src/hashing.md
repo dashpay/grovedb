@@ -231,4 +231,37 @@ pub fn node_hash_with_count(
 This means a proof of count doesn't require revealing the actual data — the count
 is baked into the cryptographic commitment.
 
+## Aggregate Hashing for ProvableSumTree
+
+`ProvableSumTree` is the sum parallel — each node's aggregate sum is bound
+into the node hash:
+
+```rust
+pub fn node_hash_with_sum(
+    kv: &CryptoHash,
+    left: &CryptoHash,
+    right: &CryptoHash,
+    sum: i64,
+) -> CostContext<CryptoHash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(kv);                        // 32 bytes
+    hasher.update(left);                      // 32 bytes
+    hasher.update(right);                     // 32 bytes
+    hasher.update(&sum.to_be_bytes());        // 8 bytes (signed i64 BE)
+    // Same 2 hash ops as node_hash_with_count
+}
+```
+
+Hashing uses fixed 8-byte big-endian `i64::to_be_bytes()` (signed),
+**not** the varint encoding used for wire-format compactness in proof
+ops. The two are deliberately decoupled: wire wants compact, the hash
+input must be canonical and length-fixed so the verifier reconstructs the
+exact pre-image. Negative sums hash correctly because two's-complement
+big-endian is a deterministic content-binding encoding (no order
+preservation needed).
+
+A proof against a `ProvableSumTree` can return the verified total of any
+key range without revealing the underlying `SumItem` values — see
+[Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md).
+
 ---

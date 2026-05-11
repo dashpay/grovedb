@@ -17,6 +17,9 @@
 | 12 | `MmrTree` | 8 | `(mmr_size: u64, flags)` | 11 | Append-only MMR log |
 | 13 | `BulkAppendTree` | 9 | `(total_count: u64, chunk_power: u8, flags)` | 12 | High-throughput append-only log |
 | 14 | `DenseAppendOnlyFixedSizeTree` | 10 | `(count: u16, height: u8, flags)` | 6 | Dense fixed-capacity Merkle storage |
+| 15 | `NonCounted` | wrapper | `Box<Element>` | inner + 1 byte | Opts inner out of parent count aggregation |
+| 16 | `NotSummed` | wrapper | `Box<Element>` | inner + 1 byte | Opts inner out of parent sum aggregation |
+| 17 | `ProvableSumTree` | 11 | `(root_key, sum: i64, flags)` | SUM_TREE_COST_SIZE | Sum baked into hash (see [Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md)) |
 
 **Notes:**
 - Discriminants 11–14 are **non-Merk trees**: data lives outside a child Merk subtree
