@@ -2606,9 +2606,18 @@ impl GroveDb {
                     ));
                 }
             }
-            Node::KVRefValueHash(..) | Node::KVRefValueHashCount(..) => {
-                // KVRefValueHash carries an opaque node_value_hash that cannot
-                // be recomputed from the value bytes alone. These node types
+            Node::KVRefValueHash(..)
+            | Node::KVRefValueHashCount(..)
+            | Node::KVRefValueHashSum(..) => {
+                // KVRefValueHash{,Count,Sum} carries an opaque
+                // node_value_hash that cannot be recomputed from the value
+                // bytes alone — the hash is `combine_hash(node_value_hash,
+                // value_hash(referenced_value))`, and the verifier never
+                // gets to see the referenced_value at this layer. Without
+                // this rejection, a forged value could ride along in a
+                // KVRefValueHashSum trunk/branch node while the merk-level
+                // hash chain still appears valid, because the embedded
+                // opaque hash is treated as authoritative. These node types
                 // should never appear in trunk/branch chunk proofs.
                 return Err(Error::InvalidProof(
                     PathQuery::new_unsized(Vec::new(), Query::default()),
