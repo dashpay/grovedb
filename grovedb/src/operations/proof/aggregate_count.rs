@@ -147,13 +147,19 @@ fn verify_v0_layer(
     )?;
 
     // Chain check: combine_hash(H(tree_value), lower_hash) must equal the
-    // value_hash recorded by the parent merk for this tree element.
+    // value_hash recorded by the parent merk for this tree element. When
+    // the next descent IS the leaf, also require that the element is
+    // specifically a ProvableCountTree / ProvableCountSumTree (parallel to
+    // the sum-side guard) — closes the empty-Merk-tree type-confusion
+    // bypass.
+    let is_terminal = depth + 1 == path_keys.len();
     enforce_lower_chain(
         path_query,
         &next_key,
         &proven_value_bytes,
         &lower_hash,
         &parent_proof_hash,
+        is_terminal,
         grove_version,
     )?;
 
@@ -211,12 +217,14 @@ fn verify_v1_layer(
         grove_version,
     )?;
 
+    let is_terminal = depth + 1 == path_keys.len();
     enforce_lower_chain(
         path_query,
         &next_key,
         &proven_value_bytes,
         &lower_hash,
         &parent_proof_hash,
+        is_terminal,
         grove_version,
     )?;
 
@@ -304,25 +312,27 @@ fn verify_single_key_layer_proof_v0(
     Ok((value_bytes, root_hash, proved.proof))
 }
 
-/// Enforce the layer-chain hash equality: the parent merk's recorded
-/// value_hash for the tree element must equal `combine_hash(H(value),
-/// lower_layer_root_hash)`. This is what makes the count cryptographically
-/// bound to the GroveDB root hash — the leaf count proof's reconstructed
-/// `lower_hash` must agree with the parent's commitment, transitively up to
-/// the root.
+/// Enforce the layer-chain hash equality plus, at the terminal layer, the
+/// leaf-tree-type invariant.
 ///
-/// Intermediate path elements may be any tree type — the GroveDB grove can
-/// route through Normal/Sum/Count/etc. trees on the way down to the
-/// provable-count leaf. The leaf-level tree-type check is enforced by the
-/// merk prover (`Merk::prove_aggregate_count_on_range`); here we only
-/// require that each non-leaf element on the path *is* some non-empty tree,
-/// since only trees have a lower layer to chain into.
+/// At intermediate depths the only requirement is that the element be
+/// *some* tree (we have to descend further). At the terminal depth — the
+/// last path element, whose inner Merk is the actual count target — the
+/// element MUST deserialize to `ProvableCountTree` or `ProvableCountSumTree`
+/// (after wrapper unwrapping). Without this, an empty Merk-backed tree of
+/// any other type at the leaf accepts a forged empty leaf proof, because
+/// every empty Merk-backed tree has `inner_root = NULL_HASH` and so its
+/// stored `value_hash = combine_hash(H(bytes), NULL_HASH)` matches the
+/// recomputation uniformly. The honest prover-side gate in
+/// `Merk::prove_aggregate_count_on_range` already rejects non-provable-count
+/// inputs; this is the matching verifier-side gate.
 fn enforce_lower_chain(
     path_query: &PathQuery,
     target_key: &[u8],
     proven_value_bytes: &[u8],
     lower_hash: &CryptoHash,
     parent_proof_hash: &CryptoHash,
+    is_terminal: bool,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
     let element = Element::deserialize(proven_value_bytes, grove_version)
@@ -337,14 +347,30 @@ fn enforce_lower_chain(
             )
         })?
         .into_underlying();
-    if !element.is_any_tree() {
+    if is_terminal {
+        if !matches!(
+            element,
+            Element::ProvableCountTree(..) | Element::ProvableCountSumTree(..)
+        ) {
+            return Err(Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "aggregate-count proof's terminal path element at key {} must be a \
+                     ProvableCountTree or ProvableCountSumTree (got {}); a count aggregate \
+                     is only meaningful against a tree that binds its count into the node hash",
+                    hex::encode(target_key),
+                    element.type_str()
+                ),
+            ));
+        }
+    } else if !element.is_any_tree() {
         return Err(Error::InvalidProof(
             path_query.clone(),
             format!(
-                "aggregate-count proof's path element at key {} is not a tree element \
-                 (got {:?}); count queries can only descend through tree elements",
+                "aggregate-count proof's intermediate path element at key {} is not a tree \
+                 element (got {}); count queries can only descend through tree elements",
                 hex::encode(target_key),
-                std::mem::discriminant(&element)
+                element.type_str()
             ),
         ));
     }

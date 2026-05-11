@@ -151,12 +151,23 @@ fn verify_v0_layer(
         grove_version,
     )?;
 
+    // When the next descent IS the leaf, require that the element we're
+    // about to bottom out into is specifically a ProvableSumTree. Without
+    // this gate, an empty Merk-backed tree of any other type (Tree,
+    // SumTree, CountTree, …) at the leaf path would accept a forged empty
+    // leaf proof — its stored value_hash already equals
+    // `combine_hash(H(bytes), NULL_HASH)`, so the chain check passes — and
+    // the verifier would silently return sum=0 for a non-ProvableSumTree
+    // leaf (type-confusion, not value forgery, but a soundness gap all
+    // the same).
+    let is_terminal = depth + 1 == path_keys.len();
     enforce_lower_chain(
         path_query,
         &next_key,
         &proven_value_bytes,
         &lower_hash,
         &parent_proof_hash,
+        is_terminal,
         grove_version,
     )?;
 
@@ -212,12 +223,14 @@ fn verify_v1_layer(
         grove_version,
     )?;
 
+    let is_terminal = depth + 1 == path_keys.len();
     enforce_lower_chain(
         path_query,
         &next_key,
         &proven_value_bytes,
         &lower_hash,
         &parent_proof_hash,
+        is_terminal,
         grove_version,
     )?;
 
@@ -300,15 +313,27 @@ fn verify_single_key_layer_proof_v0(
     Ok((value_bytes, root_hash, proved.proof))
 }
 
-/// Enforce the layer-chain hash equality. Identical contract to the count
-/// side: the parent merk's recorded value_hash for the tree element must
-/// equal `combine_hash(H(value), lower_layer_root_hash)`.
+/// Enforce the layer-chain hash equality plus, at the terminal layer,
+/// the leaf-tree-type invariant.
+///
+/// At intermediate depths the only requirement is that the element be
+/// *some* tree (we have to descend further). At the terminal depth — the
+/// last path element, whose inner Merk is the actual aggregate target —
+/// the element MUST deserialize to `Element::ProvableSumTree` (after
+/// wrapper unwrapping). Without this check, an empty Merk-backed tree of
+/// any other type at the leaf accepts a forged empty leaf proof, because
+/// every empty Merk-backed tree has `inner_root = NULL_HASH` and so its
+/// stored `value_hash = combine_hash(H(bytes), NULL_HASH)` — the chain
+/// check passes uniformly. The honest prover-side gate in
+/// `Merk::prove_aggregate_sum_on_range` already rejects non-ProvableSumTree
+/// inputs; this is the matching verifier-side gate.
 fn enforce_lower_chain(
     path_query: &PathQuery,
     target_key: &[u8],
     proven_value_bytes: &[u8],
     lower_hash: &CryptoHash,
     parent_proof_hash: &CryptoHash,
+    is_terminal: bool,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
     let element = Element::deserialize(proven_value_bytes, grove_version)
@@ -323,14 +348,27 @@ fn enforce_lower_chain(
             )
         })?
         .into_underlying();
-    if !element.is_any_tree() {
+    if is_terminal {
+        if !matches!(element, Element::ProvableSumTree(..)) {
+            return Err(Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "aggregate-sum proof's terminal path element at key {} must be a \
+                     ProvableSumTree (got {}); a sum aggregate is only meaningful against \
+                     a tree that binds its sum into the node hash",
+                    hex::encode(target_key),
+                    element.type_str()
+                ),
+            ));
+        }
+    } else if !element.is_any_tree() {
         return Err(Error::InvalidProof(
             path_query.clone(),
             format!(
-                "aggregate-sum proof's path element at key {} is not a tree element \
-                 (got {:?}); sum queries can only descend through tree elements",
+                "aggregate-sum proof's intermediate path element at key {} is not a tree \
+                 element (got {}); sum queries can only descend through tree elements",
                 hex::encode(target_key),
-                std::mem::discriminant(&element)
+                element.type_str()
             ),
         ));
     }

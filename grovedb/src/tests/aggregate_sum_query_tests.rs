@@ -912,4 +912,236 @@ mod tests {
             v,
         );
     }
+
+    // ---------- 22. Empty-leaf type-confusion forgery (security regression) -
+    /// Codex security finding: when an honest tree at the queried leaf path
+    /// is an empty Merk-backed tree of any non-ProvableSumTree type
+    /// (NormalTree, SumTree, ProvableCountTree, …), every such tree stores
+    /// `inner_root = NULL_HASH`, so its recorded value_hash equals
+    /// `combine_hash(H(element_bytes), NULL_HASH)`. The merk-level sum
+    /// verifier accepts empty proof bytes as `(NULL_HASH, 0)`. The
+    /// pre-fix verifier's `is_any_tree()` check happily accepted those
+    /// non-ProvableSumTree element bytes — and the chain-hash check
+    /// passed trivially — letting an attacker prove `sum = 0` against a
+    /// path that wasn't actually a ProvableSumTree. The numeric answer
+    /// (0) was correct for an empty tree of any type, but the implicit
+    /// claim "the leaf is a ProvableSumTree" was a soundness gap.
+    ///
+    /// This test surgically constructs the forged proof from a real
+    /// honest single-key envelope and confirms the new
+    /// terminal-type gate rejects it.
+    #[test]
+    fn empty_leaf_type_confusion_forgery_rejected() {
+        use std::collections::BTreeMap;
+
+        use bincode::config;
+
+        use crate::operations::proof::{
+            GroveDBProof, GroveDBProofV0, MerkOnlyLayerProof, ProveOptions,
+        };
+
+        // Use V0 (GROVE_V2) envelope — its MerkOnlyLayerProof is simpler to
+        // surgically reconstruct than V1's LayerProof/ProofBytes.
+        let v: &GroveVersion = &GROVE_V2;
+
+        // Build the malicious tree state: an empty NormalTree at the path
+        // we'll later claim is a ProvableSumTree. We exercise the bypass
+        // on the empty case specifically — that's the only case where the
+        // pre-fix chain check passes.
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"evil",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty normal tree at evil");
+
+        // Run an honest "does evil exist?" single-key probe via prove_query
+        // to harvest the layer-0 merk proof bytes (proves `evil` exists in
+        // TEST_LEAF with its NormalTree element bytes). The result has the
+        // shape we need for the layer-0 portion of the forgery.
+        let probe = PathQuery::new_single_key(vec![TEST_LEAF.to_vec()], b"evil".to_vec());
+        let probe_proof_bytes = db
+            .grove_db
+            .prove_query(&probe, None, v)
+            .unwrap()
+            .expect("honest probe should succeed");
+
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let probe_decoded: GroveDBProof = bincode::decode_from_slice(&probe_proof_bytes, cfg)
+            .unwrap()
+            .0;
+
+        // Forge a V0 envelope:
+        //   root_layer.merk_proof = honest proof of TEST_LEAF in root
+        //   root_layer.lower_layers[TEST_LEAF].merk_proof = honest proof of
+        //                                   "evil" in TEST_LEAF
+        //   root_layer.lower_layers[TEST_LEAF].lower_layers["evil"].merk_proof = []
+        //                                   <-- forged empty leaf
+        let (root_merk_proof_bytes, test_leaf_merk_proof_bytes) = match probe_decoded {
+            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => {
+                let test_leaf = root_layer
+                    .lower_layers
+                    .get(TEST_LEAF)
+                    .expect("probe must descend into TEST_LEAF")
+                    .merk_proof
+                    .clone();
+                (root_layer.merk_proof, test_leaf)
+            }
+            GroveDBProof::V1(_) => panic!("expected V0 envelope under GROVE_V2"),
+        };
+
+        let leaf_layer = MerkOnlyLayerProof {
+            merk_proof: Vec::new(), // the forged empty leaf
+            lower_layers: BTreeMap::new(),
+        };
+        let mut test_leaf_map = BTreeMap::new();
+        test_leaf_map.insert(b"evil".to_vec(), leaf_layer);
+
+        let test_leaf_layer = MerkOnlyLayerProof {
+            merk_proof: test_leaf_merk_proof_bytes,
+            lower_layers: test_leaf_map,
+        };
+        let mut root_lower = BTreeMap::new();
+        root_lower.insert(TEST_LEAF.to_vec(), test_leaf_layer);
+
+        let forged_envelope = GroveDBProof::V0(GroveDBProofV0 {
+            root_layer: MerkOnlyLayerProof {
+                merk_proof: root_merk_proof_bytes,
+                lower_layers: root_lower,
+            },
+            prove_options: ProveOptions::default(),
+        });
+        let forged_bytes =
+            bincode::encode_to_vec(&forged_envelope, cfg).expect("encode forged envelope");
+
+        // The attacker submits the forged proof against an aggregate-sum
+        // path that targets the empty NormalTree as if it were a
+        // ProvableSumTree.
+        let attack_pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"evil".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+
+        let result = GroveDb::verify_aggregate_sum_query(&forged_bytes, &attack_pq, v);
+        match result {
+            Err(e) => {
+                // The new terminal-type gate must fire. The error message
+                // names ProvableSumTree explicitly so we pin it.
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains("must be a ProvableSumTree") || msg.contains("ProvableSumTree"),
+                    "verifier rejected as expected but with an unrelated message: {msg}"
+                );
+            }
+            Ok((root_hash, sum)) => panic!(
+                "BUG: empty-leaf forgery accepted by verifier! \
+                 Returned (root_hash={}, sum={}) — the leaf is a NormalTree, \
+                 not a ProvableSumTree.",
+                hex::encode(root_hash),
+                sum
+            ),
+        }
+    }
+
+    /// Same forgery shape, but the honest leaf is an empty
+    /// `ProvableCountTree` (the wrong PROVABLE tree type for a sum
+    /// query). Confirms the terminal-type gate enforces the precise
+    /// tree-type, not just "any provable aggregate tree".
+    #[test]
+    fn empty_provable_count_tree_at_leaf_rejected_for_sum() {
+        use std::collections::BTreeMap;
+
+        use bincode::config;
+
+        use crate::operations::proof::{
+            GroveDBProof, GroveDBProofV0, MerkOnlyLayerProof, ProveOptions,
+        };
+
+        let v: &GroveVersion = &GROVE_V2;
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pct",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty provable count tree");
+
+        let probe = PathQuery::new_single_key(vec![TEST_LEAF.to_vec()], b"pct".to_vec());
+        let probe_proof_bytes = db
+            .grove_db
+            .prove_query(&probe, None, v)
+            .unwrap()
+            .expect("honest probe");
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let probe_decoded: GroveDBProof = bincode::decode_from_slice(&probe_proof_bytes, cfg)
+            .unwrap()
+            .0;
+
+        let (root_mp, test_leaf_mp) = match probe_decoded {
+            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => (
+                root_layer.merk_proof,
+                root_layer
+                    .lower_layers
+                    .get(TEST_LEAF)
+                    .expect("descent")
+                    .merk_proof
+                    .clone(),
+            ),
+            GroveDBProof::V1(_) => panic!("expected V0"),
+        };
+
+        let mut leaf = BTreeMap::new();
+        leaf.insert(
+            b"pct".to_vec(),
+            MerkOnlyLayerProof {
+                merk_proof: Vec::new(),
+                lower_layers: BTreeMap::new(),
+            },
+        );
+        let mut root_lower = BTreeMap::new();
+        root_lower.insert(
+            TEST_LEAF.to_vec(),
+            MerkOnlyLayerProof {
+                merk_proof: test_leaf_mp,
+                lower_layers: leaf,
+            },
+        );
+        let forged = GroveDBProof::V0(GroveDBProofV0 {
+            root_layer: MerkOnlyLayerProof {
+                merk_proof: root_mp,
+                lower_layers: root_lower,
+            },
+            prove_options: ProveOptions::default(),
+        });
+        let forged_bytes = bincode::encode_to_vec(&forged, cfg).expect("encode");
+
+        let attack_pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"pct".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+
+        let result = GroveDb::verify_aggregate_sum_query(&forged_bytes, &attack_pq, v);
+        assert!(
+            result.is_err(),
+            "ProvableCountTree at leaf must NOT be accepted for an aggregate-sum query"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("must be a ProvableSumTree"),
+            "expected terminal-type error, got: {msg}"
+        );
+    }
 }
