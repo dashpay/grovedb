@@ -762,6 +762,19 @@ impl TreeNode {
                     aggregated_sum_value,
                 ))
             }
+            // Phase 1: `ProvableSummedMerkNode` aggregates identically to a
+            // plain `SummedMerkNode`. Phase 2 will diverge the hash so the
+            // sum participates in the node hash, but the aggregation
+            // arithmetic stays the same.
+            TreeFeatureType::ProvableSummedMerkNode(value) => {
+                let left = self.child_aggregate_sum_data_as_i64(true)?;
+                let right = self.child_aggregate_sum_data_as_i64(false)?;
+                value
+                    .checked_add(left)
+                    .and_then(|a| a.checked_add(right))
+                    .ok_or(Overflow("sum is overflowing"))
+                    .map(AggregateData::Sum)
+            }
         }
     }
 

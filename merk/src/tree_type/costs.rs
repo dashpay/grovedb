@@ -65,6 +65,8 @@ impl CostSize for TreeType {
             TreeType::MmrTree => MMR_TREE_COST_SIZE,
             TreeType::BulkAppendTree(_) => BULK_APPEND_TREE_COST_SIZE,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => DENSE_TREE_COST_SIZE,
+            // ProvableSumTree mirrors SumTree's cost — Phase 1.
+            TreeType::ProvableSumTree => SUM_TREE_COST_SIZE,
         }
     }
 }

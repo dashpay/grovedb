@@ -478,6 +478,9 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
                     grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
                 }
+                TreeFeatureType::ProvableSummedMerkNode(sum) => {
+                    grovedbg_types::TreeFeatureType::ProvableSummedMerkNode(sum)
+                }
             };
             MerkProofNode::KVValueHashFeatureType(
                 key,
@@ -541,6 +544,9 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 }
                 TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
                     grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+                }
+                TreeFeatureType::ProvableSummedMerkNode(sum) => {
+                    grovedbg_types::TreeFeatureType::ProvableSummedMerkNode(sum)
                 }
             };
             MerkProofNode::KVValueHashFeatureType(
@@ -793,6 +799,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
                 element_flags,
             }
         }
+        crate::Element::ProvableSumTree(root_key, sum, element_flags) => {
+            grovedbg_types::Element::ProvableSumTree {
+                root_key,
+                sum,
+                element_flags,
+            }
+        }
         crate::Element::CommitmentTree(_, _, element_flags) => grovedbg_types::Element::Subtree {
             root_key: None,
             element_flags,
@@ -864,6 +877,9 @@ fn node_to_update(
             }
             TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
                 grovedbg_types::TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+            }
+            TreeFeatureType::ProvableSummedMerkNode(sum) => {
+                grovedbg_types::TreeFeatureType::ProvableSummedMerkNode(sum)
             }
         },
         value_hash,

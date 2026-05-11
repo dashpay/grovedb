@@ -235,6 +235,12 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::MmrTree => Ok(BasicMerkNode),
             TreeType::BulkAppendTree(_) => Ok(BasicMerkNode),
             TreeType::DenseAppendOnlyFixedSizeTree(_) => Ok(BasicMerkNode),
+            // Phase 1: ProvableSumTree aggregates the same i64 sum as a
+            // plain SumTree but uses the new `ProvableSummedMerkNode`
+            // feature type. Phase 2 will diverge the hash.
+            TreeType::ProvableSumTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
+                self.sum_value_or_default(),
+            )),
         }
     }
 }

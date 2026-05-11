@@ -44,6 +44,12 @@ pub enum TreeType {
     BulkAppendTree(u8),
     /// A dense append-only tree with fixed-size entries and a configurable height.
     DenseAppendOnlyFixedSizeTree(u8),
+    /// A sum tree with provable sum support (sums baked into node hashes).
+    /// Phase 1: behaves identically to `SumTree` everywhere except in
+    /// `inner_node_type` / `empty_tree_feature_type`, which point at the
+    /// new provable-sum feature/node types. Phase 2 will diverge the hash
+    /// computation.
+    ProvableSumTree,
 }
 
 impl TreeType {
@@ -63,6 +69,7 @@ impl TreeType {
             TreeType::MmrTree => 8,
             TreeType::BulkAppendTree(_) => 9,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => 10,
+            TreeType::ProvableSumTree => 11,
         }
     }
 }
@@ -83,7 +90,8 @@ impl TryFrom<u8> for TreeType {
             8 => Ok(TreeType::MmrTree),
             9 => Ok(TreeType::BulkAppendTree(0)),
             10 => Ok(TreeType::DenseAppendOnlyFixedSizeTree(0)),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 10", n))),
+            11 => Ok(TreeType::ProvableSumTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 11", n))),
         }
     }
 }
@@ -102,6 +110,7 @@ impl fmt::Display for TreeType {
             TreeType::MmrTree => "MMR Tree",
             TreeType::BulkAppendTree(_) => "BulkAppendTree",
             TreeType::DenseAppendOnlyFixedSizeTree(_) => "Dense Tree",
+            TreeType::ProvableSumTree => "Provable Sum Tree",
         };
         write!(f, "{}", s)
     }
@@ -112,6 +121,8 @@ impl TreeType {
     /// non-Merk entries.  These types have an always-empty Merk subtree and
     /// never contain child subtrees.
     pub fn uses_non_merk_data_storage(&self) -> bool {
+        // NOTE: `ProvableSumTree` is intentionally NOT in this list — it is
+        // a standard Merk-backed tree, just like `SumTree`.
         matches!(
             self,
             TreeType::CommitmentTree(_)
@@ -146,6 +157,7 @@ impl TreeType {
                 | TreeType::BigSumTree
                 | TreeType::CountSumTree
                 | TreeType::ProvableCountSumTree
+                | TreeType::ProvableSumTree
         )
     }
 
@@ -163,6 +175,7 @@ impl TreeType {
             TreeType::MmrTree => false,
             TreeType::BulkAppendTree(_) => false,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => false,
+            TreeType::ProvableSumTree => true,
         }
     }
 
@@ -181,6 +194,7 @@ impl TreeType {
             TreeType::MmrTree => NodeType::NormalNode,
             TreeType::BulkAppendTree(_) => NodeType::NormalNode,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => NodeType::NormalNode,
+            TreeType::ProvableSumTree => NodeType::ProvableSumNode,
         }
     }
 
@@ -198,6 +212,7 @@ impl TreeType {
             TreeType::MmrTree => TreeFeatureType::BasicMerkNode,
             TreeType::BulkAppendTree(_) => TreeFeatureType::BasicMerkNode,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => TreeFeatureType::BasicMerkNode,
+            TreeType::ProvableSumTree => TreeFeatureType::ProvableSummedMerkNode(0),
         }
     }
 
@@ -222,6 +237,7 @@ impl TreeType {
             TreeType::DenseAppendOnlyFixedSizeTree(_) => {
                 Some(ElementType::DenseAppendOnlyFixedSizeTree)
             }
+            TreeType::ProvableSumTree => Some(ElementType::ProvableSumTree),
         }
     }
 }
@@ -244,6 +260,7 @@ mod tests {
             TreeType::MmrTree,
             TreeType::BulkAppendTree(3),
             TreeType::DenseAppendOnlyFixedSizeTree(8),
+            TreeType::ProvableSumTree,
         ];
         for v in &variants {
             let d = v.discriminant();
@@ -255,7 +272,7 @@ mod tests {
 
     #[test]
     fn tree_type_try_from_invalid() {
-        assert!(TreeType::try_from(11u8).is_err());
+        assert!(TreeType::try_from(12u8).is_err());
         assert!(TreeType::try_from(255u8).is_err());
     }
 
@@ -284,6 +301,10 @@ mod tests {
             format!("{}", TreeType::DenseAppendOnlyFixedSizeTree(0)),
             "Dense Tree"
         );
+        assert_eq!(
+            format!("{}", TreeType::ProvableSumTree),
+            "Provable Sum Tree"
+        );
     }
 
     #[test]
@@ -299,6 +320,7 @@ mod tests {
         assert!(TreeType::MmrTree.uses_non_merk_data_storage());
         assert!(TreeType::BulkAppendTree(0).uses_non_merk_data_storage());
         assert!(TreeType::DenseAppendOnlyFixedSizeTree(0).uses_non_merk_data_storage());
+        assert!(!TreeType::ProvableSumTree.uses_non_merk_data_storage());
     }
 
     #[test]
@@ -314,6 +336,8 @@ mod tests {
         assert!(!TreeType::MmrTree.is_count_bearing());
         assert!(!TreeType::BulkAppendTree(0).is_count_bearing());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_count_bearing());
+        // ProvableSumTree carries a sum aggregate, not a count.
+        assert!(!TreeType::ProvableSumTree.is_count_bearing());
     }
 
     #[test]
@@ -329,6 +353,7 @@ mod tests {
         assert!(!TreeType::MmrTree.is_sum_bearing());
         assert!(!TreeType::BulkAppendTree(0).is_sum_bearing());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_sum_bearing());
+        assert!(TreeType::ProvableSumTree.is_sum_bearing());
     }
 
     #[test]
@@ -344,6 +369,7 @@ mod tests {
         assert!(!TreeType::MmrTree.allows_sum_item());
         assert!(!TreeType::BulkAppendTree(0).allows_sum_item());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).allows_sum_item());
+        assert!(TreeType::ProvableSumTree.allows_sum_item());
     }
 
     #[test]
@@ -392,6 +418,10 @@ mod tests {
             TreeType::DenseAppendOnlyFixedSizeTree(0).empty_tree_feature_type(),
             TreeFeatureType::BasicMerkNode
         );
+        assert_eq!(
+            TreeType::ProvableSumTree.empty_tree_feature_type(),
+            TreeFeatureType::ProvableSummedMerkNode(0)
+        );
     }
 
     #[test]
@@ -439,6 +469,10 @@ mod tests {
         assert_eq!(
             TreeType::DenseAppendOnlyFixedSizeTree(0).to_element_type(),
             Some(ElementType::DenseAppendOnlyFixedSizeTree)
+        );
+        assert_eq!(
+            TreeType::ProvableSumTree.to_element_type(),
+            Some(ElementType::ProvableSumTree)
         );
     }
 }

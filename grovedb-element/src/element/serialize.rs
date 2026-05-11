@@ -39,7 +39,8 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
-                | Element::ProvableCountSumTree(..) => {}
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "NotSummed inner must be a sum-tree variant".to_string(),
@@ -116,7 +117,8 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
-                | Element::ProvableCountSumTree(..) => {}
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "deserialized NotSummed with non-sum-tree inner".to_string(),

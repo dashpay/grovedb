@@ -140,20 +140,26 @@ pub enum Element {
     /// at construction and at deserialization.
     NonCounted(Box<Element>),
     /// Not-summed wrapper: contains a sum-bearing tree variant (`SumTree`,
-    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`) and behaves
-    /// identically to it for storage, hashing, and its own internal sum
-    /// aggregate, but contributes 0 to its parent sum tree's running sum
-    /// when inserted. Counts still propagate.
+    /// `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
+    /// `ProvableSumTree`) and behaves identically to it for storage,
+    /// hashing, and its own internal sum aggregate, but contributes 0 to
+    /// its parent sum tree's running sum when inserted. Counts still
+    /// propagate.
     ///
     /// May only be inserted into sum-bearing trees (`SumTree`, `BigSumTree`,
-    /// `CountSumTree`, `ProvableCountSumTree`).
+    /// `CountSumTree`, `ProvableCountSumTree`, `ProvableSumTree`).
     ///
     /// Invariants (enforced at construction, serialization, and
     /// deserialization):
-    /// - The inner element MUST be one of the four sum-tree variants above.
+    /// - The inner element MUST be one of the five sum-tree variants above.
     /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`, or
     ///   any non-tree element.
     NotSummed(Box<Element>),
+    /// Same as Element::SumTree but includes the per-node sum in the
+    /// cryptographic state. This mirrors `ProvableCountTree` but for sums,
+    /// allowing aggregate-sum range queries to be cryptographically verified
+    /// by including the sum in each node hash.
+    ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -345,6 +351,17 @@ impl fmt::Display for Element {
             Element::NotSummed(inner) => {
                 write!(f, "NotSummed({})", inner)
             }
+            Element::ProvableSumTree(root_key, sum_value, flags) => {
+                write!(
+                    f,
+                    "ProvableSumTree({}, {}{})",
+                    root_key.as_ref().map_or("None".to_string(), hex::encode),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -373,6 +390,7 @@ impl Element {
             Element::MmrTree(..) => ElementType::MmrTree,
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
             Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
+            Element::ProvableSumTree(..) => ElementType::ProvableSumTree,
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -391,6 +409,7 @@ impl Element {
                 ElementType::DenseAppendOnlyFixedSizeTree => {
                     ElementType::NonCountedDenseAppendOnlyFixedSizeTree
                 }
+                ElementType::ProvableSumTree => ElementType::NonCountedProvableSumTree,
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
@@ -400,7 +419,8 @@ impl Element {
                 ElementType::BigSumTree => ElementType::NotSummedBigSumTree,
                 ElementType::CountSumTree => ElementType::NotSummedCountSumTree,
                 ElementType::ProvableCountSumTree => ElementType::NotSummedProvableCountSumTree,
-                // Inner is always one of the 4 sum-tree variants above —
+                ElementType::ProvableSumTree => ElementType::NotSummedProvableSumTree,
+                // Inner is always one of the five sum-tree variants above —
                 // construction and (de)serialization forbid anything else.
                 // Returning the inner type is the safest fallback for the
                 // unreachable case.
@@ -437,11 +457,12 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
-                | Element::ProvableCountSumTree(..) => {}
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..) => {}
                 _ => {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NotSummed inner element must be a sum-tree variant (SumTree, \
-                         BigSumTree, CountSumTree, or ProvableCountSumTree)",
+                         BigSumTree, CountSumTree, ProvableCountSumTree, or ProvableSumTree)",
                     ));
                 }
             },
@@ -514,6 +535,7 @@ mod serde_impl {
         DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
         NonCounted(Box<ElementShadow>),
         NotSummed(Box<ElementShadow>),
+        ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
     }
 
     impl From<ElementShadow> for Element {
@@ -544,6 +566,7 @@ mod serde_impl {
                 ElementShadow::NotSummed(inner) => {
                     Element::NotSummed(Box::new(Element::from(*inner)))
                 }
+                ElementShadow::ProvableSumTree(k, s, f) => Element::ProvableSumTree(k, s, f),
             }
         }
     }
@@ -702,8 +725,8 @@ mod tests {
 
     #[test]
     fn element_type_resolves_not_summed_twins() {
-        // The four sum-tree variants each map to their NotSummed twin.
-        let cases: [(Element, ElementType); 4] = [
+        // The five sum-tree variants each map to their NotSummed twin.
+        let cases: [(Element, ElementType); 5] = [
             (
                 Element::NotSummed(Box::new(Element::SumTree(None, 0, None))),
                 ElementType::NotSummedSumTree,
@@ -719,6 +742,10 @@ mod tests {
             (
                 Element::NotSummed(Box::new(Element::ProvableCountSumTree(None, 0, 0, None))),
                 ElementType::NotSummedProvableCountSumTree,
+            ),
+            (
+                Element::NotSummed(Box::new(Element::ProvableSumTree(None, 0, None))),
+                ElementType::NotSummedProvableSumTree,
             ),
         ];
         for (element, expected) in cases {

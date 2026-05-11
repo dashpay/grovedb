@@ -107,6 +107,11 @@ impl From<TreeFeatureType> for AggregateData {
             TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
                 AggregateData::ProvableCountAndSum(count, sum)
             }
+            // Phase 1: `ProvableSummedMerkNode` maps to `AggregateData::Sum`,
+            // matching plain `SummedMerkNode`. The aggregation behavior is
+            // identical to a sum tree's; Phase 2 will introduce a dedicated
+            // `AggregateData::ProvableSum` variant when the hash diverges.
+            TreeFeatureType::ProvableSummedMerkNode(val) => AggregateData::Sum(val),
         }
     }
 }

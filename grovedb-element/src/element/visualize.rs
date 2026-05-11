@@ -186,6 +186,17 @@ impl Visualize for Element {
                 drawer = inner.visualize(drawer)?;
                 drawer.write(b")")?;
             }
+            Element::ProvableSumTree(root_key, value, flags) => {
+                drawer.write(b"provable_sum_tree: ")?;
+                drawer = root_key.as_deref().visualize(drawer)?;
+                drawer.write(format!(" {value}").as_bytes())?;
+
+                if let Some(f) = flags
+                    && !f.is_empty()
+                {
+                    drawer = f.visualize(drawer)?;
+                }
+            }
         }
         Ok(drawer)
     }
