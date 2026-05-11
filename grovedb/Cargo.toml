@@ -72,6 +72,10 @@ harness = false
 name = "branch_chunk_queries"
 harness = false
 
+[[bench]]
+name = "cidx_benchmark"
+harness = false
+
 [features]
 default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
