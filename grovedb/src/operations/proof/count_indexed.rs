@@ -383,8 +383,15 @@ impl GroveDb {
         proof_bytes: &[u8],
         path: &[&[u8]],
     ) -> Result<CountIndexedQueryResult, Error> {
+        // Bound the decode to a sane upper limit so adversarial input
+        // claiming a huge Vec length can't trigger a capacity-overflow
+        // panic in `Vec::with_capacity`. 16 MiB is far above any
+        // legitimate cidx proof; bincode's `with_limit` rejects inputs
+        // that would decode to more than this many bytes, including
+        // Vec lengths that imply oversize allocations.
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
         let (envelope, _): (CountIndexedRangeProof, _) =
-            bincode::decode_from_slice(proof_bytes, bincode::config::standard())
+            bincode::decode_from_slice(proof_bytes, config)
                 .map_err(|e| Error::CorruptedData(format!("decoding cidx proof: {e}")))?;
         let mut full_range = MerkQuery::new();
         full_range.insert_all();
@@ -401,8 +408,15 @@ impl GroveDb {
         secondary_query: MerkQuery,
         path: &[&[u8]],
     ) -> Result<CountIndexedQueryResult, Error> {
+        // Bound the decode to a sane upper limit so adversarial input
+        // claiming a huge Vec length can't trigger a capacity-overflow
+        // panic in `Vec::with_capacity`. 16 MiB is far above any
+        // legitimate cidx proof; bincode's `with_limit` rejects inputs
+        // that would decode to more than this many bytes, including
+        // Vec lengths that imply oversize allocations.
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
         let (envelope, _): (CountIndexedRangeProof, _) =
-            bincode::decode_from_slice(proof_bytes, bincode::config::standard())
+            bincode::decode_from_slice(proof_bytes, config)
                 .map_err(|e| Error::CorruptedData(format!("decoding cidx proof: {e}")))?;
         Self::verify_count_indexed_inner(envelope, secondary_query, path)
     }

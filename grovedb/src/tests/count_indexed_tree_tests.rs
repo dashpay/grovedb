@@ -4950,4 +4950,247 @@ mod tests {
             );
         }
     }
+
+    // =====================================================================
+    // Fuzz-style tests for cidx panic-resistance and high-iteration
+    // coverage.
+    //
+    // These run as part of the normal test suite but use much higher
+    // iteration counts than the property tests and specifically target
+    // panic-resistance properties — the verifier must NEVER panic on
+    // adversarial input, only return Err. Catches DoS vectors in proof
+    // verification and finds subtle bugs that property tests miss by
+    // virtue of generating much more input.
+    //
+    // Each test uses a hand-rolled SplitMix64 PRNG seeded from a
+    // fixed-but-rotating base (so failing runs are reproducible by
+    // printing the seed), with the option of overriding via env var
+    // CIDX_FUZZ_SEED=<u64> for debugging.
+    // =====================================================================
+
+    /// Seed source: env var CIDX_FUZZ_SEED if set, else a fixed
+    /// hard-coded seed. Print on test start so failures are
+    /// reproducible.
+    fn fuzz_seed(default: u64) -> u64 {
+        match std::env::var("CIDX_FUZZ_SEED")
+            .ok()
+            .and_then(|s| s.parse().ok())
+        {
+            Some(s) => {
+                eprintln!("CIDX fuzz: using env-provided seed = {}", s);
+                s
+            }
+            None => {
+                eprintln!("CIDX fuzz: using default seed = {}", default);
+                default
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_verify_count_indexed_top_k_never_panics_on_arbitrary_bytes() {
+        // The verifier MUST gracefully reject adversarial input.
+        // Garbage bytes, truncated bytes, oversized bytes, near-valid
+        // bytes — all must produce Err, never panic.
+        //
+        // 5000 iterations of random byte buffers of varying sizes.
+        let seed = fuzz_seed(0xF1122_C1DC_F022);
+        let mut rng = Prng::new(seed);
+        let path: &[&[u8]] = &[b"x", b"y"];
+
+        for iteration in 0..5_000 {
+            // Generate a random byte buffer. Size distribution skewed
+            // toward small (most adversarial inputs are short) with
+            // occasional large buffers.
+            let size = match rng.next_usize(100) {
+                0..=70 => rng.next_usize(64),   // most: short
+                71..=90 => rng.next_usize(512), // some: medium
+                _ => rng.next_usize(4096),      // few: large
+            };
+            let mut bytes = Vec::with_capacity(size);
+            for _ in 0..size {
+                bytes.push((rng.next_u64() & 0xFF) as u8);
+            }
+
+            // The contract: never panic, always return Err for invalid
+            // input. Genuinely valid proofs are vanishingly unlikely
+            // from random bytes, so we expect Err in all cases.
+            let result = GroveDb::verify_count_indexed_top_k(&bytes, path);
+            assert!(
+                result.is_err(),
+                "iteration {iteration}: random {size}-byte buffer parsed as valid proof"
+            );
+        }
+    }
+
+    #[test]
+    fn fuzz_verify_count_indexed_query_never_panics_on_arbitrary_bytes() {
+        // Same panic-resistance check for the arbitrary-query verify
+        // entry. The verify_count_indexed_query function takes a
+        // MerkQuery argument too — we pass a non-empty full-range
+        // query so the query-side code path is exercised.
+        use grovedb_merk::proofs::Query as MerkQuery;
+
+        let seed = fuzz_seed(0xF1122_C1DC_F033);
+        let mut rng = Prng::new(seed);
+        let path: &[&[u8]] = &[b"x", b"y"];
+
+        for iteration in 0..5_000 {
+            let size = rng.next_usize(2048);
+            let mut bytes = Vec::with_capacity(size);
+            for _ in 0..size {
+                bytes.push((rng.next_u64() & 0xFF) as u8);
+            }
+
+            let mut q = MerkQuery::new();
+            q.insert_all();
+            // Randomize direction so both code paths are exercised.
+            q.left_to_right = rng.next_u64() & 1 == 0;
+
+            let result = GroveDb::verify_count_indexed_query(&bytes, q, path);
+            assert!(
+                result.is_err(),
+                "iteration {iteration}: random {size}-byte buffer parsed as valid query proof"
+            );
+        }
+    }
+
+    #[test]
+    fn fuzz_prove_verify_round_trip_with_arbitrary_count_ranges() {
+        // Pick random count-ranges over a populated cidx and verify
+        // the proof round-trip. The range endpoints, direction, and
+        // limit are randomized. 1000 iterations against a single
+        // populated DB (DB construction is amortized).
+        use grovedb_merk::proofs::Query as MerkQuery;
+
+        let seed = fuzz_seed(0xF1122_C1DC_F044);
+        let mut rng = Prng::new(seed);
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Populate with 50 entries at varied counts.
+        for i in 0..50 {
+            let key = format!("k{:03}", i).into_bytes();
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                &key,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create sub");
+            // Vary count from 0..(i+1) by inserting i items into each.
+            for j in 0..i {
+                let inner = format!("c{:03}", j).into_bytes();
+                db.insert(
+                    [TEST_LEAF, b"cidx", &key].as_ref(),
+                    &inner,
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate sub");
+            }
+        }
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+
+        for iteration in 0..1_000 {
+            // Random count range.
+            let lo = rng.next_u64() % 60; // covers 0..50 + a margin
+            let hi_delta = rng.next_u64() % 60;
+            let hi = lo.saturating_add(hi_delta);
+
+            let mut q = MerkQuery::new();
+            q.insert_range(lo.to_be_bytes().to_vec()..hi.to_be_bytes().to_vec());
+            q.left_to_right = rng.next_u64() & 1 == 0;
+
+            let limit = if rng.next_u64() & 1 == 0 {
+                None
+            } else {
+                Some((rng.next_u64() % 50) as u16 + 1)
+            };
+
+            let proof = db
+                .prove_count_indexed_query(path, q.clone(), limit, None, grove_version)
+                .unwrap();
+            let proof = match proof {
+                Ok(p) => p,
+                Err(e) => panic!(
+                    "iteration {iteration}: prove failed (lo={lo}, hi={hi}, limit={:?}): {:?}",
+                    limit, e
+                ),
+            };
+
+            let verified =
+                GroveDb::verify_count_indexed_query(&proof, q, path).unwrap_or_else(|e| {
+                    panic!(
+                        "iteration {iteration}: verify failed (lo={lo}, hi={hi}, limit={:?}): \
+                         {:?}",
+                        limit, e
+                    )
+                });
+
+            // Sanity: root_hash matches DB's actual root.
+            let expected_root = db
+                .root_hash(None, grove_version)
+                .unwrap()
+                .expect("root hash");
+            assert_eq!(
+                verified.root_hash, expected_root,
+                "iteration {iteration}: proof root_hash mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn fuzz_large_random_op_sequence_against_cidx() {
+        // 2000 random ops against a single-level cidx with a larger
+        // key space than the property tests (20 keys, more update
+        // pressure). Stress test for the bug class found in
+        // delete_from_count_indexed_tree (commit 4f1d7305).
+        let seed = fuzz_seed(0xF1122_C1DC_F055);
+        let mut rng = Prng::new(seed);
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        let cidx_path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let mut model = CidxModel::default();
+
+        for iteration in 0..2_000 {
+            apply_random_op_and_check(
+                &mut rng,
+                &db,
+                cidx_path,
+                &mut model,
+                grove_version,
+                iteration,
+            );
+        }
+    }
 }
