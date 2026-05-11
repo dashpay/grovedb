@@ -1448,6 +1448,152 @@ mod tests {
         );
     }
 
+    // ---------- Unit tests for helper-function error paths --------------
+    //
+    // These exercise small internal helpers that the integration tests
+    // can only reach indirectly. Each one pins a specific Err-classification
+    // arm so that future refactors can't silently drop the diagnostic.
+
+    #[test]
+    fn provable_sum_from_aggregate_rejects_non_provable_sum_variants() {
+        // Cover every non-`ProvableSum` arm of `provable_sum_from_aggregate`.
+        // The fallback "other" arm should fire for each.
+        let cases = [
+            AggregateData::NoAggregateData,
+            AggregateData::Sum(5),
+            AggregateData::BigSum(5),
+            AggregateData::Count(5),
+            AggregateData::CountAndSum(2, 3),
+            AggregateData::ProvableCount(5),
+            AggregateData::ProvableCountAndSum(2, 3),
+        ];
+        for case in cases {
+            let result = provable_sum_from_aggregate(case);
+            match result {
+                Err(Error::CorruptedData(msg)) => {
+                    assert!(
+                        msg.contains("expected ProvableSum"),
+                        "wrong message for {:?}: {msg}",
+                        case
+                    );
+                }
+                other => panic!("expected CorruptedData for {:?}, got {:?}", case, other),
+            }
+        }
+    }
+
+    #[test]
+    fn provable_sum_from_aggregate_accepts_provable_sum() {
+        // Sanity: the happy-path arm preserves the inner value (including
+        // negative values).
+        assert_eq!(
+            provable_sum_from_aggregate(AggregateData::ProvableSum(0)).unwrap(),
+            0
+        );
+        assert_eq!(
+            provable_sum_from_aggregate(AggregateData::ProvableSum(-42)).unwrap(),
+            -42
+        );
+        assert_eq!(
+            provable_sum_from_aggregate(AggregateData::ProvableSum(i64::MAX)).unwrap(),
+            i64::MAX
+        );
+        assert_eq!(
+            provable_sum_from_aggregate(AggregateData::ProvableSum(i64::MIN)).unwrap(),
+            i64::MIN
+        );
+    }
+
+    #[test]
+    fn is_provable_sum_bearing_only_for_provable_sum_tree() {
+        // Every TreeType variant must return false except ProvableSumTree.
+        // This pins the matches!(...) gate against accidental loosening.
+        assert!(is_provable_sum_bearing(TreeType::ProvableSumTree));
+        for t in [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::CommitmentTree(0),
+            TreeType::MmrTree,
+            TreeType::BulkAppendTree(0),
+            TreeType::DenseAppendOnlyFixedSizeTree(0),
+        ] {
+            assert!(!is_provable_sum_bearing(t), "false expected for {:?}", t);
+        }
+    }
+
+    #[test]
+    fn classify_subtree_disjoint_above_sum() {
+        // Subtree entirely above the range → Disjoint. Mirror of
+        // classify_disjoint_below_sum.
+        let r = range_inclusive(b"d", b"f");
+        assert_eq!(
+            classify_subtree(Some(b"g"), None, &r),
+            SubtreeClassification::Disjoint,
+        );
+    }
+
+    #[test]
+    fn classify_subtree_boundary_overlapping_upper_sum() {
+        let r = range_inclusive(b"d", b"f");
+        assert_eq!(
+            classify_subtree(Some(b"e"), Some(b"h"), &r),
+            SubtreeClassification::Boundary,
+        );
+    }
+
+    #[test]
+    fn classify_subtree_contained_within_inclusive_sum() {
+        // Subtree (b, c] with range [a..=z] → Contained.
+        let r = range_inclusive(b"a", b"z");
+        assert_eq!(
+            classify_subtree(Some(b"b"), Some(b"c"), &r),
+            SubtreeClassification::Contained,
+        );
+    }
+
+    #[test]
+    fn key_strictly_inside_handles_unbounded_endpoints() {
+        // -inf lower bound: any key > None is true.
+        assert!(key_strictly_inside(b"a", None, Some(b"z")));
+        // +inf upper bound: any key < None is true.
+        assert!(key_strictly_inside(b"z", Some(b"a"), None));
+        // Both unbounded: trivially true.
+        assert!(key_strictly_inside(b"m", None, None));
+        // Strictly outside lo.
+        assert!(!key_strictly_inside(b"a", Some(b"a"), None));
+        assert!(!key_strictly_inside(b"a", Some(b"z"), None));
+        // Strictly outside hi.
+        assert!(!key_strictly_inside(b"z", None, Some(b"z")));
+        assert!(!key_strictly_inside(b"z", None, Some(b"a")));
+    }
+
+    #[test]
+    fn empty_provable_sum_tree_proof_round_trip() {
+        // Hits the "empty merk" branch of `prove_aggregate_sum_on_range`
+        // (the no-proof side has its own test; this is the prover side).
+        let v = GroveVersion::latest();
+        let merk = TempMerk::new_with_tree_type(v, TreeType::ProvableSumTree);
+        let (ops, sum) = merk
+            .prove_aggregate_sum_on_range(&QueryItem::Range(b"a".to_vec()..b"z".to_vec()), v)
+            .unwrap()
+            .expect("prove on empty merk should succeed");
+        assert_eq!(sum, 0);
+        // The empty-merk proof should verify to (NULL_HASH, 0).
+        let bytes = encode_proof(&ops);
+        let (_root, verified) = verify_aggregate_sum_on_range_proof(
+            &bytes,
+            &QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        )
+        .unwrap()
+        .expect("verify on empty proof should succeed");
+        assert_eq!(verified, 0);
+    }
+
     #[test]
     fn no_proof_sum_with_negative_values_matches_prover() {
         // A tree with mixed positive and negative sum items must yield the
