@@ -1143,4 +1143,179 @@ mod tests {
             "nested count tree's 5 should be suppressed; only the bare item should count"
         );
     }
+
+    // =====================================================================
+    // Coverage for cidx-specific subtree insert error branches
+    // (merk/src/element/insert.rs:685-700, 768-777).
+    // =====================================================================
+
+    #[test]
+    fn insert_count_indexed_subtree_rejects_non_cidx_element() {
+        // Coverage for L685-694 — insert_count_indexed_subtree must
+        // reject any element whose underlying type is not
+        // CountIndexedTree / ProvableCountIndexedTree.
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+
+        // A plain item is not a cidx element.
+        let plain_item = Element::new_item(b"v".to_vec());
+        let result = plain_item
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k",
+                NULL_HASH,
+                NULL_HASH,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInputError(msg)) => {
+                assert!(
+                    msg.contains("only accepts CountIndexedTree"),
+                    "expected non-cidx error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInputError(non-cidx element), got: {:?}",
+                other
+            ),
+        }
+
+        // A regular tree element is also not a cidx element.
+        let plain_tree = Element::empty_tree();
+        let result = plain_tree
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k2",
+                NULL_HASH,
+                NULL_HASH,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInputError(_))),
+            "regular tree must be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_rejects_non_counted_wrapper_into_normal_tree() {
+        // Coverage for L696-700 — non-counted wrapper elements may
+        // only be inserted into count-bearing trees. A NonCounted-
+        // wrapped cidx into a NormalTree merk must be rejected.
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
+
+        // Wrap a cidx in NonCounted, then attempt to insert into a
+        // NormalTree (not count-bearing).
+        let cidx_inner = Element::empty_count_indexed_tree();
+        let wrapped = Element::new_non_counted(cidx_inner).expect("wrap");
+        let result = wrapped
+            .insert_count_indexed_subtree(
+                &mut merk,
+                b"k",
+                NULL_HASH,
+                NULL_HASH,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInputError(msg)) => {
+                assert!(
+                    msg.contains(
+                        "non-counted elements may only be inserted into \
+                                  count-bearing trees"
+                    ),
+                    "expected non-counted-wrong-tree error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInputError(non-counted wrapper into non-count-bearing tree), \
+                 got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_into_batch_operations_rejects_non_cidx_element() {
+        // Coverage for L768-777 — the batch-operations variant of
+        // insert_count_indexed_subtree has the same non-cidx reject.
+        use crate::tree::hash::NULL_HASH;
+        use crate::TreeFeatureType::BasicMerkNode;
+
+        let grove_version = GroveVersion::latest();
+        let mut batch_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
+
+        // Plain item routed through the batch-ops API.
+        let plain_item = Element::new_item(b"v".to_vec());
+        let key: &[u8] = b"k";
+        let result = plain_item
+            .insert_count_indexed_subtree_into_batch_operations(
+                key,
+                NULL_HASH,
+                NULL_HASH,
+                false,
+                &mut batch_ops,
+                BasicMerkNode,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInputError(msg)) => {
+                assert!(
+                    msg.contains("only accepts CountIndexedTree"),
+                    "expected non-cidx error, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidInputError(non-cidx element in batch), got: {:?}",
+                other
+            ),
+        }
+        assert!(
+            batch_ops.is_empty(),
+            "rejected op must not push to batch operations vec"
+        );
+    }
+
+    #[test]
+    fn insert_count_indexed_subtree_into_batch_operations_replace_variant_for_cidx() {
+        // Coverage for L790-799 — `is_replace = true` branch using
+        // Op::ReplaceLayeredCountIndexedReference (vs the Put variant
+        // at L802-811 which is `is_replace = false`).
+        use crate::tree::hash::NULL_HASH;
+        use crate::TreeFeatureType;
+
+        let grove_version = GroveVersion::latest();
+        let mut batch_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
+
+        let cidx = Element::empty_count_indexed_tree();
+        let key: &[u8] = b"k";
+        cidx.insert_count_indexed_subtree_into_batch_operations(
+            key,
+            NULL_HASH,
+            NULL_HASH,
+            true, // is_replace
+            &mut batch_ops,
+            TreeFeatureType::CountedMerkNode(0),
+            grove_version,
+        )
+        .unwrap()
+        .expect("replace variant must succeed for a cidx element");
+        assert_eq!(batch_ops.len(), 1, "one op must be queued");
+        // The pushed op should be Op::ReplaceLayeredCountIndexedReference.
+        match &batch_ops[0].1 {
+            Op::ReplaceLayeredCountIndexedReference(..) => {}
+            other => panic!("expected ReplaceLayered, got: {:?}", other),
+        }
+    }
 }
