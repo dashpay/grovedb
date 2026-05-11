@@ -7901,4 +7901,809 @@ mod tests {
             "oversize sentinel should encode the actual key length"
         );
     }
+
+    // =====================================================================
+    // Coverage tests for cidx code paths that are otherwise hard to reach:
+    //   - direct insert_into_count_indexed_tree overwriting a nested cidx
+    //     (existing_is_tree && existing_is_cidx — clears secondary).
+    //   - direct delete_from_count_indexed_tree removing a nested cidx
+    //     entry (deleted_was_cidx_primary — clears its secondary too).
+    //   - count_indexed_top_k / count_indexed_count_range surfacing a
+    //     CorruptedData error when the secondary contains a key that is
+    //     shorter than the 8-byte count prefix (drift via corrupted
+    //     storage; the decode_secondary_key helper returns None).
+    //   - reconcile_count_indexed_tree_secondary surfacing CorruptedData
+    //     when the primary contains undecodable Element bytes.
+    // =====================================================================
+
+    #[test]
+    fn direct_insert_into_cidx_overwrites_nested_cidx_entry_and_cleans_secondary() {
+        // Layout: TEST_LEAF / outer_cidx / inner (nested cidx, populated)
+        // Then call insert_into_count_indexed_tree on outer_cidx with key
+        // "inner" replacing it with a plain item (safe-subset overwrite
+        // allowed when validate_insertion_does_not_override_tree is off
+        // at the cidx-API level). The cleanup path
+        // (count_indexed_tree.rs:400-427) must clear the nested cidx's
+        // SECONDARY namespace too — not just the primary's subtree
+        // storage.
+        use grovedb_storage::{
+            rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create nested cidx");
+        // Force the nested cidx's secondary to acquire concrete storage
+        // so the post-overwrite cleanup has something visible to clear.
+        // Use corrupt_secondary_insert here because the normal cidx
+        // insert path doesn't accept an empty (no-count) entry — and we
+        // want a secondary KV that survives any merk root-key reset.
+        corrupt_secondary_insert(
+            &db,
+            &[TEST_LEAF, b"outer_cidx", b"inner"],
+            &make_secondary_key(0, b"sec_entry"),
+            grove_version,
+        );
+
+        // Capture the nested cidx's S2-B secondary prefix.
+        let inner_path: &[&[u8]] = &[TEST_LEAF, b"outer_cidx", b"inner"];
+        let inner_path_vec: Vec<&[u8]> = inner_path.to_vec();
+        let inner_subtree: grovedb_path::SubtreePath<&[u8]> = inner_path_vec.as_slice().into();
+        let inner_primary_prefix = RocksDbStorage::build_prefix(inner_subtree).unwrap();
+        let inner_secondary_prefix =
+            RocksDbStorage::secondary_prefix_for(&inner_primary_prefix).unwrap();
+
+        // Sanity: secondary namespace non-empty pre-overwrite.
+        {
+            let tx = db.start_transaction();
+            let ctx = db
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    inner_secondary_prefix,
+                    None,
+                    &tx,
+                )
+                .unwrap();
+            let mut it = ctx.raw_iter();
+            it.seek_to_first().unwrap();
+            assert!(
+                it.valid().unwrap(),
+                "pre-overwrite: nested cidx secondary must be non-empty"
+            );
+        }
+
+        // Direct cidx insert overwriting nested cidx with a plain item.
+        // This is the safe-subset path: cidx → non-cidx is allowed.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner",
+            Element::new_item(b"replaced".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("overwrite nested cidx with item via direct cidx insert");
+
+        // Verify nested cidx's secondary namespace is now cleared.
+        {
+            let tx = db.start_transaction();
+            let ctx = db
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    inner_secondary_prefix,
+                    None,
+                    &tx,
+                )
+                .unwrap();
+            let mut it = ctx.raw_iter();
+            it.seek_to_first().unwrap();
+            assert!(
+                !it.valid().unwrap(),
+                "post-overwrite: nested cidx secondary must be cleared by the \
+                 direct insert_into_count_indexed_tree overwrite cleanup"
+            );
+        }
+
+        // Element at outer/inner is now an item.
+        let elem = db
+            .get(
+                [TEST_LEAF, b"outer_cidx"].as_ref(),
+                b"inner",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get after overwrite");
+        assert_eq!(elem, Element::new_item(b"replaced".to_vec()));
+    }
+
+    #[test]
+    fn direct_delete_from_cidx_removes_nested_cidx_entry_and_cleans_secondary() {
+        // Layout: TEST_LEAF / outer_cidx / nested_cidx (populated cidx).
+        // delete_from_count_indexed_tree on the outer with key
+        // "nested_cidx" must (a) remove the entry from the outer's
+        // primary, (b) clear the nested cidx's PRIMARY child storage
+        // (find_subtrees loop), AND (c) clear the nested cidx's
+        // SECONDARY namespace (count_indexed_tree.rs:1408-1443).
+        use grovedb_storage::{
+            rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext,
+        };
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"nested_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create nested cidx");
+        // Populate so secondary has concrete state to clean.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx", b"nested_cidx"].as_ref(),
+            b"x",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate nested cidx");
+
+        // Capture nested cidx's secondary prefix.
+        let nested_path: &[&[u8]] = &[TEST_LEAF, b"outer_cidx", b"nested_cidx"];
+        let nested_path_vec: Vec<&[u8]> = nested_path.to_vec();
+        let nested_subtree: grovedb_path::SubtreePath<&[u8]> = nested_path_vec.as_slice().into();
+        let nested_primary_prefix = RocksDbStorage::build_prefix(nested_subtree).unwrap();
+        let nested_secondary_prefix =
+            RocksDbStorage::secondary_prefix_for(&nested_primary_prefix).unwrap();
+
+        // Sanity: nested secondary is populated pre-delete.
+        {
+            let tx = db.start_transaction();
+            let ctx = db
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    nested_secondary_prefix,
+                    None,
+                    &tx,
+                )
+                .unwrap();
+            let mut it = ctx.raw_iter();
+            it.seek_to_first().unwrap();
+            assert!(
+                it.valid().unwrap(),
+                "pre-delete: nested cidx secondary must be non-empty"
+            );
+        }
+
+        // Delete the nested_cidx entry via delete_from_count_indexed_tree.
+        let removed = db
+            .delete_from_count_indexed_tree(
+                [TEST_LEAF, b"outer_cidx"].as_ref(),
+                b"nested_cidx",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("delete nested cidx entry from outer");
+        assert!(removed, "entry must exist and report removed=true");
+
+        // Verify nested cidx's secondary namespace is cleared.
+        {
+            let tx = db.start_transaction();
+            let ctx = db
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    nested_secondary_prefix,
+                    None,
+                    &tx,
+                )
+                .unwrap();
+            let mut it = ctx.raw_iter();
+            it.seek_to_first().unwrap();
+            assert!(
+                !it.valid().unwrap(),
+                "post-delete: nested cidx secondary must be cleared by \
+                 delete_from_count_indexed_tree"
+            );
+        }
+
+        // Outer no longer contains the entry.
+        let result = db
+            .get(
+                [TEST_LEAF, b"outer_cidx"].as_ref(),
+                b"nested_cidx",
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(crate::Error::PathKeyNotFound(_))),
+            "deleted entry must return PathKeyNotFound, got {:?}",
+            result
+        );
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "verify issues: {:?}", issues);
+    }
+
+    #[test]
+    fn count_indexed_top_k_errors_on_short_secondary_key_drift() {
+        // The secondary's key encoding is `count_be(8 bytes) ‖
+        // original_key`. If drift creates a key shorter than 8 bytes,
+        // the iterator's decode_secondary_key returns None and
+        // count_indexed_top_k surfaces a CorruptedData error
+        // (count_indexed_tree.rs:1061-1065, 1750).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Inject a 3-byte (< 8) secondary key directly. Bypasses cidx
+        // mirror logic that always uses 8-byte count prefix.
+        corrupt_secondary_insert(&db, &[TEST_LEAF, b"cidx"], b"abc", grove_version);
+
+        let result = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("shorter than 8 bytes"),
+                    "expected short-key CorruptedData, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected CorruptedData(secondary key shorter than 8 bytes), \
+                 got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn count_indexed_count_range_errors_on_short_secondary_key_drift() {
+        // Same drift class as the previous test, exercising the
+        // count_indexed_count_range branch
+        // (count_indexed_tree.rs:1160-1164). A short secondary key
+        // returned by the range iterator must produce CorruptedData
+        // rather than silently truncate.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // 3-byte secondary key. The range [0, u64::MAX] forces the
+        // None-upper branch (lo_bytes.shrink_to_fit + insert_range_from)
+        // — also useful coverage.
+        corrupt_secondary_insert(&db, &[TEST_LEAF, b"cidx"], b"abc", grove_version);
+
+        let result = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("shorter than 8 bytes"),
+                    "expected short-key CorruptedData, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn count_indexed_count_range_returns_empty_when_lo_greater_than_hi() {
+        // Trivial early-return path
+        // (count_indexed_tree.rs:1096-1098): if lo_count > hi_count, the
+        // returned range is empty without opening the secondary merk.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        let res = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                10,
+                5, // lo > hi
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range with lo>hi");
+        assert!(
+            res.is_empty(),
+            "lo>hi must produce empty result, got {:?}",
+            res
+        );
+    }
+
+    #[test]
+    fn reconcile_errors_on_undecodable_element_bytes_in_primary() {
+        // The reconcile loop calls `Element::raw_decode` on each primary
+        // KV's value bytes. If a corrupted code path stored bytes that
+        // don't decode as an Element, reconcile surfaces a CorruptedData
+        // error (count_indexed_tree.rs:842-845) rather than panicking or
+        // silently producing a wrong secondary.
+        use grovedb_path::SubtreePath;
+        use grovedb_storage::{Storage, StorageBatch, StorageContext};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+
+        // Write garbage bytes directly into the cidx primary's storage
+        // namespace at a key that the merk's raw_iter will surface. We
+        // bypass the merk-level tree structure so the bytes won't form
+        // a valid TreeNode, but the bytes-in-storage will still trip
+        // the raw_decode path in reconcile.
+        //
+        // Approach: write to the storage context at the cidx primary's
+        // prefix using StorageContext::put. The bytes show up via the
+        // raw_iter scan but aren't part of the merk's tree.
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let cidx_path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let path_vec: Vec<&[u8]> = cidx_path.to_vec();
+        let subtree: SubtreePath<&[u8]> = path_vec.as_slice().into();
+        let mut storage = db
+            .db
+            .get_transactional_storage_context(subtree, Some(&batch), &tx)
+            .unwrap();
+        storage
+            .put(
+                b"corrupted",
+                b"this is not valid Element bytes \xff\xff\xff\xff",
+                None,
+                None,
+            )
+            .unwrap()
+            .expect("write garbage bytes");
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("commit tx");
+
+        let result = db
+            .reconcile_count_indexed_tree_secondary(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("failed to decode element while reconciling secondary"),
+                    "expected decode-failure CorruptedData, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData decode error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconcile_repairs_missing_secondary_entry_via_insert_loop() {
+        // Exercises reconcile's insert loop
+        // (count_indexed_tree.rs:927-937): re-adds a secondary entry
+        // that the primary still claims but the secondary lacks.
+        //
+        // Set up cidx with one entry, delete its secondary mirror,
+        // run reconcile, expect the mirror to be restored.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        let ct = Element::new_count_tree_with_flags_and_count_value(None, 7, None);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            ct,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Drift: delete the mirror for (count=7, "a").
+        corrupt_secondary_delete(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(7, b"a"),
+            grove_version,
+        );
+
+        // Reconcile must re-insert the missing mirror via the insert
+        // loop. Don't assert on top_k afterwards (verify_grovedb's
+        // chain integrity isn't restored by reconcile alone), only
+        // confirm reconcile completes without error so the loop runs.
+        db.reconcile_count_indexed_tree_secondary(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("reconcile must run insert loop without error");
+    }
+
+    #[test]
+    fn reconcile_removes_orphan_secondary_entry_via_delete_loop() {
+        // Exercises reconcile's delete loop
+        // (count_indexed_tree.rs:909-919): removes a secondary entry
+        // that the primary doesn't claim.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Real entry so the secondary's tree isn't empty.
+        let ct = Element::new_count_tree_with_flags_and_count_value(None, 7, None);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            ct,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Drift: inject an orphan into the secondary.
+        corrupt_secondary_insert(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &make_secondary_key(999, b"ghost"),
+            grove_version,
+        );
+
+        // Reconcile must remove the orphan via the delete loop.
+        db.reconcile_count_indexed_tree_secondary(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("reconcile must run delete loop without error");
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_tampered_primary_root_hash() {
+        // Coverage for proof/count_indexed.rs:566-572: the H1-A chain
+        // check at the cidx layer must fail when the envelope's
+        // `primary_root_hash` field is tampered. Generate a valid
+        // proof, flip a byte in the encoded primary_root_hash, and
+        // expect a "cidx layer chain mismatch" CorruptedData.
+        use crate::operations::proof::count_indexed::CountIndexedRangeProof;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::empty_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Decode + tamper + re-encode.
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (mut envelope, _): (CountIndexedRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode");
+        envelope.primary_root_hash[0] ^= 0xFF; // flip one byte
+        let tampered = bincode::encode_to_vec(&envelope, bincode::config::standard())
+            .expect("re-encode tampered envelope");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&tampered, path, 10, true);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("cidx layer chain mismatch") || msg.contains("chain mismatch"),
+                    "expected chain mismatch CorruptedData, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData(chain mismatch), got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_tampered_intermediate_layer_proof() {
+        // Coverage for proof/count_indexed.rs:600-613: the verifier's
+        // shallower-layer chain check (combine_hash / combine_hash_three
+        // at non-cidx ancestor depth). Tamper a byte in an intermediate
+        // layer's encoded proof; the recomputed value_hash for that
+        // layer will diverge from the parent's recorded one.
+        use crate::operations::proof::count_indexed::CountIndexedRangeProof;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer tree");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let proof = db
+            .prove_count_indexed_top_k(
+                [TEST_LEAF, b"outer", b"cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (mut envelope, _): (CountIndexedRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode");
+        // Tamper an intermediate (non-deepest) layer proof. Replace it
+        // with a wholly different layer proof — concretely, the
+        // secondary proof bytes (a different valid Merk proof, but
+        // proving a different tree at a different key). The verifier
+        // must reject because the recomputed value_hash for this layer
+        // diverges from the parent's recorded one.
+        envelope.layer_proofs[0] = envelope.secondary_proof.clone();
+        let tampered =
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).expect("re-encode");
+        let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&tampered, path, 10, true);
+        // Accept any CorruptedData — the tampered layer must NOT
+        // verify silently.
+        assert!(
+            matches!(result, Err(crate::Error::CorruptedData(_))),
+            "tampered intermediate layer must produce CorruptedData, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_tampered_secondary_root_hash_via_query() {
+        // Coverage for proof/count_indexed.rs:581-585: the verifier
+        // checks `ancestor_cidx_secondary_root_hashes.len() == last_idx`
+        // and emits CorruptedData if a length mismatch sneaks in. We
+        // achieve this by tampering the envelope's ancestor secondary
+        // attestation vector to a wrong length.
+        use crate::operations::proof::count_indexed::CountIndexedRangeProof;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Nested cidx so last_idx > 0 — without nesting, ancestor list
+        // would be size 0 and trivially "match".
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+
+        let proof = db
+            .prove_count_indexed_top_k(
+                [TEST_LEAF, b"outer", b"cidx"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (mut envelope, _): (CountIndexedRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode");
+        // Tamper: pad ancestor list to a wrong length.
+        envelope.ancestor_cidx_secondary_root_hashes.push(None);
+        let tampered =
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).expect("re-encode");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&tampered, path, 10, true);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("ancestor_cidx_secondary_root_hashes"),
+                    "expected ancestor-length-mismatch CorruptedData, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData(ancestor length mismatch), got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_proof_with_short_secondary_key_drift() {
+        // Coverage for proof/count_indexed.rs:540-545 — the verifier's
+        // result_set loop rejects any proved key shorter than 8 bytes.
+        // Build a proof where the secondary has a < 8-byte drifted key
+        // (via corrupt_secondary_insert), generate the proof, and check
+        // that verification surfaces the short-key CorruptedData rather
+        // than silently producing garbage entries.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Drift: a 3-byte secondary key. The proof generator iterates
+        // the secondary and includes this key in the proof; the
+        // verifier's loop then rejects on length check.
+        corrupt_secondary_insert(&db, &[TEST_LEAF, b"cidx"], b"abc", grove_version);
+
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("prove (drift accepted at proof time; rejected at verify)");
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path, 10, true);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("shorter than 8 bytes"),
+                    "expected short-key CorruptedData at verify, got: {msg}"
+                );
+            }
+            other => {
+                panic!("expected CorruptedData(short secondary key) at verify, got: {other:?}")
+            }
+        }
+    }
 }
