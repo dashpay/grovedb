@@ -3089,7 +3089,6 @@ where
             // delta, mirror_to_secondary_for_batch does delete-then-
             // insert ON ONE KEY which is fine; the order issue only
             // surfaces ACROSS deltas of different keys.
-            let mut deltas = deltas;
             deltas.sort_by(|a, b| {
                 let a_is_pure_delete = a.1.is_some() && a.2.is_none();
                 let b_is_pure_delete = b.1.is_some() && b.2.is_none();
