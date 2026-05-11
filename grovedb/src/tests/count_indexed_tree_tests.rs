@@ -4550,6 +4550,216 @@ mod tests {
         }
     }
 
+    /// Apply a single insert operation via the DIRECT API
+    /// (`insert_into_count_indexed_tree`).
+    fn apply_insert_via_direct(
+        db: &crate::GroveDb,
+        cidx_path: &[&[u8]],
+        key: &[u8],
+        item: Element,
+        grove_version: &GroveVersion,
+    ) {
+        db.insert_into_count_indexed_tree(cidx_path, key, item, None, grove_version)
+            .unwrap()
+            .expect("direct insert");
+    }
+
+    /// Apply a single insert operation via the BATCH path
+    /// (`apply_batch` with one InsertOrReplace op).
+    fn apply_insert_via_batch(
+        db: &crate::GroveDb,
+        cidx_path: &[&[u8]],
+        key: &[u8],
+        item: Element,
+        grove_version: &GroveVersion,
+    ) {
+        use crate::batch::QualifiedGroveDbOp;
+        let path_vec: Vec<Vec<u8>> = cidx_path.iter().map(|s| s.to_vec()).collect();
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            path_vec,
+            key.to_vec(),
+            item,
+        )];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch insert");
+    }
+
+    #[test]
+    fn differential_direct_vs_batch_produce_identical_root_hashes() {
+        // The same sequence of operations applied via the two API
+        // paths (insert_into_count_indexed_tree vs. apply_batch with
+        // one InsertOrReplace op) must produce IDENTICAL on-disk
+        // state — same GroveDB root hash, same cidx element bytes,
+        // same primary/secondary content. This catches any drift
+        // between the dedicated and batch implementations.
+        use crate::batch::QualifiedGroveDbOp;
+
+        let grove_version = GroveVersion::latest();
+
+        // 4 representative operation sequences.
+        let sequences: Vec<Vec<(Vec<u8>, Element)>> = vec![
+            // Sequence 1: three distinct inserts.
+            vec![
+                (b"a".to_vec(), Element::new_item(b"1".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"2".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"3".to_vec())),
+            ],
+            // Sequence 2: insert + overwrite same key.
+            vec![
+                (b"x".to_vec(), Element::new_item(b"old".to_vec())),
+                (b"x".to_vec(), Element::new_item(b"new".to_vec())),
+                (b"y".to_vec(), Element::new_item(b"z".to_vec())),
+            ],
+            // Sequence 3: inserts in varying key order.
+            vec![
+                (b"c".to_vec(), Element::new_item(b"3".to_vec())),
+                (b"a".to_vec(), Element::new_item(b"1".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"2".to_vec())),
+                (b"d".to_vec(), Element::new_item(b"4".to_vec())),
+            ],
+            // Sequence 4: inserts then a delete on a middle key
+            // (handled as an extra op below).
+            vec![
+                (b"a".to_vec(), Element::new_item(b"1".to_vec())),
+                (b"b".to_vec(), Element::new_item(b"2".to_vec())),
+                (b"c".to_vec(), Element::new_item(b"3".to_vec())),
+            ],
+        ];
+
+        for (idx, seq) in sequences.iter().enumerate() {
+            // === Apply via direct API ===
+            let db_direct = make_test_grovedb(grove_version);
+            db_direct
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    b"cidx",
+                    Element::empty_count_indexed_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("direct: create cidx");
+            for (k, v) in seq {
+                apply_insert_via_direct(
+                    &db_direct,
+                    &[TEST_LEAF, b"cidx"],
+                    k,
+                    v.clone(),
+                    grove_version,
+                );
+            }
+            if idx == 3 {
+                db_direct
+                    .delete_from_count_indexed_tree(
+                        [TEST_LEAF, b"cidx"].as_ref(),
+                        b"b",
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("direct: delete b");
+            }
+
+            // === Apply via batch path ===
+            let db_batch = make_test_grovedb(grove_version);
+            db_batch
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    b"cidx",
+                    Element::empty_count_indexed_tree(),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("batch: create cidx");
+            for (k, v) in seq {
+                apply_insert_via_batch(
+                    &db_batch,
+                    &[TEST_LEAF, b"cidx"],
+                    k,
+                    v.clone(),
+                    grove_version,
+                );
+            }
+            if idx == 3 {
+                let ops = vec![QualifiedGroveDbOp::delete_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                    b"b".to_vec(),
+                )];
+                db_batch
+                    .apply_batch(ops, None, None, grove_version)
+                    .unwrap()
+                    .expect("batch: delete b");
+            }
+
+            // === Compare ===
+            let root_direct = db_direct
+                .root_hash(None, grove_version)
+                .unwrap()
+                .expect("direct: root");
+            let root_batch = db_batch
+                .root_hash(None, grove_version)
+                .unwrap()
+                .expect("batch: root");
+            assert_eq!(
+                root_direct, root_batch,
+                "sequence {}: GroveDB root hashes differ between direct and batch paths",
+                idx
+            );
+
+            let elem_direct = db_direct
+                .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+                .unwrap()
+                .expect("direct: cidx elem");
+            let elem_batch = db_batch
+                .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+                .unwrap()
+                .expect("batch: cidx elem");
+            assert_eq!(
+                elem_direct, elem_batch,
+                "sequence {}: cidx element bytes differ",
+                idx
+            );
+
+            let top_direct = db_direct
+                .count_indexed_top_k(
+                    [TEST_LEAF, b"cidx"].as_ref(),
+                    100,
+                    true,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("direct: top");
+            let top_batch = db_batch
+                .count_indexed_top_k(
+                    [TEST_LEAF, b"cidx"].as_ref(),
+                    100,
+                    true,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("batch: top");
+            assert_eq!(top_direct, top_batch, "sequence {}: top-k differs", idx);
+
+            let issues_direct = db_direct
+                .verify_grovedb(None, false, true, grove_version)
+                .expect("direct: verify");
+            let issues_batch = db_batch
+                .verify_grovedb(None, false, true, grove_version)
+                .expect("batch: verify");
+            assert!(
+                issues_direct.is_empty() && issues_batch.is_empty(),
+                "sequence {}: integrity issues",
+                idx
+            );
+        }
+    }
+
     #[test]
     fn property_random_ops_preserve_cidx_invariant_nested_two_levels() {
         // Same shape but against a NESTED cidx layout
