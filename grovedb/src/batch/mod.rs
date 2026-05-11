@@ -2,6 +2,13 @@
 
 mod batch_structure;
 
+/// Cidx-specific helpers for the batch apply pipeline (pre-apply count
+/// capture + post-apply secondary mirror). Extracted from `mod.rs` to
+/// keep the cidx propagation pattern self-contained and reusable for
+/// future aggregate-indexed tree shapes (e.g., the planned
+/// `SumIndexedTree`).
+mod cidx;
+
 #[cfg(feature = "estimated_costs")]
 pub mod estimated_costs;
 
@@ -1999,63 +2006,16 @@ where
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
         // secondary entry needs to move; we capture it here too.
-        let cidx_pre_state: Option<HashMap<Vec<u8>, Option<u64>>> = if in_tree_type
-            .is_count_indexed_primary()
-        {
-            // Bound the item key length so the derived secondary key
-            // (count_be ‖ item_key) stays under Merk's 256-byte limit.
-            // Generic batch validation only enforces the 255-byte cap;
-            // cidx primaries need 247 bytes to leave room for the 8-byte
-            // count prefix in the secondary.
-            for (key_info, _) in ops_at_path_by_key.iter() {
-                let k_len = key_info.get_key_clone().len();
-                if k_len > crate::operations::count_indexed_tree::MAX_CIDX_ITEM_KEY_LEN {
-                    return Err(Error::InvalidInput(
-                        "item key for a CountIndexedTree primary must be at most 247 \
-                         bytes in batch ops (the secondary index prepends an 8-byte \
-                         count, and Merk requires keys < 256 bytes)",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            }
-            let merk = self.merks.get(path).expect("the Merk is cached");
-            let mut pre: HashMap<Vec<u8>, Option<u64>> = HashMap::new();
-            for (key_info, op) in ops_at_path_by_key.iter() {
-                let key_bytes = key_info.get_key_clone();
-                // Single source of truth: `GroveOp::can_mutate_child_count`
-                // uses an exhaustive match so adding a new variant
-                // forces explicit classification at the type-system
-                // level. This is the structural guard against the
-                // nested-cidx bug class (commit a8bb34fb).
-                if op.can_mutate_child_count() && !pre.contains_key(&key_bytes) {
-                    let maybe_bytes = cost_return_on_error!(
-                        &mut cost,
-                        merk.get(
-                            key_bytes.as_slice(),
-                            true,
-                            Some(&Element::value_defined_cost_for_serialized_value),
-                            grove_version,
-                        )
-                        .map_err(Error::MerkError)
-                    );
-                    let old_count = if let Some(bytes) = maybe_bytes {
-                        let elem = cost_return_on_error_no_add!(
-                            cost,
-                            Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
-                                Error::CorruptedData(format!("cidx pre-state deserialize: {e}"))
-                            })
-                        );
-                        Some(elem.count_value_or_default())
-                    } else {
-                        None
-                    };
-                    pre.insert(key_bytes, old_count);
-                }
-            }
-            Some(pre)
-        } else {
-            None
-        };
+        let cidx_pre_state: Option<HashMap<Vec<u8>, Option<u64>>> =
+            if in_tree_type.is_count_indexed_primary() {
+                let merk = self.merks.get(path).expect("the Merk is cached");
+                Some(cost_return_on_error!(
+                    &mut cost,
+                    cidx::capture_cidx_pre_state(merk, &ops_at_path_by_key, grove_version)
+                ))
+            } else {
+                None
+            };
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
@@ -3049,82 +3009,19 @@ where
         // post-mirror state into `cidx_secondary_after_apply` so the
         // bubble-up can emit `ReplaceAggregateIndexedTreeRootKeys`.
         if let Some(pre) = cidx_pre_state {
-            // Collect post-apply counts per key. We re-borrow the merk
-            // (now applied) to read each key's new element.
-            let merk = self.merks.get(path).expect("the Merk is cached");
-            let mut deltas: Vec<(Vec<u8>, Option<u64>, Option<u64>)> =
-                Vec::with_capacity(pre.len());
-            for (key, old_count) in pre {
-                let maybe_bytes = cost_return_on_error!(
-                    &mut cost,
-                    merk.get(
-                        key.as_slice(),
-                        true,
-                        Some(&Element::value_defined_cost_for_serialized_value),
-                        grove_version,
-                    )
-                    .map_err(Error::MerkError)
-                );
-                let new_count = if let Some(bytes) = maybe_bytes {
-                    let elem = cost_return_on_error_no_add!(
-                        cost,
-                        Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
-                            Error::CorruptedData(format!("cidx post-state deserialize: {e}"))
-                        })
-                    );
-                    Some(elem.count_value_or_default())
-                } else {
-                    None
-                };
-                deltas.push((key, old_count, new_count));
-            }
-
             // Open the secondary via the closure (it does the parent
             // merk lookup to find the current secondary_root_key).
             let mut secondary_merk =
                 cost_return_on_error!(&mut cost, (self.get_secondary_merk_fn)(path));
-            // Sort deltas DETERMINISTICALLY: pure deletes first
-            // (`(Some, None)`), then everything else, with secondary
-            // sort by key. Without this, HashMap iteration order
-            // produces non-deterministic ordering of secondary mirror
-            // operations. Empirical reproduction showed: when an
-            // INSERT delta runs BEFORE a DELETE delta on the same
-            // secondary merk, the delete sometimes fails to actually
-            // remove the entry — leaving stale secondary state. The
-            // underlying merk-level bug (delete-after-insert on a
-            // count-bearing Merk) needs separate investigation; this
-            // sort enforces a known-good order in the meantime.
-            //
-            // Classification: a delta `(_, Some(_), None)` is a pure
-            // delete (key removed from primary). For each individual
-            // delta, mirror_to_secondary_for_batch does delete-then-
-            // insert ON ONE KEY which is fine; the order issue only
-            // surfaces ACROSS deltas of different keys.
-            deltas.sort_by(|a, b| {
-                let a_is_pure_delete = a.1.is_some() && a.2.is_none();
-                let b_is_pure_delete = b.1.is_some() && b.2.is_none();
-                match b_is_pure_delete.cmp(&a_is_pure_delete) {
-                    std::cmp::Ordering::Equal => a.0.cmp(&b.0),
-                    other => other,
-                }
-            });
-            for (key, old_count, new_count) in deltas {
-                cost_return_on_error!(
-                    &mut cost,
-                    crate::operations::count_indexed_tree::mirror_to_secondary_for_batch(
-                        &mut secondary_merk,
-                        key.as_slice(),
-                        old_count,
-                        new_count,
-                        grove_version,
-                    )
-                );
-            }
-            let (sec_hash, sec_root_key, _) = cost_return_on_error!(
+            let primary_merk = self.merks.get(path).expect("the Merk is cached");
+            let (sec_hash, sec_root_key) = cost_return_on_error!(
                 &mut cost,
-                secondary_merk
-                    .root_hash_key_and_aggregate_data()
-                    .map_err(Error::MerkError)
+                cidx::apply_cidx_secondary_mirror_post_apply(
+                    primary_merk,
+                    pre,
+                    &mut secondary_merk,
+                    grove_version,
+                )
             );
             self.cidx_secondary_after_apply
                 .insert(path.to_vec(), (sec_hash, sec_root_key));
