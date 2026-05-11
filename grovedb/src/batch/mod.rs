@@ -1216,6 +1216,15 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// a `ReplaceCountIndexedTreeRootKeys` op can be emitted on the
     /// parent level carrying both primary and secondary state.
     cidx_secondary_after_apply: HashMap<Vec<Vec<u8>>, (CryptoHash, Option<Vec<u8>>)>,
+    /// Cidx primary paths whose old storage (primary subtree + secondary
+    /// namespace) must be cleaned up at apply_batch's post-apply phase
+    /// because an InsertOrReplace / Replace / Patch op replaced the
+    /// cidx with either a non-cidx element OR an empty cidx. These are
+    /// the SAFE-SUBSET overwrites — cidx → non-empty cidx is rejected
+    /// at validation time because the storage-pointer semantics are
+    /// ambiguous. See the cidx-overwrite handling in
+    /// `execute_ops_on_path`.
+    cidx_overwrite_cleanup_paths: Vec<Vec<Vec<u8>>>,
 }
 
 impl<S, F, F2> fmt::Debug for TreeCacheMerkByPath<S, F, F2> {
@@ -1262,6 +1271,15 @@ trait TreeCache<G, SR> {
         _path: &[Vec<u8>],
     ) -> Option<(CryptoHash, Option<Vec<u8>>)> {
         None
+    }
+
+    /// After all level processing completes, `apply_batch` calls this
+    /// to retrieve the list of cidx primary paths whose OLD storage
+    /// (primary subtree + secondary namespace) must be cleaned up
+    /// because a safe-subset overwrite replaced them with a non-cidx
+    /// element or an empty cidx. Default impl returns an empty Vec.
+    fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
+        Vec::new()
     }
 }
 
@@ -1906,6 +1924,10 @@ where
         self.cidx_secondary_after_apply.remove(path)
     }
 
+    fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
+        std::mem::take(&mut self.cidx_overwrite_cleanup_paths)
+    }
+
     fn update_base_merk_root_key(
         &mut self,
         root_key: Option<Vec<u8>>,
@@ -2075,20 +2097,28 @@ where
                         }
                     } else if op_could_overwrite && !matches!(&element, Element::Reference(..)) {
                         // Tree-override protection is OFF for this batch.
-                        // Even so, **never** allow a cidx element to be
-                        // overwritten silently: cidx owns two storage
-                        // namespaces (primary + secondary) and the batch
-                        // path has no dual-storage cleanup hook, so an
-                        // overwrite would orphan the secondary and could
-                        // collide with future inserts under the new
-                        // element's primary_root_key. Reject explicitly,
-                        // pointing callers to the dedicated APIs (empty
-                        // the cidx via `delete_from_count_indexed_tree`,
-                        // DeleteTree it via batch — now supported — and
-                        // re-create in a follow-up batch). Other
-                        // tree-type overwrites remain permitted under the
-                        // existing footgun semantics for backwards
-                        // compatibility.
+                        // For cidx overwrites, allow the SAFE SUBSET:
+                        //
+                        //   cidx → non-cidx element    → ALLOW + cleanup
+                        //   cidx → empty cidx          → ALLOW + cleanup
+                        //   cidx → non-empty cidx      → REJECT (ambiguous)
+                        //
+                        // The cleanup runs in apply_batch's post-apply
+                        // pass: walk find_subtrees on the old cidx
+                        // primary's path and clear each subtree's
+                        // storage, plus clear the secondary namespace
+                        // at Blake3(primary_prefix ‖ 0x01). Same shape
+                        // as the cidx DeleteTree cleanup (commit
+                        // 0688731a).
+                        //
+                        // Non-empty cidx replacement stays rejected
+                        // because the new element's primary_root_key /
+                        // secondary_root_key would point at on-disk
+                        // data while our post-apply cleanup of the OLD
+                        // cidx's prefixes also clears that data — the
+                        // storage-pointer semantics are ambiguous
+                        // (reuse old? fresh?) and the safe answer is to
+                        // force the caller through delete-then-recreate.
                         let merk = self.merks.get_mut(path).expect("the Merk is cached");
                         let maybe_existing = cost_return_on_error_into!(
                             &mut cost,
@@ -2114,22 +2144,43 @@ where
                                         )
                                     })
                             );
-                            if matches!(
+                            let existing_is_cidx = matches!(
                                 existing_element.underlying(),
                                 Element::CountIndexedTree(..)
                                     | Element::ProvableCountIndexedTree(..)
-                            ) {
-                                return Err(Error::NotSupported(
-                                    "overwriting an existing CountIndexedTree / \
-                                     ProvableCountIndexedTree via the batch path is not \
-                                     supported (the secondary storage namespace would be \
-                                     orphaned). Empty the cidx via \
-                                     delete_from_count_indexed_tree, DeleteTree it via \
-                                     batch (now supported), and re-create in a follow-up \
-                                     batch"
-                                        .to_string(),
-                                ))
-                                .wrap_with_cost(cost);
+                            );
+                            if existing_is_cidx {
+                                // Classify the new element.
+                                let (new_is_cidx, new_is_empty_cidx) = match element.underlying() {
+                                    Element::CountIndexedTree(p, s, c, _)
+                                    | Element::ProvableCountIndexedTree(p, s, c, _) => {
+                                        (true, p.is_none() && s.is_none() && *c == 0)
+                                    }
+                                    _ => (false, false),
+                                };
+                                if new_is_cidx && !new_is_empty_cidx {
+                                    return Err(Error::NotSupported(
+                                        "overwriting an existing CountIndexedTree / \
+                                         ProvableCountIndexedTree with a NON-EMPTY cidx via \
+                                         the batch path is not supported (storage-pointer \
+                                         semantics are ambiguous: the new element's \
+                                         root_keys would refer to data while the \
+                                         post-apply cleanup also clears it). Empty the \
+                                         cidx via delete_from_count_indexed_tree, \
+                                         DeleteTree it via batch, and re-create with the \
+                                         new state in a follow-up batch"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+                                // Safe subset: cidx → non-cidx OR
+                                // cidx → empty cidx. Schedule the OLD
+                                // cidx's storage namespaces for
+                                // cleanup. The cidx's path is
+                                // `path + key_info`.
+                                let mut cidx_path = path.to_vec();
+                                cidx_path.push(key_info.get_key_clone());
+                                self.cidx_overwrite_cleanup_paths.push(cidx_path);
                             }
                         }
                     }
@@ -3009,11 +3060,21 @@ impl GroveDb {
     /// Method to propagate updated subtree root hashes up to GroveDB root
     /// If the stop level is set in the apply options the remaining operations
     /// are returned
+    /// Runs the level-by-level batch propagation.
+    ///
+    /// Returns `(leftover_ops, cidx_overwrite_cleanup_paths)`:
+    ///   - `leftover_ops` is `Some(...)` only if a `batch_pause_height`
+    ///     was set and pruning paused before reaching the root.
+    ///   - `cidx_overwrite_cleanup_paths` is the list of cidx primary
+    ///     paths whose old storage (primary subtree + secondary
+    ///     namespace) must be cleaned up post-apply because of a safe-
+    ///     subset cidx-overwrite (see `execute_ops_on_path`). Empty when
+    ///     no such overwrites occurred.
     fn apply_batch_structure<C: TreeCache<F, SR>, F, SR>(
         batch_structure: BatchStructure<C, F, SR>,
         batch_apply_options: Option<BatchApplyOptions>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<OpsByLevelPath>, Error>
+    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error>
     where
         F: FnMut(&StorageCost, Option<ElementFlags>, &mut ElementFlags) -> Result<bool, Error>,
         SR: FnMut(
@@ -3475,11 +3536,15 @@ impl GroveDb {
             }
             if current_level == stop_level {
                 // we need to pause the batch execution
-                return Ok(Some(ops_by_level_paths)).wrap_with_cost(cost);
+                let cidx_overwrite_cleanup_paths =
+                    merk_tree_cache.take_cidx_overwrite_cleanup_paths();
+                return Ok((Some(ops_by_level_paths), cidx_overwrite_cleanup_paths))
+                    .wrap_with_cost(cost);
             }
             current_level = current_level.saturating_sub(1);
         }
-        Ok(None).wrap_with_cost(cost)
+        let cidx_overwrite_cleanup_paths = merk_tree_cache.take_cidx_overwrite_cleanup_paths();
+        Ok((None, cidx_overwrite_cleanup_paths)).wrap_with_cost(cost)
     }
 
     /// Method to propagate updated subtree root hashes up to GroveDB root
@@ -3505,7 +3570,7 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         get_secondary_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<OpsByLevelPath>, Error> {
+    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
         check_grovedb_v0_with_cost!(
             "apply_body",
             grove_version.grovedb_versions.apply_batch.apply_body
@@ -3522,6 +3587,7 @@ impl GroveDb {
                     get_merk_fn,
                     get_secondary_merk_fn,
                     cidx_secondary_after_apply: Default::default(),
+                    cidx_overwrite_cleanup_paths: Default::default(),
                 }
             )
         );
@@ -3553,7 +3619,7 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         get_secondary_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
         grove_version: &GroveVersion,
-    ) -> CostResult<Option<OpsByLevelPath>, Error> {
+    ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
         check_grovedb_v0_with_cost!(
             "continue_partial_apply_body",
             grove_version
@@ -3574,6 +3640,7 @@ impl GroveDb {
                     get_merk_fn,
                     get_secondary_merk_fn,
                     cidx_secondary_after_apply: Default::default(),
+                    cidx_overwrite_cleanup_paths: Default::default(),
                 }
             )
         );
@@ -4303,7 +4370,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        cost_return_on_error!(
+        let (_leftover, cidx_overwrite_cleanup_paths) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -4422,6 +4489,65 @@ impl GroveDb {
                 secondary_storage.clear().map_err(|e| {
                     Error::CorruptedData(format!(
                         "unable to clean up cidx secondary storage in batch delete: {e}",
+                    ))
+                })
+            );
+        }
+
+        // Cidx safe-subset OVERWRITE cleanup. When a batch op replaced
+        // an existing cidx element with a non-cidx element or an empty
+        // cidx, the OLD cidx's primary subtree storage AND secondary
+        // namespace must be cleared. Cleanup paths were collected by
+        // execute_ops_on_path and surfaced via apply_body's tuple
+        // return. Each path is the cidx primary's full path
+        // (parent_path + cidx_key).
+        for cidx_path in &cidx_overwrite_cleanup_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = cidx_path.as_slice().into();
+            // Clear all primary subtree storage recursively via
+            // find_subtrees (same walk as DeleteTree cleanup above).
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&cidx_subtree_path, Some(tx.as_ref()), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(p, Some(&storage_batch), tx.as_ref())
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up cidx primary subtree storage in batch \
+                             overwrite: {e}",
+                        ))
+                    })
+                );
+            }
+            // Clear the secondary namespace at Blake3(primary ‖ 0x01).
+            let primary_prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+                cidx_subtree_path.clone(),
+            )
+            .unwrap_add_cost(&mut cost);
+            let secondary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                    &primary_prefix,
+                )
+                .unwrap_add_cost(&mut cost);
+            let mut secondary_storage = self
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    secondary_prefix,
+                    Some(&storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                secondary_storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up cidx secondary storage in batch overwrite: {e}",
                     ))
                 })
             );
@@ -4708,7 +4834,7 @@ impl GroveDb {
         // 5. Remove operation from the tree, repeat until there are operations to do;
         // 6. Add root leaves save operation to the batch
         // 7. Apply storage_cost batch
-        let left_over_operations = cost_return_on_error!(
+        let (left_over_operations, partial_cidx_overwrite_cleanup_paths) = cost_return_on_error!(
             &mut cost,
             self.apply_body(
                 ops,
@@ -4792,7 +4918,7 @@ impl GroveDb {
 
         let continue_storage_batch = StorageBatch::new();
 
-        cost_return_on_error!(
+        let (_leftover_unused, continue_cidx_overwrite_cleanup_paths) = cost_return_on_error!(
             &mut cost,
             self.continue_partial_apply_body(
                 left_over_operations,
@@ -4908,6 +5034,67 @@ impl GroveDb {
                 secondary_storage.clear().map_err(|e| {
                     Error::CorruptedData(format!(
                         "unable to clean up cidx secondary storage in batch delete: {e}",
+                    ))
+                })
+            );
+        }
+
+        // Cidx safe-subset OVERWRITE cleanup (parallels the
+        // apply_batch_with_element_flags_update pass). Two passes
+        // contribute paths: the initial apply_body and the
+        // continue_partial_apply_body. Union them.
+        let all_cidx_overwrite_paths: Vec<&Vec<Vec<u8>>> = partial_cidx_overwrite_cleanup_paths
+            .iter()
+            .chain(continue_cidx_overwrite_cleanup_paths.iter())
+            .collect();
+        for cidx_path in all_cidx_overwrite_paths {
+            let cidx_subtree_path: SubtreePath<Vec<u8>> = cidx_path.as_slice().into();
+            let subtrees_paths = cost_return_on_error!(
+                &mut cost,
+                self.find_subtrees(&cidx_subtree_path, Some(tx.as_ref()), grove_version)
+            );
+            for subtree_path in subtrees_paths {
+                let p: SubtreePath<_> = subtree_path.as_slice().into();
+                let mut storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        p,
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up cidx primary subtree storage in batch \
+                             overwrite: {e}",
+                        ))
+                    })
+                );
+            }
+            let primary_prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
+                cidx_subtree_path.clone(),
+            )
+            .unwrap_add_cost(&mut cost);
+            let secondary_prefix =
+                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                    &primary_prefix,
+                )
+                .unwrap_add_cost(&mut cost);
+            let mut secondary_storage = self
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    secondary_prefix,
+                    Some(&continue_storage_batch),
+                    tx.as_ref(),
+                )
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                secondary_storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up cidx secondary storage in batch overwrite: {e}",
                     ))
                 })
             );

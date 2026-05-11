@@ -2092,11 +2092,12 @@ mod tests {
     }
 
     #[test]
-    fn batch_overwrite_existing_cidx_with_item_is_rejected() {
-        // Even with the tree-override protection flag off, the batch
-        // path must refuse to overwrite an existing cidx element with
-        // anything (cidx or non-cidx). Otherwise the secondary storage
-        // namespace would be orphaned.
+    fn batch_overwrite_existing_cidx_with_item_is_allowed_and_cleans_up() {
+        // Safe subset of the cidx-overwrite case: replacing an
+        // existing cidx with a NON-CIDX element (plain item here) is
+        // allowed when override-protection is off, and the post-apply
+        // pass cleans up both the primary subtree storage AND the
+        // secondary namespace at Blake3(primary ‖ 0x01).
         use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
 
         let grove_version = GroveVersion::latest();
@@ -2111,7 +2112,8 @@ mod tests {
         )
         .unwrap()
         .expect("create cidx");
-        // Populate so the secondary has data we'd be orphaning.
+        // Populate so we have non-trivial primary + secondary state
+        // to clean up.
         db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"cidx"].as_ref(),
             b"k",
@@ -2122,12 +2124,155 @@ mod tests {
         .unwrap()
         .expect("populate");
 
-        // Try to overwrite the cidx element with a plain item via batch
-        // with override-protection turned OFF.
+        // Overwrite the cidx element with a plain item.
         let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec()],
             b"cidx".to_vec(),
             Element::new_item(b"replaced".to_vec()),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        db.apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap()
+            .expect("safe-subset overwrite must succeed");
+
+        // The element at TEST_LEAF/cidx is now an Item, not a cidx.
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get after overwrite");
+        assert_eq!(elem, Element::new_item(b"replaced".to_vec()));
+
+        // Integrity walk: no orphaned primary storage, no orphaned
+        // secondary. verify_grovedb fails if either is left behind.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "verify issues: {:?}", issues);
+    }
+
+    #[test]
+    fn batch_overwrite_existing_cidx_with_empty_cidx_is_allowed_and_resets() {
+        // Safe subset case 2: replacing a non-empty cidx with an
+        // EMPTY cidx is allowed. The old storage is cleaned up; the
+        // new cidx starts fresh.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Populate so the cidx has non-empty state before reset.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"stale_key",
+            Element::new_item(b"stale_value".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Overwrite with an empty cidx (same element type, fresh state).
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            Element::empty_count_indexed_tree(),
+        )];
+        let opts = BatchApplyOptions {
+            validate_insertion_does_not_override_tree: false,
+            ..Default::default()
+        };
+        db.apply_batch(ops, Some(opts), None, grove_version)
+            .unwrap()
+            .expect("reset to empty cidx must succeed");
+
+        // The cidx is now empty (count = 0, no entries).
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get cidx after reset");
+        match elem {
+            Element::CountIndexedTree(p, s, c, _) => {
+                assert!(
+                    p.is_none() && s.is_none() && c == 0,
+                    "expected empty cidx, got {:?}",
+                    (p, s, c)
+                );
+            }
+            other => panic!("expected cidx, got {:?}", other),
+        }
+
+        // Top-k returns nothing — the stale key from before is gone.
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top after reset");
+        assert!(top.is_empty(), "stale entries leaked: {:?}", top);
+
+        // Re-populate; verify the new entry is the only one.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"fresh_key",
+            Element::new_item(b"fresh".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("re-populate");
+        let top = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top after re-populate");
+        assert_eq!(top, vec![(1u64, b"fresh_key".to_vec())]);
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn batch_overwrite_existing_cidx_with_non_empty_cidx_is_rejected() {
+        // Non-empty cidx overwrite: rejected because the new element's
+        // root_keys refer to on-disk data that the cleanup pass would
+        // also clear — ambiguous storage-pointer semantics. Callers
+        // must use the delete-then-recreate dance.
+        use crate::batch::{BatchApplyOptions, QualifiedGroveDbOp};
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // A non-empty cidx element (claims root_keys + count != 0).
+        let non_empty = Element::new_count_indexed_tree_with_root_keys_and_count_value(
+            Some(b"bogus_primary".to_vec()),
+            Some(b"bogus_secondary".to_vec()),
+            5,
+            None,
+        );
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            non_empty,
         )];
         let opts = BatchApplyOptions {
             validate_insertion_does_not_override_tree: false,
@@ -2139,8 +2284,8 @@ mod tests {
         match result {
             Err(crate::Error::NotSupported(msg)) => {
                 assert!(
-                    msg.contains("CountIndexedTree") && msg.contains("orphaned"),
-                    "expected cidx orphan-prevention message, got: {msg}"
+                    msg.contains("NON-EMPTY cidx") || msg.contains("ambiguous"),
+                    "expected non-empty cidx rejection message, got: {msg}"
                 );
             }
             other => panic!("expected NotSupported, got {:?}", other),
