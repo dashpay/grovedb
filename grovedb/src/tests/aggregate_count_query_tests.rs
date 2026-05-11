@@ -1584,12 +1584,14 @@ mod tests {
             .query_aggregate_count(&path_query, None, v)
             .unwrap()
             .expect_err("NormalTree must be rejected by the merk-level entry");
-        // The merk-level error gets wrapped in Error::MerkError; we just
-        // require *some* error rather than asserting on the exact variant
-        // since the merk layer's InvalidProofError formatting is internal.
+        // The merk-level error gets wrapped with contextual `CorruptedData`
+        // (callsite-specific path info — see `query_aggregate_count` in
+        // `operations/get/query.rs`). We just require *some* error rather
+        // than asserting on the exact variant since the merk layer's
+        // `InvalidProofError` formatting is internal.
         match err {
-            crate::Error::MerkError(_) => {}
-            other => panic!("expected MerkError, got {:?}", other),
+            crate::Error::CorruptedData(_) => {}
+            other => panic!("expected CorruptedData wrapper, got {:?}", other),
         }
     }
 

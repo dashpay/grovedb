@@ -362,26 +362,39 @@ mod tests {
             )
             .unwrap()
             .is_ok();
-        if !ok1 || !ok2 {
-            // Insertion already rejected the overflow — that's the
-            // healthiest end state. Bail out.
-            return;
-        }
+        let either_insert_rejected = !ok1 || !ok2;
+
+        // If both inserts succeeded, the overflow must be caught later —
+        // either by the prover or by the verifier. If both inserts AND
+        // the prover succeed AND the verifier accepts, that's the
+        // silent-no-op regression we explicitly want to fail on.
         let pq = PathQuery::new_aggregate_sum_on_range(
             vec![TEST_LEAF.to_vec(), b"st".to_vec()],
             QueryItem::RangeInclusive(b"a".to_vec()..=b"b".to_vec()),
         );
-        let prove_result = db.grove_db.prove_query(&pq, None, v).unwrap();
-        match prove_result {
-            Err(_) => { /* prover detected overflow — fine */ }
-            Ok(proof) => {
-                let verify_result = GroveDb::verify_aggregate_sum_query(&proof, &pq, v);
-                assert!(
-                    verify_result.is_err(),
-                    "verifier must reject a sum that doesn't fit in i64"
-                );
+        let (prover_rejected, verifier_rejected) = if either_insert_rejected {
+            // The insert side already detected the overflow; no need to
+            // exercise prove/verify (they'd never reach the i128->i64
+            // gate without inputs that overflow).
+            (false, false)
+        } else {
+            match db.grove_db.prove_query(&pq, None, v).unwrap() {
+                Err(_) => (true, false),
+                Ok(proof) => {
+                    let verify_result = GroveDb::verify_aggregate_sum_query(&proof, &pq, v);
+                    (false, verify_result.is_err())
+                }
             }
-        }
+        };
+
+        // Exactly the silent-no-op branch must NEVER be reached: at least
+        // one of {insert, prove, verify} must reject the i64::MAX +
+        // i64::MAX overflow.
+        assert!(
+            either_insert_rejected || prover_rejected || verifier_rejected,
+            "BUG: i64::MAX + i64::MAX silently produced a wrong sum — insert, \
+             prove, and verify all accepted the overflow"
+        );
     }
 
     // ---------- 7. i64::MAX + i64::MIN = -1 (intermediate overflows i64 but final fits) ----------
@@ -1036,7 +1049,7 @@ mod tests {
                 // names ProvableSumTree explicitly so we pin it.
                 let msg = format!("{e}");
                 assert!(
-                    msg.contains("must be a ProvableSumTree") || msg.contains("ProvableSumTree"),
+                    msg.contains("must be a ProvableSumTree"),
                     "verifier rejected as expected but with an unrelated message: {msg}"
                 );
             }
@@ -1463,9 +1476,12 @@ mod tests {
             .query_aggregate_sum(&path_query, None, v)
             .unwrap()
             .expect_err("NormalTree leaf must be rejected by merk-level gate");
+        // The merk-level error gets wrapped with contextual `CorruptedData`
+        // by `query_aggregate_sum` (callsite-specific path info — see
+        // `operations/get/query.rs`).
         match err {
-            crate::Error::MerkError(_) => {}
-            other => panic!("expected MerkError, got {:?}", other),
+            crate::Error::CorruptedData(_) => {}
+            other => panic!("expected CorruptedData wrapper, got {:?}", other),
         }
     }
 

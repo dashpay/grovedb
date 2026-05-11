@@ -317,9 +317,9 @@ impl<'de> Deserialize<'de> for NonAggregateInner {
     where
         D: Deserializer<'de>,
     {
-        // Field set excludes "AggregateCountOnRange"; encountering that tag
-        // produces a serde "unknown variant" error before any inner
-        // recursion can happen.
+        // Field set excludes both `AggregateCountOnRange` and
+        // `AggregateSumOnRange`; encountering either tag produces a serde
+        // "unknown variant" error before any inner recursion can happen.
         #[derive(Deserialize)]
         #[serde(field_identifier, rename_all = "snake_case")]
         enum Field {

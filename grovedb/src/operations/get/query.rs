@@ -663,7 +663,10 @@ where {
             &mut cost,
             subtree
                 .sum_aggregate_on_range(&inner_range, grove_version)
-                .map_err(Error::MerkError)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "query_aggregate_sum at path {:?}: {}",
+                    path_slices, e
+                )))
         );
 
         Ok(sum).wrap_with_cost(cost)
@@ -818,7 +821,10 @@ where {
             &mut cost,
             subtree
                 .count_aggregate_on_range(&inner_range, grove_version)
-                .map_err(Error::MerkError)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "query_aggregate_count at path {:?}: {}",
+                    path_slices, e
+                )))
         );
 
         Ok(count).wrap_with_cost(cost)
