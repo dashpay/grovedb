@@ -518,22 +518,34 @@ where
                 .link(false)
                 .map(|l| l.aggregate_data().as_count_u64())
                 .unwrap_or(0);
+            let left_link_present = walker.tree().link(true).is_some();
+            let right_link_present = walker.tree().link(false).is_some();
 
             let mut total: u64 = 0;
 
-            // LEFT child. If link is Some, walk(true) is expected to yield
-            // Some; treat the impossible None as an empty branch — the
-            // outcome (no contribution) is identical to the link being
-            // absent, so there is no need for a separate corrupted-state
-            // arm here.
-            if let Some(mut left_walker) = cost_return_on_error!(
-                &mut cost,
-                walker.walk(
-                    true,
-                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                    grove_version,
-                )
-            ) {
+            // LEFT child. If link is Some, walk(true) must yield Some; the
+            // proof variant has the verifier to catch silent inconsistencies,
+            // but this no-proof path returns the count straight to the
+            // caller — so we fail loudly on impossible state rather than
+            // silently undercounting.
+            if left_link_present {
+                let walked = cost_return_on_error!(
+                    &mut cost,
+                    walker.walk(
+                        true,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                );
+                let mut left_walker = match walked {
+                    Some(lw) => lw,
+                    None => {
+                        return Err(Error::CorruptedState(
+                            "tree.link(true) was Some but walk(true) returned None",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
                 let n = cost_return_on_error!(
                     &mut cost,
                     walk_count_only(
@@ -549,23 +561,42 @@ where
 
             // Current node's own_count: 1 if in-range and counted, 0 for
             // NonCounted-wrapped (which has stored aggregate 0, so the
-            // saturating subtraction yields 0).
+            // subtraction yields 0). `checked_sub` (not `saturating_sub`)
+            // because children claiming more keys than the parent's
+            // aggregate is corrupted state, not something to silently
+            // clamp to 0.
             if range.contains(&node_key) {
                 let own_count = node_count
-                    .saturating_sub(left_link_aggregate)
-                    .saturating_sub(right_link_aggregate);
+                    .checked_sub(left_link_aggregate)
+                    .and_then(|n| n.checked_sub(right_link_aggregate))
+                    .ok_or_else(|| {
+                        Error::CorruptedState(
+                            "child structural counts exceed parent's aggregate count",
+                        )
+                    });
+                let own_count = cost_return_on_error_no_add!(cost, own_count);
                 total = total.saturating_add(own_count);
             }
 
-            // RIGHT child — same pattern as LEFT.
-            if let Some(mut right_walker) = cost_return_on_error!(
-                &mut cost,
-                walker.walk(
-                    false,
-                    None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-                    grove_version,
-                )
-            ) {
+            // RIGHT child — same fail-fast pattern as LEFT.
+            if right_link_present {
+                let walked = cost_return_on_error!(
+                    &mut cost,
+                    walker.walk(
+                        false,
+                        None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                        grove_version,
+                    )
+                );
+                let mut right_walker = match walked {
+                    Some(rw) => rw,
+                    None => {
+                        return Err(Error::CorruptedState(
+                            "tree.link(false) was Some but walk(false) returned None",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                };
                 let n = cost_return_on_error!(
                     &mut cost,
                     walk_count_only(

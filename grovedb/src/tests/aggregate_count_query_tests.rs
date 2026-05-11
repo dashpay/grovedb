@@ -1441,22 +1441,59 @@ mod tests {
 
     #[test]
     fn no_proof_uses_provided_transaction() {
-        // Exercise the TransactionArg = Some(&tx) path of query_aggregate_count.
-        // A transactional read sees the committed state inside the same
-        // transaction.
+        // Exercise the TransactionArg = Some(&tx) path of query_aggregate_count
+        // and verify the transactional read actually observes uncommitted
+        // state. The base view must NOT see the in-transaction insert.
         let v = GroveVersion::latest();
         let (db, _) = setup_15_key_provable_count_tree(v);
-        let tx = db.start_transaction();
         let path_query = PathQuery::new_aggregate_count_on_range(
             vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
             QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
         );
-        let count = db
+
+        // Sanity check: base view sees 10 keys in [c, l].
+        let base_count = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect("base query should succeed");
+        assert_eq!(base_count, 10, "base view should see 10 keys");
+
+        // Insert a new in-range key ("k2") inside a transaction.
+        let tx = db.start_transaction();
+        db.insert(
+            [TEST_LEAF, b"ct"].as_ref(),
+            b"k2",
+            Element::new_item(b"k2".to_vec()),
+            None,
+            Some(&tx),
+            v,
+        )
+        .unwrap()
+        .expect("transactional insert should succeed");
+
+        // Transactional read must include the uncommitted insert (11).
+        let tx_count = db
             .grove_db
             .query_aggregate_count(&path_query, Some(&tx), v)
             .unwrap()
-            .expect("query_aggregate_count with transaction should succeed");
-        assert_eq!(count, 10);
+            .expect("transactional query should succeed");
+        assert_eq!(
+            tx_count, 11,
+            "transactional view must include uncommitted insert"
+        );
+
+        // Base view must still see 10 — the uncommitted insert is invisible
+        // to non-transactional reads.
+        let base_count_after = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect("base query should succeed after tx insert");
+        assert_eq!(
+            base_count_after, 10,
+            "base view must not see uncommitted insert"
+        );
     }
 
     #[test]
