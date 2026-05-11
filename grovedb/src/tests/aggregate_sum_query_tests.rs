@@ -2036,4 +2036,68 @@ mod tests {
             other => panic!("expected CorruptedData, got {:?}", other),
         }
     }
+
+    #[test]
+    fn sum_proof_display_includes_sum_node_variants() {
+        // Drive the Display arms for ProvableSumTree node variants
+        // (KVSum / KVHashSum / KVDigestSum / HashWithSum / KVRefValueHashSum)
+        // in `node_to_string` (grovedb/src/operations/proof/mod.rs around
+        // lines 753-781). Formatting the decoded proof recursively walks
+        // every Op → Node, hitting each per-variant arm that appears in
+        // the proof. We don't pin which specific variants the prover
+        // emits — for a sum-proof on a 15-key tree we expect at least
+        // KVDigestSum (boundary) and HashWithSum (Disjoint / Contained
+        // leaf), but the exact mix can change. Instead we assert that
+        // the formatted output mentions the sum-bearing prefix.
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof_bytes = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+        let decoded = decode_sum_envelope(&proof_bytes);
+        let printed = format!("{}", decoded);
+        assert!(
+            printed.contains("Sum") || printed.contains("HashWith"),
+            "expected formatted proof to mention sum-bearing nodes: {printed}"
+        );
+    }
+
+    #[test]
+    fn regular_prove_on_provable_sum_tree_formats_kv_sum_nodes() {
+        // Drive the KVSum / KVHashSum Display arms specifically. The
+        // sum-aggregate proof emits KVDigestSum / HashWithSum, but a
+        // regular `Merk::prove`-style query on a ProvableSumTree emits
+        // KVSum (for the queried items) and KVHashSum (for non-queried
+        // path nodes). We hit those by running a normal proof query on
+        // the same tree and formatting it.
+        use grovedb_merk::proofs::Query as MerkQuery;
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let mut q = MerkQuery::new();
+        q.insert_range_inclusive(b"c".to_vec()..=b"l".to_vec());
+        let pq = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            crate::SizedQuery::new(q, None, None),
+        );
+        let proof_bytes = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+        let decoded = decode_sum_envelope(&proof_bytes);
+        let printed = format!("{}", decoded);
+        // KVSum or KVHashSum must appear in the formatted output for a
+        // regular range query against a ProvableSumTree.
+        assert!(
+            printed.contains("KVSum") || printed.contains("KVHashSum"),
+            "expected KV-sum-flavored node in printed proof: {printed}"
+        );
+    }
 }
