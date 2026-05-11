@@ -229,8 +229,11 @@ impl GroveDb {
             if depth < last_idx {
                 let intermediate = cost_return_on_error!(
                     &mut cost,
-                    Element::get(&parent_merk, key.as_slice(), true, grove_version)
-                        .map_err(Error::MerkError)
+                    Element::get(&parent_merk, key.as_slice(), true, grove_version).map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cidx proof: fetch intermediate-layer element at depth {depth}: {e}"
+                        ))
+                    })
                 );
                 let attestation = match intermediate.underlying() {
                     Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
@@ -260,7 +263,9 @@ impl GroveDb {
                             &mut cost,
                             ancestor_secondary
                                 .root_hash_key_and_aggregate_data()
-                                .map_err(Error::MerkError)
+                                .map_err(|e| Error::CorruptedData(format!(
+                                    "cidx proof: ancestor secondary root hash at depth {depth}: {e}"
+                                )))
                         );
                         Some(sec_hash)
                     }
@@ -274,7 +279,9 @@ impl GroveDb {
                 &mut cost,
                 parent_merk
                     .prove(q, None, grove_version)
-                    .map_err(Error::MerkError)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "cidx proof: prove single-key at layer depth {depth}: {e}"
+                    )))
             );
             layer_proofs.push(result.proof);
         }
@@ -301,7 +308,7 @@ impl GroveDb {
             &mut cost,
             primary_merk
                 .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
+                .map_err(|e| Error::CorruptedData(format!("cidx proof: primary root hash: {e}")))
         );
 
         // 3. Open secondary; produce a range proof in the requested
@@ -335,7 +342,9 @@ impl GroveDb {
             &mut cost,
             secondary_merk
                 .prove(secondary_query, limit, grove_version)
-                .map_err(Error::MerkError)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "cidx proof: secondary range proof: {e}"
+                )))
         );
 
         Ok(CountIndexedRangeProof {
@@ -372,8 +381,11 @@ impl GroveDb {
         );
         let element = cost_return_on_error!(
             &mut cost,
-            Element::get(&parent_merk, count_indexed_key, true, grove_version)
-                .map_err(Error::MerkError)
+            Element::get(&parent_merk, count_indexed_key, true, grove_version).map_err(|e| {
+                Error::CorruptedData(format!(
+                    "cidx proof: fetch cidx element from parent merk: {e}"
+                ))
+            })
         );
         match element.underlying() {
             Element::CountIndexedTree(_, secondary, ..)
