@@ -1468,4 +1468,572 @@ mod tests {
             other => panic!("expected MerkError, got {:?}", other),
         }
     }
+
+    // -------------------------------------------------------------------
+    // Verifier error-path coverage: each test below pins a specific
+    // arm of `verify_v0_layer` / `verify_v1_layer` / `verify_sum_leaf` /
+    // `verify_single_key_layer_proof_v0` / `enforce_lower_chain` in
+    // `grovedb/src/operations/proof/aggregate_sum.rs`. Mirrored from the
+    // count-side mutation tests in `aggregate_count_query_tests.rs`.
+    // -------------------------------------------------------------------
+
+    /// Decode the bincode envelope back into a `GroveDBProof` for surgical
+    /// mutation, mirroring the count-side helper.
+    fn decode_sum_envelope(proof: &[u8]) -> crate::operations::proof::GroveDBProof {
+        bincode::decode_from_slice(
+            proof,
+            bincode::config::standard()
+                .with_big_endian()
+                .with_limit::<{ 256 * 1024 * 1024 }>(),
+        )
+        .expect("decode envelope")
+        .0
+    }
+
+    /// Re-encode a (possibly mutated) `GroveDBProof` envelope using the
+    /// same bincode config the prover uses on the way out.
+    fn reencode_sum_envelope(decoded: crate::operations::proof::GroveDBProof) -> Vec<u8> {
+        bincode::encode_to_vec(
+            decoded,
+            bincode::config::standard()
+                .with_big_endian()
+                .with_no_limit(),
+        )
+        .expect("re-encode envelope")
+    }
+
+    /// Walk to the TEST_LEAF non-leaf merk proof bytes in a V1 envelope,
+    /// run `mutate` over its parsed ops, then re-encode. Mirrors
+    /// `mutate_test_leaf_layer_ops` from the count tests.
+    fn mutate_sum_test_leaf_layer_ops(
+        proof: &[u8],
+        mutate: impl FnOnce(&mut Vec<grovedb_merk::proofs::Op>),
+    ) -> Vec<u8> {
+        use grovedb_merk::proofs::{encoding::encode_into, Decoder, Op};
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let mut decoded = decode_sum_envelope(proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF lower layer");
+        let bytes = match &mut test_leaf_layer.merk_proof {
+            ProofBytes::Merk(b) => b,
+            _ => panic!("expected Merk bytes at TEST_LEAF non-leaf"),
+        };
+        let mut ops: Vec<Op> = Decoder::new(bytes)
+            .map(|r| r.expect("decode existing op"))
+            .collect();
+        mutate(&mut ops);
+        let mut new_bytes = Vec::new();
+        encode_into(ops.iter(), &mut new_bytes);
+        *bytes = new_bytes;
+        reencode_sum_envelope(decoded)
+    }
+
+    #[test]
+    fn sum_non_leaf_proof_without_target_key_is_rejected() {
+        // Replace the KV op carrying the "st" key with a `Hash` op. The
+        // single-key verifier still parses the proof but `result_set` is
+        // empty for the requested key — the "did not contain the expected
+        // key" arm in verify_single_key_layer_proof_v0 fires (or, if the
+        // upstream merk verifier rejects first because the hash op makes
+        // the proof unparsable, that's still the same outcome).
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+        let mutated = mutate_sum_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let key_match = matches!(
+                    op,
+                    Op::Push(
+                        Node::KV(k, _)
+                        | Node::KVValueHash(k, _, _)
+                        | Node::KVValueHashFeatureType(k, _, _, _)
+                        | Node::KVValueHashFeatureTypeWithChildHash(k, _, _, _, _)
+                    )
+                    | Op::PushInverted(
+                        Node::KV(k, _)
+                        | Node::KVValueHash(k, _, _)
+                        | Node::KVValueHashFeatureType(k, _, _, _)
+                        | Node::KVValueHashFeatureTypeWithChildHash(k, _, _, _, _)
+                    ) if k == b"st"
+                );
+                if key_match {
+                    *op = Op::Push(Node::Hash([0u8; 32]));
+                    return;
+                }
+            }
+            panic!("test setup: no `st` KV op found in non-leaf proof");
+        });
+        let err = GroveDb::verify_aggregate_sum_query(&mutated, &pq, v)
+            .expect_err("missing target key must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => assert!(
+                msg.contains("did not contain the expected key")
+                    || msg.contains("non-leaf single-key proof"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sum_non_leaf_proof_with_kv_replaced_by_kvdigest_is_rejected() {
+        // Replace `st` KV with KVDigest (no value bytes) — hits the "no
+        // value bytes" arm in verify_single_key_layer_proof_v0 (lines
+        // 304-310 in aggregate_sum.rs).
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+        let mutated = mutate_sum_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let replaced = match op {
+                    Op::Push(Node::KVValueHash(k, _, vh))
+                    | Op::PushInverted(Node::KVValueHash(k, _, vh))
+                        if k == b"st" =>
+                    {
+                        Some((k.clone(), *vh))
+                    }
+                    Op::Push(Node::KVValueHashFeatureType(k, _, vh, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureType(k, _, vh, _))
+                        if k == b"st" =>
+                    {
+                        Some((k.clone(), *vh))
+                    }
+                    Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, _, vh, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(k, _, vh, _, _))
+                        if k == b"st" =>
+                    {
+                        Some((k.clone(), *vh))
+                    }
+                    _ => None,
+                };
+                if let Some((k, vh)) = replaced {
+                    *op = Op::Push(Node::KVDigest(k, vh));
+                    return;
+                }
+            }
+            panic!("test setup: no `st` KVValueHash op");
+        });
+        let result = GroveDb::verify_aggregate_sum_query(&mutated, &pq, v);
+        match result {
+            Err(crate::Error::InvalidProof(_, _)) => {}
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sum_non_leaf_proof_with_undeserializable_value_is_rejected() {
+        // Mutate value bytes to garbage so Element::deserialize fails —
+        // covers the deserialize-failure arm in enforce_lower_chain
+        // (lines 341-348).
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+        let garbage: Vec<u8> = vec![0xff, 0xff, 0xff];
+        let mutated = mutate_sum_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let replaced = match op {
+                    Op::Push(Node::KVValueHash(k, val, _))
+                    | Op::PushInverted(Node::KVValueHash(k, val, _))
+                        if k == b"st" =>
+                    {
+                        *val = garbage.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureType(k, val, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureType(k, val, _, _))
+                        if k == b"st" =>
+                    {
+                        *val = garbage.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                        k,
+                        val,
+                        _,
+                        _,
+                        _,
+                    )) if k == b"st" => {
+                        *val = garbage.clone();
+                        true
+                    }
+                    _ => false,
+                };
+                if replaced {
+                    return;
+                }
+            }
+            panic!("test setup: no `st` value-bearing KV op");
+        });
+        let result = GroveDb::verify_aggregate_sum_query(&mutated, &pq, v);
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, _))),
+            "expected InvalidProof, got {:?}",
+            result.map(|(_, s)| s)
+        );
+    }
+
+    #[test]
+    fn sum_non_leaf_proof_with_non_tree_element_is_rejected() {
+        // Replace `st` value with a serialized Item: deserializes fine,
+        // but enforce_lower_chain's `is_any_tree()` guard rejects it
+        // (lines 365-373 in aggregate_sum.rs).
+        use grovedb_merk::proofs::{Node, Op};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_three_layer_provable_sum_tree(v);
+        // We need a 3-layer setup so there's an intermediate (non-terminal)
+        // descent at depth 1 (path[1] = "outer"). At terminal layer the
+        // ProvableSumTree gate would fire first; we want the
+        // intermediate-tree gate.
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"inner".to_vec()],
+            QueryItem::RangeInclusive(b"b".to_vec()..=b"d".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+        let item_bytes = Element::new_item(vec![0xab, 0xcd])
+            .serialize(v)
+            .expect("serialize");
+        let mutated = mutate_sum_test_leaf_layer_ops(&proof, |ops| {
+            for op in ops.iter_mut() {
+                let replaced = match op {
+                    Op::Push(Node::KVValueHash(k, val, _))
+                    | Op::PushInverted(Node::KVValueHash(k, val, _))
+                        if k == b"outer" =>
+                    {
+                        *val = item_bytes.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureType(k, val, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureType(k, val, _, _))
+                        if k == b"outer" =>
+                    {
+                        *val = item_bytes.clone();
+                        true
+                    }
+                    Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                    | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(
+                        k,
+                        val,
+                        _,
+                        _,
+                        _,
+                    )) if k == b"outer" => {
+                        *val = item_bytes.clone();
+                        true
+                    }
+                    _ => false,
+                };
+                if replaced {
+                    return;
+                }
+            }
+            panic!("test setup: no `outer` value-bearing KV op");
+        });
+        let result = GroveDb::verify_aggregate_sum_query(&mutated, &pq, v);
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, _))),
+            "non-tree element on path must be rejected, got {:?}",
+            result.map(|(_, s)| s)
+        );
+    }
+
+    #[test]
+    fn sum_v1_envelope_with_non_merk_proof_bytes_is_rejected() {
+        // Swap leaf layer bytes for MMR variant → triggers V1 walker's
+        // "unexpected non-merk leaf bytes" arm (lines 189-196).
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope on latest GroveVersion");
+        };
+        let leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF")
+            .lower_layers
+            .get_mut(&b"st".to_vec())
+            .expect("st");
+        leaf_layer.merk_proof = ProofBytes::MMR(vec![0u8; 8]);
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("non-Merk leaf bytes must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("non-merk"),
+                    "expected non-merk rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sum_v1_envelope_with_missing_lower_layer_is_rejected() {
+        // Drop the leaf layer → triggers the V1 walker's
+        // "missing lower layer for path key" arm (lines 209-216).
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF");
+        let removed = test_leaf_layer.lower_layers.remove(&b"st".to_vec());
+        assert!(removed.is_some(), "test setup: st layer should exist");
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("missing lower_layer must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("missing lower layer"),
+                    "expected missing-lower-layer rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sum_v1_envelope_with_malformed_leaf_sum_proof_is_rejected() {
+        // Replace leaf merk bytes with a Push(Hash(...)) ops stream that
+        // the sum verifier's Phase 1 rejects (plain Hash isn't on the
+        // sum allowlist). Triggers `verify_sum_leaf`'s `.map_err(...)`
+        // arm (lines 250-254).
+        use std::collections::LinkedList;
+
+        use grovedb_merk::proofs::{encoding::encode_into, Node, Op};
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF")
+            .lower_layers
+            .get_mut(&b"st".to_vec())
+            .expect("st");
+
+        let mut ops: LinkedList<Op> = LinkedList::new();
+        ops.push_back(Op::Push(Node::Hash([0u8; 32])));
+        let mut bad_bytes = Vec::new();
+        encode_into(ops.iter(), &mut bad_bytes);
+        leaf_layer.merk_proof = ProofBytes::Merk(bad_bytes);
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("malformed leaf sum proof must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("aggregate-sum leaf proof failed to verify"),
+                    "expected leaf-verify failure message, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sum_v1_envelope_with_corrupted_non_leaf_merk_bytes_is_rejected() {
+        // Truncate the non-leaf merk proof bytes — the single-key proof
+        // verifier fails before we ever descend (lines 279-286).
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF");
+        match &mut test_leaf_layer.merk_proof {
+            ProofBytes::Merk(b) => {
+                *b = vec![0xff];
+            }
+            other => panic!(
+                "expected Merk bytes at non-leaf, got discriminant {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("corrupted non-leaf merk bytes must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, _) => {}
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sum_v0_envelope_with_missing_lower_layer_is_rejected() {
+        // V0 (GROVE_V2) counterpart of the V1 missing-lower-layer test —
+        // drops the leaf MerkOnlyLayerProof from `lower_layers` to hit
+        // the V0 walker's missing-layer arm (lines 137-144).
+        use grovedb_version::version::v2::GROVE_V2;
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV0};
+
+        let v: &GroveVersion = &GROVE_V2;
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query (v0)");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) = &mut decoded else {
+            panic!("expected V0 envelope under GROVE_V2");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(TEST_LEAF)
+            .expect("TEST_LEAF");
+        let removed = test_leaf_layer.lower_layers.remove(&b"st".to_vec());
+        assert!(removed.is_some(), "test setup: st layer should exist");
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("v0 missing lower layer must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("missing lower layer"),
+                    "expected missing-lower-layer rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sum_unparsable_envelope_is_rejected() {
+        // Random garbage bytes can't decode as a GroveDBProof — covers
+        // the bincode-decode error arm in verify_aggregate_sum_query
+        // (around line 86-88).
+        let v = GroveVersion::latest();
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let err = GroveDb::verify_aggregate_sum_query(&[0xffu8; 64], &pq, v)
+            .expect_err("unparsable bytes must be rejected");
+        match err {
+            crate::Error::CorruptedData(msg) => {
+                assert!(
+                    msg.contains("unable to decode proof"),
+                    "expected decode-error message, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
 }

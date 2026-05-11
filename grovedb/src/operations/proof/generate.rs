@@ -2517,4 +2517,57 @@ mod tests {
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // AggregateSumOnRange rejection on non-provable-sum tree types.
+    //
+    // Same rationale as the count side: `AggregateSumOnRange` is only valid
+    // against `ProvableSumTree` (binds sum into the node hash via
+    // `node_hash_with_sum`). Dense / MMR / BulkAppend trees must reject.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dense_tree_rejects_aggregate_sum_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u16(0)..=be_u16(5));
+        let items = vec![QueryItem::AggregateSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_positions(&items, 100)
+            .expect_err("dense tree must reject AggregateSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("dense fixed-size") || msg.contains("provable sum"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mmr_tree_rejects_aggregate_sum_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_leaf_indices(&items, 7)
+            .expect_err("MMR must reject AggregateSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("MMR") || msg.contains("provable sum"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bulk_append_tree_rejects_aggregate_sum_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_range(&items, 100)
+            .expect_err("BulkAppendTree must reject AggregateSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("BulkAppendTree") || msg.contains("provable sum"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
 }
