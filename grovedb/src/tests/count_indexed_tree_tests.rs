@@ -5157,6 +5157,125 @@ mod tests {
         }
     }
 
+    // =====================================================================
+    // Cost regression tests for cidx ops. Pins down cost shape so
+    // accidental regressions (extra disk reads, redundant hashes) fail
+    // CI.
+    // =====================================================================
+
+    fn make_grovedb_with_cidx() -> (crate::tests::TempGroveDb, &'static GroveVersion) {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        (db, grove_version)
+    }
+
+    #[test]
+    fn cost_insert_into_count_indexed_tree_first_item() {
+        let (db, grove_version) = make_grovedb_with_cidx();
+        let cost = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"k",
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .cost;
+        eprintln!("cidx insert cost: {:?}", cost);
+        assert!(cost.seek_count > 0 && cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn cost_delete_from_count_indexed_tree() {
+        let (db, grove_version) = make_grovedb_with_cidx();
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let cost = db
+            .delete_from_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"k",
+                None,
+                grove_version,
+            )
+            .cost;
+        eprintln!("cidx delete cost: {:?}", cost);
+        assert!(cost.seek_count > 0 && cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn cost_count_indexed_top_k_read_does_not_write() {
+        let (db, grove_version) = make_grovedb_with_cidx();
+        for i in 0..5 {
+            let key = format!("k{:02}", i).into_bytes();
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                &key,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let cost = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .cost;
+        eprintln!("cidx top_k cost: {:?}", cost);
+        assert!(cost.seek_count > 0 && cost.storage_loaded_bytes > 0);
+        assert_eq!(cost.storage_cost.added_bytes, 0, "top_k must not write");
+    }
+
+    #[test]
+    fn cost_count_indexed_count_range_read_does_not_write() {
+        let (db, grove_version) = make_grovedb_with_cidx();
+        for i in 0..5 {
+            let key = format!("k{:02}", i).into_bytes();
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                &key,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let cost = db
+            .count_indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                false,
+                10,
+                None,
+                grove_version,
+            )
+            .cost;
+        eprintln!("cidx count_range cost: {:?}", cost);
+        assert!(cost.seek_count > 0 && cost.storage_loaded_bytes > 0);
+        assert_eq!(
+            cost.storage_cost.added_bytes, 0,
+            "count_range must not write"
+        );
+    }
+
     #[test]
     fn fuzz_large_random_op_sequence_against_cidx() {
         // 2000 random ops against a single-level cidx with a larger
