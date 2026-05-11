@@ -39,6 +39,7 @@ mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;
 mod provable_count_tree_test;
+mod provable_sum_tree_tests;
 mod query_result_type_tests;
 mod reference_path_tests;
 mod replication_session_tests;

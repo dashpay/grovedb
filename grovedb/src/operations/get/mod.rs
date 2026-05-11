@@ -403,6 +403,7 @@ impl GroveDb {
                 | Ok(Element::CountSumTree(..))
                 | Ok(Element::ProvableCountTree(..))
                 | Ok(Element::ProvableCountSumTree(..))
+                | Ok(Element::ProvableSumTree(..))
                 | Ok(Element::CommitmentTree(..))
                 | Ok(Element::MmrTree(..))
                 | Ok(Element::BulkAppendTree(..))

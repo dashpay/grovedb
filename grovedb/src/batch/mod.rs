@@ -2519,6 +2519,7 @@ where
                                     | Element::CountSumTree(..)
                                     | Element::ProvableCountTree(..)
                                     | Element::ProvableCountSumTree(..)
+                                    | Element::ProvableSumTree(..)
                                     | Element::CommitmentTree(..)
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
@@ -2824,6 +2825,20 @@ impl GroveDb {
                                                                 not_summed,
                                                             }
                                                     } else if let Element::ProvableCountSumTree(
+                                                        ..,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                non_counted,
+                                                                not_summed,
+                                                            }
+                                                    } else if let Element::ProvableSumTree(
                                                         ..,
                                                         flags,
                                                     ) = element
