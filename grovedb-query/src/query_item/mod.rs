@@ -1498,4 +1498,353 @@ mod test {
             ],
         );
     }
+
+    // ---------- AggregateSumOnRange: mirrors of the AggregateCountOnRange tests ----------
+    //
+    // These exist to drive coverage of the variant-11 dispatch in encode,
+    // decode_with_depth, borrow_decode_with_depth, Display, and the helper
+    // accessors. Each test targets a specific arm previously not exercised.
+
+    #[test]
+    fn decode_rejects_nested_aggregate_sum_on_range() {
+        // AggregateSumOnRange(AggregateSumOnRange(Range)): the inner nested
+        // aggregate must be rejected by the variant-11 dispatch's matches!
+        // guard (or by the depth guard).
+        let nested = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&nested, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("nested AggregateSumOnRange must be rejected at decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("nesting depth"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_aggregate_sum_wrapping_aggregate_count() {
+        // Orthogonality check: AggregateSumOnRange cannot wrap
+        // AggregateCountOnRange (and vice versa) — this is the explicit
+        // matches! guard in variant 11.
+        let mixed = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateCountOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result
+            .expect_err("AggregateSumOnRange wrapping AggregateCountOnRange must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("aggregate"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_aggregate_count_wrapping_aggregate_sum() {
+        // The other direction: AggregateCountOnRange cannot wrap
+        // AggregateSumOnRange — variant 10's matches! guard.
+        let mixed = QueryItem::AggregateCountOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result
+            .expect_err("AggregateCountOnRange wrapping AggregateSumOnRange must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateCountOnRange") || msg.contains("aggregate"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_accepts_valid_one_level_aggregate_sum_on_range() {
+        let q = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let bytes = bincode::encode_to_vec(&q, bincode_config()).unwrap();
+        let (decoded, _): (QueryItem, _) = bincode::decode_from_slice(&bytes, bincode_config())
+            .expect("single-level wrap must decode");
+        assert_eq!(q, decoded);
+    }
+
+    #[test]
+    fn decode_caps_depth_for_malicious_sum_payload() {
+        // Mirrors the count payload depth test but with the variant-11
+        // (AggregateSumOnRange) tag. Hits the depth guard inside
+        // decode_with_depth on the sum branch.
+        let depth_to_try = MAX_QUERY_ITEM_DECODE_DEPTH + 2;
+        let mut payload: Vec<u8> = Vec::new();
+        for _ in 0..depth_to_try {
+            payload.push(11u8); // AggregateSumOnRange variant tag
+        }
+        // Innermost: Range. Variant tag 1, then start/end Vec<u8> bytes.
+        payload.push(1u8);
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let inner_bytes = bincode::encode_to_vec(&inner, bincode_config()).unwrap();
+        payload.extend_from_slice(&inner_bytes[1..]);
+
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("payload exceeding max depth must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("nesting depth") || msg.contains("AggregateSumOnRange"),
+            "expected depth-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_unknown_variant_rejected() {
+        // Variant byte 12 is unknown (max = 11). Verifies the trailing
+        // UnexpectedVariant arm in decode_with_depth.
+        let payload = vec![12u8];
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("unknown variant must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("UnexpectedVariant") || msg.contains("QueryItem"),
+            "expected unknown-variant error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_round_trips_aggregate_sum_on_range() {
+        // BorrowDecode path: exercises borrow_decode_with_depth's variant-11
+        // branch.
+        let q = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let bytes = bincode::encode_to_vec(&q, bincode_config()).unwrap();
+        let (decoded, _): (QueryItem, _) =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config()).expect("borrow decode");
+        assert_eq!(q, decoded);
+    }
+
+    #[test]
+    fn borrow_decode_rejects_nested_aggregate_sum_on_range() {
+        let nested = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&nested, bincode_config()).expect("encode");
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("must reject nested aggregate sum via borrow decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("nesting depth"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_rejects_count_wrapping_sum() {
+        let mixed = QueryItem::AggregateCountOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode");
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("must reject count wrapping sum via borrow decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateCountOnRange") || msg.contains("aggregate"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_rejects_sum_wrapping_count() {
+        let mixed = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateCountOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode");
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("must reject sum wrapping count via borrow decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("aggregate"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_unknown_variant_rejected() {
+        let payload = vec![12u8];
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("unknown variant must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("UnexpectedVariant") || msg.contains("QueryItem"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn display_aggregate_sum_on_range_formats() {
+        // Drives the Display arm at line ~717.
+        let q = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"aa".to_vec()..b"zz".to_vec(),
+        )));
+        let s = format!("{}", q);
+        assert!(s.starts_with("AggregateSumOnRange("), "got: {s}");
+        assert!(s.contains("Range("), "got: {s}");
+    }
+
+    #[test]
+    fn display_aggregate_count_on_range_formats() {
+        // Drives the Display arm at line ~714 (also currently uncovered).
+        let q = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"aa".to_vec()..b"zz".to_vec(),
+        )));
+        let s = format!("{}", q);
+        assert!(s.starts_with("AggregateCountOnRange("), "got: {s}");
+    }
+
+    #[test]
+    fn aggregate_sum_helpers_and_bounds() {
+        // Hits processing_footprint, lower_bound, lower_unbounded,
+        // upper_bound, upper_unbounded, enum_value, is_range, is_single,
+        // is_unbounded_range, is_aggregate_*, aggregate_*_inner for the
+        // sum variant.
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let q = QueryItem::AggregateSumOnRange(Box::new(inner.clone()));
+
+        assert_eq!(q.processing_footprint(), inner.processing_footprint());
+        assert_eq!(q.lower_bound(), inner.lower_bound());
+        assert_eq!(q.upper_bound(), inner.upper_bound());
+        assert_eq!(q.lower_unbounded(), inner.lower_unbounded());
+        assert_eq!(q.upper_unbounded(), inner.upper_unbounded());
+        assert_eq!(q.enum_value(), 11);
+        assert!(q.is_range());
+        assert!(!q.is_single());
+        assert!(!q.is_key());
+        assert!(!q.is_aggregate_count_on_range());
+        assert!(q.is_aggregate_sum_on_range());
+        assert!(q.aggregate_count_inner().is_none());
+        assert_eq!(q.aggregate_sum_inner(), Some(&inner));
+        // unbounded delegation: inner is bounded -> false
+        assert!(!q.is_unbounded_range());
+
+        // Now wrap an unbounded inner and verify delegation flips.
+        let q_unbound =
+            QueryItem::AggregateSumOnRange(Box::new(QueryItem::RangeFrom(b"a".to_vec()..)));
+        assert!(q_unbound.is_unbounded_range());
+    }
+
+    #[test]
+    fn aggregate_count_helpers_and_bounds() {
+        // Mirror the helpers for the count variant — covers count arms
+        // for the same accessors (some of which were missed by the
+        // existing tests).
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let q = QueryItem::AggregateCountOnRange(Box::new(inner.clone()));
+
+        assert_eq!(q.processing_footprint(), inner.processing_footprint());
+        assert_eq!(q.lower_bound(), inner.lower_bound());
+        assert_eq!(q.upper_bound(), inner.upper_bound());
+        assert_eq!(q.lower_unbounded(), inner.lower_unbounded());
+        assert_eq!(q.upper_unbounded(), inner.upper_unbounded());
+        assert_eq!(q.enum_value(), 10);
+        assert!(q.is_range());
+        assert!(q.is_aggregate_count_on_range());
+        assert!(!q.is_aggregate_sum_on_range());
+        assert_eq!(q.aggregate_count_inner(), Some(&inner));
+        assert!(q.aggregate_sum_inner().is_none());
+        assert!(!q.is_unbounded_range());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_rejects_nested_aggregate_sum_on_range() {
+        // Mirrors the serde nested-rejection test for the sum variant
+        // (covers the serde dispatcher's variant-11 path).
+        use serde_test::{assert_de_tokens_error, Token};
+        assert_de_tokens_error::<QueryItem>(
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+            ],
+            "unknown field `aggregate_sum_on_range`, expected one of \
+             `key`, `range`, `range_inclusive`, `range_full`, `range_from`, \
+             `range_to`, `range_to_inclusive`, `range_after`, `range_after_to`, \
+             `range_after_to_inclusive`",
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_accepts_valid_one_level_aggregate_sum_on_range() {
+        // Covers the serde Field::AggregateSumOnRange dispatch arm and
+        // the NonAggregateInner inner deserialization.
+        use serde_test::{assert_de_tokens, Token};
+        let expected = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_de_tokens(
+            &expected,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_rejects_aggregate_sum_wrapping_count() {
+        // The NonAggregateInner field set excludes both variants — verify
+        // that explicitly for the sum-wrapping-count combination.
+        use serde_test::{assert_de_tokens_error, Token};
+        assert_de_tokens_error::<QueryItem>(
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+            ],
+            "unknown field `aggregate_count_on_range`, expected one of \
+             `key`, `range`, `range_inclusive`, `range_full`, `range_from`, \
+             `range_to`, `range_to_inclusive`, `range_after`, `range_after_to`, \
+             `range_after_to_inclusive`",
+        );
+    }
 }
