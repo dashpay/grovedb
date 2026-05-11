@@ -884,3 +884,140 @@ mod not_summed_tests {
         assert!(bad.serialize(grove_version).is_err());
     }
 }
+
+#[cfg(test)]
+mod flag_accessor_tests {
+    // Targets the per-variant match arms in `get_flags`, `get_flags_owned`,
+    // `get_flags_mut`, and `set_flags`. Each aggregate-bearing variant
+    // (CountSumTree, ProvableCountTree, ProvableCountSumTree, ProvableSumTree)
+    // gets a direct round-trip exercise so the per-variant pattern lines
+    // register as covered.
+    use crate::element::Element;
+
+    fn flags() -> Option<Vec<u8>> {
+        Some(vec![0xCA, 0xFE])
+    }
+
+    fn flags_b() -> Option<Vec<u8>> {
+        Some(vec![0xBE, 0xEF])
+    }
+
+    fn check_accessors_round_trip(initial: Element) {
+        // get_flags_owned (covers the matched arm on the consuming path).
+        let got_owned = initial.clone().get_flags_owned();
+        assert_eq!(got_owned, flags());
+
+        // get_flags_mut (covers the &mut arm).
+        let mut mutable = initial.clone();
+        let slot = mutable.get_flags_mut();
+        assert_eq!(slot, &flags());
+        *slot = flags_b();
+        assert_eq!(mutable.get_flags(), &flags_b());
+
+        // set_flags (covers the &mut arm of set_flags).
+        let mut e = initial;
+        e.set_flags(flags_b());
+        assert_eq!(e.get_flags(), &flags_b());
+    }
+
+    #[test]
+    fn count_sum_tree_flag_accessors() {
+        let e = Element::CountSumTree(None, 0, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn provable_count_tree_flag_accessors() {
+        let e = Element::ProvableCountTree(None, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn provable_count_sum_tree_flag_accessors() {
+        let e = Element::ProvableCountSumTree(None, 0, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn provable_sum_tree_flag_accessors() {
+        let e = Element::ProvableSumTree(None, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn item_with_sum_item_flag_accessors() {
+        let e = Element::ItemWithSumItem(b"x".to_vec(), 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn commitment_tree_flag_accessors() {
+        let e = Element::CommitmentTree(0, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn mmr_tree_flag_accessors() {
+        let e = Element::MmrTree(0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn bulk_append_tree_flag_accessors() {
+        let e = Element::BulkAppendTree(0, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn dense_append_only_tree_flag_accessors() {
+        let e = Element::DenseAppendOnlyFixedSizeTree(0, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn big_sum_tree_flag_accessors() {
+        let e = Element::BigSumTree(None, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn count_tree_flag_accessors() {
+        let e = Element::CountTree(None, 0, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn flag_accessors_delegate_through_not_summed() {
+        // Drives the `Element::NotSummed(inner) => inner.set_flags(...)` arm
+        // (and matching arms in the other two accessors).
+        let inner = Element::new_sum_tree_with_flags(None, flags());
+        let mut wrapper = Element::new_not_summed(inner).expect("wrap ok");
+
+        assert_eq!(wrapper.clone().get_flags_owned(), flags());
+        let slot = wrapper.get_flags_mut();
+        assert_eq!(slot, &flags());
+        *slot = flags_b();
+        assert_eq!(wrapper.get_flags(), &flags_b());
+
+        wrapper.set_flags(None);
+        assert_eq!(wrapper.get_flags(), &None);
+    }
+
+    #[test]
+    fn flag_accessors_delegate_through_non_counted() {
+        // Drives the `Element::NonCounted(inner) => ...` arm in the same
+        // three accessors. (Was uncovered when no test invoked set_flags via
+        // a NonCounted wrapper.)
+        let inner = Element::new_item_with_flags(b"x".to_vec(), flags());
+        let mut wrapper = Element::new_non_counted(inner).expect("wrap ok");
+
+        assert_eq!(wrapper.clone().get_flags_owned(), flags());
+        let slot = wrapper.get_flags_mut();
+        assert_eq!(slot, &flags());
+        *slot = flags_b();
+        assert_eq!(wrapper.get_flags(), &flags_b());
+
+        wrapper.set_flags(None);
+        assert_eq!(wrapper.get_flags(), &None);
+    }
+}
