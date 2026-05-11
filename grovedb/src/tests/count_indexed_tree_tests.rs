@@ -9268,4 +9268,303 @@ mod tests {
             .expect("top_k after direct re-insert");
         assert_eq!(top.len(), 1);
     }
+
+    // =====================================================================
+    // Coverage tests for cidx-proof verify entry-point error paths
+    // (proof/count_indexed.rs:472-494, 534-537, 601-613).
+    // =====================================================================
+
+    #[test]
+    fn verify_count_indexed_query_rejects_wrong_expected_descending() {
+        // Coverage for proof/count_indexed.rs:472-478 — the
+        // verify_count_indexed_query direction mismatch check (the
+        // _query variant; the _top_k variant is already covered by
+        // verify_count_indexed_top_k_rejects_wrong_expected_descending).
+        use grovedb_merk::proofs::Query as MerkQuery;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Prove with left_to_right=true (ascending).
+        let mut q_asc = MerkQuery::new();
+        q_asc.insert_all();
+        q_asc.left_to_right = true;
+        let proof = db
+            .prove_count_indexed_query(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                q_asc.clone(),
+                Some(5),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+
+        // Verify with left_to_right=false (descending) — direction
+        // mismatch.
+        let mut q_desc = MerkQuery::new();
+        q_desc.insert_all();
+        q_desc.left_to_right = false;
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_query(&proof, q_desc, Some(5), path);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("direction mismatch"),
+                    "expected direction-mismatch error, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData direction mismatch, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_proof_with_layer_count_mismatch() {
+        // Coverage for proof/count_indexed.rs:488-494. Generate a
+        // proof for [TEST_LEAF, "cidx"] (2 layers), then verify with
+        // a 1-segment path. layer_proofs.len() != path.len() → reject.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Populate so the cidx isn't empty (empty cidx prove errors).
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        // Verify with WRONG path length (1 segment, but envelope has 2
+        // layer proofs).
+        let short_path: &[&[u8]] = &[TEST_LEAF];
+        let result = GroveDb::verify_count_indexed_top_k(&proof, short_path, 10, true);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("layers") && msg.contains("segments"),
+                    "expected layer/path-length-mismatch error, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData(layer count mismatch), got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_rejects_proof_with_corrupted_secondary_proof() {
+        // Coverage for proof/count_indexed.rs:534-537. Tamper the
+        // envelope's secondary_proof bytes; secondary range proof
+        // verification must fail with CorruptedData. We replace the
+        // secondary_proof bytes with random garbage so merk's
+        // execute_proof returns an error.
+        use crate::operations::proof::count_indexed::CountIndexedRangeProof;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let proof = db
+            .prove_count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (mut envelope, _): (CountIndexedRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode");
+        // Replace secondary_proof with garbage so execute_proof errors.
+        envelope.secondary_proof = vec![0xFF; 32];
+        let tampered =
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).expect("re-encode");
+
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let result = GroveDb::verify_count_indexed_top_k(&tampered, path, 10, true);
+        match result {
+            Err(crate::Error::CorruptedData(msg)) => {
+                assert!(
+                    msg.contains("secondary range proof failed to verify")
+                        || msg.contains("decoding")
+                        || msg.contains("execute"),
+                    "expected secondary-proof failure, got: {msg}"
+                );
+            }
+            other => panic!("expected CorruptedData(secondary proof verification), got: {other:?}"),
+        }
+    }
+
+    // =====================================================================
+    // Coverage tests for the lib.rs cidx-propagate cascading aggregation
+    // path (lib.rs:840-998). Triggered when a nested write under a cidx
+    // ancestor bubbles up the parent count delta into the ancestor's
+    // secondary mirror. The deep_insert_under_nested_cidx test exercises
+    // this in a 2-level layout; the next test does the same for a deeper
+    // 3-level chain to cover additional cascading paths in the same
+    // propagate loop.
+    // =====================================================================
+
+    #[test]
+    fn deep_insert_under_triple_nested_cidx_propagates_all_levels() {
+        // Layout:
+        //   TEST_LEAF / outer (cidx)
+        //                  / middle (cidx)
+        //                          / inner (cidx)
+        //                                  / leaf_ct (count_tree)
+        // Insert an item inside leaf_ct; the count must bubble up
+        // through inner → middle → outer, updating each level's
+        // secondary mirror. Exercises the cascading-aggregation path
+        // in lib.rs propagate_changes_with_transaction_with_initial_deferred.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"middle",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("middle cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"middle"].as_ref(),
+            b"inner",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"middle", b"inner"].as_ref(),
+            b"leaf_ct",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("leaf count tree");
+
+        // Insert a real item inside leaf_ct — count bubbles up.
+        db.insert(
+            [TEST_LEAF, b"outer", b"middle", b"inner", b"leaf_ct"].as_ref(),
+            b"item",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert leaf item");
+
+        // verify_grovedb walks all three cidx layers' H1-A chains and
+        // their content consistency. A propagation bug would surface
+        // here.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(
+            issues.is_empty(),
+            "triple-nested cidx propagation must produce no integrity issues: {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+
+        // Top_k at each level returns the expected entry.
+        let top_inner = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer", b"middle", b"inner"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("inner top_k");
+        assert_eq!(top_inner.len(), 1);
+        assert_eq!(top_inner[0].1, b"leaf_ct".to_vec());
+
+        let top_middle = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer", b"middle"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("middle top_k");
+        assert_eq!(top_middle.len(), 1);
+        assert_eq!(top_middle[0].1, b"inner".to_vec());
+
+        let top_outer = db
+            .count_indexed_top_k(
+                [TEST_LEAF, b"outer"].as_ref(),
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("outer top_k");
+        assert_eq!(top_outer.len(), 1);
+        assert_eq!(top_outer[0].1, b"middle".to_vec());
+    }
 }
