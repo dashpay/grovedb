@@ -10968,4 +10968,147 @@ mod tests {
         );
         assert_eq!(top[0], (100, b"a".to_vec()));
     }
+
+    // =====================================================================
+    // Additional V1 proof coverage targeting subquery-into-cidx branches
+    // in verify.rs (L509-538).
+    // =====================================================================
+
+    #[test]
+    fn v1_proof_subquery_into_cidx_with_add_parent_tree_returns_cidx_and_children() {
+        // Coverage for proof/verify.rs:524-538 — the
+        // should_add_parent_tree_at_path branch inside the cidx
+        // subquery descent. When the query has
+        // `add_parent_tree_on_subquery: true`, the verifier emits the
+        // cidx element itself in addition to descending into its
+        // contents.
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::query::{QueryItem, SubqueryBranch};
+        use grovedb_merk::proofs::Query as MerkQuery;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+
+        let mut inner = MerkQuery::new();
+        inner.insert_all();
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: MerkQuery {
+                    items: vec![QueryItem::Key(b"cidx".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: true,
+                },
+                limit: None,
+                offset: None,
+            },
+        };
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let (_root, results) =
+            GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+
+        assert!(
+            results.len() >= 3,
+            "expected cidx element + children (>= 3), got {}: {:?}",
+            results.len(),
+            results
+        );
+    }
+
+    #[test]
+    fn v1_proof_subquery_into_cidx_with_limit_one_terminates_early() {
+        // Coverage for proof/verify.rs:518-523 — the cidx-terminal
+        // path that decrements limit and breaks at zero. With a tight
+        // limit, the iteration terminates inside the cidx subquery.
+        use crate::{PathQuery, SizedQuery};
+        use grovedb_merk::proofs::query::{QueryItem, SubqueryBranch};
+        use grovedb_merk::proofs::Query as MerkQuery;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        for k in [b"a".as_slice(), b"b", b"c", b"d"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+
+        let mut inner = MerkQuery::new();
+        inner.insert_all();
+        let path_query = PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: MerkQuery {
+                    items: vec![QueryItem::Key(b"cidx".to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: true,
+                },
+                limit: Some(1),
+                offset: None,
+            },
+        };
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove with limit=1");
+        let (_root, results) =
+            GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify with limit=1");
+        assert!(
+            !results.is_empty() && results.len() <= 2,
+            "expected 1-2 results with limit=1 + add_parent_tree, got {}: {:?}",
+            results.len(),
+            results
+        );
+    }
 }
