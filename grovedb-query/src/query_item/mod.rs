@@ -91,6 +91,26 @@ pub enum QueryItem {
     /// no pagination, no other range items). The inner `QueryItem` may not be
     /// `Key`, `RangeFull`, or another `AggregateCountOnRange`.
     AggregateCountOnRange(Box<QueryItem>),
+
+    /// A sum-only meta-query that wraps another `QueryItem` describing the
+    /// range to sum.
+    ///
+    /// When this variant appears in a `Query`, the query is interpreted as
+    /// "return the **total signed sum** of children with keys in the inner
+    /// range" instead of returning the elements themselves. The proof is
+    /// shaped accordingly: boundary nodes are emitted as `KVDigestSum`,
+    /// fully-inside subtree roots as `HashWithSum`, and fully-outside subtree
+    /// roots also as `HashWithSum` so the parent's `own_sum` derivation is
+    /// hash-bound (same self-verifying compression pattern as count).
+    ///
+    /// This variant is only valid against `ProvableSumTree` (and its
+    /// `NotSummed` wrapper variant), and it must be the **only** item in the
+    /// surrounding `Query` (no subqueries, no pagination, no other range
+    /// items). The inner `QueryItem` may not be `Key`, `RangeFull`, another
+    /// `AggregateCountOnRange`, or another `AggregateSumOnRange`. Sum values
+    /// are signed `i64`; the verifier uses an `i128` accumulator and narrows
+    /// to `i64` at the end to detect overflow on adversarial inputs.
+    AggregateSumOnRange(Box<QueryItem>),
 }
 
 #[cfg(feature = "serde")]
@@ -142,6 +162,9 @@ impl Serialize for QueryItem {
                 "AggregateCountOnRange",
                 inner,
             ),
+            QueryItem::AggregateSumOnRange(inner) => {
+                serializer.serialize_newtype_variant("QueryItem", 11, "AggregateSumOnRange", inner)
+            }
         }
     }
 }
@@ -166,6 +189,7 @@ impl<'de> Deserialize<'de> for QueryItem {
             RangeAfterTo,
             RangeAfterToInclusive,
             AggregateCountOnRange,
+            AggregateSumOnRange,
         }
 
         struct QueryItemVisitor;
@@ -235,6 +259,18 @@ impl<'de> Deserialize<'de> for QueryItem {
                         let NonAggregateInner(inner) = variant_access.newtype_variant()?;
                         Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
                     }
+                    Field::AggregateSumOnRange => {
+                        // Same defense-in-depth as AggregateCountOnRange: the
+                        // inner is deserialized through `NonAggregateInner`
+                        // whose field set excludes both aggregate-variant
+                        // tags, so any nested aggregate payload is rejected
+                        // immediately by serde without recursing through
+                        // `QueryItem::deserialize`. Keeps `AggregateSumOnRange`
+                        // and `AggregateCountOnRange` orthogonal — one cannot
+                        // wrap the other.
+                        let NonAggregateInner(inner) = variant_access.newtype_variant()?;
+                        Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
+                    }
                 }
             }
         }
@@ -251,6 +287,7 @@ impl<'de> Deserialize<'de> for QueryItem {
             "RangeAfterTo",
             "RangeAfterToInclusive",
             "AggregateCountOnRange",
+            "AggregateSumOnRange",
         ];
 
         deserializer.deserialize_enum("QueryItem", VARIANTS, QueryItemVisitor)
@@ -258,14 +295,18 @@ impl<'de> Deserialize<'de> for QueryItem {
 }
 
 /// Newtype wrapper used internally by the serde `Deserialize` impl when
-/// deserializing the *inner* item of an `AggregateCountOnRange`. The wrapper's
-/// `Deserialize` impl mirrors `QueryItem::deserialize` but rejects the
-/// `AggregateCountOnRange` field tag immediately — without recursing — so
-/// nested aggregate payloads cannot exhaust the stack via repeated variant-10
-/// recursion through `QueryItem::deserialize`.
+/// deserializing the *inner* item of an `AggregateCountOnRange` or
+/// `AggregateSumOnRange`. The wrapper's `Deserialize` impl mirrors
+/// `QueryItem::deserialize` but rejects both aggregate field tags immediately
+/// — without recursing — so nested aggregate payloads cannot exhaust the
+/// stack via repeated variant-10/11 recursion through
+/// `QueryItem::deserialize`. Reused for both aggregate wrappers so
+/// `AggregateCountOnRange` and `AggregateSumOnRange` stay orthogonal:
+/// neither can wrap the other (or itself).
 ///
-/// Defense-in-depth: nested `AggregateCountOnRange` is also rejected by
-/// `Query::validate_aggregate_count_on_range`, but enforcing it at decode time
+/// Defense-in-depth: nested aggregate variants are also rejected by
+/// `Query::validate_aggregate_count_on_range` /
+/// `Query::validate_aggregate_sum_on_range`, but enforcing it at decode time
 /// matches the bincode side and prevents the DoS class on its own.
 #[cfg(feature = "serde")]
 struct NonAggregateInner(QueryItem);
@@ -405,6 +446,10 @@ impl Encode for QueryItem {
                 encoder.writer().write(&[10])?;
                 inner.as_ref().encode(encoder)
             }
+            QueryItem::AggregateSumOnRange(inner) => {
+                encoder.writer().write(&[11])?;
+                inner.as_ref().encode(encoder)
+            }
         }
     }
 }
@@ -490,17 +535,38 @@ impl QueryItem {
                 // Defense-in-depth: nested AggregateCountOnRange is invalid
                 // by validation rules, so we also reject it at decode time.
                 // The depth guard above remains the primary stack-overflow
-                // mitigation for malicious deeper nesting.
-                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                // mitigation for malicious deeper nesting. Also reject
+                // `AggregateSumOnRange` to keep the two aggregate variants
+                // orthogonal.
+                if matches!(
+                    inner,
+                    QueryItem::AggregateCountOnRange(_) | QueryItem::AggregateSumOnRange(_)
+                ) {
                     return Err(DecodeError::Other(
-                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                        "AggregateCountOnRange must not wrap another aggregate variant",
                     ));
                 }
                 Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
             }
+            11 => {
+                let inner = QueryItem::decode_with_depth(decoder, depth + 1)?;
+                // Same defense-in-depth as variant 10. `AggregateSumOnRange`
+                // may not wrap another aggregate variant (whether sum or
+                // count) — keeps the two orthogonal and the depth guard
+                // primary mitigation against stack-exhaustion.
+                if matches!(
+                    inner,
+                    QueryItem::AggregateSumOnRange(_) | QueryItem::AggregateCountOnRange(_)
+                ) {
+                    return Err(DecodeError::Other(
+                        "AggregateSumOnRange must not wrap another aggregate variant",
+                    ));
+                }
+                Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 11 },
                 found: variant_id as u32,
             }),
         }
@@ -575,16 +641,31 @@ impl QueryItem {
             }
             10 => {
                 let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
-                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                if matches!(
+                    inner,
+                    QueryItem::AggregateCountOnRange(_) | QueryItem::AggregateSumOnRange(_)
+                ) {
                     return Err(DecodeError::Other(
-                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                        "AggregateCountOnRange must not wrap another aggregate variant",
                     ));
                 }
                 Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
             }
+            11 => {
+                let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
+                if matches!(
+                    inner,
+                    QueryItem::AggregateSumOnRange(_) | QueryItem::AggregateCountOnRange(_)
+                ) {
+                    return Err(DecodeError::Other(
+                        "AggregateSumOnRange must not wrap another aggregate variant",
+                    ));
+                }
+                Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 11 },
                 found: variant_id as u32,
             }),
         }
@@ -633,6 +714,9 @@ impl fmt::Display for QueryItem {
             QueryItem::AggregateCountOnRange(inner) => {
                 write!(f, "AggregateCountOnRange({})", inner)
             }
+            QueryItem::AggregateSumOnRange(inner) => {
+                write!(f, "AggregateSumOnRange({})", inner)
+            }
         }
     }
 }
@@ -644,6 +728,7 @@ impl QueryItem {
             QueryItem::Key(key) => key.len() as u32,
             QueryItem::RangeFull(_) => 0u32,
             QueryItem::AggregateCountOnRange(inner) => inner.processing_footprint(),
+            QueryItem::AggregateSumOnRange(inner) => inner.processing_footprint(),
             _ => {
                 self.lower_bound().0.map_or(0u32, |x| x.len() as u32)
                     + self.upper_bound().0.map_or(0u32, |x| x.len() as u32)
@@ -666,6 +751,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.start().as_ref()), true),
             QueryItem::AggregateCountOnRange(inner) => inner.lower_bound(),
+            QueryItem::AggregateSumOnRange(inner) => inner.lower_bound(),
         }
     }
 
@@ -683,6 +769,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
             QueryItem::AggregateCountOnRange(inner) => inner.lower_unbounded(),
+            QueryItem::AggregateSumOnRange(inner) => inner.lower_unbounded(),
         }
     }
 
@@ -701,6 +788,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(range) => (Some(range.end.as_ref()), false),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.end().as_ref()), true),
             QueryItem::AggregateCountOnRange(inner) => inner.upper_bound(),
+            QueryItem::AggregateSumOnRange(inner) => inner.upper_bound(),
         }
     }
 
@@ -718,6 +806,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
             QueryItem::AggregateCountOnRange(inner) => inner.upper_unbounded(),
+            QueryItem::AggregateSumOnRange(inner) => inner.upper_unbounded(),
         }
     }
 
@@ -747,6 +836,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(_) => 8,
             QueryItem::RangeAfterToInclusive(_) => 9,
             QueryItem::AggregateCountOnRange(_) => 10,
+            QueryItem::AggregateSumOnRange(_) => 11,
         }
     }
 
@@ -756,8 +846,8 @@ impl QueryItem {
     }
 
     /// Returns `true` if this query item is any kind of range (not a single
-    /// key). `AggregateCountOnRange` counts as a range — it describes a range
-    /// to count over.
+    /// key). `AggregateCountOnRange` and `AggregateSumOnRange` count as
+    /// ranges — they describe a range to aggregate over.
     pub const fn is_range(&self) -> bool {
         matches!(
             self,
@@ -771,6 +861,7 @@ impl QueryItem {
                 | QueryItem::RangeAfterTo(_)
                 | QueryItem::RangeAfterToInclusive(_)
                 | QueryItem::AggregateCountOnRange(_)
+                | QueryItem::AggregateSumOnRange(_)
         )
     }
 
@@ -781,10 +872,12 @@ impl QueryItem {
 
     /// Returns `true` if this query item is a range with at least one unbounded
     /// end (e.g., `RangeFull`, `RangeFrom`, `RangeTo`, etc.). For
-    /// `AggregateCountOnRange`, delegates to the inner item.
+    /// `AggregateCountOnRange` and `AggregateSumOnRange`, delegates to the
+    /// inner item.
     pub fn is_unbounded_range(&self) -> bool {
         match self {
             QueryItem::AggregateCountOnRange(inner) => inner.is_unbounded_range(),
+            QueryItem::AggregateSumOnRange(inner) => inner.is_unbounded_range(),
             _ => !matches!(
                 self,
                 QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
@@ -797,11 +890,25 @@ impl QueryItem {
         matches!(self, QueryItem::AggregateCountOnRange(_))
     }
 
+    /// Returns `true` if this query item is the sum-only meta-variant.
+    pub const fn is_aggregate_sum_on_range(&self) -> bool {
+        matches!(self, QueryItem::AggregateSumOnRange(_))
+    }
+
     /// If this is `AggregateCountOnRange`, returns a reference to the inner
     /// `QueryItem` describing the range to count. Otherwise returns `None`.
     pub fn aggregate_count_inner(&self) -> Option<&QueryItem> {
         match self {
             QueryItem::AggregateCountOnRange(inner) => Some(inner.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// If this is `AggregateSumOnRange`, returns a reference to the inner
+    /// `QueryItem` describing the range to sum. Otherwise returns `None`.
+    pub fn aggregate_sum_inner(&self) -> Option<&QueryItem> {
+        match self {
+            QueryItem::AggregateSumOnRange(inner) => Some(inner.as_ref()),
             _ => None,
         }
     }
@@ -1008,6 +1115,7 @@ impl QueryItem {
                 }
             }
             QueryItem::AggregateCountOnRange(inner) => inner.seek_for_iter(iter, left_to_right),
+            QueryItem::AggregateSumOnRange(inner) => inner.seek_for_iter(iter, left_to_right),
         }
     }
 
@@ -1101,6 +1209,9 @@ impl QueryItem {
                 }
             }
             QueryItem::AggregateCountOnRange(inner) => {
+                return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
+            }
+            QueryItem::AggregateSumOnRange(inner) => {
                 return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
             }
         };

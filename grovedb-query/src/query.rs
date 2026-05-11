@@ -321,6 +321,22 @@ impl Query {
         }
     }
 
+    /// Creates an aggregate-sum-on-range query that sums the children matched
+    /// by `range`. Mirrors [`Self::new_aggregate_count_on_range`] for
+    /// `ProvableSumTree` instead of `ProvableCountTree`.
+    ///
+    /// `range` must be a true range variant; passing `Key`, `RangeFull`,
+    /// another `AggregateSumOnRange`, or an `AggregateCountOnRange` is
+    /// allowed at construction time but will be rejected by
+    /// [`Self::validate_aggregate_sum_on_range`].
+    pub fn new_aggregate_sum_on_range(range: QueryItem) -> Self {
+        Self {
+            items: vec![QueryItem::AggregateSumOnRange(Box::new(range))],
+            left_to_right: true,
+            ..Self::default()
+        }
+    }
+
     /// If this query contains an `AggregateCountOnRange` item *anywhere* in
     /// its `items` vec, returns a reference to the first such item (whether
     /// the surrounding query is well-formed or not). Returns `None` only
@@ -337,6 +353,15 @@ impl Query {
         self.items
             .iter()
             .find(|item| item.is_aggregate_count_on_range())
+    }
+
+    /// Mirror of [`Self::aggregate_count_on_range`] for `AggregateSumOnRange`.
+    /// Returns `Some(...)` for any query containing such an item, regardless
+    /// of well-formedness.
+    pub fn aggregate_sum_on_range(&self) -> Option<&QueryItem> {
+        self.items
+            .iter()
+            .find(|item| item.is_aggregate_sum_on_range())
     }
 
     /// Returns `true` if any item in this query — including items inside
@@ -364,6 +389,31 @@ impl Query {
             for branch in branches.values() {
                 if let Some(sub) = branch.subquery.as_deref()
                     && sub.has_aggregate_count_on_range_anywhere()
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Mirror of [`Self::has_aggregate_count_on_range_anywhere`] for
+    /// `AggregateSumOnRange`. Used by the prover/verifier to validate at
+    /// entry — if any ASOR is present anywhere, the query must satisfy
+    /// [`Self::validate_aggregate_sum_on_range`].
+    pub fn has_aggregate_sum_on_range_anywhere(&self) -> bool {
+        if self.aggregate_sum_on_range().is_some() {
+            return true;
+        }
+        if let Some(sub) = self.default_subquery_branch.subquery.as_deref()
+            && sub.has_aggregate_sum_on_range_anywhere()
+        {
+            return true;
+        }
+        if let Some(branches) = &self.conditional_subquery_branches {
+            for branch in branches.values() {
+                if let Some(sub) = branch.subquery.as_deref()
+                    && sub.has_aggregate_sum_on_range_anywhere()
                 {
                     return true;
                 }
@@ -427,6 +477,12 @@ impl Query {
                     "AggregateCountOnRange may not wrap another AggregateCountOnRange",
                 ));
             }
+            QueryItem::AggregateSumOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap AggregateSumOnRange — the two are \
+                     orthogonal aggregate queries",
+                ));
+            }
             _ => {}
         }
         if self.default_subquery_branch.subquery.is_some()
@@ -441,6 +497,86 @@ impl Query {
         {
             return Err(Error::InvalidOperation(
                 "AggregateCountOnRange queries may not carry conditional subquery branches",
+            ));
+        }
+        Ok(inner)
+    }
+
+    /// Validates the Query-level constraints that apply when an
+    /// `AggregateSumOnRange` is present. Mirror of
+    /// [`Self::validate_aggregate_count_on_range`] for `ProvableSumTree`.
+    ///
+    /// Rules enforced:
+    ///
+    /// 1. The query must contain exactly one item.
+    /// 2. That item must be `AggregateSumOnRange(_)`.
+    /// 3. The inner item must not be `Key` (use `has_raw` / `get_raw` for
+    ///    existence tests).
+    /// 4. The inner item must not be `RangeFull` (read the parent
+    ///    `Element::ProvableSumTree` bytes directly for the unconditional
+    ///    total).
+    /// 5. The inner item must not itself be `AggregateSumOnRange`.
+    /// 6. The inner item must not be `AggregateCountOnRange` (the two
+    ///    aggregate variants are orthogonal).
+    /// 7. `default_subquery_branch.subquery` and
+    ///    `default_subquery_branch.subquery_path` must both be `None`.
+    /// 8. `conditional_subquery_branches` must be `None` or empty.
+    ///
+    /// `SizedQuery::limit` / `SizedQuery::offset` checks live at the
+    /// `PathQuery` / `SizedQuery` layer.
+    pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.items.len() != 1 {
+            return Err(Error::InvalidOperation(
+                "AggregateSumOnRange must be the only item in the query",
+            ));
+        }
+        let inner = match &self.items[0] {
+            QueryItem::AggregateSumOnRange(inner) => inner.as_ref(),
+            _ => {
+                return Err(Error::InvalidOperation(
+                    "validate_aggregate_sum_on_range called on a query without an \
+                     AggregateSumOnRange item",
+                ));
+            }
+        };
+        match inner {
+            QueryItem::Key(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateSumOnRange may not wrap Key — use has_raw / get_raw for \
+                     existence tests",
+                ));
+            }
+            QueryItem::RangeFull(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateSumOnRange may not wrap RangeFull — read the parent \
+                     ProvableSumTree element for the unconditional total",
+                ));
+            }
+            QueryItem::AggregateSumOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateSumOnRange may not wrap another AggregateSumOnRange",
+                ));
+            }
+            QueryItem::AggregateCountOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateSumOnRange may not wrap AggregateCountOnRange — the two are \
+                     orthogonal aggregate queries",
+                ));
+            }
+            _ => {}
+        }
+        if self.default_subquery_branch.subquery.is_some()
+            || self.default_subquery_branch.subquery_path.is_some()
+        {
+            return Err(Error::InvalidOperation(
+                "AggregateSumOnRange queries may not carry a default subquery branch",
+            ));
+        }
+        if let Some(branches) = &self.conditional_subquery_branches
+            && !branches.is_empty()
+        {
+            return Err(Error::InvalidOperation(
+                "AggregateSumOnRange queries may not carry conditional subquery branches",
             ));
         }
         Ok(inner)

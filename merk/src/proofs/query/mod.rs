@@ -8,12 +8,16 @@ mod merk_integration_tests;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_count;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod aggregate_sum;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod map;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use aggregate_count::verify_aggregate_count_on_range_proof;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use aggregate_sum::verify_aggregate_sum_on_range_proof;
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};

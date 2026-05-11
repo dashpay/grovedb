@@ -2,6 +2,8 @@
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_count;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod aggregate_sum;
 #[cfg(feature = "minimal")]
 mod generate;
 /// Utility functions for proof display and conversion.

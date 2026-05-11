@@ -124,6 +124,15 @@ impl GroveDb {
         {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
+        // Mirror of the count gate for sum. Same defense-in-depth: catch
+        // malformed `AggregateSumOnRange` shapes up front so the prover
+        // never silently returns a regular proof for a path that doesn't
+        // exist.
+        if path_query.query.query.has_aggregate_sum_on_range_anywhere()
+            && let Err(e) = path_query.validate_aggregate_sum_on_range()
+        {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
 
         match grove_version
             .grovedb_versions
@@ -309,6 +318,30 @@ impl GroveDb {
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(count_ops.iter(), &mut serialized);
+            return Ok(MerkOnlyLayerProof {
+                merk_proof: serialized,
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
+        // Aggregate-sum short-circuit (mirror of count). Same contract: any
+        // `AggregateSumOnRange` at this level requires the whole `PathQuery`
+        // to be well-formed; the validate call surfaces the precise error
+        // otherwise.
+        if query.items.iter().any(QueryItem::is_aggregate_sum_on_range) {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_sum_on_range().cloned()
+            );
+            let (sum_ops, _sum) = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_aggregate_sum_on_range(&inner_range, grove_version)
+                    .map_err(Error::MerkError)
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(sum_ops.iter(), &mut serialized);
             return Ok(MerkOnlyLayerProof {
                 merk_proof: serialized,
                 lower_layers: BTreeMap::new(),
@@ -1119,6 +1152,28 @@ impl GroveDb {
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(count_ops.iter(), &mut serialized);
+            return Ok(LayerProof {
+                merk_proof: ProofBytes::Merk(serialized),
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
+        // Aggregate-sum short-circuit (v1 path). Mirror of the count v1
+        // branch.
+        if query.items.iter().any(QueryItem::is_aggregate_sum_on_range) {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_sum_on_range().cloned()
+            );
+            let (sum_ops, _sum) = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_aggregate_sum_on_range(&inner_range, grove_version)
+                    .map_err(Error::MerkError)
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(sum_ops.iter(), &mut serialized);
             return Ok(LayerProof {
                 merk_proof: ProofBytes::Merk(serialized),
                 lower_layers: BTreeMap::new(),
@@ -2008,6 +2063,12 @@ impl GroveDb {
                          not on dense fixed-size merkle trees",
                     ));
                 }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on dense fixed-size merkle trees",
+                    ));
+                }
             }
         }
 
@@ -2132,6 +2193,12 @@ impl GroveDb {
                          not on MMR trees",
                     ));
                 }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on MMR trees",
+                    ));
+                }
             }
         }
 
@@ -2203,6 +2270,12 @@ impl GroveDb {
                 QueryItem::AggregateCountOnRange(_) => {
                     return Err(Error::InvalidInput(
                         "AggregateCountOnRange is only supported on provable count trees, \
+                         not on BulkAppendTree",
+                    ));
+                }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
                          not on BulkAppendTree",
                     ));
                 }

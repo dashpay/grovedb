@@ -184,6 +184,39 @@ where
             }
         })
     }
+
+    /// Generate a sum-only proof for an `AggregateSumOnRange` query.
+    /// Mirror of [`Self::prove_aggregate_count_on_range`] for the
+    /// `ProvableSumTree` flavor.
+    ///
+    /// The merk's `tree_type` must be `ProvableSumTree`; any other tree type
+    /// is rejected with `Error::InvalidProofError` before any walking
+    /// happens. Empty merk: returns `(empty proof, sum = 0)`.
+    pub fn prove_aggregate_sum_on_range(
+        &self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(LinkedList<ProofOp>, i64), Error> {
+        let tree_type = self.tree_type;
+        if !matches!(tree_type, crate::TreeType::ProvableSumTree) {
+            return Err(Error::InvalidProofError(format!(
+                "AggregateSumOnRange is only valid against ProvableSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok((LinkedList::new(), 0i64)).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.create_aggregate_sum_on_range_proof(
+                    inner_range,
+                    tree_type,
+                    grove_version,
+                )
+            }
+        })
+    }
 }
 
 type Proof = (LinkedList<ProofOp>, Option<u16>);

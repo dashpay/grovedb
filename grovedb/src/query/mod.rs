@@ -139,9 +139,30 @@ impl SizedQuery {
             .map_err(query_validation_error_to_static_str)
             .map_err(Error::InvalidQuery)
     }
+
+    /// Mirror of [`Self::validate_aggregate_count_on_range`] for
+    /// `AggregateSumOnRange`. Forwards to
+    /// [`Query::validate_aggregate_sum_on_range`] and additionally rejects
+    /// any non-`None` `limit` or `offset`.
+    pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.limit.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateSumOnRange queries may not set SizedQuery::limit",
+            ));
+        }
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateSumOnRange queries may not set SizedQuery::offset",
+            ));
+        }
+        self.query
+            .validate_aggregate_sum_on_range()
+            .map_err(query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
 }
 
-/// Converts a `Query::validate_aggregate_count_on_range` error into a
+/// Converts an aggregate-validation error (count or sum) into a
 /// `&'static str`. Validation only ever returns
 /// `grovedb_query::error::Error::InvalidOperation(&'static str)`, so this is
 /// just a projection of that variant; any other error variant (which would
@@ -149,7 +170,7 @@ impl SizedQuery {
 fn query_validation_error_to_static_str(e: grovedb_query::error::Error) -> &'static str {
     match e {
         grovedb_query::error::Error::InvalidOperation(msg) => msg,
-        _ => "AggregateCountOnRange query validation failed",
+        _ => "aggregate query validation failed",
     }
 }
 
@@ -189,6 +210,14 @@ impl PathQuery {
         Self::new_unsized(path, Query::new_aggregate_count_on_range(range))
     }
 
+    /// Mirror of [`Self::new_aggregate_count_on_range`] for
+    /// `AggregateSumOnRange`. Builds a `PathQuery` whose underlying query
+    /// asks for the cryptographically-verifiable sum of children with keys
+    /// in `range` against the `ProvableSumTree` rooted at `path`.
+    pub fn new_aggregate_sum_on_range(path: Vec<Vec<u8>>, range: QueryItem) -> Self {
+        Self::new_unsized(path, Query::new_aggregate_sum_on_range(range))
+    }
+
     /// Validates that this `PathQuery` is a well-formed
     /// `AggregateCountOnRange` query. On success, returns a reference to the
     /// inner range item.
@@ -198,12 +227,25 @@ impl PathQuery {
         self.query.validate_aggregate_count_on_range()
     }
 
+    /// Validates that this `PathQuery` is a well-formed
+    /// `AggregateSumOnRange` query. On success, returns a reference to the
+    /// inner range item. Forwards to
+    /// [`SizedQuery::validate_aggregate_sum_on_range`].
+    pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        self.query.validate_aggregate_sum_on_range()
+    }
+
     /// Returns `true` if this `PathQuery`'s underlying query carries an
     /// `AggregateCountOnRange` item (whether well-formed or not). Use
     /// [`Self::validate_aggregate_count_on_range`] when you also need
     /// well-formedness.
     pub fn has_aggregate_count_on_range(&self) -> bool {
         self.query.query.aggregate_count_on_range().is_some()
+    }
+
+    /// Mirror of [`Self::has_aggregate_count_on_range`] for the sum variant.
+    pub fn has_aggregate_sum_on_range(&self) -> bool {
+        self.query.query.aggregate_sum_on_range().is_some()
     }
 
     /// The max depth of the query, this is the maximum layers we could get back
