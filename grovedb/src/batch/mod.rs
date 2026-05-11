@@ -3072,6 +3072,32 @@ where
             // merk lookup to find the current secondary_root_key).
             let mut secondary_merk =
                 cost_return_on_error!(&mut cost, (self.get_secondary_merk_fn)(path));
+            // Sort deltas DETERMINISTICALLY: pure deletes first
+            // (`(Some, None)`), then everything else, with secondary
+            // sort by key. Without this, HashMap iteration order
+            // produces non-deterministic ordering of secondary mirror
+            // operations. Empirical reproduction showed: when an
+            // INSERT delta runs BEFORE a DELETE delta on the same
+            // secondary merk, the delete sometimes fails to actually
+            // remove the entry — leaving stale secondary state. The
+            // underlying merk-level bug (delete-after-insert on a
+            // count-bearing Merk) needs separate investigation; this
+            // sort enforces a known-good order in the meantime.
+            //
+            // Classification: a delta `(_, Some(_), None)` is a pure
+            // delete (key removed from primary). For each individual
+            // delta, mirror_to_secondary_for_batch does delete-then-
+            // insert ON ONE KEY which is fine; the order issue only
+            // surfaces ACROSS deltas of different keys.
+            let mut deltas = deltas;
+            deltas.sort_by(|a, b| {
+                let a_is_pure_delete = a.1.is_some() && a.2.is_none();
+                let b_is_pure_delete = b.1.is_some() && b.2.is_none();
+                match b_is_pure_delete.cmp(&a_is_pure_delete) {
+                    std::cmp::Ordering::Equal => a.0.cmp(&b.0),
+                    other => other,
+                }
+            });
             for (key, old_count, new_count) in deltas {
                 cost_return_on_error!(
                     &mut cost,

@@ -10836,22 +10836,25 @@ mod tests {
     // =====================================================================
 
     #[test]
-    #[ignore = "Repro for suspect: batch delete_op on cidx primary entry"]
-    fn repro_batch_delete_op_on_cidx_primary_entry_should_mirror_to_secondary() {
+    fn batch_delete_op_on_cidx_primary_entry_mirrors_to_secondary() {
         // Pre-populate cidx with one entry, use REGULAR batch
         // delete_op (NOT the cidx-aware delete_from_count_indexed_tree)
-        // to remove it, then insert a new one in the same batch. If
-        // regular delete doesn't mirror to the secondary, top_k will
-        // show both old and new.
+        // to remove it, then insert a new one in the same batch.
         //
-        // OBSERVED (flaky, fails ~80% of parallel runs):
-        //   top_k returns [(77, "new"), (42, "old")] — the deleted
-        //   "old" still appears in the secondary mirror at count=42.
+        // History: this test was flaky (~60% failure under
+        // --test-threads=4) before the fix at batch/mod.rs:3046-3070.
+        // The cidx secondary mirror deltas were applied in non-
+        // deterministic HashMap iteration order, and when an INSERT
+        // delta ran before a DELETE delta on the same secondary merk,
+        // the delete sometimes failed to actually remove the entry —
+        // leaving stale secondary state. Fixed by sorting deltas
+        // deterministically (pure deletes first, then by key).
         //
-        // get on the primary returns PathKeyNotFound for "old" (the
-        // primary delete succeeds), so the bug is specifically that
-        // the regular batch Delete op does not propagate to the cidx
-        // secondary mirror.
+        // Pre-fix observed failure: top_k returned
+        // [(77, "new"), (42, "old")] — the deleted "old" remained at
+        // count=42 in the secondary. Primary delete succeeded
+        // (`db.get` returned `PathKeyNotFound`); the bug was strictly
+        // in the cidx secondary mirror path.
         use crate::batch::QualifiedGroveDbOp;
 
         let grove_version = GroveVersion::latest();
@@ -10917,8 +10920,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Repro for suspect: batch insert_or_replace overwriting cidx entry"]
-    fn repro_batch_insert_or_replace_overwriting_cidx_entry_should_drop_old_mirror() {
+    fn batch_insert_or_replace_overwriting_cidx_entry_drops_old_mirror() {
         // Pre-populate cidx with "a" at count=0. Then batch-replace
         // "a" with count=100. The OLD secondary mirror at count=0
         // must be removed, leaving only count=100.
