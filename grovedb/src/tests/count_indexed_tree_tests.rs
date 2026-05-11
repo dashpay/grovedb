@@ -3465,7 +3465,7 @@ mod tests {
         // Mixed nesting: cidx → regular tree → cidx. The bubble-up from
         // inner_cidx must:
         //   1. Mirror inner's secondary inline.
-        //   2. Emit ReplaceCountIndexedTreeRootKeys to the regular_tree
+        //   2. Emit ReplaceAggregateIndexedTreeRootKeys to the regular_tree
         //      level (parent is NOT a cidx primary, so no mirror runs
         //      there, but the inner_cidx element bytes are still
         //      updated via the H1-A handler).
@@ -3566,7 +3566,7 @@ mod tests {
         //   b's secondary: c under count 1
         //   c's secondary: item under count 1
         //
-        // Also confirms that ReplaceCountIndexedTreeRootKeys correctly
+        // Also confirms that ReplaceAggregateIndexedTreeRootKeys correctly
         // chains through multiple cidx-primary levels (each level emits
         // it for the level above when the level was a cidx primary).
         use crate::batch::QualifiedGroveDbOp;
@@ -3662,14 +3662,14 @@ mod tests {
         // should:
         //   - Mirror the count change inside inner's secondary (count
         //     for "item" goes None → 1).
-        //   - Emit ReplaceCountIndexedTreeRootKeys to outer's primary
+        //   - Emit ReplaceAggregateIndexedTreeRootKeys to outer's primary
         //     level.
         //   - At outer's primary level, the pre/post element bytes for
         //     "inner_cidx" change (count_value 0 → 1), so outer's
         //     secondary entry for "inner_cidx" must move from
         //     (0_be ‖ inner_cidx) to (1_be ‖ inner_cidx).
         //
-        // If outer's pre-state capture skips ReplaceCountIndexedTreeRootKeys
+        // If outer's pre-state capture skips ReplaceAggregateIndexedTreeRootKeys
         // ops, outer's secondary won't be mirrored — top-k on outer
         // would silently return stale counts.
         use crate::batch::QualifiedGroveDbOp;
@@ -10110,7 +10110,7 @@ mod tests {
         // iteration's propagation visits the cidx primary's level
         // with an EXISTING `ReplaceTreeRootKey` op already in
         // ops_at_level_above, and must upgrade it to
-        // `ReplaceCountIndexedTreeRootKeys`.
+        // `ReplaceAggregateIndexedTreeRootKeys`.
         use crate::batch::QualifiedGroveDbOp;
 
         let grove_version = GroveVersion::latest();

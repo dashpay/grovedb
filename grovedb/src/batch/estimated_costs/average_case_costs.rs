@@ -307,7 +307,7 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::ReplaceCountIndexedTreeRootKeys {
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                 primary_aggregate_data,
                 ..
             } => {

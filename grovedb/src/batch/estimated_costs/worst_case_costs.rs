@@ -309,7 +309,7 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
-            GroveOp::ReplaceCountIndexedTreeRootKeys {
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                 primary_aggregate_data,
                 ..
             } => GroveDb::worst_case_merk_replace_tree(

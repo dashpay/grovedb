@@ -330,30 +330,41 @@ pub enum GroveOp {
         non_counted: bool,
     },
     /// **Internal only — do not construct directly.**
-    /// Replace both primary and secondary root keys for a CountIndexedTree
-    /// element after batch ops mutated its primary Merk. Carries both child
-    /// Merks' new (root_hash, root_key) plus the primary's aggregate count;
-    /// the parent merk node uses these in `combine_hash_three` (H1-A) to
-    /// recompute its value_hash via `Op::ReplaceLayeredCountIndexedReference`.
+    /// Replace both primary and secondary root keys for an aggregate-
+    /// indexed tree element (e.g. `CountIndexedTree`, and the planned
+    /// `SumIndexedTree` / other aggregate-indexed shapes) after batch ops
+    /// mutated its primary Merk. Carries both child Merks' new
+    /// `(root_hash, root_key)` plus the primary's aggregate value; the
+    /// parent merk node uses these in `combine_hash_three` (H1-A) to
+    /// recompute its value_hash via
+    /// `Op::ReplaceLayeredCountIndexedReference` (and its future
+    /// aggregate-shape siblings).
     ///
-    /// Produced by `execute_ops_on_path` when a level's path resolves to
-    /// a CountIndexedTree primary; consumed at the parent level to update
-    /// the cidx element bytes consistently with both child Merks.
+    /// The op is aggregate-agnostic: `primary_aggregate_data` is an
+    /// `AggregateData` enum, so the same propagation op works for Count,
+    /// ProvableCount, and any future Sum / BigSum / ProvableSum / etc.
+    /// secondary-indexed variants. Today this is produced only by
+    /// `execute_ops_on_path` when a level's path resolves to a
+    /// CountIndexedTree primary; consumed at the parent level to update
+    /// the cidx (or future aggregate-cidx) element bytes consistently
+    /// with both child Merks.
     ///
     /// This variant is `#[non_exhaustive]` and cannot be constructed outside
     /// of this crate.
     #[non_exhaustive]
-    ReplaceCountIndexedTreeRootKeys {
-        /// Cidx primary's new root hash.
+    ReplaceAggregateIndexedTreeRootKeys {
+        /// Primary Merk's new root hash.
         primary_hash: [u8; 32],
-        /// Cidx primary's new root key.
+        /// Primary Merk's new root key.
         primary_root_key: Option<Vec<u8>>,
-        /// Cidx primary's new aggregate (always `AggregateData::Count` or
-        /// `AggregateData::ProvableCount`).
+        /// Primary Merk's new aggregate. Today always one of
+        /// `AggregateData::Count` / `AggregateData::ProvableCount`;
+        /// future aggregate-indexed shapes (Sum, BigSum, ...) reuse this
+        /// op with their corresponding `AggregateData` variant.
         primary_aggregate_data: AggregateData,
-        /// Cidx secondary's new root hash.
+        /// Secondary Merk's new root hash.
         secondary_hash: [u8; 32],
-        /// Cidx secondary's new root key.
+        /// Secondary Merk's new root key.
         secondary_root_key: Option<Vec<u8>>,
     },
     /// Refresh the reference with information provided
@@ -422,7 +433,7 @@ impl GroveOp {
             GroveOp::DenseTreeInsert { .. } => 14,
             GroveOp::ReplaceNonMerkTreeRoot { .. } => 15,
             GroveOp::InsertNonMerkTree { .. } => 16,
-            GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => 17,
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
         }
     }
 
@@ -445,7 +456,7 @@ impl GroveOp {
     /// mirror-bug class (commit a8bb34fb) from recurring: that bug
     /// existed because the original inline `matches!()` was a
     /// non-exhaustive check, so the newly added
-    /// `ReplaceCountIndexedTreeRootKeys` variant silently fell through
+    /// `ReplaceAggregateIndexedTreeRootKeys` variant silently fell through
     /// to "doesn't mutate" and the outer's secondary stayed stale.
     pub(crate) fn can_mutate_child_count(&self) -> bool {
         match self {
@@ -471,7 +482,7 @@ impl GroveOp {
             | GroveOp::InsertTreeWithRootHash { .. }
             | GroveOp::ReplaceNonMerkTreeRoot { .. }
             | GroveOp::InsertNonMerkTree { .. }
-            | GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => true,
+            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => true,
 
             // Non-Merk-tree leaf inserts (commitment/MMR/bulk-append/
             // dense) don't change count_value for their own entries
@@ -753,7 +764,7 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::MmrTreeAppend { .. } => "MMR Tree Append".to_string(),
             GroveOp::BulkAppend { .. } => "Bulk Append".to_string(),
             GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
-            GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => {
+            GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
                 "Replace CountIndexedTree primary+secondary roots".to_string()
             }
         };
@@ -1213,7 +1224,7 @@ struct TreeCacheMerkByPath<S, F, F2> {
     /// Per-cidx-primary captured secondary state after apply, keyed by
     /// the primary's path. Populated by `execute_ops_on_path` when the
     /// path's merk is a cidx primary; consumed by the bubble-up code so
-    /// a `ReplaceCountIndexedTreeRootKeys` op can be emitted on the
+    /// a `ReplaceAggregateIndexedTreeRootKeys` op can be emitted on the
     /// parent level carrying both primary and secondary state.
     cidx_secondary_after_apply: HashMap<Vec<Vec<u8>>, (CryptoHash, Option<Vec<u8>>)>,
     /// Cidx primary paths whose old storage (primary subtree + secondary
@@ -1692,7 +1703,7 @@ where
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
                 | GroveOp::InsertNonMerkTree { .. }
-                | GroveOp::ReplaceCountIndexedTreeRootKeys { .. }
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
                 | GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
@@ -1983,7 +1994,7 @@ where
         // mirror the change in the secondary Merk. Then we store the
         // post-mirror secondary state in `cidx_secondary_after_apply`
         // so the bubble-up code can emit
-        // `ReplaceCountIndexedTreeRootKeys` instead of the standard
+        // `ReplaceAggregateIndexedTreeRootKeys` instead of the standard
         // `ReplaceTreeRootKey`. `ReplaceTreeRootKey` ops on a cidx
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
@@ -2849,7 +2860,7 @@ where
                     ))
                     .wrap_with_cost(cost);
                 }
-                GroveOp::ReplaceCountIndexedTreeRootKeys {
+                GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                     primary_hash,
                     primary_root_key,
                     primary_aggregate_data,
@@ -3036,7 +3047,7 @@ where
         // Post-apply: if this level was a cidx primary, mirror each
         // mutation to the secondary and capture the secondary's
         // post-mirror state into `cidx_secondary_after_apply` so the
-        // bubble-up can emit `ReplaceCountIndexedTreeRootKeys`.
+        // bubble-up can emit `ReplaceAggregateIndexedTreeRootKeys`.
         if let Some(pre) = cidx_pre_state {
             // Collect post-apply counts per key. We re-borrow the merk
             // (now applied) to read each key's new element.
@@ -3250,7 +3261,7 @@ impl GroveDb {
                                                 cidx_secondary_state
                                             {
                                                 vacant_entry.insert(
-                                                    GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                                    GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                                                         primary_hash: root_hash,
                                                         primary_root_key: calculated_root_key,
                                                         primary_aggregate_data: aggregate_data,
@@ -3281,7 +3292,7 @@ impl GroveDb {
                                                         // the parent merk's value_hash
                                                         // is recomputed via H1-A.
                                                         *mutable_occupied_entry =
-                                                            GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                                            GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                                                                 primary_hash: root_hash,
                                                                 primary_root_key:
                                                                     calculated_root_key,
@@ -3306,7 +3317,7 @@ impl GroveDb {
                                                 }
                                                 GroveOp::InsertTreeWithRootHash { .. }
                                                 | GroveOp::InsertNonMerkTree { .. }
-                                                | GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                                | GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                                                     ..
                                                 } => {
                                                     return Err(Error::CorruptedCodeExecution(
@@ -3561,7 +3572,7 @@ impl GroveDb {
                                     let new_op = if let Some((sec_hash, sec_root_key)) =
                                         cidx_secondary_state
                                     {
-                                        GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                        GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                                             primary_hash: root_hash,
                                             primary_root_key: calculated_root_key,
                                             primary_aggregate_data: aggregate_data,
@@ -3582,7 +3593,7 @@ impl GroveDb {
                                 let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
                                 let new_op =
                                     if let Some((sec_hash, sec_root_key)) = cidx_secondary_state {
-                                        GroveOp::ReplaceCountIndexedTreeRootKeys {
+                                        GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                                             primary_hash: root_hash,
                                             primary_root_key: calculated_root_key,
                                             primary_aggregate_data: aggregate_data,
@@ -4002,7 +4013,7 @@ impl GroveDb {
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
                 | GroveOp::InsertNonMerkTree { .. }
-                | GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => {
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
                     return Err(Error::NotSupported(
                         "internal tree ops not supported in apply_operations_without_batching"
                             .to_string(),
