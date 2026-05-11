@@ -44,11 +44,16 @@ pub enum TreeType {
     BulkAppendTree(u8),
     /// A dense append-only tree with fixed-size entries and a configurable height.
     DenseAppendOnlyFixedSizeTree(u8),
-    /// A sum tree with provable sum support (sums baked into node hashes).
-    /// Phase 1: behaves identically to `SumTree` everywhere except in
-    /// `inner_node_type` / `empty_tree_feature_type`, which point at the
-    /// new provable-sum feature/node types. Phase 2 will diverge the hash
-    /// computation.
+    /// A sum tree with provable sum support — the aggregate `i64` sum is
+    /// baked into every node's hash via `node_hash_with_sum`. This is the
+    /// sum-side counterpart to `ProvableCountTree`: tampering with the
+    /// stored sum changes the node hash and is therefore catchable by
+    /// proof verification, unlike the plain `SumTree` where the sum is
+    /// stored alongside but not bound into the hash. Phase 1 routed
+    /// through `SumTree`'s hash dispatch; Phase 2 introduced the divergent
+    /// hash and proof-node families (`KVSum`, `KVHashSum`, `KVDigestSum`,
+    /// `KVRefValueHashSum`, `HashWithSum`, and the
+    /// `AggregateSumOnRange` query).
     ProvableSumTree,
 }
 
