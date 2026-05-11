@@ -425,6 +425,67 @@ impl GroveOp {
             GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => 17,
         }
     }
+
+    /// True iff this op, when applied at a cidx primary's path, can
+    /// change the `count_value` (or absence) of the element at the
+    /// op's key — and therefore requires the cidx primary's secondary
+    /// mirror to be updated for that key.
+    ///
+    /// Used by `execute_ops_on_path`'s pre-state capture pass: only
+    /// ops that may change a key's count_value are read from disk
+    /// before apply, so the post-apply mirror knows the (old, new)
+    /// count delta.
+    ///
+    /// # Single source of truth — keep in sync with `GroveOp` variants
+    ///
+    /// This method uses an **exhaustive `match`** with no wildcard
+    /// arm. Adding a new `GroveOp` variant forces an explicit decision
+    /// here; the compiler will refuse to compile until the variant is
+    /// classified. This is the guard that prevents the nested-cidx
+    /// mirror-bug class (commit a8bb34fb) from recurring: that bug
+    /// existed because the original inline `matches!()` was a
+    /// non-exhaustive check, so the newly added
+    /// `ReplaceCountIndexedTreeRootKeys` variant silently fell through
+    /// to "doesn't mutate" and the outer's secondary stayed stale.
+    pub(crate) fn can_mutate_child_count(&self) -> bool {
+        match self {
+            // User-facing leaf-level mutations: insert/replace/patch
+            // all set a new (or unchanged) count_value on the affected
+            // key; delete removes it. All require secondary mirror.
+            GroveOp::InsertWithKnownToNotAlreadyExist { .. }
+            | GroveOp::InsertIfNotExists { .. }
+            | GroveOp::InsertOrReplace { .. }
+            | GroveOp::Replace { .. }
+            | GroveOp::Patch { .. }
+            | GroveOp::Delete
+            | GroveOp::DeleteTree(..)
+            | GroveOp::RefreshReference { .. } => true,
+
+            // Bubble-up ops emitted by propagation. Each updates the
+            // child element's bytes at the parent level — for
+            // count-bearing trees this changes the aggregated
+            // count_value, which is the secondary's sort key. Without
+            // this arm, nested-cidx bubble-up silently leaves the
+            // outer's secondary stale (commit a8bb34fb).
+            GroveOp::ReplaceTreeRootKey { .. }
+            | GroveOp::InsertTreeWithRootHash { .. }
+            | GroveOp::ReplaceNonMerkTreeRoot { .. }
+            | GroveOp::InsertNonMerkTree { .. }
+            | GroveOp::ReplaceCountIndexedTreeRootKeys { .. } => true,
+
+            // Non-Merk-tree leaf inserts (commitment/MMR/bulk-append/
+            // dense) don't change count_value for their own entries
+            // because these trees use non-Merk storage and don't
+            // contribute counts to a parent cidx the same way. Their
+            // own internal aggregation is handled by the tree-specific
+            // propagation; they do NOT need a per-entry cidx secondary
+            // mirror at the leaf level.
+            GroveOp::CommitmentTreeInsert { .. }
+            | GroveOp::MmrTreeAppend { .. }
+            | GroveOp::BulkAppend { .. }
+            | GroveOp::DenseTreeInsert { .. } => false,
+        }
+    }
 }
 
 impl PartialOrd for GroveOp {
@@ -1912,33 +1973,12 @@ where
             let mut pre: HashMap<Vec<u8>, Option<u64>> = HashMap::new();
             for (key_info, op) in ops_at_path_by_key.iter() {
                 let key_bytes = key_info.get_key_clone();
-                let mutates = matches!(
-                    op,
-                    GroveOp::InsertWithKnownToNotAlreadyExist { .. }
-                        | GroveOp::InsertIfNotExists { .. }
-                        | GroveOp::InsertOrReplace { .. }
-                        | GroveOp::Replace { .. }
-                        | GroveOp::Patch { .. }
-                        | GroveOp::Delete
-                        | GroveOp::DeleteTree(..)
-                        | GroveOp::RefreshReference { .. }
-                        | GroveOp::ReplaceTreeRootKey { .. }
-                        | GroveOp::InsertTreeWithRootHash { .. }
-                        | GroveOp::ReplaceNonMerkTreeRoot { .. }
-                        | GroveOp::InsertNonMerkTree { .. }
-                        // Nested cidx: when a child cidx primary
-                        // bubbles up to its OUTER cidx primary, the
-                        // child's element bytes (count_value field)
-                        // change as part of this op. The outer's
-                        // secondary entry for the child must move
-                        // from (old_count_be ‖ child_key) to
-                        // (new_count_be ‖ child_key). Without this
-                        // arm the outer's secondary silently reports
-                        // stale counts even though H1-A integrity
-                        // still passes.
-                        | GroveOp::ReplaceCountIndexedTreeRootKeys { .. }
-                );
-                if mutates && !pre.contains_key(&key_bytes) {
+                // Single source of truth: `GroveOp::can_mutate_child_count`
+                // uses an exhaustive match so adding a new variant
+                // forces explicit classification at the type-system
+                // level. This is the structural guard against the
+                // nested-cidx bug class (commit a8bb34fb).
+                if op.can_mutate_child_count() && !pre.contains_key(&key_bytes) {
                     let maybe_bytes = cost_return_on_error!(
                         &mut cost,
                         merk.get(
