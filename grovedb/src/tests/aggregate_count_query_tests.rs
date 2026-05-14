@@ -2052,6 +2052,141 @@ mod tests {
     }
 
     #[test]
+    fn carrier_sql_style_fixed_prefix_range_then_count_succeeds() {
+        // Demonstrates the SQL-style 3-column aggregate query
+        //
+        //   SELECT COUNT(*) FROM t WHERE a = 1 AND b > 4 AND c > 4
+        //
+        // against an `(a, b, c)`-indexed grove laid out as
+        //
+        //   TEST_LEAF / byA / <a_val> / byB / <b_val> / byC /
+        //       <ProvableCountTree of c_val items>
+        //
+        // The mapping is:
+        //   - `A = 1` is a fixed prefix → lives in `path_query.path`
+        //     (the verifier walks it via single-key descents).
+        //   - `B > 4` is the variable outer dimension → carrier's
+        //     `RangeAfter("b_4")` item.
+        //   - per matched `B`, walk `byC` → carrier's `subquery_path`.
+        //   - `COUNT(C > 4)` is the leaf aggregate-count subquery.
+        //
+        // Expected: one `(b_val, count)` entry per matched `b > 4`,
+        // each carrying the count of `c > 4` under that `(a=1, b)` cell.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+
+        // Build the tree: TEST_LEAF/byA/1/byB/<b>/byC/<c>.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"byA",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert byA");
+        // Insert two `A` values so we can confirm the path prefix
+        // actually scopes the count (queries with `A = 1` must not
+        // see anything under `A = 2`).
+        for a_val in [b"1".as_ref(), b"2".as_ref()] {
+            db.insert(
+                [TEST_LEAF, b"byA"].as_ref(),
+                a_val,
+                Element::empty_tree(),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert a_val");
+            db.insert(
+                [TEST_LEAF, b"byA", a_val].as_ref(),
+                b"byB",
+                Element::empty_tree(),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert byB");
+            for b_val in [b"b_3".as_ref(), b"b_5".as_ref(), b"b_7".as_ref()] {
+                db.insert(
+                    [TEST_LEAF, b"byA", a_val, b"byB"].as_ref(),
+                    b_val,
+                    Element::empty_tree(),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("insert b_val");
+                db.insert(
+                    [TEST_LEAF, b"byA", a_val, b"byB", b_val].as_ref(),
+                    b"byC",
+                    Element::empty_provable_count_tree(),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("insert byC");
+                for i in 0..10u8 {
+                    let c_key = format!("c_{i}");
+                    db.insert(
+                        [TEST_LEAF, b"byA", a_val, b"byB", b_val, b"byC"].as_ref(),
+                        c_key.as_bytes(),
+                        Element::new_item(c_key.as_bytes().to_vec()),
+                        None,
+                        None,
+                        v,
+                    )
+                    .unwrap()
+                    .expect("insert c");
+                }
+            }
+        }
+        let expected_root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+
+        // Carrier: `B > "b_4"` outer, walk `byC`, count `C > "c_4"`.
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::RangeAfter(b"b_4".to_vec()..));
+        carrier.set_subquery_path(vec![b"byC".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+            b"c_4".to_vec()..,
+        )));
+
+        // PathQuery: fix `A = 1` via the path prefix.
+        let path_query = PathQuery::new(
+            vec![
+                TEST_LEAF.to_vec(),
+                b"byA".to_vec(),
+                b"1".to_vec(),
+                b"byB".to_vec(),
+            ],
+            SizedQuery::new(carrier, None, None),
+        );
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove (A=1, B>4, COUNT C>4) should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify should succeed");
+        assert_eq!(got_root, expected_root);
+        // B > "b_4" matches `b_5` and `b_7` (not `b_3`). For each
+        // matched B, count C > "c_4" → c_5..=c_9 → 5 elements.
+        assert_eq!(results.len(), 2, "expected b_5 and b_7");
+        assert_eq!(results[0].0, b"b_5".to_vec());
+        assert_eq!(results[1].0, b"b_7".to_vec());
+        assert_eq!(results[0].1, 5);
+        assert_eq!(results[1].1, 5);
+    }
+
+    #[test]
     fn carrier_with_long_subquery_path_succeeds() {
         // Exercises a non-trivial `subquery_path` (length > 1) in the
         // carrier shape: TEST_LEAF / "outer" / <brand> / "level1" /
