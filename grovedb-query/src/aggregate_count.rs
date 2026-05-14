@@ -690,6 +690,37 @@ mod tests {
     }
 
     #[test]
+    fn validate_carrier_aggregate_count_rejects_nested_carrier() {
+        // Out of scope: a "Range × Range × AggregateCountOnRange"
+        // shape — i.e. an outer carrier whose subquery is itself
+        // another carrier (with its own Range outer items + leaf
+        // AggregateCountOnRange subquery). This is the
+        // `IN × IN`-on-prefix case the spec explicitly defers.
+        //
+        // The carrier validator delegates to the *leaf* validator for
+        // the subquery, so a carrier-of-carrier subquery fails the
+        // leaf rules ("must contain exactly one item" /
+        // "validate called on a query without an AggregateCountOnRange
+        // item") — exactly what we want.
+        let mut inner_carrier = Query::new();
+        inner_carrier
+            .items
+            .push(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        inner_carrier.set_subquery(make_leaf_aggregate_count_subquery());
+
+        let mut outer_carrier = Query::new();
+        outer_carrier
+            .items
+            .push(QueryItem::Range(b"A".to_vec()..b"Z".to_vec()));
+        outer_carrier.set_subquery(inner_carrier);
+
+        let err = outer_carrier
+            .validate_aggregate_count_on_range()
+            .expect_err("nested carrier (Range x Range x ACOR) must be rejected");
+        assert!(matches!(err, crate::error::Error::InvalidOperation(_)));
+    }
+
+    #[test]
     fn validate_carrier_aggregate_count_rejects_carrier_subquery_with_invalid_inner() {
         // The carrier validator delegates to the leaf validator for the
         // subquery, so a malformed leaf `AggregateCountOnRange` (e.g. wrapping `Key`) is

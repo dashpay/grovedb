@@ -1728,6 +1728,56 @@ mod tests {
     }
 
     #[test]
+    fn rejects_nested_carrier_range_range_aggregate_count() {
+        // Out of scope: a "Range × Range × AggregateCountOnRange"
+        // shape — an outer carrier whose subquery is *itself* another
+        // carrier. This is the `IN × IN`-on-prefix case the spec
+        // explicitly defers. The carrier validator delegates to the
+        // leaf validator for the subquery, which rejects because the
+        // inner carrier has its own outer items (not a single
+        // `AggregateCountOnRange`). Both the static validator and the
+        // prover's entry-point gate must refuse.
+        use grovedb_query::Query;
+
+        // inner_carrier: Range outer + leaf aggregate-count subquery.
+        let mut inner_carrier = Query::new();
+        inner_carrier
+            .items
+            .push(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        inner_carrier.set_subquery_path(vec![b"leaf".to_vec()]);
+        inner_carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+
+        // outer_carrier: Range outer + inner_carrier as subquery.
+        let mut outer_carrier = Query::new();
+        outer_carrier
+            .items
+            .push(QueryItem::Range(b"A".to_vec()..b"Z".to_vec()));
+        outer_carrier.set_subquery_path(vec![b"middle".to_vec()]);
+        outer_carrier.set_subquery(inner_carrier);
+
+        let pq = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            SizedQuery::new(outer_carrier, None, None),
+        );
+        let v = GroveVersion::latest();
+
+        // Static validator rejects.
+        assert!(
+            pq.validate_aggregate_count_on_range().is_err(),
+            "nested carrier (Range x Range x ACOR) must fail validation"
+        );
+
+        // Prover entry-point gate also rejects.
+        let prove_result = make_test_grovedb(v).grove_db.prove_query(&pq, None, v);
+        match prove_result.value() {
+            Err(crate::Error::InvalidQuery(_)) => {}
+            other => panic!("expected InvalidQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn rejects_aggregate_count_at_both_levels() {
         // Try to build a query where the carrier ITSELF has an aggregate-count item
         // AND its subquery is also an aggregate-count. The validator must reject up
