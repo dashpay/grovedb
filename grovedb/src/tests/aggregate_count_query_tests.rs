@@ -2145,6 +2145,49 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_count_proof_with_trailing_bytes_is_rejected() {
+        // Decoding is canonical — a valid proof with any trailing
+        // bytes appended must be rejected, even though the
+        // cryptographic chain check would still bind the same
+        // `(RootHash, count)` result. Otherwise the same logical
+        // proof would have many distinct byte encodings, which breaks
+        // proof-equality / caching assumptions.
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let mut proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        // Sanity: the untouched proof verifies.
+        GroveDb::verify_aggregate_count_query(&proof, &path_query, v)
+            .expect("clean proof should verify");
+        // Now append a single trailing byte and expect rejection from
+        // both entry points.
+        proof.push(0u8);
+        let leaf_err = GroveDb::verify_aggregate_count_query(&proof, &path_query, v)
+            .expect_err("leaf entry: trailing-byte proof must be rejected");
+        match leaf_err {
+            crate::Error::CorruptedData(msg) => {
+                assert!(msg.contains("trailing bytes"), "unexpected message: {msg}")
+            }
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+        let per_key_err = GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+            .expect_err("per-key entry: trailing-byte proof must be rejected");
+        match per_key_err {
+            crate::Error::CorruptedData(msg) => {
+                assert!(msg.contains("trailing bytes"), "unexpected message: {msg}")
+            }
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn carrier_legacy_verifier_rejects_carrier_query() {
         // The legacy single-`u64` `verify_aggregate_count_query` strictly
         // validates the leaf shape and rejects carrier queries — even

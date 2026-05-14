@@ -32,13 +32,27 @@ use crate::{
 
 /// Decode a serialized `GroveDBProof` envelope using the same bincode
 /// configuration the prover writes out.
+///
+/// Decoding is canonical: trailing bytes beyond the encoded envelope
+/// are rejected. Without this check the same `(RootHash, count)` could
+/// be reconstructed from many different proof byte-strings (a proof and
+/// the same proof with arbitrary suffix bytes), which is harmless for
+/// the chain-bound correctness guarantee but breaks any
+/// equality-by-bytes assumption a caller might rely on (caching,
+/// deduplication, hashing the proof itself).
 pub(super) fn decode_grovedb_proof(proof: &[u8]) -> Result<GroveDBProof, Error> {
     let config = bincode::config::standard()
         .with_big_endian()
         .with_limit::<{ 256 * 1024 * 1024 }>();
-    let (proof, _) = bincode::decode_from_slice(proof, config)
+    let (decoded, consumed) = bincode::decode_from_slice(proof, config)
         .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
-    Ok(proof)
+    if consumed != proof.len() {
+        return Err(Error::CorruptedData(format!(
+            "aggregate-count proof has {} trailing bytes after the encoded envelope",
+            proof.len() - consumed
+        )));
+    }
+    Ok(decoded)
 }
 
 /// Verify the leaf layer: bytes are the encoded count-proof Op stream;
