@@ -116,21 +116,36 @@ impl GroveDb {
         // the path doesn't exist. Without this gate, `prove_query` would
         // happily return a regular path/absence proof for an invalid
         // aggregate-count request.
-        if path_query
+        let is_acor_query = path_query
             .query
             .query
-            .has_aggregate_count_on_range_anywhere()
-            && let Err(e) = path_query.validate_aggregate_count_on_range()
-        {
+            .has_aggregate_count_on_range_anywhere();
+        if is_acor_query && let Err(e) = path_query.validate_aggregate_count_on_range() {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
 
-        match grove_version
+        let prove_version = grove_version
             .grovedb_versions
             .operations
             .proof
-            .prove_query_non_serialized
-        {
+            .prove_query_non_serialized;
+
+        // AggregateCountOnRange requires V1 proof envelopes. The legacy
+        // V0 (`MerkOnlyLayerProof`) envelope predates ACOR and is only
+        // produced by grove versions that pre-date Dash Platform v12;
+        // refusing the combination here keeps callers from accidentally
+        // emitting a V0 ACOR proof that the verifier would (correctly)
+        // reject.
+        if is_acor_query && prove_version == 0 {
+            return Err(Error::NotSupported(
+                "AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove \
+                 version producing the proof"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+
+        match prove_version {
             0 => self.prove_query_non_serialized_v0(path_query, prove_options, grove_version),
             1 => self.prove_query_non_serialized_v1(path_query, prove_options, grove_version),
             version => Err(Error::VersionError(
@@ -1090,6 +1105,17 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // Whether the surrounding query is an aggregate-count carrier:
+        // empty trees that match a `subquery_path` step still need a
+        // lower-layer descent so the aggregate-count short-circuit can
+        // emit an empty count proof (verifier reads it as count = 0).
+        // For non-aggregate-count queries, empty trees keep their
+        // existing "terminal result" semantics.
+        let is_aggregate_count_query = path_query
+            .query
+            .query
+            .has_aggregate_count_on_range_anywhere();
+
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
             self.generate_merk_proof(
@@ -1406,6 +1432,39 @@ impl GroveDb {
                                     *limit -= 1;
                                 }
                                 has_a_result_at_level |= true;
+                            }
+                            // Empty count trees under an aggregate-count
+                            // carrier still need a lower-layer descent —
+                            // the recursion hits the ACOR short-circuit on
+                            // the empty merk and emits an empty count proof
+                            // (verifier reads it as count = 0).
+                            Ok(Element::ProvableCountTree(None, ..))
+                            | Ok(Element::ProvableCountSumTree(None, ..))
+                                if !done_with_results
+                                    && is_aggregate_count_query
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )
+                                );
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
                             }
                             // Empty trees and CommitmentTree without subquery
                             Ok(Element::Tree(None, _))
