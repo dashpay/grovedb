@@ -735,16 +735,16 @@ mod tests {
     #[test]
     fn aggregate_count_with_missing_path_and_invalid_inner_is_rejected_at_entry() {
         // Codex finding: validation only fires inside `prove_subqueries` when
-        // the recursion reaches the ACOR-bearing leaf level. If the path
+        // the recursion reaches the aggregate-count-bearing leaf level. If the path
         // doesn't exist (e.g. "missing" key under TEST_LEAF), the recursive
-        // prover never sees the ACOR item and the malformed query is allowed
+        // prover never sees the aggregate-count item and the malformed query is allowed
         // to return a regular path/absence proof. Fix: validate at the
         // `prove_query` entry point, before any recursive dispatch.
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
         let path_query = PathQuery::new_aggregate_count_on_range(
             vec![TEST_LEAF.to_vec(), b"missing".to_vec()],
-            // QueryItem::Key as the inner range is invalid for ACOR.
+            // QueryItem::Key as the inner range is invalid for aggregate-count.
             QueryItem::Key(b"k".to_vec()),
         );
         let prove_result = db.grove_db.prove_query(&path_query, None, v).unwrap();
@@ -752,11 +752,11 @@ mod tests {
             Err(crate::Error::InvalidQuery(msg)) => {
                 assert!(
                     msg.contains("AggregateCountOnRange may not wrap Key"),
-                    "expected ACOR-Key rejection, got: {msg}"
+                    "expected `AggregateCountOnRange`-Key rejection, got: {msg}"
                 );
             }
             other => panic!(
-                "malformed ACOR with non-existent path must be rejected at entry, got {:?}",
+                "malformed aggregate-count with non-existent path must be rejected at entry, got {:?}",
                 other.map(|b| b.len())
             ),
         }
@@ -764,23 +764,23 @@ mod tests {
 
     #[test]
     fn aggregate_count_hidden_in_subquery_branch_with_invalid_inner_is_rejected_at_entry() {
-        // After the carrier-ACOR feature landed, an `AggregateCountOnRange`
+        // After the carrier aggregate-count feature landed, an `AggregateCountOnRange`
         // smuggled inside a `default_subquery_branch.subquery` is **valid**
         // when the surrounding query satisfies the carrier rules — that is
         // the whole point of the carrier shape.
         //
         // What this test still guards is the *other* malformed case: a
-        // carrier whose subquery is itself a malformed leaf ACOR (here, an
-        // ACOR wrapping `Key` — leaf rule 3). The carrier validator
+        // carrier whose subquery is itself a malformed leaf `AggregateCountOnRange` (here, an
+        // aggregate-count wrapping `Key` — leaf rule 3). The carrier validator
         // delegates to `validate_leaf_aggregate_count_on_range`, which
         // surfaces the malformed-inner error, and the prove-entry gate
         // refuses to run the query.
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
-        let bad_inner_acor =
+        let bad_inner_aggregate_count =
             QueryItem::AggregateCountOnRange(Box::new(QueryItem::Key(b"k".to_vec())));
         let mut sub_query = grovedb_merk::proofs::Query::new();
-        sub_query.insert_item(bad_inner_acor);
+        sub_query.insert_item(bad_inner_aggregate_count);
         let mut top_query = grovedb_merk::proofs::Query::new();
         top_query.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
         top_query.set_subquery(sub_query);
@@ -800,7 +800,7 @@ mod tests {
                 "expected malformed-inner-Key rejection, got: {msg}"
             ),
             other => panic!(
-                "carrier ACOR with malformed leaf-inner Key must be rejected at entry, got {:?}",
+                "carrier aggregate-count with malformed leaf-inner Key must be rejected at entry, got {:?}",
                 other.map(|b| b.len())
             ),
         }
@@ -838,11 +838,11 @@ mod tests {
     #[test]
     fn aggregate_count_rejects_grove_v2_envelope() {
         // GROVE_V2 dispatches to the V0 prove_query_non_serialized path,
-        // which produces a `MerkOnlyLayerProof` envelope. ACOR was added
+        // which produces a `MerkOnlyLayerProof` envelope. aggregate-count was added
         // after V0 envelopes were superseded by V1 (in the grove version
-        // used by Dash Platform v12+), so V0+ACOR is impossible in any
+        // used by Dash Platform v12+), so V0+aggregate-count is impossible in any
         // deployed Platform release. The prover rejects the combination
-        // up front to keep callers from emitting a V0 ACOR proof that
+        // up front to keep callers from emitting a V0 aggregate-count proof that
         // the verifier would (correctly) refuse.
         let v: &GroveVersion = &GROVE_V2;
         let (db, _root) = setup_15_key_provable_count_tree(v);
@@ -857,7 +857,7 @@ mod tests {
                 "unexpected message: {msg}"
             ),
             other => panic!(
-                "expected NotSupported for V0+ACOR, got {:?}",
+                "expected NotSupported for V0+aggregate-count, got {:?}",
                 other.map(|b| b.len())
             ),
         }
@@ -1563,12 +1563,12 @@ mod tests {
         assert_eq!(count, 0, "empty tree must return 0");
     }
 
-    // ---------- Carrier ACOR end-to-end tests ----------
+    // ---------- Carrier aggregate-count end-to-end tests ----------
     //
-    // A "carrier" ACOR query is an outer fan-out — the outer query items
+    // A "carrier" aggregate-count query is an outer fan-out — the outer query items
     // are `Key`/`Range*` and the `default_subquery_branch.subquery`
     // resolves (after walking the optional `subquery_path`) to a leaf
-    // ACOR. The verifier returns one `(outer_key, u64)` pair per matched
+    // aggregate-count. The verifier returns one `(outer_key, u64)` pair per matched
     // outer key. These tests exercise the full prove → encode → decode →
     // verify pipeline.
 
@@ -1638,11 +1638,11 @@ mod tests {
         (db, root)
     }
 
-    /// Build a carrier ACOR `PathQuery` rooted at
+    /// Build a carrier aggregate-count `PathQuery` rooted at
     /// `[TEST_LEAF, "byBrand"]`, fanning out across `outer_keys` and
     /// counting elements in each brand's `color` subtree matching the
     /// inner range.
-    fn carrier_acor_path_query(outer_keys: &[&[u8]], inner_range: QueryItem) -> PathQuery {
+    fn carrier_count_path_query(outer_keys: &[&[u8]], inner_range: QueryItem) -> PathQuery {
         use grovedb_query::Query;
 
         let mut carrier = Query::new();
@@ -1662,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_subquery_two_outer_keys_succeeds() {
+    fn carrier_two_outer_keys_succeeds() {
         // Carrier with two outer brand keys, range on the color subtree.
         // Expected: two (key, count) pairs in query-direction order with
         // the correct per-brand aggregate. The carrier defaults to
@@ -1672,7 +1672,7 @@ mod tests {
             setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 1_000);
         // Pick a range that drops the lower 500 elements (`color_00000`
         // through `color_00499`).
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000", b"brand_001"],
             QueryItem::RangeAfter(b"color_00499".to_vec()..),
         );
@@ -1680,10 +1680,10 @@ mod tests {
             .grove_db
             .prove_query(&path_query, None, v)
             .unwrap()
-            .expect("prove_query (carrier ACOR) should succeed");
+            .expect("prove_query (carrier aggregate-count) should succeed");
         let (got_root, results) =
             GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
-                .expect("verify carrier ACOR should succeed");
+                .expect("verify carrier aggregate-count should succeed");
         assert_eq!(got_root, expected_root, "root must match GroveDB root");
         assert_eq!(results.len(), 2, "expected one result per outer key");
         assert_eq!(results[0].0, b"brand_000".to_vec());
@@ -1695,7 +1695,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_subquery_with_unknown_outer_key_returns_present_keys_only() {
+    fn carrier_with_unknown_outer_key_returns_present_keys_only() {
         // Spec acceptance criterion 2: an outer-key match that doesn't
         // exist contributes no entry to the result vector (it's an
         // absence, not an error). The prover doesn't emit a lower layer
@@ -1704,7 +1704,7 @@ mod tests {
         let v = GroveVersion::latest();
         let (db, expected_root) = setup_brand_color_carrier_tree(v, &[b"brand_000"], 1_000);
         // Ask for two brands — one present, one absent.
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000", b"brand_999_missing"],
             QueryItem::RangeAfter(b"color_00499".to_vec()..),
         );
@@ -1728,9 +1728,9 @@ mod tests {
     }
 
     #[test]
-    fn acor_subquery_rejects_acor_at_both_levels() {
-        // Try to build a query where the carrier ITSELF has an ACOR item
-        // AND its subquery is also an ACOR. The validator must reject up
+    fn rejects_aggregate_count_at_both_levels() {
+        // Try to build a query where the carrier ITSELF has an aggregate-count item
+        // AND its subquery is also an aggregate-count. The validator must reject up
         // front at prove time.
         use grovedb_query::Query;
 
@@ -1744,7 +1744,7 @@ mod tests {
         // Validation catches it.
         assert!(
             pq.validate_aggregate_count_on_range().is_err(),
-            "ACOR + subquery ACOR must fail validation"
+            "aggregate-count + subquery aggregate-count must fail validation"
         );
         // The prove_query entry-point gate must also reject it.
         let prove_result = make_test_grovedb(v).grove_db.prove_query(&pq, None, v);
@@ -1755,8 +1755,8 @@ mod tests {
     }
 
     #[test]
-    fn acor_leaf_unchanged_under_per_key_verifier() {
-        // The leaf shape — a single-ACOR query — produces exactly the
+    fn leaf_unchanged_under_per_key_verifier() {
+        // The leaf shape — a single-`AggregateCountOnRange` query — produces exactly the
         // same proof bytes it did before this feature. Verifying it via
         // the new per-key entry point returns a one-entry Vec with an
         // empty key and the same count `verify_aggregate_count_query`
@@ -1789,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_subquery_carrier_with_range_outer_succeeds() {
+    fn carrier_with_range_outer_succeeds() {
         // The carrier supports a Range outer item (the per-spec
         // "decide-or-defer" case). With an outer `RangeAfter`, the
         // matched outer keys come back in lex-asc order and each
@@ -1831,7 +1831,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_subquery_right_to_left_returns_descending_order() {
+    fn carrier_right_to_left_returns_descending_order() {
         // Flip the carrier's `left_to_right` flag — output must come
         // back in descending lex order, mirroring the merk walker's
         // reversed emission.
@@ -1855,10 +1855,10 @@ mod tests {
             .grove_db
             .prove_query(&path_query, None, v)
             .unwrap()
-            .expect("prove_query (carrier ACOR, right-to-left) should succeed");
+            .expect("prove_query (carrier aggregate-count, right-to-left) should succeed");
         let (got_root, results) =
             GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
-                .expect("verify carrier ACOR (right-to-left) should succeed");
+                .expect("verify carrier aggregate-count (right-to-left) should succeed");
         assert_eq!(got_root, expected_root);
         assert_eq!(results.len(), 3, "expected 3 outer-key matches");
         // Descending lex: brand_002, brand_001, brand_000.
@@ -1871,8 +1871,8 @@ mod tests {
     }
 
     #[test]
-    fn acor_per_key_rejects_non_acor_path_query() {
-        // The per-key entry point rejects path queries that aren't ACOR
+    fn per_key_rejects_non_aggregate_count_path_query() {
+        // The per-key entry point rejects path queries that aren't aggregate-count
         // queries at all — neither leaf nor carrier — before decoding
         // proof bytes.
         let v = GroveVersion::latest();
@@ -1882,7 +1882,7 @@ mod tests {
         );
         let dummy_proof = vec![0u8; 16];
         let err = GroveDb::verify_aggregate_count_query_per_key(&dummy_proof, &bad_query, v)
-            .expect_err("non-ACOR path_query must be rejected up front");
+            .expect_err("non-aggregate-count path_query must be rejected up front");
         match err {
             crate::Error::InvalidQuery(_) => {}
             other => panic!("expected InvalidQuery, got {:?}", other),
@@ -1890,7 +1890,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_subquery_count_forgery_is_caught() {
+    fn carrier_count_forgery_is_caught() {
         // Same spirit as `count_forgery_is_caught_at_grovedb_level` but
         // against a carrier proof: pick the first leaf merk
         // `HashWithCount` op in any of the per-outer-key sub-proofs and
@@ -1905,7 +1905,7 @@ mod tests {
 
         let v = GroveVersion::latest();
         let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 100);
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000", b"brand_001"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
@@ -1979,13 +1979,13 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_rejects_v0_envelope() {
-        // V0 proof envelopes predate ACOR and cannot legitimately carry
+    fn carrier_rejects_v0_envelope() {
+        // V0 proof envelopes predate aggregate-count and cannot legitimately carry
         // an aggregate-count proof — neither leaf nor carrier. The
-        // prover-side entry-point gate refuses to emit V0+ACOR.
+        // prover-side entry-point gate refuses to emit V0+aggregate-count.
         let v2 = &GROVE_V2;
         let (db, _root) = setup_brand_color_carrier_tree(v2, &[b"brand_000"], 100);
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
@@ -1995,14 +1995,14 @@ mod tests {
                 "unexpected message: {msg}"
             ),
             other => panic!(
-                "expected NotSupported for V0+carrier ACOR, got {:?}",
+                "expected NotSupported for V0+carrier aggregate-count, got {:?}",
                 other.map(|b| b.len())
             ),
         }
     }
 
     #[test]
-    fn acor_carrier_with_long_subquery_path_succeeds() {
+    fn carrier_with_long_subquery_path_succeeds() {
         // Exercises a non-trivial `subquery_path` (length > 1) in the
         // carrier shape: TEST_LEAF / "outer" / <brand> / "level1" /
         // "level2" / <ProvableCountTree>. The verifier must walk both
@@ -2098,14 +2098,14 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_corrupted_outer_layer_byte_is_rejected() {
+    fn carrier_corrupted_outer_layer_byte_is_rejected() {
         // Flip a byte deep inside the carrier-layer merk proof bytes
         // (which encode the outer-Keys multi-key proof). Either the
         // merk-level execute_proof rejects the bytes, or the chain
         // check downstream rejects the resulting hash mismatch.
         let v = GroveVersion::latest();
         let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 100);
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000", b"brand_001"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
@@ -2127,11 +2127,11 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_undecodable_proof_is_rejected() {
+    fn carrier_undecodable_proof_is_rejected() {
         // Send garbage bytes — the bincode decoder rejects the
         // envelope up front with `Error::CorruptedData`.
         let v = GroveVersion::latest();
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
@@ -2145,14 +2145,14 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_legacy_verifier_rejects_carrier_query() {
+    fn carrier_legacy_verifier_rejects_carrier_query() {
         // The legacy single-`u64` `verify_aggregate_count_query` strictly
         // validates the leaf shape and rejects carrier queries — even
         // though the proof bytes themselves are well-formed. Callers
         // must use `verify_aggregate_count_query_per_key` for carriers.
         let v = GroveVersion::latest();
         let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000"], 50);
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000"],
             QueryItem::Range(b"color_00010".to_vec()..b"color_00020".to_vec()),
         );
@@ -2170,7 +2170,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_missing_outer_lower_layer_is_rejected() {
+    fn carrier_missing_outer_lower_layer_is_rejected() {
         // Decode the carrier proof envelope, drop one of the
         // `lower_layers[outer_key]` entries, re-encode, and verify the
         // verifier rejects with "missing lower layer for outer key".
@@ -2182,7 +2182,7 @@ mod tests {
 
         let v = GroveVersion::latest();
         let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 100);
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000", b"brand_001"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
@@ -2233,7 +2233,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_missing_subquery_path_layer_is_rejected() {
+    fn carrier_missing_subquery_path_layer_is_rejected() {
         // Same idea as the previous test but one level deeper: drop the
         // `subquery_path` layer ("color") that sits between the outer
         // brand match and the leaf merk. Exercises the
@@ -2244,7 +2244,7 @@ mod tests {
 
         let v = GroveVersion::latest();
         let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000"], 100);
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
@@ -2297,7 +2297,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_non_merk_proof_bytes_is_rejected() {
+    fn carrier_non_merk_proof_bytes_is_rejected() {
         // Replace the subquery_path layer's `ProofBytes::Merk(...)` with
         // a `ProofBytes::MMR(...)` variant. The verifier rejects the
         // mismatched proof-bytes flavor through `expect_merk_bytes`.
@@ -2307,7 +2307,7 @@ mod tests {
 
         let v = GroveVersion::latest();
         let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000"], 100);
-        let path_query = carrier_acor_path_query(
+        let path_query = carrier_count_path_query(
             &[b"brand_000"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
@@ -2359,7 +2359,7 @@ mod tests {
     }
 
     #[test]
-    fn acor_carrier_pagination_is_rejected_at_entry() {
+    fn carrier_pagination_is_rejected_at_entry() {
         // Carriers (like leaves) forbid SizedQuery::limit and offset.
         // The PathQuery-level validator surfaces this before any proof
         // bytes are decoded.
@@ -2377,7 +2377,7 @@ mod tests {
         );
         let dummy_proof = vec![0u8; 8];
         let err = GroveDb::verify_aggregate_count_query_per_key(&dummy_proof, &path_query, v)
-            .expect_err("carrier ACOR with limit must be rejected at entry");
+            .expect_err("carrier aggregate-count with limit must be rejected at entry");
         match err {
             crate::Error::InvalidQuery(msg) => {
                 assert!(msg.contains("limit"), "unexpected message: {msg}")

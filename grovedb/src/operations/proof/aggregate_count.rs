@@ -23,13 +23,18 @@
 //!
 //! - **Carrier** — an outer query whose items are `Key(_)` / `Range*(_)`
 //!   (one IN-style fan-out dimension) and whose
-//!   `default_subquery_branch.subquery` resolves to a leaf ACOR query.
-//!   The proof descends `path_query.path` via single-key checks, then at
-//!   the carrier merk it produces a multi-key proof over the outer items;
-//!   each matched outer key recurses through the `subquery_path` (if any)
-//!   to a leaf merk that produces its own count. The verifier returns one
-//!   `(outer_key, count)` pair per matched outer key. Surfaced through
+//!   `default_subquery_branch.subquery` resolves to a leaf
+//!   `AggregateCountOnRange`. The proof descends `path_query.path` via
+//!   single-key checks, then at the carrier merk it produces a multi-key
+//!   proof over the outer items; each matched outer key recurses through
+//!   the `subquery_path` (if any) to a leaf merk that produces its own
+//!   count. The verifier returns one `(outer_key, count)` pair per
+//!   matched outer key. Surfaced through
 //!   [`GroveDb::verify_aggregate_count_query_per_key`].
+//!
+//! The same leaf/carrier shape will apply to forthcoming aggregate
+//! variants (sum, average) — each will get its own sibling module under
+//! `grovedb/src/operations/proof/` with parallel naming.
 
 use grovedb_merk::{
     proofs::{
@@ -56,15 +61,17 @@ impl GroveDb {
     /// [`PathQuery::validate_aggregate_count_on_range`] and additionally must
     /// be the **leaf** shape — a single `AggregateCountOnRange(_)` item, no
     /// subqueries, no pagination, and an inner range that isn't `Key`,
-    /// `RangeFull`, or another `AggregateCountOnRange`. Carrier-shape ACOR
-    /// queries (outer `Keys` + ACOR subquery) must use
+    /// `RangeFull`, or another `AggregateCountOnRange`. Carrier-shape
+    /// aggregate-count queries (outer `Keys` + `AggregateCountOnRange`
+    /// subquery) must use
     /// [`GroveDb::verify_aggregate_count_query_per_key`] instead.
     ///
     /// `AggregateCountOnRange` requires **V1 proof envelopes**
     /// (`GroveDBProofV1`). V0 (`GroveDBProofV0` / `MerkOnlyLayerProof`)
-    /// envelopes predate the ACOR feature and are only produced by grove
-    /// versions older than the one used by Dash Platform v12; this entry
-    /// point rejects them with `Error::InvalidProof`.
+    /// envelopes predate the aggregate-count feature and are only
+    /// produced by grove versions older than the one used by Dash
+    /// Platform v12; this entry point rejects them with
+    /// `Error::InvalidProof`.
     ///
     /// Returns:
     /// - `root_hash` — the reconstructed GroveDB root hash. The caller is
@@ -97,8 +104,8 @@ impl GroveDb {
         );
 
         // Validate at the PathQuery level so SizedQuery::limit / offset
-        // (which ACOR explicitly forbids) are enforced alongside the
-        // inner-Query shape rules.
+        // (which aggregate-count explicitly forbids) are enforced
+        // alongside the inner-Query shape rules.
         let inner_range = path_query.validate_leaf_aggregate_count_on_range()?.clone();
 
         let grovedb_proof = decode_grovedb_proof(proof)?;
@@ -116,31 +123,36 @@ impl GroveDb {
         Ok((root_hash, count))
     }
 
-    /// Verify a serialized `prove_query` proof against an ACOR `PathQuery`
-    /// in either the leaf or carrier shape, returning one
-    /// `(outer_key, count)` pair per matched outer key.
+    /// Verify a serialized `prove_query` proof against an
+    /// `AggregateCountOnRange` `PathQuery` in either the leaf or carrier
+    /// shape, returning one `(outer_key, count)` pair per matched outer
+    /// key.
     ///
-    /// For a **leaf** ACOR query the returned vector contains exactly one
-    /// entry whose key is an empty byte string and whose count is the same
-    /// `u64` [`GroveDb::verify_aggregate_count_query`] would have returned.
-    /// This makes carrier and leaf consumers symmetric: callers that always
-    /// process a `Vec<(Vec<u8>, u64)>` don't need to branch on the shape.
+    /// For a **leaf** aggregate-count query the returned vector contains
+    /// exactly one entry whose key is an empty byte string and whose
+    /// count is the same `u64`
+    /// [`GroveDb::verify_aggregate_count_query`] would have returned.
+    /// This makes carrier and leaf consumers symmetric: callers that
+    /// always process a `Vec<(Vec<u8>, u64)>` don't need to branch on
+    /// the shape.
     ///
-    /// For a **carrier** ACOR query the outer items must be `Key(_)` /
-    /// `Range*(_)`, the `default_subquery_branch.subquery` must validate as a
-    /// leaf ACOR, and the optional `subquery_path` is followed exactly
-    /// (single-key descent per element) before the count proof. The returned
-    /// vector has one entry per matched outer key in **query-direction
-    /// order**: when the carrier's `left_to_right` is `true` (the default,
-    /// matching the merk prover's natural walk) entries come back in
-    /// ascending lexicographic key order; when `left_to_right` is `false`
-    /// they come back in descending order, mirroring the merk proof's own
+    /// For a **carrier** aggregate-count query the outer items must be
+    /// `Key(_)` / `Range*(_)`, the `default_subquery_branch.subquery`
+    /// must validate as a leaf `AggregateCountOnRange`, and the optional
+    /// `subquery_path` is followed exactly (single-key descent per
+    /// element) before the count proof. The returned vector has one
+    /// entry per matched outer key in **query-direction order**: when
+    /// the carrier's `left_to_right` is `true` (the default, matching
+    /// the merk prover's natural walk) entries come back in ascending
+    /// lexicographic key order; when `left_to_right` is `false` they
+    /// come back in descending order, mirroring the merk proof's own
     /// emission order. Outer-key candidates that the prover proved as
     /// absent contribute no entry.
     ///
     /// Like [`GroveDb::verify_aggregate_count_query`], this entry point
-    /// requires **V1 proof envelopes**. V0 envelopes predate ACOR and are
-    /// rejected with `Error::InvalidProof`.
+    /// requires **V1 proof envelopes**. V0 envelopes predate the
+    /// aggregate-count feature and are rejected with
+    /// `Error::InvalidProof`.
     ///
     /// Cryptographic guarantees:
     /// - Every layer is committed via the same `combine_hash(H(value),
@@ -167,7 +179,7 @@ impl GroveDb {
         // Classify the query and extract the leaf inner range plus the
         // optional carrier subquery_path. For leaf queries the carrier
         // descent below is skipped (carrier_outer_items is None).
-        let classification = classify_path_query(path_query)?;
+        let classification = classify_aggregate_count_path_query(path_query)?;
 
         let grovedb_proof = decode_grovedb_proof(proof)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
@@ -184,10 +196,11 @@ impl GroveDb {
 }
 
 /// Extract the V1 root layer from a `GroveDBProof` envelope, or refuse
-/// the proof. ACOR (both leaf and carrier) requires V1 envelopes — the
-/// V0 (`MerkOnlyLayerProof`) envelope predates ACOR and is only emitted
-/// by grove versions older than the one used by Dash Platform v12, so
-/// it cannot legitimately contain an ACOR proof.
+/// the proof. `AggregateCountOnRange` (both leaf and carrier) requires
+/// V1 envelopes — the V0 (`MerkOnlyLayerProof`) envelope predates the
+/// aggregate-count feature and is only emitted by grove versions older
+/// than the one used by Dash Platform v12, so it cannot legitimately
+/// contain an aggregate-count proof.
 fn require_v1_envelope<'a>(
     proof: &'a GroveDBProof,
     path_query: &PathQuery,
@@ -203,11 +216,17 @@ fn require_v1_envelope<'a>(
     }
 }
 
-/// Classification of an ACOR `PathQuery`. Encodes either the leaf-only
-/// inner range (no carrier descent) or the carrier outer items + leaf
-/// inner range + optional subquery_path that the verifier must follow
-/// per outer key.
-struct AcorClassification {
+/// Classification of an `AggregateCountOnRange` `PathQuery`. Encodes
+/// either the leaf-only inner range (no carrier descent) or the
+/// carrier outer items + leaf inner range + optional `subquery_path`
+/// that the verifier must follow per outer key.
+///
+/// Forthcoming aggregate variants (sum, average) will define their own
+/// parallel classification types (`AggregateSumClassification`,
+/// `AggregateAverageClassification`, …) — the leaf-vs-carrier shape is
+/// a property of any aggregate-on-range query, but each variant carries
+/// its own kind of inner descriptor.
+struct AggregateCountClassification {
     /// The inner range that the leaf merk count proof must satisfy.
     leaf_inner_range: QueryItem,
     /// Carrier outer items. `None` for leaf-only queries.
@@ -222,19 +241,22 @@ struct AcorClassification {
     carrier_left_to_right: bool,
 }
 
-fn classify_path_query(path_query: &PathQuery) -> Result<AcorClassification, Error> {
+fn classify_aggregate_count_path_query(
+    path_query: &PathQuery,
+) -> Result<AggregateCountClassification, Error> {
     // Validate at the PathQuery level so SizedQuery::limit / offset
-    // (which ACOR explicitly forbids) are enforced alongside the
-    // inner-Query shape rules — for both the leaf and the carrier branch
-    // below.
+    // (which aggregate-count explicitly forbids) are enforced alongside
+    // the inner-Query shape rules — for both the leaf and the carrier
+    // branch below.
     let leaf_inner = path_query.validate_aggregate_count_on_range()?.clone();
     let q = &path_query.query.query;
     if q.aggregate_count_on_range().is_some() {
-        // Leaf shape: top-level ACOR item. The top-level
-        // `validate_aggregate_count_on_range` dispatcher above routed
-        // through the leaf validator, so we already know `leaf_inner` is
-        // the inner range of the top-level ACOR item.
-        return Ok(AcorClassification {
+        // Leaf shape: top-level `AggregateCountOnRange` item. The
+        // top-level `validate_aggregate_count_on_range` dispatcher above
+        // routed through the leaf validator, so we already know
+        // `leaf_inner` is the inner range of the top-level
+        // `AggregateCountOnRange` item.
+        return Ok(AggregateCountClassification {
             leaf_inner_range: leaf_inner,
             carrier_outer_items: None,
             carrier_subquery_path: None,
@@ -250,7 +272,7 @@ fn classify_path_query(path_query: &PathQuery) -> Result<AcorClassification, Err
         .subquery_path
         .clone()
         .unwrap_or_default();
-    Ok(AcorClassification {
+    Ok(AggregateCountClassification {
         leaf_inner_range: leaf_inner,
         carrier_outer_items: Some(outer_items),
         carrier_subquery_path: Some(subquery_path),
@@ -319,13 +341,13 @@ fn verify_v1_leaf_chain(
 
 // ── per-key entry-point traversal (V1 only — V0 envelopes are
 // rejected at the entry-point gate above, since they predate the
-// ACOR feature and cannot legitimately carry an aggregate-count proof)
+// aggregate-count feature and cannot legitimately carry one)
 
 fn verify_v1_with_classification(
     layer: &LayerProof,
     path_query: &PathQuery,
     path_keys: &[&[u8]],
-    classification: &AcorClassification,
+    classification: &AggregateCountClassification,
     grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
     verify_v1_per_key(
@@ -343,7 +365,7 @@ fn verify_v1_per_key(
     path_query: &PathQuery,
     path_keys: &[&[u8]],
     depth: usize,
-    classification: &AcorClassification,
+    classification: &AggregateCountClassification,
     grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
     let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
@@ -402,7 +424,7 @@ fn verify_v1_carrier_layer(
     merk_bytes: &[u8],
     path_query: &PathQuery,
     outer_items: &[QueryItem],
-    classification: &AcorClassification,
+    classification: &AggregateCountClassification,
     grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
     let (carrier_root, matched) = execute_carrier_layer_proof(
@@ -428,7 +450,7 @@ fn verify_v1_carrier_layer(
             Error::InvalidProof(
                 path_query.clone(),
                 format!(
-                    "carrier ACOR proof missing lower layer for outer key {}",
+                    "carrier aggregate-count proof missing lower layer for outer key {}",
                     hex::encode(&outer_key)
                 ),
             )
@@ -476,7 +498,7 @@ fn verify_v1_subquery_path(
         Error::InvalidProof(
             path_query.clone(),
             format!(
-                "carrier ACOR proof missing subquery_path layer for key {}",
+                "carrier aggregate-count proof missing subquery_path layer for key {}",
                 hex::encode(&next_key)
             ),
         )
@@ -637,7 +659,10 @@ fn execute_carrier_layer_proof(
         .map_err(|e| {
             Error::InvalidProof(
                 path_query.clone(),
-                format!("carrier ACOR multi-key proof failed to verify: {}", e),
+                format!(
+                    "carrier aggregate-count multi-key proof failed to verify: {}",
+                    e
+                ),
             )
         })?;
 
@@ -647,7 +672,7 @@ fn execute_carrier_layer_proof(
             Error::InvalidProof(
                 path_query.clone(),
                 format!(
-                    "carrier ACOR proof returned a result row without value bytes for key {}",
+                    "carrier aggregate-count proof returned a result row without value bytes for key {}",
                     hex::encode(&proved.key)
                 ),
             )
