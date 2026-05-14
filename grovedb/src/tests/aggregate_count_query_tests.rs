@@ -2187,6 +2187,80 @@ mod tests {
     }
 
     #[test]
+    fn carrier_returns_zero_count_for_empty_leaf_subtree() {
+        // An outer-key match exists, the subquery_path resolves
+        // cleanly, but the **leaf** `ProvableCountTree` is empty
+        // (root_key = None). The verifier must still get a clean
+        // `(brand, 0)` entry — the leaf count proof for an empty
+        // merk is the empty op stream, which the merk-level verifier
+        // reads as `(NULL_HASH, 0)`, and the chain check
+        // `combine_hash(H(empty_tree_value), NULL_HASH) ==
+        //  parent_value_hash` holds because the parent committed the
+        // tree element with the same NULL_HASH child root.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"byBrand",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert byBrand");
+        db.insert(
+            [TEST_LEAF, b"byBrand"].as_ref(),
+            b"brand_000",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert brand");
+        // Insert the leaf `color` count tree but leave it empty.
+        db.insert(
+            [TEST_LEAF, b"byBrand", b"brand_000"].as_ref(),
+            b"color",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty color count tree");
+        let expected_root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+
+        let mut carrier = Query::new();
+        carrier.insert_key(b"brand_000".to_vec());
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, None, None),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed even when leaf count tree is empty");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify should succeed with (brand_000, 0)");
+        assert_eq!(got_root, expected_root);
+        assert_eq!(results.len(), 1, "expected one entry for brand_000");
+        assert_eq!(results[0].0, b"brand_000".to_vec());
+        assert_eq!(
+            results[0].1, 0,
+            "empty leaf count tree must yield count = 0"
+        );
+    }
+
+    #[test]
     fn carrier_with_long_subquery_path_succeeds() {
         // Exercises a non-trivial `subquery_path` (length > 1) in the
         // carrier shape: TEST_LEAF / "outer" / <brand> / "level1" /

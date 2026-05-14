@@ -1105,6 +1105,17 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // Whether the surrounding query is an aggregate-count carrier:
+        // empty trees that match a `subquery_path` step still need a
+        // lower-layer descent so the aggregate-count short-circuit can
+        // emit an empty count proof (verifier reads it as count = 0).
+        // For non-aggregate-count queries, empty trees keep their
+        // existing "terminal result" semantics.
+        let is_aggregate_count_query = path_query
+            .query
+            .query
+            .has_aggregate_count_on_range_anywhere();
+
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
             self.generate_merk_proof(
@@ -1421,6 +1432,39 @@ impl GroveDb {
                                     *limit -= 1;
                                 }
                                 has_a_result_at_level |= true;
+                            }
+                            // Empty count trees under an aggregate-count
+                            // carrier still need a lower-layer descent —
+                            // the recursion hits the ACOR short-circuit on
+                            // the empty merk and emits an empty count proof
+                            // (verifier reads it as count = 0).
+                            Ok(Element::ProvableCountTree(None, ..))
+                            | Ok(Element::ProvableCountSumTree(None, ..))
+                                if !done_with_results
+                                    && is_aggregate_count_query
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )
+                                );
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
                             }
                             // Empty trees and CommitmentTree without subquery
                             Ok(Element::Tree(None, _))
