@@ -628,11 +628,9 @@ fn execute_carrier_layer_proof(
         ..Default::default()
     };
 
-    // CRITICAL: the merk `execute_proof`'s third argument is the
-    // direction to walk the proof bytes — it must match the direction
-    // the prover used (which is `query.left_to_right`). Hardcoding
-    // `true` here would make `left_to_right=false` carrier proofs
-    // return only one matched key.
+    // Walk direction must match the prover's; otherwise the merk
+    // walker stops at the first out-of-order boundary and only the
+    // last key in the proof is returned.
     let (root_hash, merk_result) = level_query
         .execute_proof(merk_bytes, None, left_to_right, 0)
         .unwrap()
