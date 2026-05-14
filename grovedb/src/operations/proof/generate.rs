@@ -116,21 +116,36 @@ impl GroveDb {
         // the path doesn't exist. Without this gate, `prove_query` would
         // happily return a regular path/absence proof for an invalid
         // aggregate-count request.
-        if path_query
+        let is_acor_query = path_query
             .query
             .query
-            .has_aggregate_count_on_range_anywhere()
-            && let Err(e) = path_query.validate_aggregate_count_on_range()
-        {
+            .has_aggregate_count_on_range_anywhere();
+        if is_acor_query && let Err(e) = path_query.validate_aggregate_count_on_range() {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
 
-        match grove_version
+        let prove_version = grove_version
             .grovedb_versions
             .operations
             .proof
-            .prove_query_non_serialized
-        {
+            .prove_query_non_serialized;
+
+        // AggregateCountOnRange requires V1 proof envelopes. The legacy
+        // V0 (`MerkOnlyLayerProof`) envelope predates ACOR and is only
+        // produced by grove versions that pre-date Dash Platform v12;
+        // refusing the combination here keeps callers from accidentally
+        // emitting a V0 ACOR proof that the verifier would (correctly)
+        // reject.
+        if is_acor_query && prove_version == 0 {
+            return Err(Error::NotSupported(
+                "AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove \
+                 version producing the proof"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+
+        match prove_version {
             0 => self.prove_query_non_serialized_v0(path_query, prove_options, grove_version),
             1 => self.prove_query_non_serialized_v1(path_query, prove_options, grove_version),
             version => Err(Error::VersionError(

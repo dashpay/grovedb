@@ -43,9 +43,7 @@ use grovedb_query::QueryItem;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
-    operations::proof::{
-        GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof, ProofBytes,
-    },
+    operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes},
     Element, Error, GroveDb, PathQuery,
 };
 
@@ -61,6 +59,12 @@ impl GroveDb {
     /// `RangeFull`, or another `AggregateCountOnRange`. Carrier-shape ACOR
     /// queries (outer `Keys` + ACOR subquery) must use
     /// [`GroveDb::verify_aggregate_count_query_per_key`] instead.
+    ///
+    /// `AggregateCountOnRange` requires **V1 proof envelopes**
+    /// (`GroveDBProofV1`). V0 (`GroveDBProofV0` / `MerkOnlyLayerProof`)
+    /// envelopes predate the ACOR feature and are only produced by grove
+    /// versions older than the one used by Dash Platform v12; this entry
+    /// point rejects them with `Error::InvalidProof`.
     ///
     /// Returns:
     /// - `root_hash` — the reconstructed GroveDB root hash. The caller is
@@ -100,25 +104,16 @@ impl GroveDb {
         let grovedb_proof = decode_grovedb_proof(proof)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
-        let (root_hash, results) = match &grovedb_proof {
-            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => verify_v0_leaf_chain(
-                root_layer,
-                path_query,
-                &path_keys,
-                0,
-                &inner_range,
-                grove_version,
-            )?,
-            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => verify_v1_leaf_chain(
-                root_layer,
-                path_query,
-                &path_keys,
-                0,
-                &inner_range,
-                grove_version,
-            )?,
-        };
-        Ok((root_hash, results))
+        let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
+        let (root_hash, count) = verify_v1_leaf_chain(
+            root_layer,
+            path_query,
+            &path_keys,
+            0,
+            &inner_range,
+            grove_version,
+        )?;
+        Ok((root_hash, count))
     }
 
     /// Verify a serialized `prove_query` proof against an ACOR `PathQuery`
@@ -142,6 +137,10 @@ impl GroveDb {
     /// they come back in descending order, mirroring the merk proof's own
     /// emission order. Outer-key candidates that the prover proved as
     /// absent contribute no entry.
+    ///
+    /// Like [`GroveDb::verify_aggregate_count_query`], this entry point
+    /// requires **V1 proof envelopes**. V0 envelopes predate ACOR and are
+    /// rejected with `Error::InvalidProof`.
     ///
     /// Cryptographic guarantees:
     /// - Every layer is committed via the same `combine_hash(H(value),
@@ -173,22 +172,34 @@ impl GroveDb {
         let grovedb_proof = decode_grovedb_proof(proof)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
-        match &grovedb_proof {
-            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => verify_v0_with_classification(
-                root_layer,
-                path_query,
-                &path_keys,
-                &classification,
-                grove_version,
-            ),
-            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => verify_v1_with_classification(
-                root_layer,
-                path_query,
-                &path_keys,
-                &classification,
-                grove_version,
-            ),
-        }
+        let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
+        verify_v1_with_classification(
+            root_layer,
+            path_query,
+            &path_keys,
+            &classification,
+            grove_version,
+        )
+    }
+}
+
+/// Extract the V1 root layer from a `GroveDBProof` envelope, or refuse
+/// the proof. ACOR (both leaf and carrier) requires V1 envelopes — the
+/// V0 (`MerkOnlyLayerProof`) envelope predates ACOR and is only emitted
+/// by grove versions older than the one used by Dash Platform v12, so
+/// it cannot legitimately contain an ACOR proof.
+fn require_v1_envelope<'a>(
+    proof: &'a GroveDBProof,
+    path_query: &PathQuery,
+) -> Result<&'a LayerProof, Error> {
+    match proof {
+        GroveDBProof::V1(GroveDBProofV1 { root_layer }) => Ok(root_layer),
+        GroveDBProof::V0(_) => Err(Error::InvalidProof(
+            path_query.clone(),
+            "AggregateCountOnRange proofs require V1 proof envelopes; V0 envelopes predate \
+             this feature and cannot legitimately carry an aggregate-count proof"
+                .to_string(),
+        )),
     }
 }
 
@@ -258,54 +269,6 @@ fn decode_grovedb_proof(proof: &[u8]) -> Result<GroveDBProof, Error> {
     Ok(proof)
 }
 
-// ── V0 leaf-only chain (legacy entry point, kept byte-identical) ───────────
-
-fn verify_v0_leaf_chain(
-    layer: &MerkOnlyLayerProof,
-    path_query: &PathQuery,
-    path_keys: &[&[u8]],
-    depth: usize,
-    inner_range: &QueryItem,
-    grove_version: &GroveVersion,
-) -> Result<(CryptoHash, u64), Error> {
-    if depth == path_keys.len() {
-        return verify_count_leaf(&layer.merk_proof, inner_range, path_query);
-    }
-
-    let next_key = path_keys[depth].to_vec();
-    let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
-        verify_single_key_layer_proof_v0(&layer.merk_proof, &next_key, path_query)?;
-
-    let lower_layer = layer.lower_layers.get(&next_key).ok_or_else(|| {
-        Error::InvalidProof(
-            path_query.clone(),
-            format!(
-                "aggregate-count proof missing lower layer for path key {}",
-                hex::encode(&next_key)
-            ),
-        )
-    })?;
-    let (lower_hash, count) = verify_v0_leaf_chain(
-        lower_layer,
-        path_query,
-        path_keys,
-        depth + 1,
-        inner_range,
-        grove_version,
-    )?;
-
-    enforce_lower_chain(
-        path_query,
-        &next_key,
-        &proven_value_bytes,
-        &lower_hash,
-        &parent_proof_hash,
-        grove_version,
-    )?;
-
-    Ok((parent_root_hash, count))
-}
-
 fn verify_v1_leaf_chain(
     layer: &LayerProof,
     path_query: &PathQuery,
@@ -354,43 +317,9 @@ fn verify_v1_leaf_chain(
     Ok((parent_root_hash, count))
 }
 
-// ── per-key entry-point traversal (leaf or carrier) ────────────────────────
-
-/// V0 per-key dispatch: the V0 envelope (`MerkOnlyLayerProof`) is the
-/// legacy proof format used only by older grove versions that pre-date
-/// the carrier-ACOR feature. The prover for those versions never emits a
-/// carrier-shaped proof, so V0 per-key is a strict alias for the
-/// existing leaf-only chain — collapsed into a one-entry result vector.
-///
-/// Carrier-shaped path queries paired with a V0 envelope are rejected
-/// up front so a forged envelope can't sneak past the leaf chain and
-/// have its multi-key merk proof reinterpreted as a single-key count
-/// proof.
-fn verify_v0_with_classification(
-    layer: &MerkOnlyLayerProof,
-    path_query: &PathQuery,
-    path_keys: &[&[u8]],
-    classification: &AcorClassification,
-    grove_version: &GroveVersion,
-) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
-    if classification.carrier_outer_items.is_some() {
-        return Err(Error::InvalidProof(
-            path_query.clone(),
-            "carrier AggregateCountOnRange queries are only supported on V1 proof envelopes; \
-             upgrade the grove version producing the proof"
-                .to_string(),
-        ));
-    }
-    let (root_hash, count) = verify_v0_leaf_chain(
-        layer,
-        path_query,
-        path_keys,
-        0,
-        &classification.leaf_inner_range,
-        grove_version,
-    )?;
-    Ok((root_hash, vec![(Vec::new(), count)]))
-}
+// ── per-key entry-point traversal (V1 only — V0 envelopes are
+// rejected at the entry-point gate above, since they predate the
+// ACOR feature and cannot legitimately carry an aggregate-count proof)
 
 fn verify_v1_with_classification(
     layer: &LayerProof,

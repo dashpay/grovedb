@@ -836,26 +836,31 @@ mod tests {
     }
 
     #[test]
-    fn provable_count_tree_works_on_grove_v2_envelope() {
-        // GROVE_V2 dispatches to the V0 prove_query_non_serialized path, which
-        // produces a `MerkOnlyLayerProof` envelope rather than V1's
-        // `LayerProof`. Verify the same prove → verify cycle works through that
-        // envelope.
+    fn aggregate_count_rejects_grove_v2_envelope() {
+        // GROVE_V2 dispatches to the V0 prove_query_non_serialized path,
+        // which produces a `MerkOnlyLayerProof` envelope. ACOR was added
+        // after V0 envelopes were superseded by V1 (in the grove version
+        // used by Dash Platform v12+), so V0+ACOR is impossible in any
+        // deployed Platform release. The prover rejects the combination
+        // up front to keep callers from emitting a V0 ACOR proof that
+        // the verifier would (correctly) refuse.
         let v: &GroveVersion = &GROVE_V2;
-        let (db, root) = setup_15_key_provable_count_tree(v);
+        let (db, _root) = setup_15_key_provable_count_tree(v);
         let path_query = PathQuery::new_aggregate_count_on_range(
             vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
             QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
         );
-        let proof = db
-            .grove_db
-            .prove_query(&path_query, None, v)
-            .unwrap()
-            .expect("prove_query (v0 envelope) should succeed");
-        let (got_root, got_count) = GroveDb::verify_aggregate_count_query(&proof, &path_query, v)
-            .expect("verify should succeed against v0 envelope");
-        assert_eq!(got_root, root);
-        assert_eq!(got_count, 10);
+        let prove_result = db.grove_db.prove_query(&path_query, None, v).unwrap();
+        match prove_result {
+            Err(crate::Error::NotSupported(msg)) => assert!(
+                msg.contains("V1 proof envelopes"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!(
+                "expected NotSupported for V0+ACOR, got {:?}",
+                other.map(|b| b.len())
+            ),
+        }
     }
 
     #[test]
@@ -1935,43 +1940,24 @@ mod tests {
 
     #[test]
     fn acor_carrier_rejects_v0_envelope() {
-        // V0 proof envelopes are produced only by older grove versions
-        // (pre-carrier) and cannot carry the carrier shape. The per-key
-        // verifier must reject the combination up front so a forged V0
-        // envelope can't be reinterpreted as a leaf proof. We construct
-        // a real carrier path query against a tree but force GROVE_V2
-        // (V0 prover) to produce the envelope, then verify the
-        // verifier's rejection.
+        // V0 proof envelopes predate ACOR and cannot legitimately carry
+        // an aggregate-count proof — neither leaf nor carrier. The
+        // prover-side entry-point gate refuses to emit V0+ACOR.
         let v2 = &GROVE_V2;
-        // Set up the brand/color tree under V2 (V2's prover handles
-        // the regular subquery walks; the rejection happens at verifier
-        // entry).
         let (db, _root) = setup_brand_color_carrier_tree(v2, &[b"brand_000"], 100);
         let path_query = carrier_acor_path_query(
             &[b"brand_000"],
             QueryItem::RangeAfter(b"color_00049".to_vec()..),
         );
-        // V2 prover refuses to emit a carrier ACOR proof; the
-        // existing classify-then-dispatch path means we get a clean
-        // validation error from the prover entry gate. Either the
-        // prover errors (preferred) or the verifier errors when given
-        // the V0 envelope — both close the surface.
         match db.grove_db.prove_query(&path_query, None, v2).unwrap() {
-            Ok(proof) => {
-                let err = GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v2)
-                    .expect_err(
-                        "V0 envelope with carrier path query must be rejected at verify time",
-                    );
-                match err {
-                    crate::Error::InvalidProof(_, msg) => {
-                        assert!(msg.contains("V1 proof envelope"), "unexpected error: {msg}")
-                    }
-                    other => panic!("expected InvalidProof, got {:?}", other),
-                }
-            }
-            Err(_) => {
-                // V2 prover refused to emit the proof — also acceptable.
-            }
+            Err(crate::Error::NotSupported(msg)) => assert!(
+                msg.contains("V1 proof envelopes"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!(
+                "expected NotSupported for V0+carrier ACOR, got {:?}",
+                other.map(|b| b.len())
+            ),
         }
     }
 
