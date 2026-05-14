@@ -242,8 +242,6 @@ use grovedb_version::version::GroveVersion;
 #[cfg(feature = "minimal")]
 use grovedb_visualize::DebugByteVectors;
 #[cfg(any(feature = "minimal", feature = "verify"))]
-pub(crate) use query::query_validation_error_to_invalid_query;
-#[cfg(any(feature = "minimal", feature = "verify"))]
 pub use query::{
     aggregate_sum_path_query::AggregateSumPathQuery, GroveBranchQueryResult, GroveTrunkQueryResult,
     LeafInfo, PathBranchChunkQuery, PathQuery, PathTrunkChunkQuery, SizedQuery,

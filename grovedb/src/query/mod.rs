@@ -173,12 +173,6 @@ pub(crate) fn query_validation_error_to_static_str(e: grovedb_query::error::Erro
     }
 }
 
-/// Convenience wrapper: project a `grovedb_query::error::Error` from the
-/// validation helpers onto [`Error::InvalidQuery`].
-pub(crate) fn query_validation_error_to_invalid_query(e: grovedb_query::error::Error) -> Error {
-    Error::InvalidQuery(query_validation_error_to_static_str(e))
-}
-
 impl PathQuery {
     /// New path query
     pub const fn new(path: Vec<Vec<u8>>, query: SizedQuery) -> Self {
