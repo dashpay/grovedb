@@ -763,22 +763,24 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_count_hidden_in_subquery_branch_is_rejected_at_entry() {
-        // Codex's broader concern: an `AggregateCountOnRange` smuggled
-        // inside a `default_subquery_branch.subquery` is also invalid (ACOR
-        // is terminal — it cannot be reached via a normal subquery path)
-        // and must be rejected up front. The recursive detector
-        // `has_aggregate_count_on_range_anywhere` finds the hidden ACOR;
-        // top-level `validate_aggregate_count_on_range` then rejects
-        // because the surrounding query isn't the canonical single-ACOR
-        // shape.
+    fn aggregate_count_hidden_in_subquery_branch_with_invalid_inner_is_rejected_at_entry() {
+        // After the carrier-ACOR feature landed, an `AggregateCountOnRange`
+        // smuggled inside a `default_subquery_branch.subquery` is **valid**
+        // when the surrounding query satisfies the carrier rules — that is
+        // the whole point of the carrier shape.
+        //
+        // What this test still guards is the *other* malformed case: a
+        // carrier whose subquery is itself a malformed leaf ACOR (here, an
+        // ACOR wrapping `Key` — leaf rule 3). The carrier validator
+        // delegates to `validate_leaf_aggregate_count_on_range`, which
+        // surfaces the malformed-inner error, and the prove-entry gate
+        // refuses to run the query.
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
-        let inner_acor = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
-            b"a".to_vec()..b"z".to_vec(),
-        )));
+        let bad_inner_acor =
+            QueryItem::AggregateCountOnRange(Box::new(QueryItem::Key(b"k".to_vec())));
         let mut sub_query = grovedb_merk::proofs::Query::new();
-        sub_query.insert_item(inner_acor);
+        sub_query.insert_item(bad_inner_acor);
         let mut top_query = grovedb_merk::proofs::Query::new();
         top_query.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
         top_query.set_subquery(sub_query);
@@ -789,7 +791,7 @@ mod tests {
         let prove_result = db.grove_db.prove_query(&path_query, None, v).unwrap();
         assert!(
             matches!(prove_result, Err(crate::Error::InvalidQuery(_))),
-            "ACOR hidden in subquery branch must be rejected at entry, got {:?}",
+            "carrier ACOR with malformed leaf-inner Key must be rejected at entry, got {:?}",
             prove_result.map(|b| b.len())
         );
     }
@@ -1544,5 +1546,377 @@ mod tests {
             .unwrap()
             .expect("query_aggregate_count on empty tree should succeed");
         assert_eq!(count, 0, "empty tree must return 0");
+    }
+
+    // ---------- Carrier ACOR end-to-end tests ----------
+    //
+    // A "carrier" ACOR query is an outer fan-out — the outer query items
+    // are `Key`/`Range*` and the `default_subquery_branch.subquery`
+    // resolves (after walking the optional `subquery_path`) to a leaf
+    // ACOR. The verifier returns one `(outer_key, u64)` pair per matched
+    // outer key. These tests exercise the full prove → encode → decode →
+    // verify pipeline.
+
+    /// Build a 3-deep tree shaped like the Dash Platform GROUP BY use
+    /// case: `TEST_LEAF / "byBrand" / <brand_n> / "color" /
+    /// <ProvableCountTree of color_xxx items>`.
+    ///
+    /// Each brand subtree has a `color` child that is a
+    /// `ProvableCountTree` populated with `colors_per_brand` keys of the
+    /// form `color_<i:05>`.
+    fn setup_brand_color_carrier_tree(
+        grove_version: &GroveVersion,
+        brands: &[&[u8]],
+        colors_per_brand: u32,
+    ) -> (crate::tests::TempGroveDb, [u8; 32]) {
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"byBrand",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert byBrand");
+        for brand in brands {
+            db.insert(
+                [TEST_LEAF, b"byBrand"].as_ref(),
+                brand,
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert brand");
+            db.insert(
+                [TEST_LEAF, b"byBrand", brand].as_ref(),
+                b"color",
+                Element::empty_provable_count_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert color subtree");
+            for i in 0..colors_per_brand {
+                let key = format!("color_{:05}", i);
+                db.insert(
+                    [TEST_LEAF, b"byBrand", brand, b"color"].as_ref(),
+                    key.as_bytes(),
+                    Element::new_item(key.as_bytes().to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert color leaf");
+            }
+        }
+        let root = db
+            .grove_db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash");
+        (db, root)
+    }
+
+    /// Build a carrier ACOR `PathQuery` rooted at
+    /// `[TEST_LEAF, "byBrand"]`, fanning out across `outer_keys` and
+    /// counting elements in each brand's `color` subtree matching the
+    /// inner range.
+    fn carrier_acor_path_query(outer_keys: &[&[u8]], inner_range: QueryItem) -> PathQuery {
+        use grovedb_query::Query;
+
+        let mut carrier = Query::new();
+        for k in outer_keys {
+            carrier.items.push(QueryItem::Key(k.to_vec()));
+        }
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(inner_range));
+
+        PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, None, None),
+        )
+    }
+
+    #[test]
+    fn acor_subquery_two_outer_keys_succeeds() {
+        // Carrier with two outer brand keys, range on the color subtree.
+        // Expected: two (key, count) pairs in lex-asc order with the
+        // correct per-brand aggregate.
+        let v = GroveVersion::latest();
+        let (db, expected_root) =
+            setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 1_000);
+        // Pick a range that drops the lower 500 elements (`color_00000`
+        // through `color_00499`).
+        let path_query = carrier_acor_path_query(
+            &[b"brand_000", b"brand_001"],
+            QueryItem::RangeAfter(b"color_00499".to_vec()..),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query (carrier ACOR) should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify carrier ACOR should succeed");
+        assert_eq!(got_root, expected_root, "root must match GroveDB root");
+        assert_eq!(results.len(), 2, "expected one result per outer key");
+        // Lex-asc order: brand_000 then brand_001.
+        assert_eq!(results[0].0, b"brand_000".to_vec());
+        assert_eq!(results[1].0, b"brand_001".to_vec());
+        // Each brand has 1 000 colors; range_after `color_00499` leaves
+        // the upper 500 (`color_00500` .. `color_00999`).
+        assert_eq!(results[0].1, 500);
+        assert_eq!(results[1].1, 500);
+    }
+
+    #[test]
+    fn acor_subquery_with_unknown_outer_key_returns_present_keys_only() {
+        // Spec acceptance criterion 2: an outer-key match that doesn't
+        // exist contributes no entry to the result vector (it's an
+        // absence, not an error). The prover doesn't emit a lower layer
+        // for keys that don't exist in the carrier subtree, so the
+        // verifier sees only the matched keys.
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_color_carrier_tree(v, &[b"brand_000"], 1_000);
+        // Ask for two brands — one present, one absent.
+        let path_query = carrier_acor_path_query(
+            &[b"brand_000", b"brand_999_missing"],
+            QueryItem::RangeAfter(b"color_00499".to_vec()..),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify should succeed");
+        assert_eq!(got_root, expected_root);
+        // Only the present brand contributes a result row.
+        assert_eq!(
+            results.len(),
+            1,
+            "absent outer keys must not contribute an entry"
+        );
+        assert_eq!(results[0].0, b"brand_000".to_vec());
+        assert_eq!(results[0].1, 500);
+    }
+
+    #[test]
+    fn acor_subquery_rejects_acor_at_both_levels() {
+        // Try to build a query where the carrier ITSELF has an ACOR item
+        // AND its subquery is also an ACOR. The validator must reject up
+        // front at prove time.
+        use grovedb_query::Query;
+
+        let mut q =
+            Query::new_aggregate_count_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        q.set_subquery(Query::new_aggregate_count_on_range(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let pq = PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(q, None, None));
+        let v = GroveVersion::latest();
+        // Validation catches it.
+        assert!(
+            pq.validate_aggregate_count_on_range().is_err(),
+            "ACOR + subquery ACOR must fail validation"
+        );
+        // The prove_query entry-point gate must also reject it.
+        let prove_result = make_test_grovedb(v).grove_db.prove_query(&pq, None, v);
+        match prove_result.value() {
+            Err(crate::Error::InvalidQuery(_)) => {}
+            other => panic!("expected InvalidQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn acor_leaf_unchanged_under_per_key_verifier() {
+        // The leaf shape — a single-ACOR query — produces exactly the
+        // same proof bytes it did before this feature. Verifying it via
+        // the new per-key entry point returns a one-entry Vec with an
+        // empty key and the same count `verify_aggregate_count_query`
+        // returns. This is the leaf-symmetry contract.
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_15_key_provable_count_tree(v);
+        let path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        // Existing single-u64 entry point still works.
+        let (root_one, count_one) = GroveDb::verify_aggregate_count_query(&proof, &path_query, v)
+            .expect("legacy leaf verifier must still accept legacy leaf proof");
+        // New per-key entry point also accepts leaf and returns a
+        // one-entry Vec with an empty key.
+        let (root_many, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("per-key verifier must accept leaf proofs");
+        assert_eq!(root_one, expected_root);
+        assert_eq!(root_one, root_many);
+        assert_eq!(count_one, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, Vec::<u8>::new());
+        assert_eq!(results[0].1, count_one);
+    }
+
+    #[test]
+    fn acor_subquery_carrier_with_range_outer_succeeds() {
+        // The carrier supports a Range outer item (the per-spec
+        // "decide-or-defer" case). With an outer `RangeAfter`, the
+        // matched outer keys come back in lex-asc order and each
+        // contributes its own count.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) =
+            setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001", b"brand_002"], 100);
+
+        let mut carrier = Query::new();
+        // Take everything strictly after brand_000 → brand_001, brand_002.
+        carrier
+            .items
+            .push(QueryItem::RangeAfter(b"brand_000".to_vec()..));
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+            b"color_00049".to_vec()..,
+        )));
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, None, None),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query (carrier with Range outer) should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify carrier with Range outer should succeed");
+        assert_eq!(got_root, expected_root);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, b"brand_001".to_vec());
+        assert_eq!(results[1].0, b"brand_002".to_vec());
+        for (_, count) in results {
+            // 100 colors per brand; > color_00049 leaves 50.
+            assert_eq!(count, 50);
+        }
+    }
+
+    #[test]
+    fn acor_per_key_rejects_non_acor_path_query() {
+        // The per-key entry point rejects path queries that aren't ACOR
+        // queries at all — neither leaf nor carrier — before decoding
+        // proof bytes.
+        let v = GroveVersion::latest();
+        let bad_query = PathQuery::new_single_query_item(
+            vec![TEST_LEAF.to_vec()],
+            QueryItem::Key(b"k".to_vec()),
+        );
+        let dummy_proof = vec![0u8; 16];
+        let err = GroveDb::verify_aggregate_count_query_per_key(&dummy_proof, &bad_query, v)
+            .expect_err("non-ACOR path_query must be rejected up front");
+        match err {
+            crate::Error::InvalidQuery(_) => {}
+            other => panic!("expected InvalidQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn acor_subquery_count_forgery_is_caught() {
+        // Same spirit as `count_forgery_is_caught_at_grovedb_level` but
+        // against a carrier proof: pick the first leaf merk
+        // `HashWithCount` op in any of the per-outer-key sub-proofs and
+        // bump its count. The verifier must reject.
+        use bincode::config;
+        use grovedb_merk::proofs::{encoding::encode_into, Decoder, Node, Op};
+
+        use crate::operations::proof::{
+            GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof, MerkOnlyLayerProof,
+            ProofBytes,
+        };
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 100);
+        let path_query = carrier_acor_path_query(
+            &[b"brand_000", b"brand_001"],
+            QueryItem::RangeAfter(b"color_00049".to_vec()..),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut decoded, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof, cfg).expect("decode envelope");
+
+        // Walk to the first leaf merk proof bytes via depth-first
+        // descent: we expect the path `TEST_LEAF -> byBrand -> brand_000
+        // -> color`. The "leaf" is the deepest layer (a leaf has no
+        // further lower_layers; in our test setup that's the count proof
+        // at the color subtree).
+        fn first_leaf_v0(mut layer: &mut MerkOnlyLayerProof) -> &mut Vec<u8> {
+            while let Some((_, child)) = layer.lower_layers.iter_mut().next() {
+                layer = child;
+            }
+            &mut layer.merk_proof
+        }
+        fn first_leaf_v1(mut layer: &mut LayerProof) -> &mut Vec<u8> {
+            while let Some((_, child)) = layer.lower_layers.iter_mut().next() {
+                layer = child;
+            }
+            match &mut layer.merk_proof {
+                ProofBytes::Merk(b) => b,
+                _ => panic!("expected Merk leaf bytes"),
+            }
+        }
+        let leaf_bytes: &mut Vec<u8> = match &mut decoded {
+            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => first_leaf_v0(root_layer),
+            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => first_leaf_v1(root_layer),
+        };
+        let mut ops: Vec<Op> = Decoder::new(leaf_bytes)
+            .map(|r| r.expect("decode op"))
+            .collect();
+        let mut tampered = false;
+        for op in ops.iter_mut() {
+            match op {
+                Op::Push(Node::HashWithCount(_, _, _, count))
+                | Op::PushInverted(Node::HashWithCount(_, _, _, count)) => {
+                    *count = count.wrapping_add(1);
+                    tampered = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(tampered, "expected a HashWithCount in the leaf proof");
+        let mut new_leaf = Vec::new();
+        encode_into(ops.iter(), &mut new_leaf);
+        *leaf_bytes = new_leaf;
+        let new_proof = bincode::encode_to_vec(
+            decoded,
+            config::standard().with_big_endian().with_no_limit(),
+        )
+        .expect("re-encode");
+
+        let result = GroveDb::verify_aggregate_count_query_per_key(&new_proof, &path_query, v);
+        assert!(
+            result.is_err(),
+            "tampered carrier count must be rejected, got {:?}",
+            result.map(|(_, c)| c)
+        );
     }
 }

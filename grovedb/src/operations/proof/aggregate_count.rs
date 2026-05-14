@@ -11,6 +11,25 @@
 //! The proof generator side is wired directly into
 //! [`GroveDb::prove_subqueries`] / [`GroveDb::prove_subqueries_v1`] — see
 //! the "Aggregate-count short-circuit" branches there.
+//!
+//! ## Two shapes
+//!
+//! `AggregateCountOnRange` queries come in two flavors:
+//!
+//! - **Leaf** — a single `AggregateCountOnRange(_)` item at the top level
+//!   of the inner `Query`. The proof descends `path_query.path` via
+//!   single-key existence checks and produces a single `u64` at the leaf
+//!   merk. Surfaced through [`GroveDb::verify_aggregate_count_query`].
+//!
+//! - **Carrier** — an outer query whose items are `Key(_)` / `Range*(_)`
+//!   (one IN-style fan-out dimension) and whose
+//!   `default_subquery_branch.subquery` resolves to a leaf ACOR query.
+//!   The proof descends `path_query.path` via single-key checks, then at
+//!   the carrier merk it produces a multi-key proof over the outer items;
+//!   each matched outer key recurses through the `subquery_path` (if any)
+//!   to a leaf merk that produces its own count. The verifier returns one
+//!   `(outer_key, count)` pair per matched outer key. Surfaced through
+//!   [`GroveDb::verify_aggregate_count_query_per_key`].
 
 use grovedb_merk::{
     proofs::{
@@ -20,6 +39,7 @@ use grovedb_merk::{
     tree::{combine_hash, value_hash},
     CryptoHash,
 };
+use grovedb_query::QueryItem;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
@@ -30,16 +50,17 @@ use crate::{
 };
 
 impl GroveDb {
-    /// Verify a serialized `prove_query` proof against an
+    /// Verify a serialized `prove_query` proof against a leaf
     /// `AggregateCountOnRange` `PathQuery`, returning the GroveDB root hash
     /// and the verified count.
     ///
     /// `path_query` must satisfy
-    /// [`PathQuery::validate_aggregate_count_on_range`] — a single
-    /// `AggregateCountOnRange(_)` item, no subqueries, no pagination, and an
-    /// inner range that isn't `Key`, `RangeFull`, or another
-    /// `AggregateCountOnRange`. Any other shape is rejected up front with
-    /// `Error::InvalidQuery` before any bytes are decoded.
+    /// [`PathQuery::validate_aggregate_count_on_range`] and additionally must
+    /// be the **leaf** shape — a single `AggregateCountOnRange(_)` item, no
+    /// subqueries, no pagination, and an inner range that isn't `Key`,
+    /// `RangeFull`, or another `AggregateCountOnRange`. Carrier-shape ACOR
+    /// queries (outer `Keys` + ACOR subquery) must use
+    /// [`GroveDb::verify_aggregate_count_query_per_key`] instead.
     ///
     /// Returns:
     /// - `root_hash` — the reconstructed GroveDB root hash. The caller is
@@ -71,63 +92,192 @@ impl GroveDb {
                 .verify_query_with_options
         );
 
-        let inner_range = path_query.validate_aggregate_count_on_range()?.clone();
+        let inner_range = path_query
+            .query
+            .query
+            .validate_leaf_aggregate_count_on_range()
+            .map_err(crate::query_validation_error_to_invalid_query)?
+            .clone();
 
-        // Decode the GroveDBProof envelope using the same config the prover
-        // uses on the way out (matches `prove_query`).
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
-
+        let grovedb_proof = decode_grovedb_proof(proof)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
-        match grovedb_proof {
-            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => verify_v0_layer(
-                &root_layer,
+        let (root_hash, results) = match &grovedb_proof {
+            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => verify_v0_leaf_chain(
+                root_layer,
                 path_query,
                 &path_keys,
                 0,
                 &inner_range,
                 grove_version,
-            ),
-            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => verify_v1_layer(
-                &root_layer,
+            )?,
+            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => verify_v1_leaf_chain(
+                root_layer,
                 path_query,
                 &path_keys,
                 0,
                 &inner_range,
+                grove_version,
+            )?,
+        };
+        Ok((root_hash, results))
+    }
+
+    /// Verify a serialized `prove_query` proof against an ACOR `PathQuery`
+    /// in either the leaf or carrier shape, returning one
+    /// `(outer_key, count)` pair per matched outer key.
+    ///
+    /// For a **leaf** ACOR query the returned vector contains exactly one
+    /// entry whose key is an empty byte string and whose count is the same
+    /// `u64` [`GroveDb::verify_aggregate_count_query`] would have returned.
+    /// This makes carrier and leaf consumers symmetric: callers that always
+    /// process a `Vec<(Vec<u8>, u64)>` don't need to branch on the shape.
+    ///
+    /// For a **carrier** ACOR query the outer items must be `Key(_)` /
+    /// `Range*(_)`, the `default_subquery_branch.subquery` must validate as a
+    /// leaf ACOR, and the optional `subquery_path` is followed exactly
+    /// (single-key descent per element) before the count proof. The returned
+    /// vector has one entry per matched outer key in ascending lexicographic
+    /// order. Outer-key candidates that the prover proved as absent
+    /// contribute no entry; outer-key candidates that resolve to an
+    /// **empty** leaf subtree return `count = 0`.
+    ///
+    /// Cryptographic guarantees:
+    /// - Every layer is committed via the same `combine_hash(H(value),
+    ///   lower_hash) == parent_proof_hash` chain check used by the leaf
+    ///   verifier, so a forged path through the carrier or
+    ///   `subquery_path` produces a root-hash mismatch.
+    /// - Each per-outer-key count is committed by the leaf
+    ///   `HashWithCount` / `KVDigestCount` recomputation;
+    ///   counts can't be tampered with independently.
+    pub fn verify_aggregate_count_query_per_key(
+        proof: &[u8],
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+        check_grovedb_v0!(
+            "verify_aggregate_count_query_per_key",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_query_with_options
+        );
+
+        // Classify the query and extract the leaf inner range plus the
+        // optional carrier subquery_path. For leaf queries the carrier
+        // descent below is skipped (carrier_outer_items is None).
+        let classification = classify_path_query(path_query)?;
+
+        let grovedb_proof = decode_grovedb_proof(proof)?;
+        let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+
+        match &grovedb_proof {
+            GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) => verify_v0_with_classification(
+                root_layer,
+                path_query,
+                &path_keys,
+                &classification,
+                grove_version,
+            ),
+            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => verify_v1_with_classification(
+                root_layer,
+                path_query,
+                &path_keys,
+                &classification,
                 grove_version,
             ),
         }
     }
 }
 
-/// Walk a V0 (`MerkOnlyLayerProof`) envelope. At each non-leaf depth we
-/// verify the single-key existence proof for `path[depth]` and descend into
-/// the matching lower layer; at the leaf depth we delegate to the merk
-/// count verifier.
-fn verify_v0_layer(
+/// Classification of an ACOR `PathQuery`. Encodes either the leaf-only
+/// inner range (no carrier descent) or the carrier outer items + leaf
+/// inner range + optional subquery_path that the verifier must follow
+/// per outer key.
+struct AcorClassification {
+    /// The inner range that the leaf merk count proof must satisfy.
+    leaf_inner_range: QueryItem,
+    /// Carrier outer items. `None` for leaf-only queries.
+    carrier_outer_items: Option<Vec<QueryItem>>,
+    /// Carrier subquery_path (the keys between each outer match and the
+    /// leaf merk). Empty `Vec` if no subquery_path was set. `None` for
+    /// leaf-only queries.
+    carrier_subquery_path: Option<Vec<Vec<u8>>>,
+    /// Whether the outer query is left-to-right. Affects which results the
+    /// merk_proof returns when the outer items are ranges. Always `true`
+    /// for leaf-only.
+    carrier_left_to_right: bool,
+}
+
+fn classify_path_query(path_query: &PathQuery) -> Result<AcorClassification, Error> {
+    let q = &path_query.query.query;
+    if q.aggregate_count_on_range().is_some() {
+        // Leaf shape: top-level ACOR item.
+        let inner = q
+            .validate_leaf_aggregate_count_on_range()
+            .map_err(crate::query_validation_error_to_invalid_query)?
+            .clone();
+        return Ok(AcorClassification {
+            leaf_inner_range: inner,
+            carrier_outer_items: None,
+            carrier_subquery_path: None,
+            carrier_left_to_right: true,
+        });
+    }
+    if !q.has_aggregate_count_on_range_anywhere() {
+        return Err(Error::InvalidQuery(
+            "verify_aggregate_count_query_per_key called on a non-ACOR path query",
+        ));
+    }
+    // Carrier shape.
+    let leaf_inner = q
+        .validate_carrier_aggregate_count_on_range()
+        .map_err(crate::query_validation_error_to_invalid_query)?
+        .clone();
+    let outer_items = q.items.clone();
+    let subquery_path = q
+        .default_subquery_branch
+        .subquery_path
+        .clone()
+        .unwrap_or_default();
+    Ok(AcorClassification {
+        leaf_inner_range: leaf_inner,
+        carrier_outer_items: Some(outer_items),
+        carrier_subquery_path: Some(subquery_path),
+        carrier_left_to_right: q.left_to_right,
+    })
+}
+
+fn decode_grovedb_proof(proof: &[u8]) -> Result<GroveDBProof, Error> {
+    // Decode the GroveDBProof envelope using the same config the prover
+    // uses on the way out (matches `prove_query`).
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_limit::<{ 256 * 1024 * 1024 }>();
+    let (proof, _) = bincode::decode_from_slice(proof, config)
+        .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
+    Ok(proof)
+}
+
+// ── V0 leaf-only chain (legacy entry point, kept byte-identical) ───────────
+
+fn verify_v0_leaf_chain(
     layer: &MerkOnlyLayerProof,
     path_query: &PathQuery,
     path_keys: &[&[u8]],
     depth: usize,
-    inner_range: &grovedb_merk::proofs::query::QueryItem,
+    inner_range: &QueryItem,
     grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, u64), Error> {
     if depth == path_keys.len() {
-        // Leaf layer: count proof.
         return verify_count_leaf(&layer.merk_proof, inner_range, path_query);
     }
 
-    // Non-leaf: build a single-key merk query and verify.
     let next_key = path_keys[depth].to_vec();
     let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
         verify_single_key_layer_proof_v0(&layer.merk_proof, &next_key, path_query)?;
 
-    // Descend.
     let lower_layer = layer.lower_layers.get(&next_key).ok_or_else(|| {
         Error::InvalidProof(
             path_query.clone(),
@@ -137,7 +287,7 @@ fn verify_v0_layer(
             ),
         )
     })?;
-    let (lower_hash, count) = verify_v0_layer(
+    let (lower_hash, count) = verify_v0_leaf_chain(
         lower_layer,
         path_query,
         path_keys,
@@ -146,8 +296,6 @@ fn verify_v0_layer(
         grove_version,
     )?;
 
-    // Chain check: combine_hash(H(tree_value), lower_hash) must equal the
-    // value_hash recorded by the parent merk for this tree element.
     enforce_lower_chain(
         path_query,
         &next_key,
@@ -160,30 +308,15 @@ fn verify_v0_layer(
     Ok((parent_root_hash, count))
 }
 
-/// Walk a V1 (`LayerProof`) envelope. Mirrors `verify_v0_layer`; the V1
-/// envelope wraps merk proof bytes in `ProofBytes::Merk(_)` and we reject
-/// any other tree-specific proof variant for count queries (they're not
-/// applicable to provable count trees).
-fn verify_v1_layer(
+fn verify_v1_leaf_chain(
     layer: &LayerProof,
     path_query: &PathQuery,
     path_keys: &[&[u8]],
     depth: usize,
-    inner_range: &grovedb_merk::proofs::query::QueryItem,
+    inner_range: &QueryItem,
     grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, u64), Error> {
-    let merk_bytes = match &layer.merk_proof {
-        ProofBytes::Merk(b) => b.as_slice(),
-        other => {
-            return Err(Error::InvalidProof(
-                path_query.clone(),
-                format!(
-                    "aggregate-count proof has unexpected non-merk leaf bytes: {:?}",
-                    std::mem::discriminant(other)
-                ),
-            ));
-        }
-    };
+    let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
 
     if depth == path_keys.len() {
         return verify_count_leaf(merk_bytes, inner_range, path_query);
@@ -202,7 +335,7 @@ fn verify_v1_layer(
             ),
         )
     })?;
-    let (lower_hash, count) = verify_v1_layer(
+    let (lower_hash, count) = verify_v1_leaf_chain(
         lower_layer,
         path_query,
         path_keys,
@@ -223,11 +356,380 @@ fn verify_v1_layer(
     Ok((parent_root_hash, count))
 }
 
+// ── per-key entry-point traversal (leaf or carrier) ────────────────────────
+
+fn verify_v0_with_classification(
+    layer: &MerkOnlyLayerProof,
+    path_query: &PathQuery,
+    path_keys: &[&[u8]],
+    classification: &AcorClassification,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+    verify_v0_per_key(
+        layer,
+        path_query,
+        path_keys,
+        0,
+        classification,
+        grove_version,
+    )
+}
+
+fn verify_v0_per_key(
+    layer: &MerkOnlyLayerProof,
+    path_query: &PathQuery,
+    path_keys: &[&[u8]],
+    depth: usize,
+    classification: &AcorClassification,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+    if depth < path_keys.len() {
+        // Path-prefix layer: same single-key descent both shapes use.
+        let next_key = path_keys[depth].to_vec();
+        let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
+            verify_single_key_layer_proof_v0(&layer.merk_proof, &next_key, path_query)?;
+
+        let lower_layer = layer.lower_layers.get(&next_key).ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "aggregate-count proof missing lower layer for path key {}",
+                    hex::encode(&next_key)
+                ),
+            )
+        })?;
+        let (lower_hash, results) = verify_v0_per_key(
+            lower_layer,
+            path_query,
+            path_keys,
+            depth + 1,
+            classification,
+            grove_version,
+        )?;
+        enforce_lower_chain(
+            path_query,
+            &next_key,
+            &proven_value_bytes,
+            &lower_hash,
+            &parent_proof_hash,
+            grove_version,
+        )?;
+        return Ok((parent_root_hash, results));
+    }
+
+    // depth == path_keys.len(): we are at the carrier (or, in the leaf
+    // shape, at the leaf merk).
+    match &classification.carrier_outer_items {
+        None => {
+            // Leaf shape: single u64 → one entry with empty key.
+            let (root, count) = verify_count_leaf(
+                &layer.merk_proof,
+                &classification.leaf_inner_range,
+                path_query,
+            )?;
+            Ok((root, vec![(Vec::new(), count)]))
+        }
+        Some(outer_items) => verify_v0_carrier_layer(
+            layer,
+            path_query,
+            outer_items,
+            classification,
+            grove_version,
+        ),
+    }
+}
+
+fn verify_v0_carrier_layer(
+    layer: &MerkOnlyLayerProof,
+    path_query: &PathQuery,
+    outer_items: &[QueryItem],
+    classification: &AcorClassification,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+    // Execute the outer multi-key merk proof to discover which outer keys
+    // matched (and recover their value_hash commitments).
+    let (carrier_root, matched) = execute_carrier_layer_proof(
+        &layer.merk_proof,
+        outer_items,
+        classification.carrier_left_to_right,
+        path_query,
+    )?;
+
+    let subquery_path = classification
+        .carrier_subquery_path
+        .as_ref()
+        .expect("carrier subquery_path is set when carrier_outer_items is Some");
+
+    let mut results = Vec::with_capacity(matched.len());
+    for OuterMatch {
+        outer_key,
+        value_bytes,
+        commitment_hash,
+    } in matched
+    {
+        let lower_layer = layer.lower_layers.get(&outer_key).ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "carrier ACOR proof missing lower layer for outer key {}",
+                    hex::encode(&outer_key)
+                ),
+            )
+        })?;
+
+        let (lower_root, count) = verify_v0_subquery_path(
+            lower_layer,
+            path_query,
+            subquery_path,
+            0,
+            &classification.leaf_inner_range,
+            grove_version,
+        )?;
+
+        enforce_lower_chain(
+            path_query,
+            &outer_key,
+            &value_bytes,
+            &lower_root,
+            &commitment_hash,
+            grove_version,
+        )?;
+
+        results.push((outer_key, count));
+    }
+
+    Ok((carrier_root, results))
+}
+
+fn verify_v0_subquery_path(
+    layer: &MerkOnlyLayerProof,
+    path_query: &PathQuery,
+    subquery_path: &[Vec<u8>],
+    depth: usize,
+    inner_range: &QueryItem,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, u64), Error> {
+    if depth == subquery_path.len() {
+        // Leaf merk: count proof.
+        return verify_count_leaf(&layer.merk_proof, inner_range, path_query);
+    }
+    let next_key = subquery_path[depth].clone();
+    let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
+        verify_single_key_layer_proof_v0(&layer.merk_proof, &next_key, path_query)?;
+    let lower_layer = layer.lower_layers.get(&next_key).ok_or_else(|| {
+        Error::InvalidProof(
+            path_query.clone(),
+            format!(
+                "carrier ACOR proof missing subquery_path layer for key {}",
+                hex::encode(&next_key)
+            ),
+        )
+    })?;
+    let (lower_hash, count) = verify_v0_subquery_path(
+        lower_layer,
+        path_query,
+        subquery_path,
+        depth + 1,
+        inner_range,
+        grove_version,
+    )?;
+    enforce_lower_chain(
+        path_query,
+        &next_key,
+        &proven_value_bytes,
+        &lower_hash,
+        &parent_proof_hash,
+        grove_version,
+    )?;
+    Ok((parent_root_hash, count))
+}
+
+fn verify_v1_with_classification(
+    layer: &LayerProof,
+    path_query: &PathQuery,
+    path_keys: &[&[u8]],
+    classification: &AcorClassification,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+    verify_v1_per_key(
+        layer,
+        path_query,
+        path_keys,
+        0,
+        classification,
+        grove_version,
+    )
+}
+
+fn verify_v1_per_key(
+    layer: &LayerProof,
+    path_query: &PathQuery,
+    path_keys: &[&[u8]],
+    depth: usize,
+    classification: &AcorClassification,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+    let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
+
+    if depth < path_keys.len() {
+        let next_key = path_keys[depth].to_vec();
+        let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
+            verify_single_key_layer_proof_v0(merk_bytes, &next_key, path_query)?;
+        let lower_layer = layer.lower_layers.get(&next_key).ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "aggregate-count proof missing lower layer for path key {}",
+                    hex::encode(&next_key)
+                ),
+            )
+        })?;
+        let (lower_hash, results) = verify_v1_per_key(
+            lower_layer,
+            path_query,
+            path_keys,
+            depth + 1,
+            classification,
+            grove_version,
+        )?;
+        enforce_lower_chain(
+            path_query,
+            &next_key,
+            &proven_value_bytes,
+            &lower_hash,
+            &parent_proof_hash,
+            grove_version,
+        )?;
+        return Ok((parent_root_hash, results));
+    }
+
+    match &classification.carrier_outer_items {
+        None => {
+            let (root, count) =
+                verify_count_leaf(merk_bytes, &classification.leaf_inner_range, path_query)?;
+            Ok((root, vec![(Vec::new(), count)]))
+        }
+        Some(outer_items) => verify_v1_carrier_layer(
+            layer,
+            merk_bytes,
+            path_query,
+            outer_items,
+            classification,
+            grove_version,
+        ),
+    }
+}
+
+fn verify_v1_carrier_layer(
+    layer: &LayerProof,
+    merk_bytes: &[u8],
+    path_query: &PathQuery,
+    outer_items: &[QueryItem],
+    classification: &AcorClassification,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
+    let (carrier_root, matched) = execute_carrier_layer_proof(
+        merk_bytes,
+        outer_items,
+        classification.carrier_left_to_right,
+        path_query,
+    )?;
+
+    let subquery_path = classification
+        .carrier_subquery_path
+        .as_ref()
+        .expect("carrier subquery_path is set when carrier_outer_items is Some");
+
+    let mut results = Vec::with_capacity(matched.len());
+    for OuterMatch {
+        outer_key,
+        value_bytes,
+        commitment_hash,
+    } in matched
+    {
+        let lower_layer = layer.lower_layers.get(&outer_key).ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "carrier ACOR proof missing lower layer for outer key {}",
+                    hex::encode(&outer_key)
+                ),
+            )
+        })?;
+
+        let (lower_root, count) = verify_v1_subquery_path(
+            lower_layer,
+            path_query,
+            subquery_path,
+            0,
+            &classification.leaf_inner_range,
+            grove_version,
+        )?;
+
+        enforce_lower_chain(
+            path_query,
+            &outer_key,
+            &value_bytes,
+            &lower_root,
+            &commitment_hash,
+            grove_version,
+        )?;
+        results.push((outer_key, count));
+    }
+
+    Ok((carrier_root, results))
+}
+
+fn verify_v1_subquery_path(
+    layer: &LayerProof,
+    path_query: &PathQuery,
+    subquery_path: &[Vec<u8>],
+    depth: usize,
+    inner_range: &QueryItem,
+    grove_version: &GroveVersion,
+) -> Result<(CryptoHash, u64), Error> {
+    let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
+    if depth == subquery_path.len() {
+        return verify_count_leaf(merk_bytes, inner_range, path_query);
+    }
+    let next_key = subquery_path[depth].clone();
+    let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
+        verify_single_key_layer_proof_v0(merk_bytes, &next_key, path_query)?;
+    let lower_layer = layer.lower_layers.get(&next_key).ok_or_else(|| {
+        Error::InvalidProof(
+            path_query.clone(),
+            format!(
+                "carrier ACOR proof missing subquery_path layer for key {}",
+                hex::encode(&next_key)
+            ),
+        )
+    })?;
+    let (lower_hash, count) = verify_v1_subquery_path(
+        lower_layer,
+        path_query,
+        subquery_path,
+        depth + 1,
+        inner_range,
+        grove_version,
+    )?;
+    enforce_lower_chain(
+        path_query,
+        &next_key,
+        &proven_value_bytes,
+        &lower_hash,
+        &parent_proof_hash,
+        grove_version,
+    )?;
+    Ok((parent_root_hash, count))
+}
+
+// ── shared helpers ─────────────────────────────────────────────────────────
+
 /// Verify the leaf layer: bytes are the encoded count-proof Op stream;
 /// the inner range is the same one the prover counted over.
 fn verify_count_leaf(
     leaf_bytes: &[u8],
-    inner_range: &grovedb_merk::proofs::query::QueryItem,
+    inner_range: &QueryItem,
     path_query: &PathQuery,
 ) -> Result<(CryptoHash, u64), Error> {
     let (root_hash, count) = verify_aggregate_count_on_range_proof(leaf_bytes, inner_range)
@@ -239,6 +741,22 @@ fn verify_count_leaf(
             )
         })?;
     Ok((root_hash, count))
+}
+
+fn expect_merk_bytes<'a>(
+    proof_bytes: &'a ProofBytes,
+    path_query: &PathQuery,
+) -> Result<&'a [u8], Error> {
+    match proof_bytes {
+        ProofBytes::Merk(b) => Ok(b.as_slice()),
+        other => Err(Error::InvalidProof(
+            path_query.clone(),
+            format!(
+                "aggregate-count proof has unexpected non-merk layer bytes: {:?}",
+                std::mem::discriminant(other)
+            ),
+        )),
+    }
 }
 
 /// Verify a non-leaf layer that should contain a single-key proof for
@@ -276,7 +794,6 @@ fn verify_single_key_layer_proof_v0(
             )
         })?;
 
-    // Find the result row for our target key and pull the value + proof_hash.
     let proved = merk_result
         .result_set
         .iter()
@@ -302,6 +819,67 @@ fn verify_single_key_layer_proof_v0(
     })?;
 
     Ok((value_bytes, root_hash, proved.proof))
+}
+
+/// One matched outer key in the carrier layer's multi-key merk proof.
+struct OuterMatch {
+    /// The matched outer key bytes.
+    outer_key: Vec<u8>,
+    /// The serialized tree element bytes for the matched outer key (a
+    /// non-empty tree element of some flavor).
+    value_bytes: Vec<u8>,
+    /// The value_hash the parent merk committed for this outer key — the
+    /// hash that must equal `combine_hash(H(value), lower_layer_root)`.
+    commitment_hash: CryptoHash,
+}
+
+/// Execute the carrier-layer multi-key merk proof for `outer_items`,
+/// returning `(carrier_merk_root_hash, matched_outer_keys)`. Each
+/// `OuterMatch` carries the value bytes and the parent-recorded value_hash
+/// that the chain check will validate.
+fn execute_carrier_layer_proof(
+    merk_bytes: &[u8],
+    outer_items: &[QueryItem],
+    left_to_right: bool,
+    path_query: &PathQuery,
+) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
+    // The grovedb_query::QueryItem and grovedb_merk::proofs::query::QueryItem
+    // types are identical (the merk crate re-exports the grovedb-query one).
+    let level_query = MerkQuery {
+        items: outer_items.to_vec(),
+        left_to_right,
+        ..Default::default()
+    };
+
+    let (root_hash, merk_result) = level_query
+        .execute_proof(merk_bytes, None, true, 0)
+        .unwrap()
+        .map_err(|e| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!("carrier ACOR multi-key proof failed to verify: {}", e),
+            )
+        })?;
+
+    let mut matched = Vec::with_capacity(merk_result.result_set.len());
+    for proved in &merk_result.result_set {
+        let value = proved.value.clone().ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "carrier ACOR proof returned a result row without value bytes for key {}",
+                    hex::encode(&proved.key)
+                ),
+            )
+        })?;
+        matched.push(OuterMatch {
+            outer_key: proved.key.clone(),
+            value_bytes: value,
+            commitment_hash: proved.proof,
+        });
+    }
+
+    Ok((root_hash, matched))
 }
 
 /// Enforce the layer-chain hash equality: the parent merk's recorded

@@ -374,7 +374,42 @@ impl Query {
 
     /// Validates the Query-level constraints that apply when an
     /// `AggregateCountOnRange` is present. On success, returns a reference
-    /// to the inner `QueryItem` describing the range to count.
+    /// to the inner range `QueryItem` describing the keys being counted
+    /// (the same item regardless of whether the surrounding query is the
+    /// leaf shape or the carrier shape).
+    ///
+    /// Top-level dispatcher: classifies the query as either
+    /// - **leaf** (the query owns an `AggregateCountOnRange` item directly —
+    ///   the original single-`u64` shape), or
+    /// - **carrier** (the query is an outer fan-out of `Key`/`Range` items
+    ///   whose `default_subquery_branch.subquery` resolves to a leaf
+    ///   `AggregateCountOnRange` — the new per-outer-key shape)
+    ///
+    /// and forwards to the corresponding rule set. See
+    /// [`Self::validate_leaf_aggregate_count_on_range`] and
+    /// [`Self::validate_carrier_aggregate_count_on_range`] for the precise
+    /// rules in each case.
+    ///
+    /// `SizedQuery::limit` / `SizedQuery::offset` checks live at the
+    /// `PathQuery` / `SizedQuery` layer.
+    pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.aggregate_count_on_range().is_some() {
+            // Owns an ACOR at this level → leaf shape.
+            self.validate_leaf_aggregate_count_on_range()
+        } else if self.has_aggregate_count_on_range_anywhere() {
+            // Doesn't own an ACOR but a nested subquery does → carrier shape.
+            self.validate_carrier_aggregate_count_on_range()
+        } else {
+            Err(Error::InvalidOperation(
+                "validate_aggregate_count_on_range called on a query without an \
+                 AggregateCountOnRange item",
+            ))
+        }
+    }
+
+    /// Validates the leaf shape: a query whose single item is
+    /// `AggregateCountOnRange(_)` and whose surroundings carry no subquery
+    /// branches. Returns a reference to the inner range `QueryItem`.
     ///
     /// Rules enforced (matching the constraints documented in the GroveDB
     /// book chapter "Aggregate Count Queries"):
@@ -390,11 +425,7 @@ impl Query {
     /// 6. `default_subquery_branch.subquery` and
     ///    `default_subquery_branch.subquery_path` must both be `None`.
     /// 7. `conditional_subquery_branches` must be `None` or empty.
-    ///
-    /// `SizedQuery::limit` / `SizedQuery::offset` checks live at the
-    /// `PathQuery` / `SizedQuery` layer (see
-    /// [`SizedQuery::validate_aggregate_count_on_range`]).
-    pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+    pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
         if self.items.len() != 1 {
             return Err(Error::InvalidOperation(
                 "AggregateCountOnRange must be the only item in the query",
@@ -444,6 +475,87 @@ impl Query {
             ));
         }
         Ok(inner)
+    }
+
+    /// Validates the carrier shape: an outer query whose items are
+    /// `Key`/`Range`-like (NOT `AggregateCountOnRange`), and whose
+    /// `default_subquery_branch.subquery` resolves to a valid leaf ACOR
+    /// query (possibly after walking a `subquery_path`).
+    ///
+    /// Returns a reference to the leaf's inner range `QueryItem` — the
+    /// same kind of value [`Self::validate_leaf_aggregate_count_on_range`]
+    /// returns for a leaf-shape query.
+    ///
+    /// Rules enforced:
+    /// 1. Items must be non-empty.
+    /// 2. Each item must be `Key(_)` or a `Range*(_)` variant — explicitly
+    ///    NOT `AggregateCountOnRange` (those route through the leaf
+    ///    validator) and NOT `RangeFull` (use a leaf ACOR on the parent
+    ///    instead).
+    /// 3. `default_subquery_branch.subquery` must be `Some(_)`. Its target
+    ///    query must itself validate as a leaf ACOR query.
+    /// 4. `default_subquery_branch.subquery_path` may be `Some(_)`
+    ///    (typically names the path from each outer-key match to the leaf
+    ///    subtree). When set, every element must be a non-empty key.
+    /// 5. `conditional_subquery_branches` must be `None` or empty
+    ///    (out of scope for the initial implementation).
+    pub fn validate_carrier_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.items.is_empty() {
+            return Err(Error::InvalidOperation(
+                "carrier AggregateCountOnRange query must have at least one outer item",
+            ));
+        }
+        for item in &self.items {
+            match item {
+                QueryItem::Key(_)
+                | QueryItem::Range(_)
+                | QueryItem::RangeInclusive(_)
+                | QueryItem::RangeFrom(_)
+                | QueryItem::RangeTo(_)
+                | QueryItem::RangeToInclusive(_)
+                | QueryItem::RangeAfter(_)
+                | QueryItem::RangeAfterTo(_)
+                | QueryItem::RangeAfterToInclusive(_) => {}
+                QueryItem::RangeFull(_) => {
+                    return Err(Error::InvalidOperation(
+                        "carrier AggregateCountOnRange query may not have a RangeFull outer item",
+                    ));
+                }
+                QueryItem::AggregateCountOnRange(_) => {
+                    return Err(Error::InvalidOperation(
+                        "carrier AggregateCountOnRange query may not own an \
+                         AggregateCountOnRange item — use the leaf shape instead",
+                    ));
+                }
+            }
+        }
+        let subquery = match self.default_subquery_branch.subquery.as_deref() {
+            Some(sub) => sub,
+            None => {
+                return Err(Error::InvalidOperation(
+                    "carrier AggregateCountOnRange query must set \
+                     default_subquery_branch.subquery to a leaf ACOR query",
+                ));
+            }
+        };
+        if let Some(path) = &self.default_subquery_branch.subquery_path
+            && path.iter().any(|k| k.is_empty())
+        {
+            return Err(Error::InvalidOperation(
+                "carrier AggregateCountOnRange query's subquery_path must contain non-empty keys",
+            ));
+        }
+        if let Some(branches) = &self.conditional_subquery_branches
+            && !branches.is_empty()
+        {
+            return Err(Error::InvalidOperation(
+                "carrier AggregateCountOnRange query may not carry conditional subquery \
+                 branches (out of scope for this feature)",
+            ));
+        }
+        // The subquery must validate as a leaf ACOR (which is what the
+        // proof descent will ultimately consume).
+        subquery.validate_leaf_aggregate_count_on_range()
     }
 
     /// Returns `true` if the given key would trigger a subquery (either via
@@ -1278,5 +1390,190 @@ mod tests {
             conditional.has_aggregate_count_on_range_anywhere(),
             "ACOR hidden in conditional subquery branch must be detected"
         );
+    }
+
+    // ---------- Carrier ACOR validation tests ----------
+    //
+    // The carrier shape is an outer query with `Key`/`Range*` items whose
+    // `default_subquery_branch.subquery` resolves to a leaf ACOR query.
+    // It is the multi-outer-key extension of the leaf shape, returning one
+    // count per outer key. These tests verify the new
+    // `validate_carrier_aggregate_count_on_range` rules and the dispatcher
+    // behavior of the top-level `validate_aggregate_count_on_range`.
+
+    fn make_leaf_acor_subquery() -> Query {
+        make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()))
+    }
+
+    #[test]
+    fn validate_carrier_acor_happy_path_keys_outer_with_subquery_path() {
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::Key(b"brand_000".to_vec()));
+        carrier.items.push(QueryItem::Key(b"brand_001".to_vec()));
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(make_leaf_acor_subquery());
+        // Top-level dispatcher accepts the carrier and returns the leaf's
+        // inner range.
+        let inner = carrier
+            .validate_aggregate_count_on_range()
+            .expect("carrier should validate");
+        assert!(matches!(inner, QueryItem::Range(_)));
+        // And the dedicated carrier validator agrees.
+        carrier
+            .validate_carrier_aggregate_count_on_range()
+            .expect("carrier validator should accept");
+        // Leaf validator must reject (carrier-level items aren't ACOR).
+        assert!(carrier.validate_leaf_aggregate_count_on_range().is_err());
+    }
+
+    #[test]
+    fn validate_carrier_acor_happy_path_no_subquery_path() {
+        // subquery_path is optional — the leaf ACOR may be directly under
+        // each outer match.
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::Key(b"a".to_vec()));
+        carrier.set_subquery(make_leaf_acor_subquery());
+        carrier
+            .validate_aggregate_count_on_range()
+            .expect("carrier without subquery_path should validate");
+    }
+
+    #[test]
+    fn validate_carrier_acor_rejects_acor_at_both_levels() {
+        // Carrier itself owns an ACOR AND its subquery is also an ACOR.
+        // The "rule" of "no ACOR at carrier level" must fire — but the
+        // top-level dispatcher routes this to the LEAF validator first
+        // (because aggregate_count_on_range() returns Some at carrier
+        // level), so the leaf's "single item" rule catches the extra
+        // ACOR-in-subquery shape via the items-len check or the
+        // no-subquery rule. Either way the error fires.
+        let mut q = make_acor_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        q.set_subquery(make_leaf_acor_subquery());
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("ACOR at both levels must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(
+                    msg.contains("AggregateCountOnRange") || msg.contains("subquery"),
+                    "unexpected message: {msg}"
+                );
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_carrier_acor_rejects_range_full_outer() {
+        let mut carrier = Query::new();
+        carrier
+            .items
+            .push(QueryItem::RangeFull(std::ops::RangeFull));
+        carrier.set_subquery(make_leaf_acor_subquery());
+        let err = carrier
+            .validate_aggregate_count_on_range()
+            .expect_err("RangeFull outer must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(msg.contains("RangeFull"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_carrier_acor_rejects_acor_outer_item() {
+        // Both a Key and an AggregateCountOnRange item at the carrier
+        // level. The leaf validator's items-len check fires first (since
+        // there's an ACOR item in items, aggregate_count_on_range()
+        // returns Some, and len != 1).
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::Key(b"k".to_vec()));
+        carrier
+            .items
+            .push(QueryItem::AggregateCountOnRange(Box::new(
+                QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            )));
+        carrier.set_subquery(make_leaf_acor_subquery());
+        let err = carrier
+            .validate_aggregate_count_on_range()
+            .expect_err("ACOR + Key outer items must fail");
+        assert!(matches!(err, crate::error::Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn validate_carrier_acor_rejects_carrier_with_missing_subquery() {
+        // Outer items present but no subquery → not a carrier (and not a
+        // leaf), so the top-level dispatcher routes to the
+        // "not an ACOR query" error.
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::Key(b"k".to_vec()));
+        let err = carrier
+            .validate_aggregate_count_on_range()
+            .expect_err("carrier without subquery must fail");
+        assert!(matches!(err, crate::error::Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn validate_carrier_acor_rejects_non_acor_subquery() {
+        // Outer Keys + subquery that is NOT an ACOR (just a regular range
+        // query) → not a valid carrier ACOR. The top-level dispatcher
+        // sees `has_aggregate_count_on_range_anywhere() == false`, so it
+        // surfaces the "not an ACOR query" error rather than the carrier
+        // validator's "subquery must validate as leaf ACOR" error.
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::Key(b"k".to_vec()));
+        let regular_sub =
+            Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        carrier.set_subquery(regular_sub);
+        let err = carrier
+            .validate_aggregate_count_on_range()
+            .expect_err("non-ACOR subquery must fail");
+        assert!(matches!(err, crate::error::Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn validate_carrier_acor_rejects_conditional_branches() {
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::Key(b"k".to_vec()));
+        carrier.set_subquery(make_leaf_acor_subquery());
+        carrier.add_conditional_subquery(
+            QueryItem::Key(b"k".to_vec()),
+            None,
+            Some(make_leaf_acor_subquery()),
+        );
+        let err = carrier
+            .validate_aggregate_count_on_range()
+            .expect_err("carrier conditional branches must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(msg.contains("conditional"), "unexpected message: {msg}")
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_carrier_acor_rejects_empty_outer_items() {
+        // Empty items + leaf ACOR subquery → not a valid carrier.
+        // (Empty outer means no outer key to iterate; doesn't make sense.)
+        let mut carrier = Query::new();
+        carrier.set_subquery(make_leaf_acor_subquery());
+        let err = carrier
+            .validate_carrier_aggregate_count_on_range()
+            .expect_err("empty outer items must fail");
+        assert!(matches!(err, crate::error::Error::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn validate_carrier_acor_accepts_range_outer_items() {
+        // A carrier may use Range outer items (the spec leaves room for
+        // this). Verify the validator agrees.
+        let mut carrier = Query::new();
+        carrier.items.push(QueryItem::RangeAfter(b"a".to_vec()..));
+        carrier.set_subquery(make_leaf_acor_subquery());
+        carrier
+            .validate_aggregate_count_on_range()
+            .expect("carrier with Range outer should validate");
     }
 }
