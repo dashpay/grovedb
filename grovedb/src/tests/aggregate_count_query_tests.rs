@@ -1831,6 +1831,46 @@ mod tests {
     }
 
     #[test]
+    fn acor_subquery_right_to_left_returns_descending_order() {
+        // Flip the carrier's `left_to_right` flag — output must come
+        // back in descending lex order, mirroring the merk walker's
+        // reversed emission.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) =
+            setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001", b"brand_002"], 100);
+        let mut carrier = Query::new_with_direction(false);
+        carrier.insert_key(b"brand_000".to_vec());
+        carrier.insert_key(b"brand_001".to_vec());
+        carrier.insert_key(b"brand_002".to_vec());
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+            b"color_00049".to_vec()..,
+        )));
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, None, None),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query (carrier ACOR, right-to-left) should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify carrier ACOR (right-to-left) should succeed");
+        assert_eq!(got_root, expected_root);
+        assert_eq!(results.len(), 3, "expected 3 outer-key matches");
+        // Descending lex: brand_002, brand_001, brand_000.
+        assert_eq!(results[0].0, b"brand_002".to_vec());
+        assert_eq!(results[1].0, b"brand_001".to_vec());
+        assert_eq!(results[2].0, b"brand_000".to_vec());
+        for (_, count) in results {
+            assert_eq!(count, 50);
+        }
+    }
+
+    #[test]
     fn acor_per_key_rejects_non_acor_path_query() {
         // The per-key entry point rejects path queries that aren't ACOR
         // queries at all — neither leaf nor carrier — before decoding
