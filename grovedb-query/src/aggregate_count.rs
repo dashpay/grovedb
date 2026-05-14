@@ -764,4 +764,76 @@ mod tests {
             _ => panic!("expected InvalidOperation"),
         }
     }
+
+    // ---------- Direct carrier-validator branch coverage ----------
+    //
+    // The top-level dispatcher classifies first and routes to either
+    // `validate_leaf_aggregate_count_on_range` or
+    // `validate_carrier_aggregate_count_on_range`. Some carrier rules
+    // (no subquery, ACOR outer item) get masked by classification —
+    // calling the carrier validator directly is the only way to exercise
+    // them. These tests pin those branches.
+
+    #[test]
+    fn validate_carrier_acor_direct_rejects_missing_subquery() {
+        // Carrier-shaped items but no subquery — the carrier
+        // validator's "subquery must be Some" branch fires.
+        let mut carrier = Query::new();
+        carrier.insert_key(b"k".to_vec());
+        let err = carrier
+            .validate_carrier_aggregate_count_on_range()
+            .expect_err("missing subquery must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(msg.contains("must set"), "unexpected message: {msg}")
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_carrier_acor_direct_rejects_acor_outer_item() {
+        // ACOR appears in outer items + a leaf subquery is set. The
+        // top-level dispatcher routes to the leaf validator (because
+        // `aggregate_count_on_range()` returns Some at the carrier
+        // level); calling the carrier validator directly is the only
+        // way to hit the carrier-side rule.
+        let mut carrier = Query::new();
+        carrier
+            .items
+            .push(QueryItem::AggregateCountOnRange(Box::new(
+                QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            )));
+        carrier.set_subquery(make_leaf_acor_subquery());
+        let err = carrier
+            .validate_carrier_aggregate_count_on_range()
+            .expect_err("ACOR outer item via direct carrier validator must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(
+                msg.contains("may not own an") || msg.contains("AggregateCountOnRange"),
+                "unexpected message: {msg}"
+            ),
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_carrier_acor_direct_rejects_range_full_outer() {
+        // RangeFull outer + leaf subquery — exercise the carrier
+        // validator's `RangeFull` arm directly.
+        let mut carrier = Query::new();
+        carrier
+            .items
+            .push(QueryItem::RangeFull(std::ops::RangeFull));
+        carrier.set_subquery(make_leaf_acor_subquery());
+        let err = carrier
+            .validate_carrier_aggregate_count_on_range()
+            .expect_err("RangeFull outer via direct carrier validator must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(msg.contains("RangeFull"), "unexpected message: {msg}")
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
 }

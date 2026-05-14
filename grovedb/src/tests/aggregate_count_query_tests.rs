@@ -2144,6 +2144,195 @@ mod tests {
     }
 
     #[test]
+    fn acor_carrier_missing_outer_lower_layer_is_rejected() {
+        // Decode the carrier proof envelope, drop one of the
+        // `lower_layers[outer_key]` entries, re-encode, and verify the
+        // verifier rejects with "missing lower layer for outer key".
+        // Exercises the `lower_layers.get(&outer_key).ok_or_else(...)`
+        // branch in `verify_v1_carrier_layer`.
+        use bincode::config;
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 100);
+        let path_query = carrier_acor_path_query(
+            &[b"brand_000", b"brand_001"],
+            QueryItem::RangeAfter(b"color_00049".to_vec()..),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut decoded, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof, cfg).expect("decode envelope");
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        // Walk to the carrier layer: TEST_LEAF -> byBrand.
+        let carrier_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF layer")
+            .lower_layers
+            .get_mut(&b"byBrand".to_vec())
+            .expect("byBrand carrier layer");
+        // Drop brand_001's lower_layer — its row will still be in the
+        // multi-key proof but the descent will fail.
+        let removed = carrier_layer.lower_layers.remove(&b"brand_001".to_vec());
+        assert!(
+            removed.is_some(),
+            "test setup: expected brand_001 in carrier lower_layers"
+        );
+        let new_proof = bincode::encode_to_vec(
+            decoded,
+            config::standard().with_big_endian().with_no_limit(),
+        )
+        .expect("re-encode");
+
+        let err = GroveDb::verify_aggregate_count_query_per_key(&new_proof, &path_query, v)
+            .expect_err("missing outer lower_layer must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => assert!(
+                msg.contains("missing lower layer for outer key"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn acor_carrier_missing_subquery_path_layer_is_rejected() {
+        // Same idea as the previous test but one level deeper: drop the
+        // `subquery_path` layer ("color") that sits between the outer
+        // brand match and the leaf merk. Exercises the
+        // `verify_v1_subquery_path` "missing subquery_path layer" branch.
+        use bincode::config;
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000"], 100);
+        let path_query = carrier_acor_path_query(
+            &[b"brand_000"],
+            QueryItem::RangeAfter(b"color_00049".to_vec()..),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut decoded, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof, cfg).expect("decode envelope");
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        // Walk to brand_000 layer and drop the "color" subquery_path
+        // descent.
+        let brand_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF layer")
+            .lower_layers
+            .get_mut(&b"byBrand".to_vec())
+            .expect("byBrand layer")
+            .lower_layers
+            .get_mut(&b"brand_000".to_vec())
+            .expect("brand_000 layer");
+        let removed = brand_layer.lower_layers.remove(&b"color".to_vec());
+        assert!(
+            removed.is_some(),
+            "test setup: expected color in brand_000 lower_layers"
+        );
+        let new_proof = bincode::encode_to_vec(
+            decoded,
+            config::standard().with_big_endian().with_no_limit(),
+        )
+        .expect("re-encode");
+
+        let err = GroveDb::verify_aggregate_count_query_per_key(&new_proof, &path_query, v)
+            .expect_err("missing subquery_path layer must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => assert!(
+                msg.contains("missing subquery_path layer"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn acor_carrier_non_merk_proof_bytes_is_rejected() {
+        // Replace the subquery_path layer's `ProofBytes::Merk(...)` with
+        // a `ProofBytes::MMR(...)` variant. The verifier rejects the
+        // mismatched proof-bytes flavor through `expect_merk_bytes`.
+        use bincode::config;
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_brand_color_carrier_tree(v, &[b"brand_000"], 100);
+        let path_query = carrier_acor_path_query(
+            &[b"brand_000"],
+            QueryItem::RangeAfter(b"color_00049".to_vec()..),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let (mut decoded, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof, cfg).expect("decode envelope");
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        // Swap the subquery_path "color" layer's proof bytes from Merk
+        // to MMR — `verify_v1_subquery_path` will refuse via
+        // `expect_merk_bytes`.
+        let color_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF layer")
+            .lower_layers
+            .get_mut(&b"byBrand".to_vec())
+            .expect("byBrand layer")
+            .lower_layers
+            .get_mut(&b"brand_000".to_vec())
+            .expect("brand_000 layer")
+            .lower_layers
+            .get_mut(&b"color".to_vec())
+            .expect("color layer");
+        color_layer.merk_proof = ProofBytes::MMR(vec![]);
+        let new_proof = bincode::encode_to_vec(
+            decoded,
+            config::standard().with_big_endian().with_no_limit(),
+        )
+        .expect("re-encode");
+
+        let err = GroveDb::verify_aggregate_count_query_per_key(&new_proof, &path_query, v)
+            .expect_err("non-Merk proof bytes must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => assert!(
+                msg.contains("unexpected non-merk layer bytes"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn acor_carrier_pagination_is_rejected_at_entry() {
         // Carriers (like leaves) forbid SizedQuery::limit and offset.
         // The PathQuery-level validator surfaces this before any proof
