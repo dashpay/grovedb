@@ -1400,6 +1400,46 @@ mod tests {
     }
 
     #[test]
+    fn no_proof_rejects_carrier_shape() {
+        // `query_aggregate_count` returns a single `u64` and has no way
+        // to surface per-outer-key carrier counts. Calling it with a
+        // carrier-shape path query must be rejected up front by the
+        // leaf-only validator, BEFORE any storage reads happen — even
+        // though the dispatcher-level `validate_aggregate_count_on_range`
+        // would have accepted the same query.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_count_tree(v);
+
+        let mut carrier = Query::new();
+        carrier.insert_key(b"brand_000".to_vec());
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            SizedQuery::new(carrier, None, None),
+        );
+
+        // Sanity: the dispatcher-level validator accepts this as a
+        // valid carrier, so the rejection below is specifically
+        // because `query_aggregate_count` tightens to leaf-only.
+        assert!(path_query.validate_aggregate_count_on_range().is_ok());
+
+        let err = db
+            .grove_db
+            .query_aggregate_count(&path_query, None, v)
+            .unwrap()
+            .expect_err("carrier shape must be rejected at the no-proof entry");
+        assert!(
+            matches!(err, crate::Error::InvalidQuery(_)),
+            "expected InvalidQuery, got {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn no_proof_rejects_invalid_inner_range() {
         // Same shape check the prover/verifier use: Key inner is invalid for
         // an aggregate-count-on-range query.

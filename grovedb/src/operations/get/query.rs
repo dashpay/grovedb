@@ -668,10 +668,16 @@ where {
     /// skips proof generation, serialization, and verification entirely.
     ///
     /// `path_query` must satisfy
-    /// [`PathQuery::validate_aggregate_count_on_range`] — a single
-    /// `AggregateCountOnRange(_)` item, no subqueries, no pagination, and an
-    /// inner range that isn't `Key`, `RangeFull`, or another
-    /// `AggregateCountOnRange`. Any other shape is rejected up front with
+    /// [`PathQuery::validate_leaf_aggregate_count_on_range`] — strictly the
+    /// **leaf** shape: a single `AggregateCountOnRange(_)` item, no
+    /// subqueries, no pagination, and an inner range that isn't `Key`,
+    /// `RangeFull`, or another `AggregateCountOnRange`. Carrier-shape
+    /// queries (outer `Keys` + `AggregateCountOnRange` subquery) are
+    /// rejected here because this entry point returns one `u64` and has
+    /// no way to surface per-outer-key counts; use
+    /// [`Self::prove_query`] +
+    /// [`Self::verify_aggregate_count_query_per_key`](GroveDb::verify_aggregate_count_query_per_key)
+    /// for those. Any other shape is rejected up front with
     /// `Error::InvalidQuery` before any merk reads happen.
     ///
     /// The subtree at `path_query.path` must be a `ProvableCountTree` or
@@ -701,12 +707,14 @@ where {
 
         let mut cost = OperationCost::default();
 
-        // Up-front shape validation: same gate the prover and verifier use.
-        // Catches malformed ACOR queries (illegal inner range, ACOR-hidden-in-
-        // subquery, pagination, etc.) before any storage reads.
+        // Up-front shape validation. Strictly the leaf shape — this
+        // entry point returns a single `u64` and has no way to surface
+        // per-outer-key carrier results. Catches malformed leaf
+        // aggregate-count queries (illegal inner range, pagination,
+        // etc.) AND carrier-shape queries before any storage reads.
         let inner_range = cost_return_on_error_no_add!(
             cost,
-            path_query.validate_aggregate_count_on_range().cloned()
+            path_query.validate_leaf_aggregate_count_on_range().cloned()
         );
 
         let tx = TxRef::new(&self.db, transaction);
