@@ -129,10 +129,19 @@ fn verify_v1_carrier_layer(
         path_query,
     )?;
 
+    // Invariant from `classify_aggregate_count_path_query`: whenever
+    // `carrier_outer_items` is `Some`, `carrier_subquery_path` is also
+    // `Some` (possibly empty). Surface a verification failure rather
+    // than aborting if the invariant ever drifts.
     let subquery_path = classification
         .carrier_subquery_path
         .as_ref()
-        .expect("carrier subquery_path is set when carrier_outer_items is Some");
+        .ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                "carrier aggregate-count classification missing subquery_path".to_string(),
+            )
+        })?;
 
     let mut results = Vec::with_capacity(matched.len());
     for OuterMatch {
