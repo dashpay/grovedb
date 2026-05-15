@@ -393,10 +393,10 @@ mod tests {
             other => panic!("expected ProvableCountedSummedMerkNode, got {:?}", other),
         }
 
-        // Phase 2 sum-bearing parent: ProvableSumTree must also zero
-        // out the wrapped sum so the wrapper semantics stay consistent
-        // across the new family. The sum-bearing branch uses the
-        // `ProvableSummedMerkNode(0)` feature type.
+        // Sum-bearing parent: ProvableSumTree must also zero out the wrapped
+        // sum so the wrapper semantics stay consistent across the family.
+        // The sum-bearing branch uses the `ProvableSummedMerkNode(0)`
+        // feature type.
         match ns.get_feature_type(TreeType::ProvableSumTree).unwrap() {
             TreeFeatureType::ProvableSummedMerkNode(s) => assert_eq!(s, 0),
             other => panic!("expected ProvableSummedMerkNode(0), got {:?}", other),

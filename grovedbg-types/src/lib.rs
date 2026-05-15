@@ -319,7 +319,8 @@ pub enum TreeFeatureType {
     ProvableCountedSummedMerkNode(u64, i64),
     /// Provable sum node: sum included in node hash. Mirrors
     /// `SummedMerkNode` for serialization; the debugger renders both
-    /// identically until Phase 2 of `ProvableSumTree` distinguishes them.
+    /// identically (the on-the-wire distinction is by node hash, not by
+    /// serialization shape).
     ProvableSummedMerkNode(i64),
 }
 

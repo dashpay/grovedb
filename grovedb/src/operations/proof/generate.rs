@@ -426,11 +426,11 @@ impl GroveDb {
                 },
                 _ => None,
             };
-            // Phase 2: extract sum if present for ProvableSumTree references.
-            // Mirror count_for_ref — the merk layer emits
-            // `KVValueHashFeatureType` with a `ProvableSummedMerkNode(sum)`
-            // feature for references; the GroveDB layer rewrites that to
-            // `KVRefValueHashSum` with the dereferenced value.
+            // Extract sum if present for ProvableSumTree references. Mirrors
+            // count_for_ref — the merk layer emits `KVValueHashFeatureType`
+            // with a `ProvableSummedMerkNode(sum)` feature for references;
+            // the GroveDB layer rewrites that to `KVRefValueHashSum` with
+            // the dereferenced value.
             let sum_for_ref = match op {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
                 | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
@@ -484,7 +484,7 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                // Phase 2 dispatch priority:
+                                // Dispatch priority:
                                 //   ProvableSumTree references -> KVRefValueHashSum
                                 //   ProvableCountTree references -> KVRefValueHashCount
                                 //   regular references          -> KVRefValueHash
@@ -492,7 +492,7 @@ impl GroveDb {
                                 // exclusive (a ref child sees one parent
                                 // tree type), but Sum takes priority if both
                                 // are erroneously set — Sum-in-hash is the
-                                // newer and stricter invariant.
+                                // stricter invariant.
                                 *node = if let Some(sum) = sum_for_ref {
                                     Node::KVRefValueHashSum(
                                         key.to_owned(),
@@ -1230,8 +1230,8 @@ impl GroveDb {
 
         for op in merk_proof.proof.iter_mut() {
             done_with_results |= overall_limit == &Some(0);
-            // Phase 2: mirror generate.rs's first ref-rewriting loop —
-            // preserve ProvableSumTree special nodes too.
+            // Mirror generate.rs's first ref-rewriting loop — preserve
+            // ProvableSumTree special nodes too.
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))

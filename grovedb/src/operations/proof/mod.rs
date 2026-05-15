@@ -749,7 +749,7 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex::encode(right_child_hash),
             count
         ),
-        // Phase 2: ProvableSumTree proof variants.
+        // ProvableSumTree proof variants.
         Node::KVSum(key, value, sum) => format!(
             "KVSum({}, {}, {})",
             hex_to_ascii(key),

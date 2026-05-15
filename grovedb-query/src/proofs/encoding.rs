@@ -355,7 +355,7 @@ impl Encode for Op {
                 }
             }
 
-            // Phase 2: ProvableSumTree proof variants. Tag bytes 0x30..=0x3D
+            // ProvableSumTree proof variants. Tag bytes 0x30..=0x3D
             // (0x3E and 0x3F intentionally reserved). Layout mirrors the
             // corresponding Count variants verbatim; only the encoded
             // aggregate type changes (i64 sum via varint instead of u64
@@ -585,7 +585,7 @@ impl Encode for Op {
                     + feature_type.encoding_length()?
                     + HASH_LENGTH
             }
-            // Phase 2 ProvableSumTree variants — Push (sum is i64 varint)
+            // ProvableSumTree variants — Push (sum is i64 varint)
             Op::Push(Node::KVSum(key, value, sum)) => {
                 let header = if value.len() < 65536 { 4 } else { 6 };
                 header + key.len() + value.len() + sum.encoding_length()?
@@ -601,7 +601,7 @@ impl Encode for Op {
             Op::Push(Node::HashWithSum(_, _, _, sum)) => {
                 1 + 3 * HASH_LENGTH + sum.encoding_length()?
             }
-            // Phase 2 ProvableSumTree variants — PushInverted
+            // ProvableSumTree variants — PushInverted
             Op::PushInverted(Node::KVSum(key, value, sum)) => {
                 let header = if value.len() < 65536 { 4 } else { 6 };
                 header + key.len() + value.len() + sum.encoding_length()?
@@ -1234,9 +1234,9 @@ impl Decode for Op {
                 ))
             }
 
-            // Phase 2: ProvableSumTree decoder arms. Mirror the Count
-            // family layout exactly; only the aggregate type differs (i64
-            // sum via varint instead of u64 count).
+            // ProvableSumTree decoder arms. Mirror the Count family layout
+            // exactly; only the aggregate type differs (i64 sum via varint
+            // instead of u64 count).
             0x30 => {
                 let key_len: u8 = Decode::decode(&mut input)?;
                 let mut key = vec![0; key_len as usize];
@@ -2723,10 +2723,9 @@ mod test {
         assert_eq!(decoded_ops.unwrap(), ops);
     }
 
-    // Phase 2: ProvableSumTree proof-node round-trip tests. Each new variant
-    // must round-trip through both `Op::Push` and `Op::PushInverted`, and
-    // through the full numeric range of i64 sums (incl. negatives and
-    // boundaries).
+    // ProvableSumTree proof-node round-trip tests. Each variant must
+    // round-trip through both `Op::Push` and `Op::PushInverted`, and through
+    // the full numeric range of i64 sums (incl. negatives and boundaries).
     fn round_trip_op(op: Op) {
         let mut encoded = vec![];
         op.encode_into(&mut encoded).unwrap();
@@ -2786,26 +2785,26 @@ mod test {
     }
 
     #[test]
-    fn phase2_sum_node_variants_round_trip_at_zero() {
+    fn sum_node_variants_round_trip_at_zero() {
         round_trip_sum_variants_with(0);
     }
 
     #[test]
-    fn phase2_sum_node_variants_round_trip_at_positive() {
+    fn sum_node_variants_round_trip_at_positive() {
         round_trip_sum_variants_with(1);
         round_trip_sum_variants_with(42);
         round_trip_sum_variants_with(i64::MAX);
     }
 
     #[test]
-    fn phase2_sum_node_variants_round_trip_at_negative() {
+    fn sum_node_variants_round_trip_at_negative() {
         round_trip_sum_variants_with(-1);
         round_trip_sum_variants_with(-42);
         round_trip_sum_variants_with(i64::MIN);
     }
 
     #[test]
-    fn phase2_sum_node_variants_use_new_tag_bytes() {
+    fn sum_node_variants_use_new_tag_bytes() {
         // Sanity check: each new variant writes its expected tag byte as the
         // first byte of the encoded form. This guards against tag drift if
         // someone refactors the encoder.
@@ -2866,10 +2865,10 @@ mod test {
         }
     }
 
-    // Phase 2: large-value (>= 65536 bytes) round-trip tests for ProvableSumTree
+    // Large-value (>= 65536 bytes) round-trip tests for ProvableSumTree
     // proof-node variants. Each KV-style variant has a "small value" (u16 length)
     // and a "large value" (u32 length) encoding path. The small-value path is
-    // exercised by `phase2_sum_node_variants_round_trip_at_*` above; here we cover
+    // exercised by `sum_node_variants_round_trip_at_*` above; here we cover
     // the large-value path for the four KV variants that carry a value field
     // (`KVSum`, `KVRefValueHashSum` in both Push and PushInverted directions).
 
@@ -2884,7 +2883,7 @@ mod test {
     }
 
     #[test]
-    fn phase2_kvsum_push_large_value_round_trip() {
+    fn kvsum_push_large_value_round_trip() {
         // 0x31 = Push KVSum with u32 value length (value.len() >= 65536).
         let large_value = vec![0xAB; 70_000];
         let op = Op::Push(Node::KVSum(vec![1, 2, 3], large_value, 42));
@@ -2892,7 +2891,7 @@ mod test {
     }
 
     #[test]
-    fn phase2_kvsum_pushinverted_large_value_round_trip() {
+    fn kvsum_pushinverted_large_value_round_trip() {
         // 0x38 = PushInverted KVSum with u32 value length.
         let large_value = vec![0xCD; 70_000];
         let op = Op::PushInverted(Node::KVSum(vec![9, 8, 7], large_value, -99));
@@ -2900,7 +2899,7 @@ mod test {
     }
 
     #[test]
-    fn phase2_kvrefvaluehashsum_push_large_value_round_trip() {
+    fn kvrefvaluehashsum_push_large_value_round_trip() {
         // 0x34 = Push KVRefValueHashSum with u32 value length.
         let large_value = vec![0xEF; 70_000];
         let op = Op::Push(Node::KVRefValueHashSum(
@@ -2913,7 +2912,7 @@ mod test {
     }
 
     #[test]
-    fn phase2_kvrefvaluehashsum_pushinverted_large_value_round_trip() {
+    fn kvrefvaluehashsum_pushinverted_large_value_round_trip() {
         // 0x3b = PushInverted KVRefValueHashSum with u32 value length.
         let large_value = vec![0x12; 70_000];
         let op = Op::PushInverted(Node::KVRefValueHashSum(

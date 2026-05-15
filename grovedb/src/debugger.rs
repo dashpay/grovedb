@@ -576,9 +576,9 @@ fn merk_proof_node_to_grovedbg(node: Node) -> Result<MerkProofNode, crate::Error
                 grovedbg_types::TreeFeatureType::ProvableCountedMerkNode(count),
             )
         }
-        // Phase 2: ProvableSumTree proof variants. Same approach as the
-        // Count family — flatten through `KVValueHashFeatureType` slots
-        // using `ProvableSummedMerkNode` as the embedded feature type.
+        // ProvableSumTree proof variants. Same approach as the Count
+        // family — flatten through `KVValueHashFeatureType` slots using
+        // `ProvableSummedMerkNode` as the embedded feature type.
         Node::KVSum(key, value, sum) => {
             let element = crate::Element::deserialize(&value, GroveVersion::latest())?;
             let val_hash = value_hash(&value).unwrap();

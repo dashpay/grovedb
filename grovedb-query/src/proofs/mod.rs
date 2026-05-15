@@ -380,9 +380,9 @@ mod tests {
         );
     }
 
-    // Phase 2: Display tests for the new ProvableSumTree proof-node variants.
-    // Each variant has its own match arm in the Display impl, so we exercise
-    // them individually to ensure they don't accidentally fall through to a
+    // Display tests for the ProvableSumTree proof-node variants. Each
+    // variant has its own match arm in the Display impl, so we exercise them
+    // individually to ensure they don't accidentally fall through to a
     // wildcard that would mask future drift.
 
     #[test]

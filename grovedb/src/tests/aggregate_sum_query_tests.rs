@@ -318,9 +318,10 @@ mod tests {
     // ---------- 6. i64::MAX + i64::MAX → verify returns overflow error ----------
     /// Two i64::MAX children sum to 2*i64::MAX which doesn't fit in i64.
     /// The verifier's final i64-narrowing check must reject. Whether the
-    /// underlying tree allows insertion depends on Phase 1's intermediate-
-    /// overflow handling — if it doesn't, we exit early; the merk-side
-    /// test in `merk::aggregate_sum::integration_overflow_at_i64_max_is_rejected`
+    /// underlying tree allows insertion depends on the apply path's
+    /// intermediate-overflow handling — if it doesn't, we exit early; the
+    /// merk-side test in
+    /// `merk::aggregate_sum::integration_overflow_at_i64_max_is_rejected`
     /// additionally exercises this via a directly-fabricated proof.
     #[test]
     fn provable_sum_tree_overflow_at_i64_max_is_rejected() {

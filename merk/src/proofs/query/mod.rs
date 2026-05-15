@@ -80,8 +80,8 @@ where
 
     /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
     /// root node
-    /// Note: For ProvableCountTree, ProvableCountSumTree, and ProvableSumTree
-    /// (Phase 2), uses aggregate value to match hash calculation
+    /// Note: For ProvableCountTree, ProvableCountSumTree, and ProvableSumTree,
+    /// uses aggregate value to match hash calculation
     pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
         // For ProvableCountTree, ProvableCountSumTree, and ProvableSumTree
         // we need to use the aggregate value (sum of self + children) because
@@ -175,7 +175,7 @@ where
     }
 
     /// Creates a `Node::KVDigestSum` from the key/value_hash pair and sum
-    /// of the root node. Phase 2: parallel to `to_kvdigest_count_node` for
+    /// of the root node. Parallel to `to_kvdigest_count_node` for
     /// ProvableSumTree boundary nodes (proving absence). Uses aggregate sum
     /// (self + children) to match the `node_hash_with_sum` calculation.
     pub(crate) fn to_kvdigest_sum_node(&self) -> Node {
@@ -187,7 +187,7 @@ where
     }
 
     /// Creates a `Node::KVHashSum` from the kv hash and sum of the root
-    /// node. Phase 2: parallel to `to_kvhash_count_node` for ProvableSumTree
+    /// node. Parallel to `to_kvhash_count_node` for ProvableSumTree
     /// non-queried nodes on the path.
     pub(crate) fn to_kvhash_sum_node(&self) -> Node {
         let sum = match self.tree().aggregate_data() {
@@ -198,7 +198,7 @@ where
     }
 
     /// Creates a `Node::KVSum` from the key/value pair and sum of the root
-    /// node. Phase 2: parallel to `to_kv_count_node` for queried Items in a
+    /// node. Parallel to `to_kv_count_node` for queried Items in a
     /// ProvableSumTree. Tamper-resistant (verifier computes hash from value)
     /// while including the sum in the node hash.
     pub(crate) fn to_kv_sum_node(&self) -> Node {
@@ -356,8 +356,8 @@ where
             TreeFeatureType::ProvableCountedMerkNode(_)
                 | TreeFeatureType::ProvableCountedSummedMerkNode(..)
         );
-        // Phase 2: a sibling family for ProvableSumTree, whose nodes carry
-        // the i64 sum in their feature_type.
+        // Sibling family for ProvableSumTree, whose nodes carry the i64 sum
+        // in their feature_type.
         let is_provable_sum_tree = matches!(
             self.tree().feature_type(),
             TreeFeatureType::ProvableSummedMerkNode(_)
@@ -367,7 +367,7 @@ where
         // Convert the tree kind to an `ElementType` so `proof_node_type()`
         // can dispatch — the Count family folds to `ProvableCountTree`
         // (count-in-hash) and the Sum family folds to `ProvableSumTree`
-        // (sum-in-hash). Phase 2: the two families are distinct.
+        // (sum-in-hash). The two families are distinct.
         let parent_tree_type = if is_provable_count_tree {
             Some(ElementType::ProvableCountTree)
         } else if is_provable_sum_tree {

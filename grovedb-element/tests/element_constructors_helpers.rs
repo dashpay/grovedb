@@ -537,9 +537,9 @@ fn convert_if_reference_to_absolute_reference_converts_and_preserves_other_types
     ));
 }
 
-/// Phase 2 (ProvableSumTree): exercise every constructor and helper added for
-/// the new variant. Mirrors `constructors_create_expected_provable_tree_variants`
-/// plus the relevant sections of `value_helpers_and_conversion_errors_work`.
+/// Coverage for every `ProvableSumTree` constructor and helper. Mirrors
+/// `constructors_create_expected_provable_tree_variants` plus the relevant
+/// sections of `value_helpers_and_conversion_errors_work`.
 #[test]
 fn provable_sum_tree_constructors_and_helpers() {
     // --- Constructors ---

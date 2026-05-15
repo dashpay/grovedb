@@ -119,7 +119,7 @@ impl From<TreeFeatureType> for AggregateData {
             TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
                 AggregateData::ProvableCountAndSum(count, sum)
             }
-            // Phase 2: `ProvableSummedMerkNode` maps to its own
+            // `ProvableSummedMerkNode` maps to its own
             // `AggregateData::ProvableSum` variant so the hash dispatch
             // (in `Tree::hash_for_link` and `commit`) can route a
             // ProvableSumTree through `node_hash_with_sum`. Arithmetic
@@ -249,8 +249,8 @@ mod tests {
             AggregateData::from(TreeFeatureType::ProvableCountedSummedMerkNode(1, 2)),
             AggregateData::ProvableCountAndSum(1, 2)
         );
-        // Phase 2: `ProvableSummedMerkNode` now maps to its dedicated
-        // `AggregateData::ProvableSum` variant (was `Sum` in Phase 1).
+        // `ProvableSummedMerkNode` maps to its dedicated
+        // `AggregateData::ProvableSum` variant.
         assert_eq!(
             AggregateData::from(TreeFeatureType::ProvableSummedMerkNode(42)),
             AggregateData::ProvableSum(42)

@@ -673,9 +673,8 @@ impl TreeNode {
             }
             TreeType::ProvableSumTree => {
                 // For ProvableSumTree, include the aggregate sum in the hash
-                // via `node_hash_with_sum`. Phase 2: this is what makes the
-                // root hash diverge from a plain SumTree containing the
-                // same elements.
+                // via `node_hash_with_sum`. This is what makes the root hash
+                // diverge from a plain SumTree containing the same elements.
                 let aggregate_data = self
                     .aggregate_data()
                     .unwrap_or(AggregateData::NoAggregateData);
@@ -793,8 +792,8 @@ impl TreeNode {
                     aggregated_sum_value,
                 ))
             }
-            // Phase 2: `ProvableSummedMerkNode` aggregates exactly like a
-            // plain `SummedMerkNode` arithmetically, but yields a distinct
+            // `ProvableSummedMerkNode` aggregates exactly like a plain
+            // `SummedMerkNode` arithmetically, but yields a distinct
             // `AggregateData::ProvableSum` so the hash dispatch can route
             // through `node_hash_with_sum` (which bakes the sum into the
             // node hash). The child helpers above treat `ProvableSum`
@@ -1230,7 +1229,7 @@ impl TreeNode {
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
 
                 // Use special hash for ProvableCountTree, ProvableCountSumTree,
-                // and ProvableSumTree (Phase 2).
+                // and ProvableSumTree.
                 let hash = match &aggregate_data {
                     AggregateData::ProvableCount(count) => node_hash_with_count(
                         tree.inner.kv.hash(),
@@ -1278,7 +1277,7 @@ impl TreeNode {
                 cost_return_on_error!(&mut cost, tree.commit(c, old_specialized_cost,));
                 let aggregate_data = cost_return_on_error_default!(tree.aggregate_data());
                 // Use special hash for ProvableCountTree, ProvableCountSumTree,
-                // and ProvableSumTree (Phase 2).
+                // and ProvableSumTree.
                 let hash = match &aggregate_data {
                     AggregateData::ProvableCount(count) => node_hash_with_count(
                         tree.inner.kv.hash(),
@@ -1641,12 +1640,12 @@ mod test {
         );
     }
 
-    /// Phase 2: a `ProvableSumTree`-style tree (built from
-    /// `ProvableSummedMerkNode` features) aggregates to `ProvableSum(N)`
-    /// where N is the sum of its node values + children. The root hash for
-    /// such a tree, computed via `hash_for_link(TreeType::ProvableSumTree)`,
-    /// must equal `node_hash_with_sum(kv_hash, l, r, N)` rather than the
-    /// plain `node_hash`.
+    /// A `ProvableSumTree`-style tree (built from `ProvableSummedMerkNode`
+    /// features) aggregates to `ProvableSum(N)` where N is the sum of its
+    /// node values + children. The root hash for such a tree, computed via
+    /// `hash_for_link(TreeType::ProvableSumTree)`, must equal
+    /// `node_hash_with_sum(kv_hash, l, r, N)` rather than the plain
+    /// `node_hash`.
     #[test]
     fn provable_sum_tree_aggregates_and_hashes_sum() {
         use crate::tree::{
@@ -1666,8 +1665,8 @@ mod test {
             .unwrap()
             .expect("commit failed");
 
-        // Phase 2: aggregate is `ProvableSum` (not plain `Sum`), so the
-        // hash dispatch routes through `node_hash_with_sum`.
+        // Aggregate is `ProvableSum` (not plain `Sum`), so the hash dispatch
+        // routes through `node_hash_with_sum`.
         assert_eq!(
             AggregateData::ProvableSum(8),
             tree.aggregate_data()
@@ -1676,7 +1675,7 @@ mod test {
 
         // The root hash via the ProvableSumTree dispatch matches
         // `node_hash_with_sum(kv, l, r, 8)`. It does NOT match the plain
-        // `node_hash` — that's the cryptographic divergence Phase 2 adds.
+        // `node_hash` — that's the cryptographic divergence of ProvableSumTree.
         let kv_hash = *tree.inner.kv.hash();
         let l = *tree.child_hash(true);
         let r = *tree.child_hash(false);
@@ -1695,9 +1694,8 @@ mod test {
         assert_ne!(tree.hash().unwrap(), actual);
     }
 
-    /// Phase 2: mutating any node's sum changes the root hash for a
-    /// ProvableSumTree. This is the proof-tampering detection at the
-    /// Merk-tree level.
+    /// Mutating any node's sum changes the root hash for a ProvableSumTree.
+    /// This is the proof-tampering detection at the Merk-tree level.
     #[test]
     fn provable_sum_tree_root_hash_changes_on_sum_mutation() {
         use crate::tree::tree_feature_type::TreeFeatureType::ProvableSummedMerkNode;

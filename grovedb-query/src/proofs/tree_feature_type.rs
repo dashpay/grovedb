@@ -33,9 +33,9 @@ pub enum NodeType {
     /// Provable count + sum node (count included in hash)
     ProvableCountSumNode,
     /// Provable sum node (sum included in hash). Mirrors `SumNode`'s
-    /// encoding layout (i64 varint, 9-byte feature length). Phase 1
-    /// behaves identically to `SumNode`; Phase 2 will diverge the hash
-    /// computation so the sum participates in the node hash.
+    /// encoding layout (i64 varint, 9-byte feature length), but the hash
+    /// computation includes the sum so the sum participates in the node
+    /// hash (unlike `SumNode`, which only tracks the sum alongside).
     ProvableSumNode,
 }
 
@@ -87,8 +87,8 @@ pub enum TreeFeatureType {
     /// Provable Counted and Summed Merk Tree Node (count in hash, sum tracked)
     ProvableCountedSummedMerkNode(u64, i64),
     /// Provable Summed Merk Tree Node (sum included in hash).
-    /// Mirrors `SummedMerkNode` for encoding/cost purposes; Phase 2 will
-    /// diverge the hash computation so the sum participates in the node hash.
+    /// Mirrors `SummedMerkNode` for encoding/cost purposes, but the hash
+    /// computation includes the sum so the sum participates in the node hash.
     ProvableSummedMerkNode(i64),
 }
 

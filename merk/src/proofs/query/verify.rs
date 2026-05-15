@@ -511,10 +511,10 @@ impl QueryProofVerify for Query {
                     ));
                 }
                 Node::HashWithSum(..) => {
-                    // Phase 2: same fail-fast rationale as `HashWithCount`
-                    // above. `HashWithSum` is reserved for the dedicated
-                    // aggregate-sum verifier (Phase 5); it must never reach
-                    // the regular query verifier.
+                    // Same fail-fast rationale as `HashWithCount` above.
+                    // `HashWithSum` is reserved for the dedicated
+                    // aggregate-sum verifier; it must never reach the
+                    // regular query verifier.
                     return Err(Error::InvalidProofError(
                         "HashWithSum node is only valid in aggregate-sum proofs; \
                          encountered in regular query verification"
@@ -575,8 +575,8 @@ impl QueryProofVerify for Query {
                     Some(Node::KVValueHashFeatureType(..)) => {}
                     Some(Node::KVValueHashFeatureTypeWithChildHash(..)) => {}
                     Some(Node::KVRefValueHashCount(..)) => {}
-                    // Phase 2: ProvableSumTree key-bearing nodes are also
-                    // acceptable absence-proof boundaries.
+                    // ProvableSumTree key-bearing nodes are also acceptable
+                    // absence-proof boundaries.
                     Some(Node::KVSum(..)) => {}
                     Some(Node::KVDigestSum(..)) => {}
                     Some(Node::KVRefValueHashSum(..)) => {}

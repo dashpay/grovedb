@@ -1912,8 +1912,8 @@ mod tests {
     }
 
     /// Defense-in-depth sibling of the KVRefValueHash rejection test for
-    /// the new Phase 2 KVRefValueHashSum variant. KVRefValueHashSum carries
-    /// an opaque `node_value_hash` (combine_hash of node_value_hash and
+    /// the KVRefValueHashSum variant. KVRefValueHashSum carries an opaque
+    /// `node_value_hash` (combine_hash of node_value_hash and
     /// referenced_value_hash) that the trunk verifier cannot recompute, so
     /// a forged value bundled into such a node must be rejected by the
     /// trunk extractor regardless of whether the merk hash chain catches

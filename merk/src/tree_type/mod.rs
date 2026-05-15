@@ -49,11 +49,10 @@ pub enum TreeType {
     /// sum-side counterpart to `ProvableCountTree`: tampering with the
     /// stored sum changes the node hash and is therefore catchable by
     /// proof verification, unlike the plain `SumTree` where the sum is
-    /// stored alongside but not bound into the hash. Phase 1 routed
-    /// through `SumTree`'s hash dispatch; Phase 2 introduced the divergent
-    /// hash and proof-node families (`KVSum`, `KVHashSum`, `KVDigestSum`,
-    /// `KVRefValueHashSum`, `HashWithSum`, and the
-    /// `AggregateSumOnRange` query).
+    /// stored alongside but not bound into the hash. Uses dedicated
+    /// proof-node families (`KVSum`, `KVHashSum`, `KVDigestSum`,
+    /// `KVRefValueHashSum`, `HashWithSum`, and the `AggregateSumOnRange`
+    /// query).
     ProvableSumTree,
 }
 

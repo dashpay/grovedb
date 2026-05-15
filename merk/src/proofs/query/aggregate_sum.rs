@@ -1283,9 +1283,10 @@ mod tests {
                 Op::Put(vec![0], ProvableSummedMerkNode(i64::MAX)),
             ),
         ];
-        // Insertion itself may or may not succeed depending on Phase 1's
-        // intermediate-overflow handling. Skip if not; this scenario is
-        // additionally exercised at the verify layer via fabricated proofs.
+        // Insertion itself may or may not succeed depending on the apply
+        // path's intermediate-overflow handling. Skip if not; this scenario
+        // is additionally exercised at the verify layer via fabricated
+        // proofs.
         if merk
             .apply::<_, Vec<_>>(&entries, &[], None, v)
             .unwrap()

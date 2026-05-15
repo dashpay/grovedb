@@ -444,9 +444,8 @@ impl Encode for Link {
                 out.write_varint(*count_value)?;
                 out.write_varint(*sum_value)?;
             }
-            // Phase 2: tag byte 7 parallels the
-            // `TreeFeatureType::ProvableSummedMerkNode` tag in
-            // `tree_feature_type.rs`. Sum encoded as varint i64 — same
+            // Tag byte 7 parallels the `TreeFeatureType::ProvableSummedMerkNode`
+            // tag in `tree_feature_type.rs`. Sum encoded as varint i64 — same
             // layout as `AggregateData::Sum`. The hash divergence happens
             // upstream in `hash_for_link` / `commit`; the on-link encoding
             // just preserves the variant for later dispatch.
@@ -651,7 +650,7 @@ impl Decode for Link {
                     let encoded_sum: i64 = input.read_varint()?;
                     AggregateData::ProvableCountAndSum(encoded_count, encoded_sum)
                 }
-                // Phase 2: ProvableSum decode — matches encode tag 7.
+                // ProvableSum decode — matches encode tag 7.
                 7 => {
                     let encoded_sum: i64 = input.read_varint()?;
                     AggregateData::ProvableSum(encoded_sum)
@@ -925,12 +924,11 @@ mod test {
         assert_eq!(link.aggregate_data(), AggregateData::NoAggregateData);
     }
 
-    /// Phase 2 wire-format regression: `AggregateData::ProvableSum` is
-    /// encoded with tag byte 7 followed by a varint-encoded i64. Pin
-    /// down both the tag byte and the round-trip so any drift in the
-    /// link encoding surface is caught immediately. Uses a negative
-    /// value to also exercise the i64 varint encoding (ProvableSum is
-    /// signed).
+    /// Wire-format regression: `AggregateData::ProvableSum` is encoded with
+    /// tag byte 7 followed by a varint-encoded i64. Pin down both the tag
+    /// byte and the round-trip so any drift in the link encoding surface is
+    /// caught immediately. Uses a negative value to also exercise the i64
+    /// varint encoding (ProvableSum is signed).
     #[test]
     fn round_trip_aggregate_data_provable_sum_negative() {
         let original = Link::Reference {

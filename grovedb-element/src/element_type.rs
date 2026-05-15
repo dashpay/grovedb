@@ -124,7 +124,7 @@ pub enum ProofNodeType {
 
     /// Use `Node::KVSum` - sum analogue of `KvCount`. The verifier
     /// recomputes `value_hash = H(value)` and includes the i64 sum in the
-    /// node hash via `node_hash_with_sum`. Phase 2.
+    /// node hash via `node_hash_with_sum`.
     ///
     /// Used for: Item, SumItem, ItemWithSumItem (inside ProvableSumTree)
     KvSum,
@@ -440,15 +440,15 @@ impl ElementType {
         // "Provable aggregate parents" are those that bake the per-node
         // aggregate into the node hash. The count family
         // (`ProvableCountTree`, `ProvableCountSumTree`) hashes the count;
-        // the sum family (`ProvableSumTree`, Phase 2) hashes the sum.
+        // the sum family (`ProvableSumTree`) hashes the sum.
         //
-        // Phase 2: the dispatch now distinguishes the two families. Item /
-        // Reference proof variants diverge (KvSum / KvRefValueHashSum vs
-        // KvCount / KvRefValueHashCount). Subtrees inside either family
-        // still use `KvValueHashFeatureType` — the feature_type field on
-        // that variant carries both the count and sum in their respective
-        // tagged TreeFeatureType variants, so a single proof-node variant
-        // suffices for the subtree case.
+        // The dispatch distinguishes the two families. Item / Reference proof
+        // variants diverge (KvSum / KvRefValueHashSum vs KvCount /
+        // KvRefValueHashCount). Subtrees inside either family still use
+        // `KvValueHashFeatureType` — the feature_type field on that variant
+        // carries both the count and sum in their respective tagged
+        // TreeFeatureType variants, so a single proof-node variant suffices
+        // for the subtree case.
         let is_provable_count_tree = matches!(
             parent_base,
             Some(ElementType::ProvableCountTree) | Some(ElementType::ProvableCountSumTree)
@@ -712,7 +712,7 @@ mod tests {
         assert!(ElementType::try_from(15).is_err());
         // 16 is the raw NotSummed wrapper byte.
         assert!(ElementType::try_from(16).is_err());
-        // 17 is ProvableSumTree (Phase 1 addition).
+        // 17 is ProvableSumTree.
         assert_eq!(
             ElementType::try_from(17).unwrap(),
             ElementType::ProvableSumTree
@@ -928,11 +928,11 @@ mod tests {
     }
 
     #[test]
-    fn test_as_str_for_phase2_variants() {
-        // Phase 2: cover the as_str / Display path for the new ProvableSumTree
-        // variant and its synthetic NonCountedProvableSumTree / NotSummed
-        // twins. The Display impl delegates to `as_str`, so we go through it
-        // to make the test resilient.
+    fn test_as_str_for_provable_sum_tree_variants() {
+        // Cover the as_str / Display path for the ProvableSumTree variant and
+        // its synthetic NonCountedProvableSumTree / NotSummed twins. The
+        // Display impl delegates to `as_str`, so we go through it to make the
+        // test resilient.
         assert_eq!(ElementType::ProvableSumTree.as_str(), "provable sum tree");
         assert_eq!(
             ElementType::NonCountedProvableSumTree.as_str(),
@@ -1079,11 +1079,10 @@ mod tests {
 
     #[test]
     fn test_proof_node_type_provable_sum_tree() {
-        // Phase 2: inside a ProvableSumTree parent, items map to KvSum and
-        // references map to KvRefValueHashSum. Subtrees still use
-        // KvValueHashFeatureType (the embedded TreeFeatureType carries the
-        // aggregate). This exercises the `is_provable_sum_tree` branches in
-        // `proof_node_type`.
+        // Inside a ProvableSumTree parent, items map to KvSum and references
+        // map to KvRefValueHashSum. Subtrees still use KvValueHashFeatureType
+        // (the embedded TreeFeatureType carries the aggregate). This
+        // exercises the `is_provable_sum_tree` branches in `proof_node_type`.
         use super::ProofNodeType;
 
         let pst = Some(ElementType::ProvableSumTree);

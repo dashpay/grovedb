@@ -161,8 +161,8 @@ impl Tree {
                 kv_digest_to_kv_hash(key.as_slice(), value_hash).flat_map(|kv_hash| {
                     // For ProvableCountTree and ProvableCountSumTree, use node_hash_with_count
                     // Note: ProvableCountSumTree only includes count in hash, not sum
-                    // For ProvableSumTree (Phase 2), use node_hash_with_sum so the
-                    // sum baked into the parent's hash matches the link
+                    // For ProvableSumTree, use node_hash_with_sum so the sum
+                    // baked into the parent's hash matches the link
                     // verifier's reconstruction.
                     match feature_type {
                         TreeFeatureType::ProvableCountedMerkNode(count) => node_hash_with_count(
@@ -243,7 +243,7 @@ impl Tree {
                     )
                 })
             }
-            // Phase 2: ProvableSumTree proof-node hash dispatch. All five
+            // ProvableSumTree proof-node hash dispatch. All five
             // sum-bearing variants pipe through `node_hash_with_sum`, the
             // same hash function used by `Tree::hash_for_link` and the
             // commit path for `TreeType::ProvableSumTree`. This is what
@@ -487,7 +487,7 @@ impl Tree {
             }
             Node::KVCount(_, _, count) => Ok(AggregateData::ProvableCount(*count)),
             Node::HashWithCount(.., count) => Ok(AggregateData::ProvableCount(*count)),
-            // Phase 2: ProvableSumTree proof nodes map to ProvableSum.
+            // ProvableSumTree proof nodes map to ProvableSum.
             Node::KVSum(_, _, sum) => Ok(AggregateData::ProvableSum(*sum)),
             Node::HashWithSum(.., sum) => Ok(AggregateData::ProvableSum(*sum)),
             Node::KV(..) | Node::KVValueHash(..) => Ok(AggregateData::NoAggregateData),
@@ -1203,7 +1203,7 @@ mod test {
         let mut ops: Vec<Result<Op, Error>> = Vec::new();
         let mut current_stack_depth: usize = 0;
 
-        // Phase 1: push height-(max_height-1) chains onto the stack.
+        // Step 1: push height-(max_height-1) chains onto the stack.
         // Each chain: 1 Push + (max_height-2) × (Push + Parent) = 2*(max_height-1) - 1 ops.
         // Each chain leaves 1 item on the stack (a tree of height max_height-1).
         let ops_per_chain = 2 * (max_height - 1) - 1;
@@ -1217,14 +1217,14 @@ mod test {
             current_stack_depth += 1;
         }
 
-        // Phase 2: fill remaining op budget with bare Push(Hash) ops,
+        // Step 2: fill remaining op budget with bare Push(Hash) ops,
         // growing the stack further.
         while ops.len() < max_ops && current_stack_depth < max_stack {
             ops.push(Ok(Op::Push(Node::Hash([0xEE; 32]))));
             current_stack_depth += 1;
         }
 
-        // Phase 3: one more Push to exceed whichever limit is tighter.
+        // Step 3: one more Push to exceed whichever limit is tighter.
         ops.push(Ok(Op::Push(Node::Hash([0xFF; 32]))));
 
         let result = execute(ops.into_iter(), true, |_| Ok(())).unwrap();
@@ -1337,12 +1337,12 @@ mod test {
         assert!(result.key().is_some());
     }
 
-    /// Phase 2: `Node::HashWithSum` with a forged sum recomputes to a
-    /// different node hash than the same kv/l/r with the correct sum. The
-    /// verifier's root-hash check therefore catches sum tampering, just as
+    /// `Node::HashWithSum` with a forged sum recomputes to a different node
+    /// hash than the same kv/l/r with the correct sum. The verifier's
+    /// root-hash check therefore catches sum tampering, just as
     /// `HashWithCount` catches count tampering.
     #[test]
-    fn phase2_hashwithsum_forged_sum_changes_root_hash() {
+    fn hashwithsum_forged_sum_changes_root_hash() {
         use crate::tree::HASH_LENGTH;
         let kv = [0xAB; HASH_LENGTH];
         let l = [0xCD; HASH_LENGTH];
@@ -1359,12 +1359,12 @@ mod test {
         );
     }
 
-    /// Phase 2: `Node::KVSum` hash recomputation is sum-bound. Changing the
-    /// sum alone (with the same key/value) produces a different node hash,
-    /// so a malicious prover can't claim a different sum without breaking
-    /// the parent's hash chain.
+    /// `Node::KVSum` hash recomputation is sum-bound. Changing the sum alone
+    /// (with the same key/value) produces a different node hash, so a
+    /// malicious prover can't claim a different sum without breaking the
+    /// parent's hash chain.
     #[test]
-    fn phase2_kvsum_forged_sum_changes_root_hash() {
+    fn kvsum_forged_sum_changes_root_hash() {
         let honest: ProofTree = Node::KVSum(vec![1], vec![2, 3], 7).into();
         let forged: ProofTree = Node::KVSum(vec![1], vec![2, 3], 8).into();
 
@@ -1373,9 +1373,9 @@ mod test {
         assert_ne!(honest_hash, forged_hash);
     }
 
-    /// Phase 2: `Node::KVHashSum` hash recomputation is sum-bound.
+    /// `Node::KVHashSum` hash recomputation is sum-bound.
     #[test]
-    fn phase2_kvhashsum_forged_sum_changes_root_hash() {
+    fn kvhashsum_forged_sum_changes_root_hash() {
         use crate::tree::HASH_LENGTH;
         let kv_hash = [0x55; HASH_LENGTH];
         let honest: ProofTree = Node::KVHashSum(kv_hash, 0).into();
@@ -1383,13 +1383,13 @@ mod test {
         assert_ne!(honest.hash().unwrap(), forged.hash().unwrap());
     }
 
-    /// Phase 2 cornerstone: a ProvableSumTree's root hash diverges from a
-    /// plain SumTree's root hash for the same {key/value/sum} contents.
-    /// This is the whole point of Phase 2 — proves that the per-node sum
-    /// now participates in the node hash (via `node_hash_with_sum`) instead
-    /// of being merely tracked alongside `node_hash`.
+    /// Cornerstone: a ProvableSumTree's root hash diverges from a plain
+    /// SumTree's root hash for the same {key/value/sum} contents. This
+    /// proves that the per-node sum participates in the node hash (via
+    /// `node_hash_with_sum`) instead of being merely tracked alongside
+    /// `node_hash`.
     #[test]
-    fn phase2_provable_sum_tree_diverges_from_plain_sum_tree() {
+    fn provable_sum_tree_diverges_from_plain_sum_tree() {
         use crate::tree::{
             node_hash, node_hash_with_sum,
             TreeFeatureType::{ProvableSummedMerkNode, SummedMerkNode},
@@ -1434,15 +1434,15 @@ mod test {
         // The cornerstone: same contents, different cryptographic identity.
         assert_ne!(
             plain_hash, provable_hash,
-            "Phase 2: ProvableSumTree root hash must diverge from plain \
-             SumTree root hash with identical contents"
+            "ProvableSumTree root hash must diverge from plain SumTree root \
+             hash with identical contents"
         );
     }
 
-    /// Phase 2: `Node::KVDigestSum` hash recomputation is sum-bound. Changing
-    /// the sum alone produces a different node hash.
+    /// `Node::KVDigestSum` hash recomputation is sum-bound. Changing the sum
+    /// alone produces a different node hash.
     #[test]
-    fn phase2_kvdigestsum_forged_sum_changes_root_hash() {
+    fn kvdigestsum_forged_sum_changes_root_hash() {
         use crate::tree::HASH_LENGTH;
         let key = b"k".to_vec();
         let value_hash_bytes = [0x77; HASH_LENGTH];
@@ -1451,13 +1451,13 @@ mod test {
         assert_ne!(honest.hash().unwrap(), forged.hash().unwrap());
     }
 
-    /// Phase 2: `Node::KVRefValueHashSum` hash recomputation is sum-bound.
-    /// Exercises the full combined-hash path (combine(referenced_value_hash,
+    /// `Node::KVRefValueHashSum` hash recomputation is sum-bound. Exercises
+    /// the full combined-hash path (combine(referenced_value_hash,
     /// node_value_hash) → kv_digest_to_kv_hash → node_hash_with_sum). This
     /// is the only place in the proof verifier where the reference's combined
     /// hash logic is wired up to the sum-bearing hash.
     #[test]
-    fn phase2_kvrefvaluehashsum_forged_sum_changes_root_hash() {
+    fn kvrefvaluehashsum_forged_sum_changes_root_hash() {
         use crate::tree::HASH_LENGTH;
         let key = b"k".to_vec();
         let value = b"v".to_vec();
@@ -1472,11 +1472,11 @@ mod test {
         );
     }
 
-    /// Phase 2: `aggregate_data()` on a Sum-bearing proof node must surface
+    /// `aggregate_data()` on a Sum-bearing proof node must surface
     /// `AggregateData::ProvableSum(_)`. This covers both `Node::KVSum` and
     /// `Node::HashWithSum` arms of the `aggregate_data` match.
     #[test]
-    fn phase2_aggregate_data_returns_provable_sum_for_sum_nodes() {
+    fn aggregate_data_returns_provable_sum_for_sum_nodes() {
         use crate::tree::{AggregateData, HASH_LENGTH};
 
         let kv_sum: ProofTree = Node::KVSum(b"k".to_vec(), b"v".to_vec(), -42).into();
@@ -1493,11 +1493,11 @@ mod test {
         }
     }
 
-    /// Phase 2: `Tree::key()` must return the key for the three keyed Sum
-    /// variants (`KVSum`, `KVDigestSum`, `KVRefValueHashSum`) and `None` for
-    /// the keyless variants (`KVHashSum`, `HashWithSum`).
+    /// `Tree::key()` must return the key for the three keyed Sum variants
+    /// (`KVSum`, `KVDigestSum`, `KVRefValueHashSum`) and `None` for the
+    /// keyless variants (`KVHashSum`, `HashWithSum`).
     #[test]
-    fn phase2_key_returns_correct_key_for_sum_nodes() {
+    fn key_returns_correct_key_for_sum_nodes() {
         use crate::tree::HASH_LENGTH;
 
         let kv_sum: ProofTree = Node::KVSum(b"a".to_vec(), vec![1], 0).into();

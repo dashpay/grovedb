@@ -1,4 +1,4 @@
-//! Phase 3 tests for `ProvableSumTree` end-to-end behavior in GroveDB.
+//! End-to-end behavior tests for `ProvableSumTree` in GroveDB.
 //!
 //! Coverage:
 //! 1. Direct insert + read round-trip of a `ProvableSumTree`, with the
@@ -186,8 +186,8 @@ mod tests {
     }
 
     /// 3. `ProvableSumTree` root hash diverges from a plain `SumTree` with
-    /// identical children. This is the Phase 2 hash-binding cornerstone: the
-    /// sum is part of the node hash.
+    /// identical children. This is the hash-binding cornerstone: the sum
+    /// is part of the node hash.
     #[test]
     fn provable_sum_tree_hash_diverges_from_sum_tree() {
         let grove_version = GroveVersion::latest();
@@ -285,8 +285,8 @@ mod tests {
             .unwrap();
         assert_ne!(
             plain_merk_root, provable_merk_root,
-            "Phase 2 root hash divergence: same children must give different \
-             roots between SumTree and ProvableSumTree"
+            "Root hash divergence: same children must give different roots \
+             between SumTree and ProvableSumTree"
         );
     }
 
@@ -618,7 +618,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
-        // Phase 1: build a populated provable_sum_tree under `template`,
+        // Step 1: build a populated provable_sum_tree under `template`,
         // then snapshot its root key + aggregate sum. The direct-insert
         // path below cannot fabricate state out of thin air, so the
         // canonical pattern is: write a tree the normal way and inspect
@@ -660,7 +660,7 @@ mod tests {
             other => panic!("expected ProvableSumTree, got {:?}", other),
         };
 
-        // Phase 2: actually exercise the direct-insert path with the
+        // Step 2: actually exercise the direct-insert path with the
         // captured root_key + sum. The non-batch insert path forbids
         // inserting a Tree element that already declares a root_key
         // ("a tree should be empty at the moment of insertion when not
@@ -756,7 +756,7 @@ mod tests {
         }
     }
 
-    /// Phase 4: integrity walk tests for `verify_grovedb`.
+    /// Integrity walk tests for `verify_grovedb`.
     ///
     /// `verify_grovedb` performs two kinds of check on every tree-bearing
     /// element it walks:
@@ -774,7 +774,7 @@ mod tests {
     ///    caught at the SumItem arm by `value_hash(bytes) !=
     ///    stored_value_hash`.
     ///
-    /// 2. A **software-consistency** check (new in Phase 4):
+    /// 2. A **software-consistency** check:
     ///    the parent's recorded aggregate field (e.g. `sum_value` in
     ///    `ProvableSumTree(_, sum_value, _)`) must equal the inner Merk's
     ///    actual `aggregate_data()`.
