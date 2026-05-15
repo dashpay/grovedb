@@ -20,7 +20,7 @@ use crate::{
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
     util::TxRef,
-    Element, Error, GroveDb, PathQuery, TransactionArg,
+    Element, Error, GroveDb, PathQuery, SizedQuery, TransactionArg,
 };
 use grovedb_costs::cost_return_on_error_default;
 #[cfg(feature = "minimal")]
@@ -833,9 +833,18 @@ where {
         // outer items at `path_query.path` without descending into the
         // subquery — we want just the matched outer keys, not the
         // (unproven) results of the leaf aggregate-count.
+        //
+        // Propagate `SizedQuery::limit` (validated as carrier-only
+        // above): it caps the number of outer-key matches the walk
+        // returns. Each matched outer key still produces a complete
+        // leaf-ACOR `u64` below. `offset` is rejected at validation, so
+        // we don't propagate it here.
         let mut shallow_query = grovedb_query::Query::new_with_direction(left_to_right);
         shallow_query.items = outer_items;
-        let shallow_pq = PathQuery::new_unsized(path_query.path.clone(), shallow_query);
+        let shallow_pq = PathQuery::new(
+            path_query.path.clone(),
+            SizedQuery::new(shallow_query, path_query.query.limit, None),
+        );
 
         let (matched, _skipped) = cost_return_on_error!(
             &mut cost,

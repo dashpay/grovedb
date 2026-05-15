@@ -123,11 +123,31 @@ impl SizedQuery {
     /// `default_subquery_branch.subquery` for carrier queries).
     ///
     /// This is the `SizedQuery`-level entry point: it forwards to
-    /// [`Query::validate_aggregate_count_on_range`] and additionally rejects
-    /// any non-`None` `limit` or `offset` (counting is an aggregate over the
-    /// full match set — pagination would silently change the answer).
+    /// [`Query::validate_aggregate_count_on_range`] and additionally
+    /// enforces the appropriate per-shape size-constraint rules:
+    ///
+    /// - **Leaf** shape (single `AggregateCountOnRange(_)` item, no
+    ///   subqueries): both `SizedQuery::limit` and `SizedQuery::offset`
+    ///   are rejected. A leaf returns a single `u64`; pagination would
+    ///   silently change the answer.
+    /// - **Carrier** shape (outer `Key`/`Range*` items routing to a leaf
+    ///   `AggregateCountOnRange` subquery): `SizedQuery::limit` is
+    ///   **allowed** and caps the number of outer-key matches the
+    ///   carrier walks (each matched outer key still produces a complete
+    ///   leaf-ACOR `u64`). `SizedQuery::offset` is still rejected —
+    ///   skipping outer matches changes which `(outer_key, u64)` pairs
+    ///   end up in the proof, and the use case for that hasn't been
+    ///   designed yet.
     pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
-        self.check_aggregate_count_size_constraints()?;
+        // Inner classification first, then per-shape size-constraint
+        // check. Queries that aren't aggregate-count at all (neither leaf
+        // nor carrier) fall through to the Query-level validator below,
+        // which surfaces the canonical "no aggregate-count item" error.
+        if self.query.aggregate_count_on_range().is_some() {
+            self.check_leaf_aggregate_count_size_constraints()?;
+        } else if self.query.has_aggregate_count_on_range_anywhere() {
+            self.check_carrier_aggregate_count_size_constraints()?;
+        }
         self.query
             .validate_aggregate_count_on_range()
             .map_err(query_validation_error_to_static_str)
@@ -137,24 +157,49 @@ impl SizedQuery {
     /// Strict variant of [`Self::validate_aggregate_count_on_range`] that
     /// only accepts the **leaf** shape (single `AggregateCountOnRange(_)`
     /// item, no subqueries). Used by entry points that produce a single
-    /// `u64` and need to reject the carrier shape up front.
+    /// `u64` and need to reject the carrier shape up front. Pagination
+    /// (`SizedQuery::limit` / `SizedQuery::offset`) is rejected — see
+    /// [`Self::check_leaf_aggregate_count_size_constraints`].
     pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
-        self.check_aggregate_count_size_constraints()?;
+        self.check_leaf_aggregate_count_size_constraints()?;
         self.query
             .validate_leaf_aggregate_count_on_range()
             .map_err(query_validation_error_to_static_str)
             .map_err(Error::InvalidQuery)
     }
 
-    fn check_aggregate_count_size_constraints(&self) -> Result<(), Error> {
+    /// Size-constraint check used for **leaf** `AggregateCountOnRange`
+    /// queries. A leaf returns a single `u64`; setting `limit` or
+    /// `offset` would silently change the answer, so both are rejected.
+    fn check_leaf_aggregate_count_size_constraints(&self) -> Result<(), Error> {
         if self.limit.is_some() {
             return Err(Error::InvalidQuery(
-                "AggregateCountOnRange queries may not set SizedQuery::limit",
+                "leaf AggregateCountOnRange queries may not set SizedQuery::limit — a leaf \
+                 returns a single u64 and pagination would silently change the answer",
             ));
         }
         if self.offset.is_some() {
             return Err(Error::InvalidQuery(
-                "AggregateCountOnRange queries may not set SizedQuery::offset",
+                "leaf AggregateCountOnRange queries may not set SizedQuery::offset — same \
+                 reason as limit",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Size-constraint check used for **carrier** `AggregateCountOnRange`
+    /// queries. `SizedQuery::limit` is allowed and caps the number of
+    /// outer-key matches the carrier walks (each matched outer key still
+    /// produces a complete leaf-ACOR `u64`; the inner range is *not*
+    /// capped). `SizedQuery::offset` is still rejected — paginating into
+    /// the outer dimension changes which `(outer_key, u64)` pairs end up
+    /// in the proof, and the use case for that hasn't been designed yet.
+    fn check_carrier_aggregate_count_size_constraints(&self) -> Result<(), Error> {
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "carrier AggregateCountOnRange queries may not set SizedQuery::offset — \
+                 skipping outer matches changes which (outer_key, u64) pairs end up in the \
+                 proof; the use case for this isn't designed yet",
             ));
         }
         Ok(())
@@ -2500,7 +2545,11 @@ mod tests {
     // ---------- SizedQuery / PathQuery AggregateCountOnRange validation ----------
 
     #[test]
-    fn sized_query_validate_acor_rejects_limit() {
+    fn sized_query_validate_leaf_acor_rejects_limit_and_offset() {
+        // Leaf shape (single AggregateCountOnRange item, no subqueries):
+        // both SizedQuery::limit and SizedQuery::offset are rejected
+        // because a leaf returns a single u64 and pagination would
+        // silently change the answer.
         let mut sq = SizedQuery::new(
             Query::new_aggregate_count_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
             Some(10),
@@ -2510,7 +2559,10 @@ mod tests {
             .validate_aggregate_count_on_range()
             .expect_err("limit must fail");
         match err {
-            Error::InvalidQuery(msg) => assert!(msg.contains("limit")),
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("limit"), "unexpected message: {msg}");
+            }
             _ => panic!("expected InvalidQuery"),
         }
 
@@ -2521,7 +2573,47 @@ mod tests {
             .validate_aggregate_count_on_range()
             .expect_err("offset must fail");
         match err {
-            Error::InvalidQuery(msg) => assert!(msg.contains("offset")),
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("offset"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidQuery"),
+        }
+    }
+
+    #[test]
+    fn sized_query_validate_carrier_acor_accepts_limit_rejects_offset() {
+        // Carrier shape (outer Key/Range items + AggregateCountOnRange
+        // subquery): SizedQuery::limit is permitted (caps the outer
+        // walk), but SizedQuery::offset is still rejected pending a
+        // separate design pass.
+        let mut carrier = Query::new();
+        carrier.insert_key(b"k1".to_vec());
+        carrier.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(Query::new_aggregate_count_on_range(
+                QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            ))),
+        };
+        let mut sq = SizedQuery::new(carrier, Some(20), None);
+
+        // limit=Some(20) is now accepted on the carrier shape.
+        let inner = sq
+            .validate_aggregate_count_on_range()
+            .expect("carrier with limit must validate");
+        assert!(matches!(inner, QueryItem::Range(_)));
+
+        // offset is still rejected, with a carrier-specific message.
+        sq.limit = None;
+        sq.offset = Some(3);
+        let err = sq
+            .validate_aggregate_count_on_range()
+            .expect_err("carrier offset must fail");
+        match err {
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("carrier"), "unexpected message: {msg}");
+                assert!(msg.contains("offset"), "unexpected message: {msg}");
+            }
             _ => panic!("expected InvalidQuery"),
         }
     }
