@@ -772,8 +772,15 @@ where {
     ///
     /// `path_query` must satisfy
     /// [`PathQuery::validate_aggregate_count_on_range`] in either
-    /// shape. Pagination is rejected. Each leaf subtree the walk
-    /// terminates in must be a `ProvableCountTree` or
+    /// shape. Pagination rules differ by shape: for **leaf** queries
+    /// both `SizedQuery::limit` and `SizedQuery::offset` are rejected
+    /// (a leaf returns a single `u64` and pagination would silently
+    /// change the answer); for **carrier** queries `SizedQuery::limit`
+    /// is accepted and caps the number of outer-key matches the walk
+    /// returns (each matched outer key still produces a complete
+    /// leaf-ACOR `u64`, the inner range is not capped), while
+    /// `SizedQuery::offset` is still rejected. Each leaf subtree the
+    /// walk terminates in must be a `ProvableCountTree` or
     /// `ProvableCountSumTree` — the merk-level walk rejects any other
     /// tree type.
     ///
