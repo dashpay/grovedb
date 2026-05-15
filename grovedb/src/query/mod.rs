@@ -2683,4 +2683,29 @@ mod tests {
         let pq_regular = PathQuery::new_single_key(vec![b"p".to_vec()], b"k".to_vec());
         assert!(!pq_regular.has_aggregate_count_on_range());
     }
+
+    #[test]
+    fn query_validation_error_to_static_str_projects_invalid_operation_and_catches_other_variants()
+    {
+        use grovedb_query::error::Error as QueryError;
+
+        // The expected normal case: `InvalidOperation(&'static str)` is
+        // projected through unchanged.
+        let normal = QueryError::InvalidOperation("specific reason");
+        assert_eq!(
+            super::query_validation_error_to_static_str(normal),
+            "specific reason"
+        );
+
+        // The defensive catch-all: any other QueryError variant gets the
+        // generic fallback label. This branch shouldn't be reachable from
+        // real `Query::validate_aggregate_count_on_range` results — it's
+        // here to surface "an unrelated bug" rather than silently turning
+        // into a useless empty string.
+        let other = QueryError::NotSupported("anything not InvalidOperation".to_string());
+        assert_eq!(
+            super::query_validation_error_to_static_str(other),
+            "AggregateCountOnRange query validation failed"
+        );
+    }
 }
