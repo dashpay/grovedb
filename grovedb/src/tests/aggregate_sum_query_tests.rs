@@ -835,24 +835,34 @@ mod tests {
         }
     }
 
-    // ---------- 20. V0 (GROVE_V2) envelope round-trip ----------
+    // ---------- 20. V0 (GROVE_V2) envelope rejected ----------
+    /// Mirror of `aggregate_count_rejects_grove_v2_envelope`. GROVE_V2
+    /// dispatches to the V0 `prove_query_non_serialized` path, which
+    /// produces a `MerkOnlyLayerProof` envelope. `AggregateSumOnRange`
+    /// postdates V0 (it was added alongside / after V1 in the grove
+    /// version used by Dash Platform v12+), so V0+ASOR is impossible in
+    /// any deployed Platform release. The prover rejects the combination
+    /// up front to keep callers from emitting a V0 aggregate-sum proof
+    /// that the verifier would (correctly) refuse.
     #[test]
-    fn provable_sum_tree_works_on_grove_v2_envelope() {
+    fn aggregate_sum_rejects_grove_v2_envelope() {
         let v: &GroveVersion = &GROVE_V2;
-        let (db, root) = setup_15_key_provable_sum_tree(v);
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
         let pq = PathQuery::new_aggregate_sum_on_range(
             vec![TEST_LEAF.to_vec(), b"st".to_vec()],
             QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
         );
-        let proof = db
-            .grove_db
-            .prove_query(&pq, None, v)
-            .unwrap()
-            .expect("prove_query (v0 envelope) should succeed");
-        let (got_root, got_sum) =
-            GroveDb::verify_aggregate_sum_query(&proof, &pq, v).expect("verify v0 envelope");
-        assert_eq!(got_root, root);
-        assert_eq!(got_sum, 75);
+        let prove_result = db.grove_db.prove_query(&pq, None, v).unwrap();
+        match prove_result {
+            Err(crate::Error::NotSupported(msg)) => assert!(
+                msg.contains("V1 proof envelopes"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!(
+                "expected NotSupported for V0+aggregate-sum, got {:?}",
+                other.map(|b| b.len())
+            ),
+        }
     }
 
     // ---------- 21. NotSummed-wrapped child tree contributes 0 ----------
@@ -1046,11 +1056,19 @@ mod tests {
         let result = GroveDb::verify_aggregate_sum_query(&forged_bytes, &attack_pq, v);
         match result {
             Err(e) => {
-                // The new terminal-type gate must fire. The error message
-                // names ProvableSumTree explicitly so we pin it.
+                // The forgery is rejected either by:
+                //   (a) the V0-envelope-not-allowed gate (fires first
+                //       because the forged proof uses the V0
+                //       MerkOnlyLayerProof envelope shape), or
+                //   (b) the terminal-type gate in `enforce_lower_chain`
+                //       (would fire under a V1 envelope if we
+                //       reconstructed the forgery there instead).
+                // Either rejection means the type-confusion forgery
+                // doesn't pass — the security property holds.
                 let msg = format!("{e}");
                 assert!(
-                    msg.contains("must be a ProvableSumTree"),
+                    msg.contains("must be a ProvableSumTree")
+                        || msg.contains("require V1 proof envelopes"),
                     "verifier rejected as expected but with an unrelated message: {msg}"
                 );
             }
@@ -1069,13 +1087,13 @@ mod tests {
     ///
     /// `verify_aggregate_sum_query` calls
     /// `path_query.validate_aggregate_sum_on_range()` at its entry. If
-    /// the path is empty, validation must fail — otherwise both
-    /// `verify_v0_layer` and `verify_v1_layer` would hit the
-    /// `depth == path_keys.len()` short-circuit at depth 0 and go
-    /// straight to the merk-level leaf verifier, never invoking the
-    /// terminal-type gate in `enforce_lower_chain`. The GroveDB root
-    /// merk is always a `NormalTree` by API construction, so a root
-    /// aggregate-sum query has no valid target.
+    /// the path is empty, validation must fail — otherwise the V1 leaf-
+    /// chain walker would hit the `depth == path_keys.len()`
+    /// short-circuit at depth 0 and go straight to the merk-level leaf
+    /// verifier, never invoking the terminal-type gate in
+    /// `enforce_lower_chain`. The GroveDB root merk is always a
+    /// `NormalTree` by API construction, so a root aggregate-sum query
+    /// has no valid target.
     #[test]
     fn empty_path_aggregate_sum_rejected_at_validation() {
         let v = GroveVersion::latest();
@@ -1192,9 +1210,18 @@ mod tests {
             "ProvableCountTree at leaf must NOT be accepted for an aggregate-sum query"
         );
         let msg = format!("{}", result.unwrap_err());
+        // The forgery is rejected either by:
+        //   (a) the V0-envelope-not-allowed gate (fires first under
+        //       GROVE_V2 because the forged proof uses the V0
+        //       MerkOnlyLayerProof envelope shape), or
+        //   (b) the terminal-type gate in `enforce_lower_chain` (would
+        //       fire under a V1 envelope if we constructed the forgery
+        //       there instead).
+        // Either rejection means the type-confusion forgery doesn't
+        // pass — the security property holds. Accept both error shapes.
         assert!(
-            msg.contains("must be a ProvableSumTree"),
-            "expected terminal-type error, got: {msg}"
+            msg.contains("must be a ProvableSumTree") || msg.contains("require V1 proof envelopes"),
+            "expected terminal-type or V0-envelope error, got: {msg}"
         );
     }
 
@@ -1488,9 +1515,9 @@ mod tests {
 
     // -------------------------------------------------------------------
     // Verifier error-path coverage: each test below pins a specific
-    // arm of `verify_v0_layer` / `verify_v1_layer` / `verify_sum_leaf` /
+    // arm of `verify_v1_leaf_chain` / `verify_sum_leaf` /
     // `verify_single_key_layer_proof_v0` / `enforce_lower_chain` in
-    // `grovedb/src/operations/proof/aggregate_sum.rs`. Mirrored from the
+    // `grovedb/src/operations/proof/aggregate_sum/`. Mirrored from the
     // count-side mutation tests in `aggregate_count_query_tests.rs`.
     // -------------------------------------------------------------------
 
@@ -1612,8 +1639,8 @@ mod tests {
     #[test]
     fn sum_non_leaf_proof_with_kv_replaced_by_kvdigest_is_rejected() {
         // Replace `st` KV with KVDigest (no value bytes) — hits the "no
-        // value bytes" arm in verify_single_key_layer_proof_v0 (lines
-        // 304-310 in aggregate_sum.rs).
+        // value bytes" arm in verify_single_key_layer_proof_v0
+        // (`aggregate_sum/helpers.rs`).
         use grovedb_merk::proofs::{Node, Op};
 
         let v = GroveVersion::latest();
@@ -1731,7 +1758,7 @@ mod tests {
     fn sum_non_leaf_proof_with_non_tree_element_is_rejected() {
         // Replace `st` value with a serialized Item: deserializes fine,
         // but enforce_lower_chain's `is_any_tree()` guard rejects it
-        // (lines 365-373 in aggregate_sum.rs).
+        // (`aggregate_sum/helpers.rs`).
         use grovedb_merk::proofs::{Node, Op};
 
         let v = GroveVersion::latest();
@@ -1985,51 +2012,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sum_v0_envelope_with_missing_lower_layer_is_rejected() {
-        // V0 (GROVE_V2) counterpart of the V1 missing-lower-layer test —
-        // drops the leaf MerkOnlyLayerProof from `lower_layers` to hit
-        // the V0 walker's missing-layer arm (lines 137-144).
-        use grovedb_version::version::v2::GROVE_V2;
-
-        use crate::operations::proof::{GroveDBProof, GroveDBProofV0};
-
-        let v: &GroveVersion = &GROVE_V2;
-        let (db, _root) = setup_15_key_provable_sum_tree(v);
-        let pq = PathQuery::new_aggregate_sum_on_range(
-            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
-            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
-        );
-        let proof = db
-            .grove_db
-            .prove_query(&pq, None, v)
-            .unwrap()
-            .expect("prove_query (v0)");
-
-        let mut decoded = decode_sum_envelope(&proof);
-        let GroveDBProof::V0(GroveDBProofV0 { root_layer, .. }) = &mut decoded else {
-            panic!("expected V0 envelope under GROVE_V2");
-        };
-        let test_leaf_layer = root_layer
-            .lower_layers
-            .get_mut(TEST_LEAF)
-            .expect("TEST_LEAF");
-        let removed = test_leaf_layer.lower_layers.remove(&b"st".to_vec());
-        assert!(removed.is_some(), "test setup: st layer should exist");
-
-        let reencoded = reencode_sum_envelope(decoded);
-        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
-            .expect_err("v0 missing lower layer must be rejected");
-        match err {
-            crate::Error::InvalidProof(_, msg) => {
-                assert!(
-                    msg.contains("missing lower layer"),
-                    "expected missing-lower-layer rejection, got: {msg}"
-                );
-            }
-            other => panic!("expected InvalidProof, got {:?}", other),
-        }
-    }
+    // NOTE: There used to be a `sum_v0_envelope_with_missing_lower_layer_is_rejected`
+    // test here. It was removed alongside the V0 envelope verifier
+    // walker — V0 (`MerkOnlyLayerProof`) envelopes are now rejected at
+    // the prover and verifier entry points (see
+    // `aggregate_sum_rejects_grove_v2_envelope` for the prover gate and
+    // the `require_v1_envelope` helper in
+    // `operations/proof/aggregate_sum/mod.rs` for the verifier gate),
+    // so the V0 missing-layer code path no longer exists. The V1
+    // counterpart `sum_v1_envelope_with_missing_lower_layer_is_rejected`
+    // continues to pin the missing-layer behavior on the only envelope
+    // shape that can legitimately carry an aggregate-sum proof.
 
     #[test]
     fn sum_unparsable_envelope_is_rejected() {

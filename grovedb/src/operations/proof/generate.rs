@@ -127,9 +127,8 @@ impl GroveDb {
         // malformed `AggregateSumOnRange` shapes up front so the prover
         // never silently returns a regular proof for a path that doesn't
         // exist.
-        if path_query.query.query.has_aggregate_sum_on_range_anywhere()
-            && let Err(e) = path_query.validate_aggregate_sum_on_range()
-        {
+        let is_asor_query = path_query.query.query.has_aggregate_sum_on_range_anywhere();
+        if is_asor_query && let Err(e) = path_query.validate_aggregate_sum_on_range() {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
 
@@ -148,6 +147,20 @@ impl GroveDb {
         if is_acor_query && prove_version == 0 {
             return Err(Error::NotSupported(
                 "AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove \
+                 version producing the proof"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+
+        // Mirror of the count V0 gate for sum. `AggregateSumOnRange`
+        // postdates V0 envelopes for the same reason as count, so a V0
+        // aggregate-sum proof can never be honestly produced; refuse
+        // the combination here so callers see a clear `NotSupported`
+        // instead of a downstream verifier rejection.
+        if is_asor_query && prove_version == 0 {
+            return Err(Error::NotSupported(
+                "AggregateSumOnRange proofs require V1 proof envelopes; upgrade the grove \
                  version producing the proof"
                     .to_string(),
             ))
