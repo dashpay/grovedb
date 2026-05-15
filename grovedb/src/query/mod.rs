@@ -177,20 +177,32 @@ impl SizedQuery {
         }
         self.query
             .validate_aggregate_sum_on_range()
-            .map_err(query_validation_error_to_static_str)
+            .map_err(sum_query_validation_error_to_static_str)
             .map_err(Error::InvalidQuery)
     }
 }
 
-/// Converts an aggregate-validation error (count or sum) into a
-/// `&'static str`. Validation only ever returns
+/// Converts an aggregate-count-validation error into a `&'static str`.
+/// Validation only ever returns
 /// `grovedb_query::error::Error::InvalidOperation(&'static str)`, so this is
 /// just a projection of that variant; any other error variant (which would
 /// indicate an unrelated bug) is forwarded as a generic catch-all label.
 pub(crate) fn query_validation_error_to_static_str(e: grovedb_query::error::Error) -> &'static str {
     match e {
         grovedb_query::error::Error::InvalidOperation(msg) => msg,
-        _ => "aggregate query validation failed",
+        _ => "AggregateCountOnRange query validation failed",
+    }
+}
+
+/// Sum-side mirror of [`query_validation_error_to_static_str`]. Same
+/// projection contract; only the catch-all label differs so logs and
+/// error surfaces stay self-describing per-aggregate-variant.
+pub(crate) fn sum_query_validation_error_to_static_str(
+    e: grovedb_query::error::Error,
+) -> &'static str {
+    match e {
+        grovedb_query::error::Error::InvalidOperation(msg) => msg,
+        _ => "AggregateSumOnRange query validation failed",
     }
 }
 
