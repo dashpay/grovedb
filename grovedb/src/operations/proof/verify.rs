@@ -61,12 +61,7 @@ impl GroveDb {
             ));
         }
 
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -110,12 +105,7 @@ impl GroveDb {
             ));
         }
 
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, tree_feature_type, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -143,12 +133,7 @@ impl GroveDb {
                 .proof
                 .verify_query_raw
         );
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) = Self::verify_proof_raw_internal(
             &grovedb_proof,
@@ -1979,12 +1964,7 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, GroveTrunkQueryResult), Error> {
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         match grovedb_proof {
             GroveDBProof::V0(proof_v0) => {

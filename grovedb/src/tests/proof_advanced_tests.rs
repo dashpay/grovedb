@@ -316,6 +316,66 @@ mod tests {
         }
     }
 
+    /// Canonical-decode regression for the general verifier path.
+    ///
+    /// `GroveDb::verify_query` (and its siblings `verify_query_raw`,
+    /// `verify_query_with_options`, `verify_trunk_chunk_proof`) all
+    /// route through `decode_grovedb_proof_canonical`, which rejects
+    /// any trailing bytes beyond the encoded envelope. Without this,
+    /// the same logical proof would have many distinct byte encodings
+    /// (a proof and the same proof with arbitrary suffix bytes), all
+    /// verifying to the same `(RootHash, results)`. The cryptographic
+    /// chain still binds the answer, so this isn't a soundness break,
+    /// but it lets two byte-distinct proofs verify identically, which
+    /// breaks any equality-by-bytes / caching / dedup assumption a
+    /// consumer might rely on.
+    ///
+    /// Mirrors `sum_proof_with_trailing_bytes_is_rejected` and
+    /// `aggregate_count_proof_with_trailing_bytes_is_rejected` for the
+    /// non-aggregate `verify_query` entry point.
+    #[test]
+    fn verify_query_rejects_proof_with_trailing_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let mut proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query");
+
+        // Sanity: the untouched proof verifies.
+        GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect("clean proof should verify");
+
+        // Append a single trailing byte. The canonical-decode contract
+        // must reject this even though the cryptographic chain still
+        // binds the same `(RootHash, results)`.
+        proof.push(0u8);
+        let err = GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect_err("trailing-byte proof must be rejected");
+        match err {
+            crate::Error::CorruptedData(msg) => {
+                assert!(msg.contains("trailing bytes"), "unexpected message: {msg}")
+            }
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+
     #[test]
     fn verify_query_with_options_limit() {
         // Prove a query with a limit and verify the results are correctly
