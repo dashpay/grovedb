@@ -1121,6 +1121,140 @@ mod tests {
         );
     }
 
+    /// V1-envelope twin of `empty_leaf_type_confusion_forgery_rejected`.
+    ///
+    /// The V0 twin currently gets caught by the V0-envelope-not-allowed
+    /// gate (which fires first under `GROVE_V2`) before the
+    /// terminal-type gate in `enforce_lower_chain` runs. That gate is
+    /// the actual fix this PR landed for empty-leaf type confusion, so
+    /// we forge the same shape under a V1 envelope here to pin the
+    /// terminal-type check directly. The error message must name
+    /// `ProvableSumTree` explicitly — only the terminal-type gate
+    /// produces that message.
+    #[test]
+    fn empty_leaf_type_confusion_forgery_rejected_under_v1_envelope() {
+        use std::collections::BTreeMap;
+
+        use bincode::config;
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"evil",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty normal tree at evil");
+
+        // Honest probe to harvest the layer-0 and layer-1 merk proof
+        // bytes for the forgery. We use prove_query on a single-key
+        // PathQuery so the prover follows the same descent shape we want
+        // to forge.
+        let probe = PathQuery::new_single_key(vec![TEST_LEAF.to_vec()], b"evil".to_vec());
+        let probe_proof_bytes = db
+            .grove_db
+            .prove_query(&probe, None, v)
+            .unwrap()
+            .expect("honest probe should succeed");
+
+        let cfg = config::standard()
+            .with_big_endian()
+            .with_limit::<{ 256 * 1024 * 1024 }>();
+        let probe_decoded: GroveDBProof = bincode::decode_from_slice(&probe_proof_bytes, cfg)
+            .unwrap()
+            .0;
+
+        let (root_proof_bytes, test_leaf_proof_bytes) = match probe_decoded {
+            GroveDBProof::V1(GroveDBProofV1 { root_layer }) => {
+                let test_leaf_bytes = match &root_layer
+                    .lower_layers
+                    .get(TEST_LEAF)
+                    .expect("descent into TEST_LEAF")
+                    .merk_proof
+                {
+                    ProofBytes::Merk(b) => b.clone(),
+                    other => panic!(
+                        "expected Merk bytes, got {:?}",
+                        std::mem::discriminant(other)
+                    ),
+                };
+                let root_bytes = match root_layer.merk_proof {
+                    ProofBytes::Merk(b) => b,
+                    ref other => panic!(
+                        "expected Merk bytes, got {:?}",
+                        std::mem::discriminant(other)
+                    ),
+                };
+                (root_bytes, test_leaf_bytes)
+            }
+            GroveDBProof::V0(_) => panic!("expected V1 envelope under latest grove version"),
+        };
+
+        // Forge a V1 envelope:
+        //   root_layer.merk_proof = honest proof of TEST_LEAF in root
+        //   root_layer.lower_layers[TEST_LEAF].merk_proof =
+        //       honest proof of "evil" in TEST_LEAF
+        //   root_layer.lower_layers[TEST_LEAF].lower_layers["evil"].merk_proof =
+        //       [] (forged empty leaf — accepted as (NULL_HASH, 0) by
+        //       the merk-level sum verifier).
+        let evil_leaf = LayerProof {
+            merk_proof: ProofBytes::Merk(Vec::new()),
+            lower_layers: BTreeMap::new(),
+        };
+        let mut test_leaf_map = BTreeMap::new();
+        test_leaf_map.insert(b"evil".to_vec(), evil_leaf);
+
+        let test_leaf_layer = LayerProof {
+            merk_proof: ProofBytes::Merk(test_leaf_proof_bytes),
+            lower_layers: test_leaf_map,
+        };
+        let mut root_lower = BTreeMap::new();
+        root_lower.insert(TEST_LEAF.to_vec(), test_leaf_layer);
+
+        let forged = GroveDBProof::V1(GroveDBProofV1 {
+            root_layer: LayerProof {
+                merk_proof: ProofBytes::Merk(root_proof_bytes),
+                lower_layers: root_lower,
+            },
+        });
+        let forged_bytes = bincode::encode_to_vec(&forged, cfg).expect("encode forged envelope");
+
+        let attack_pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"evil".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+
+        let result = GroveDb::verify_aggregate_sum_query(&forged_bytes, &attack_pq, v);
+        match result {
+            Err(e) => {
+                // V1 envelope means the V0 gate does NOT fire — the
+                // terminal-type gate in `enforce_lower_chain` is the
+                // only thing standing between the forgery and a
+                // silently-accepted `sum = 0`. Pin its specific error
+                // message so future refactors that drop the gate are
+                // caught.
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains("must be a ProvableSumTree"),
+                    "expected terminal-type gate to fire; got: {msg}"
+                );
+            }
+            Ok((root_hash, sum)) => panic!(
+                "BUG: empty-leaf forgery accepted by V1 verifier! \
+                 Returned (root_hash={}, sum={}) — the leaf is a NormalTree, \
+                 not a ProvableSumTree.",
+                hex::encode(root_hash),
+                sum
+            ),
+        }
+    }
+
     /// Same forgery shape, but the honest leaf is an empty
     /// `ProvableCountTree` (the wrong PROVABLE tree type for a sum
     /// query). Confirms the terminal-type gate enforces the precise
@@ -1902,9 +2036,130 @@ mod tests {
             .expect_err("missing lower_layer must be rejected");
         match err {
             crate::Error::InvalidProof(_, msg) => {
+                // The strict-shape gate fires first when we remove the
+                // expected descent entry (`lower_layers.len() != 1`),
+                // before the older "missing lower layer" arm would have
+                // matched. Either message is acceptable here — both
+                // pin the same underlying property (the descent into
+                // the next path key must be present).
                 assert!(
-                    msg.contains("missing lower layer"),
-                    "expected missing-lower-layer rejection, got: {msg}"
+                    msg.contains("missing lower layer")
+                        || msg.contains("unexpected lower-layer shape"),
+                    "expected missing-lower-layer or unexpected-shape rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// Strict-shape regression: any non-leaf layer must contain
+    /// exactly one `lower_layers` entry — the descent into the next
+    /// path key. Adding an extra sibling entry makes two byte-distinct
+    /// envelopes verify to the same `(root, sum)`, which we reject so
+    /// proofs are uniquely byte-shaped.
+    #[test]
+    fn sum_v1_envelope_with_extra_lower_layer_is_rejected() {
+        use std::collections::BTreeMap;
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF");
+        // Smuggle an unrelated layer in alongside the legitimate `st`
+        // descent. The honest prover never emits this shape, so the
+        // strict-shape gate must reject it.
+        test_leaf_layer.lower_layers.insert(
+            b"intruder".to_vec(),
+            LayerProof {
+                merk_proof: ProofBytes::Merk(Vec::new()),
+                lower_layers: BTreeMap::new(),
+            },
+        );
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("extra lower_layer at non-leaf depth must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("unexpected lower-layer shape"),
+                    "expected unexpected-shape rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// Strict-shape regression: the leaf merk (the layer that holds the
+    /// actual sum proof) must carry no `lower_layers`. The honest
+    /// prover always emits an empty map at this depth.
+    #[test]
+    fn sum_v1_envelope_with_lower_layers_under_leaf_is_rejected() {
+        use std::collections::BTreeMap;
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF")
+            .lower_layers
+            .get_mut(&b"st".to_vec())
+            .expect("st");
+        // Attach a dangling sub-layer under the leaf merk. The
+        // strict-shape gate at `depth == path_keys.len()` must reject
+        // this even though the smuggled bytes would not affect the
+        // verified sum.
+        leaf_layer.lower_layers.insert(
+            b"dangling".to_vec(),
+            LayerProof {
+                merk_proof: ProofBytes::Merk(Vec::new()),
+                lower_layers: BTreeMap::new(),
+            },
+        );
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("dangling layer under leaf must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("unexpected lower layers below the leaf"),
+                    "expected leaf-no-children rejection, got: {msg}"
                 );
             }
             other => panic!("expected InvalidProof, got {:?}", other),

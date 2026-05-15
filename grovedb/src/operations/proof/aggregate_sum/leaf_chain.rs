@@ -41,10 +41,42 @@ pub(super) fn verify_v1_leaf_chain(
     let merk_bytes = expect_merk_bytes(&layer.merk_proof, path_query)?;
 
     if depth == path_keys.len() {
+        // Strict-shape gate: a leaf-shape aggregate-sum proof terminates
+        // in the merk that holds the actual count proof; that merk is a
+        // *leaf* of the GroveDB-proof envelope and must carry no further
+        // `lower_layers`. Without this check, an attacker can attach
+        // arbitrary unverified `LayerProof`s under the leaf and produce
+        // byte-distinct envelopes that all verify to the same `(root,
+        // sum)`, harming determinism (caching, deduplication) and
+        // enlarging the attack surface for downstream consumers that
+        // syntactically scan proof structure.
+        if !layer.lower_layers.is_empty() {
+            return Err(Error::InvalidProof(
+                path_query.clone(),
+                "aggregate-sum proof contains unexpected lower layers below the leaf merk"
+                    .to_string(),
+            ));
+        }
         return verify_sum_leaf(merk_bytes, inner_range, path_query);
     }
 
     let next_key = path_keys[depth].to_vec();
+    // Strict-shape gate: at each non-leaf depth the honest prover
+    // emits exactly one `lower_layers` entry — the descent into the
+    // next path key. Reject any other shape (extra siblings, missing
+    // descent, or descent under a different key) so the verified
+    // path-prefix is unambiguous and proofs are uniquely byte-shaped.
+    if layer.lower_layers.len() != 1 || !layer.lower_layers.contains_key(&next_key) {
+        return Err(Error::InvalidProof(
+            path_query.clone(),
+            format!(
+                "aggregate-sum proof has unexpected lower-layer shape at depth {} (expected \
+                 exactly one entry for path key {})",
+                depth,
+                hex::encode(&next_key)
+            ),
+        ));
+    }
     let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
         verify_single_key_layer_proof_v0(merk_bytes, &next_key, path_query)?;
 
