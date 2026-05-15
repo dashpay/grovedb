@@ -737,8 +737,10 @@ impl fmt::Display for ProofVerificationResult {
 }
 
 /// Checks whether a key exists as a boundary element in the given merk proof
-/// bytes. A boundary element is a `KVDigest` or `KVDigestCount` node — it
-/// proves the key exists in the tree without revealing the value.
+/// bytes. A boundary element is a `KVDigest`, `KVDigestCount`, or
+/// `KVDigestSum` node — it proves the key exists in the tree without
+/// revealing the value. (Same node-type coverage as
+/// [`boundaries_in_proof`]; the two helpers must agree.)
 ///
 /// This is useful for exclusive range queries (e.g. `RangeAfter(10)`) where
 /// the boundary key (10) is included in the proof as a digest node to anchor
@@ -752,6 +754,8 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
             | Op::PushInverted(Node::KVDigest(k, _))
             | Op::Push(Node::KVDigestCount(k, _, _))
             | Op::PushInverted(Node::KVDigestCount(k, _, _))
+            | Op::Push(Node::KVDigestSum(k, _, _))
+            | Op::PushInverted(Node::KVDigestSum(k, _, _))
                 if k.as_slice() == key =>
             {
                 return Ok(true);
@@ -857,10 +861,12 @@ mod provable_sum_tree_bound_regression_tests {
 
     /// Boundary-extraction parallel: `KVDigestSum` produced by a
     /// `ProvableSumTree` proof must surface in `boundaries_in_proof`
-    /// just like its `KVDigest` / `KVDigestCount` siblings.
+    /// just like its `KVDigest` / `KVDigestCount` siblings, AND
+    /// `key_exists_as_boundary_in_proof` must agree (the two helpers
+    /// are documented to behave identically).
     #[test]
-    fn kv_digest_sum_appears_in_boundaries_in_proof() {
-        use crate::proofs::query::verify::boundaries_in_proof;
+    fn kv_digest_sum_appears_in_both_boundary_helpers() {
+        use crate::proofs::query::verify::{boundaries_in_proof, key_exists_as_boundary_in_proof};
 
         let v = GroveVersion::latest();
         let merk = make_15_key_provable_sum_tree(v);
@@ -878,6 +884,19 @@ mod provable_sum_tree_bound_regression_tests {
             !boundaries.is_empty(),
             "boundaries_in_proof must report KVDigestSum nodes from ProvableSumTree proofs"
         );
+
+        // Every boundary key surfaced by `boundaries_in_proof` must
+        // round-trip through `key_exists_as_boundary_in_proof` as well —
+        // the two helpers must agree on the same node-type coverage.
+        for boundary in &boundaries {
+            let found = key_exists_as_boundary_in_proof(&proof.proof, boundary)
+                .expect("key_exists_as_boundary_in_proof");
+            assert!(
+                found,
+                "key_exists_as_boundary_in_proof disagreed with boundaries_in_proof on {:?}",
+                boundary
+            );
+        }
     }
 }
 
