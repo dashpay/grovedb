@@ -169,10 +169,20 @@ pub(super) struct OuterMatch {
 /// returning `(carrier_merk_root_hash, matched_outer_keys)`. Each
 /// `OuterMatch` carries the value bytes and the parent-recorded value_hash
 /// that the chain check will validate.
+///
+/// `outer_limit` is the `SizedQuery::limit` that bounds the outer walk
+/// (matching what the prover passed to `Merk::prove_unchecked_query_items`
+/// when it generated the carrier-layer merk proof). When the carrier
+/// query carries a non-`None` `SizedQuery::limit`, the prover truncates
+/// the outer walk after that many matched keys and emits structural
+/// Hash nodes for the rest; the verifier must therefore execute the
+/// proof with the same limit so that its merk walker stops at the same
+/// boundary instead of demanding KV data for the un-walked tail.
 pub(super) fn execute_carrier_layer_proof(
     merk_bytes: &[u8],
     outer_items: &[QueryItem],
     left_to_right: bool,
+    outer_limit: Option<u16>,
     path_query: &PathQuery,
 ) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
     // The grovedb_query::QueryItem and grovedb_merk::proofs::query::QueryItem
@@ -187,7 +197,7 @@ pub(super) fn execute_carrier_layer_proof(
     // walker stops at the first out-of-order boundary and only the
     // last key in the proof is returned.
     let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, None, left_to_right, 0)
+        .execute_proof(merk_bytes, outer_limit, left_to_right, 0)
         .unwrap()
         .map_err(|e| {
             Error::InvalidProof(
