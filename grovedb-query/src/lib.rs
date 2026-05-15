@@ -9,6 +9,11 @@
 /// Error types for query operations.
 pub mod error;
 
+/// `AggregateCountOnRange` (ACOR) construction and validation. The
+/// shape, detection, and leaf/carrier rule sets live here; the proof
+/// generation and verification live in the `grovedb` crate.
+mod aggregate_count;
+
 /// Aggregate sum query for sum-up-to style queries.
 pub mod aggregate_sum_query;
 

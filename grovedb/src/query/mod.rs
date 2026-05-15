@@ -116,14 +116,37 @@ impl SizedQuery {
     }
 
     /// Validates that this sized query is a well-formed
-    /// `AggregateCountOnRange` query. On success, returns a reference to the
-    /// inner range item (the `QueryItem` wrapped by `AggregateCountOnRange`).
+    /// `AggregateCountOnRange` query in either the **leaf** or **carrier**
+    /// shape. On success, returns a reference to the leaf inner range item
+    /// (the `QueryItem` wrapped by the underlying `AggregateCountOnRange`,
+    /// whether at this level for leaf queries or inside the
+    /// `default_subquery_branch.subquery` for carrier queries).
     ///
     /// This is the `SizedQuery`-level entry point: it forwards to
     /// [`Query::validate_aggregate_count_on_range`] and additionally rejects
     /// any non-`None` `limit` or `offset` (counting is an aggregate over the
     /// full match set — pagination would silently change the answer).
     pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.check_aggregate_count_size_constraints()?;
+        self.query
+            .validate_aggregate_count_on_range()
+            .map_err(query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
+
+    /// Strict variant of [`Self::validate_aggregate_count_on_range`] that
+    /// only accepts the **leaf** shape (single `AggregateCountOnRange(_)`
+    /// item, no subqueries). Used by entry points that produce a single
+    /// `u64` and need to reject the carrier shape up front.
+    pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.check_aggregate_count_size_constraints()?;
+        self.query
+            .validate_leaf_aggregate_count_on_range()
+            .map_err(query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
+
+    fn check_aggregate_count_size_constraints(&self) -> Result<(), Error> {
         if self.limit.is_some() {
             return Err(Error::InvalidQuery(
                 "AggregateCountOnRange queries may not set SizedQuery::limit",
@@ -134,10 +157,7 @@ impl SizedQuery {
                 "AggregateCountOnRange queries may not set SizedQuery::offset",
             ));
         }
-        self.query
-            .validate_aggregate_count_on_range()
-            .map_err(query_validation_error_to_static_str)
-            .map_err(Error::InvalidQuery)
+        Ok(())
     }
 
     /// Mirror of [`Self::validate_aggregate_count_on_range`] for
@@ -167,7 +187,7 @@ impl SizedQuery {
 /// `grovedb_query::error::Error::InvalidOperation(&'static str)`, so this is
 /// just a projection of that variant; any other error variant (which would
 /// indicate an unrelated bug) is forwarded as a generic catch-all label.
-fn query_validation_error_to_static_str(e: grovedb_query::error::Error) -> &'static str {
+pub(crate) fn query_validation_error_to_static_str(e: grovedb_query::error::Error) -> &'static str {
     match e {
         grovedb_query::error::Error::InvalidOperation(msg) => msg,
         _ => "aggregate query validation failed",
@@ -219,8 +239,8 @@ impl PathQuery {
     }
 
     /// Validates that this `PathQuery` is a well-formed
-    /// `AggregateCountOnRange` query. On success, returns a reference to the
-    /// inner range item.
+    /// `AggregateCountOnRange` query in either the leaf or carrier shape.
+    /// On success, returns a reference to the leaf inner range item.
     ///
     /// Rejects empty paths up-front. The GroveDB root merk is always a
     /// `NormalTree` by API construction (and never a `ProvableCountTree`),
@@ -265,6 +285,13 @@ impl PathQuery {
             ));
         }
         self.query.validate_aggregate_sum_on_range()
+    }
+
+    /// Strict variant of [`Self::validate_aggregate_count_on_range`] that
+    /// only accepts the **leaf** shape (single `AggregateCountOnRange(_)`
+    /// item, no subqueries).
+    pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        self.query.validate_leaf_aggregate_count_on_range()
     }
 
     /// Returns `true` if this `PathQuery`'s underlying query carries an
