@@ -20,6 +20,34 @@ use std::{collections::BTreeMap, fmt};
 /// fitting comfortably within typical stack sizes.
 pub const MAX_PROOF_DEPTH: usize = 128;
 
+/// Decode a serialized [`GroveDBProof`] envelope using the same bincode
+/// configuration the prover writes out.
+///
+/// Decoding is canonical: trailing bytes beyond the encoded envelope are
+/// rejected. Without this check the same `(RootHash, payload)` could be
+/// reconstructed from many different proof byte-strings (a proof and the
+/// same proof with arbitrary suffix bytes), which is harmless for the
+/// chain-bound correctness guarantee but breaks any equality-by-bytes
+/// assumption a caller might rely on (caching, deduplication, hashing
+/// the proof itself).
+///
+/// Shared by the aggregate-count and aggregate-sum verifier entry
+/// points so the canonical-decode contract has exactly one definition.
+pub(super) fn decode_grovedb_proof_canonical(proof: &[u8]) -> Result<GroveDBProof, Error> {
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_limit::<{ 256 * 1024 * 1024 }>();
+    let (decoded, consumed) = bincode::decode_from_slice(proof, config)
+        .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
+    if consumed != proof.len() {
+        return Err(Error::CorruptedData(format!(
+            "proof has {} trailing bytes after the encoded envelope",
+            proof.len() - consumed
+        )));
+    }
+    Ok(decoded)
+}
+
 use bincode::{
     de::{BorrowDecoder, Decoder as BincodeDecoder},
     error::DecodeError,

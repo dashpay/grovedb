@@ -92,7 +92,7 @@ impl GroveDb {
 
         let inner_range = path_query.validate_aggregate_sum_on_range()?.clone();
 
-        let grovedb_proof = helpers::decode_grovedb_proof(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
         let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;

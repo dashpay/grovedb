@@ -1,7 +1,11 @@
 //! Shared helpers used by both the leaf-chain walker and the per-key
 //! carrier walker.
 //!
-//! - [`decode_grovedb_proof`] — parse the bincode envelope.
+//! Envelope decoding lives one level up in
+//! [`crate::operations::proof::decode_grovedb_proof_canonical`] so the
+//! canonical-decode contract has exactly one definition shared with
+//! the aggregate-sum side.
+//!
 //! - [`verify_count_leaf`] — delegate to the merk-level count verifier.
 //! - [`expect_merk_bytes`] — unwrap a `ProofBytes::Merk(_)` or reject.
 //! - [`verify_single_key_layer_proof_v0`] — verify a non-leaf merk
@@ -25,35 +29,7 @@ use grovedb_merk::{
 use grovedb_query::QueryItem;
 use grovedb_version::version::GroveVersion;
 
-use crate::{
-    operations::proof::{GroveDBProof, ProofBytes},
-    Element, Error, PathQuery,
-};
-
-/// Decode a serialized `GroveDBProof` envelope using the same bincode
-/// configuration the prover writes out.
-///
-/// Decoding is canonical: trailing bytes beyond the encoded envelope
-/// are rejected. Without this check the same `(RootHash, count)` could
-/// be reconstructed from many different proof byte-strings (a proof and
-/// the same proof with arbitrary suffix bytes), which is harmless for
-/// the chain-bound correctness guarantee but breaks any
-/// equality-by-bytes assumption a caller might rely on (caching,
-/// deduplication, hashing the proof itself).
-pub(super) fn decode_grovedb_proof(proof: &[u8]) -> Result<GroveDBProof, Error> {
-    let config = bincode::config::standard()
-        .with_big_endian()
-        .with_limit::<{ 256 * 1024 * 1024 }>();
-    let (decoded, consumed) = bincode::decode_from_slice(proof, config)
-        .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
-    if consumed != proof.len() {
-        return Err(Error::CorruptedData(format!(
-            "aggregate-count proof has {} trailing bytes after the encoded envelope",
-            proof.len() - consumed
-        )));
-    }
-    Ok(decoded)
-}
+use crate::{operations::proof::ProofBytes, Element, Error, PathQuery};
 
 /// Verify the leaf layer: bytes are the encoded count-proof Op stream;
 /// the inner range is the same one the prover counted over.
