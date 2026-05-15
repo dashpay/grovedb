@@ -2036,16 +2036,15 @@ mod tests {
             .expect_err("missing lower_layer must be rejected");
         match err {
             crate::Error::InvalidProof(_, msg) => {
-                // The strict-shape gate fires first when we remove the
-                // expected descent entry (`lower_layers.len() != 1`),
-                // before the older "missing lower layer" arm would have
-                // matched. Either message is acceptable here — both
-                // pin the same underlying property (the descent into
-                // the next path key must be present).
+                // Removing the only entry trips the count-shape gate
+                // (`lower_layers.len() != 1`), which fires before the
+                // key-shape gate. Both pin the same underlying
+                // property (the descent into the next path key must
+                // be present), so either message is acceptable.
                 assert!(
                     msg.contains("missing lower layer")
-                        || msg.contains("unexpected lower-layer shape"),
-                    "expected missing-lower-layer or unexpected-shape rejection, got: {msg}"
+                        || msg.contains("lower-layer entries at depth"),
+                    "expected missing-lower-layer or entry-count rejection, got: {msg}"
                 );
             }
             other => panic!("expected InvalidProof, got {:?}", other),
@@ -2100,11 +2099,100 @@ mod tests {
         match err {
             crate::Error::InvalidProof(_, msg) => {
                 assert!(
-                    msg.contains("unexpected lower-layer shape"),
-                    "expected unexpected-shape rejection, got: {msg}"
+                    msg.contains("lower-layer entries at depth"),
+                    "expected entry-count rejection, got: {msg}"
                 );
             }
             other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// Strict-shape regression: the sole `lower_layers` entry at a
+    /// non-leaf depth must be keyed under the expected descent key.
+    /// Renaming the entry (single entry, but under the wrong key)
+    /// exercises the key-shape gate, distinct from the count-shape
+    /// gate covered by `sum_v1_envelope_with_extra_lower_layer_*`.
+    #[test]
+    fn sum_v1_envelope_with_wrong_keyed_lower_layer_is_rejected() {
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1};
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_sum_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF");
+        // Re-key the sole `st` entry under a different name. The
+        // count gate (`len == 1`) still passes; the key gate must
+        // reject because the sole entry is no longer for the expected
+        // path key.
+        let st_layer = test_leaf_layer
+            .lower_layers
+            .remove(&b"st".to_vec())
+            .expect("test setup: st should be present");
+        test_leaf_layer
+            .lower_layers
+            .insert(b"impostor".to_vec(), st_layer);
+
+        let reencoded = reencode_sum_envelope(decoded);
+        let err = GroveDb::verify_aggregate_sum_query(&reencoded, &pq, v)
+            .expect_err("wrong-keyed lower_layer must be rejected");
+        match err {
+            crate::Error::InvalidProof(_, msg) => {
+                assert!(
+                    msg.contains("not keyed by the expected path key"),
+                    "expected wrong-key rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// Canonical-decode regression: a valid proof with any trailing
+    /// bytes appended must be rejected, even though the cryptographic
+    /// chain check would still bind the same `(RootHash, sum)`
+    /// result. Otherwise the same logical proof would have many
+    /// distinct byte encodings, which breaks proof-equality / caching
+    /// assumptions. Mirrors `aggregate_count_proof_with_trailing_bytes_*`.
+    #[test]
+    fn sum_proof_with_trailing_bytes_is_rejected() {
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_provable_sum_tree(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let mut proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query should succeed");
+        // Sanity: the untouched proof verifies.
+        GroveDb::verify_aggregate_sum_query(&proof, &pq, v).expect("clean proof should verify");
+        // Append a single trailing byte and expect canonical-decode
+        // rejection.
+        proof.push(0u8);
+        let err = GroveDb::verify_aggregate_sum_query(&proof, &pq, v)
+            .expect_err("trailing-byte proof must be rejected");
+        match err {
+            crate::Error::CorruptedData(msg) => {
+                assert!(msg.contains("trailing bytes"), "unexpected message: {msg}")
+            }
+            other => panic!("expected CorruptedData, got {:?}", other),
         }
     }
 

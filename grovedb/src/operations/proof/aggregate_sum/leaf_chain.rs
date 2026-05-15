@@ -61,17 +61,18 @@ pub(super) fn verify_v1_leaf_chain(
     }
 
     let next_key = path_keys[depth].to_vec();
-    // Strict-shape gate: at each non-leaf depth the honest prover
-    // emits exactly one `lower_layers` entry — the descent into the
-    // next path key. Reject any other shape (extra siblings, missing
-    // descent, or descent under a different key) so the verified
-    // path-prefix is unambiguous and proofs are uniquely byte-shaped.
-    if layer.lower_layers.len() != 1 || !layer.lower_layers.contains_key(&next_key) {
+    // Strict-shape gate (size): at each non-leaf depth the honest
+    // prover emits exactly one `lower_layers` entry — the descent
+    // into the next path key. Reject any other count (extra siblings,
+    // empty map, etc.) so the verified path-prefix is unambiguous
+    // and proofs are uniquely byte-shaped.
+    if layer.lower_layers.len() != 1 {
         return Err(Error::InvalidProof(
             path_query.clone(),
             format!(
-                "aggregate-sum proof has unexpected lower-layer shape at depth {} (expected \
-                 exactly one entry for path key {})",
+                "aggregate-sum proof has {} lower-layer entries at depth {} (expected exactly \
+                 one entry for path key {})",
+                layer.lower_layers.len(),
                 depth,
                 hex::encode(&next_key)
             ),
@@ -80,11 +81,17 @@ pub(super) fn verify_v1_leaf_chain(
     let (proven_value_bytes, parent_root_hash, parent_proof_hash) =
         verify_single_key_layer_proof_v0(merk_bytes, &next_key, path_query)?;
 
+    // Strict-shape gate (key): the sole entry must be under the
+    // expected descent key. A `lower_layers` map with one entry under
+    // an unexpected key indicates either tampering or a proof for a
+    // different path — both must be rejected.
     let lower_layer = layer.lower_layers.get(&next_key).ok_or_else(|| {
         Error::InvalidProof(
             path_query.clone(),
             format!(
-                "aggregate-sum proof missing lower layer for path key {}",
+                "aggregate-sum proof's sole lower-layer entry at depth {} is not keyed by \
+                 the expected path key {}",
+                depth,
                 hex::encode(&next_key)
             ),
         )
