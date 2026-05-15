@@ -119,52 +119,64 @@ impl Serialize for QueryItem {
     where
         S: Serializer,
     {
+        // Variant tags are emitted in snake_case so that textual formats
+        // (JSON, YAML, TOML) round-trip through the matching Deserialize
+        // impl, which uses `#[serde(field_identifier, rename_all =
+        // "snake_case")]` on its `Field` enum. Binary formats that
+        // identify variants by index (bincode, postcard) ignore the
+        // string tag, so this change is transparent to them.
         match self {
-            QueryItem::Key(key) => serializer.serialize_newtype_variant("QueryItem", 0, "Key", key),
+            QueryItem::Key(key) => serializer.serialize_newtype_variant("QueryItem", 0, "key", key),
             QueryItem::Range(range) => {
-                serializer.serialize_newtype_variant("QueryItem", 1, "Range", &range)
+                serializer.serialize_newtype_variant("QueryItem", 1, "range", &range)
             }
             QueryItem::RangeInclusive(range) => {
-                serializer.serialize_newtype_variant("QueryItem", 2, "RangeInclusive", range)
+                serializer.serialize_newtype_variant("QueryItem", 2, "range_inclusive", range)
             }
             QueryItem::RangeFull(_) => {
-                serializer.serialize_unit_variant("QueryItem", 3, "RangeFull")
+                serializer.serialize_unit_variant("QueryItem", 3, "range_full")
             }
             QueryItem::RangeFrom(range_from) => {
-                serializer.serialize_newtype_variant("QueryItem", 4, "RangeFrom", range_from)
+                serializer.serialize_newtype_variant("QueryItem", 4, "range_from", range_from)
             }
             QueryItem::RangeTo(range_to) => {
-                serializer.serialize_newtype_variant("QueryItem", 5, "RangeTo", range_to)
+                serializer.serialize_newtype_variant("QueryItem", 5, "range_to", range_to)
             }
             QueryItem::RangeToInclusive(range_to_inclusive) => serializer
                 .serialize_newtype_variant(
                     "QueryItem",
                     6,
-                    "RangeToInclusive",
+                    "range_to_inclusive",
                     &range_to_inclusive.end,
                 ),
             QueryItem::RangeAfter(range_after) => {
-                serializer.serialize_newtype_variant("QueryItem", 7, "RangeAfter", range_after)
+                serializer.serialize_newtype_variant("QueryItem", 7, "range_after", range_after)
             }
-            QueryItem::RangeAfterTo(range_after_to) => {
-                serializer.serialize_newtype_variant("QueryItem", 8, "RangeAfterTo", range_after_to)
-            }
+            QueryItem::RangeAfterTo(range_after_to) => serializer.serialize_newtype_variant(
+                "QueryItem",
+                8,
+                "range_after_to",
+                range_after_to,
+            ),
             QueryItem::RangeAfterToInclusive(range_after_to_inclusive) => serializer
                 .serialize_newtype_variant(
                     "QueryItem",
                     9,
-                    "RangeAfterToInclusive",
+                    "range_after_to_inclusive",
                     range_after_to_inclusive,
                 ),
             QueryItem::AggregateCountOnRange(inner) => serializer.serialize_newtype_variant(
                 "QueryItem",
                 10,
-                "AggregateCountOnRange",
+                "aggregate_count_on_range",
                 inner,
             ),
-            QueryItem::AggregateSumOnRange(inner) => {
-                serializer.serialize_newtype_variant("QueryItem", 11, "AggregateSumOnRange", inner)
-            }
+            QueryItem::AggregateSumOnRange(inner) => serializer.serialize_newtype_variant(
+                "QueryItem",
+                11,
+                "aggregate_sum_on_range",
+                inner,
+            ),
         }
     }
 }
@@ -1421,13 +1433,11 @@ mod test {
     // rejected immediately by serde without recursion through
     // `QueryItem::deserialize`.
     //
-    // We use `serde_test`'s token-level driver here rather than a textual
-    // format because the existing `Serialize` impl emits variant tags in
-    // PascalCase (`"AggregateCountOnRange"`) while the existing `Field` enum
-    // uses `rename_all = "snake_case"` — a pre-existing mismatch unrelated
-    // to this PR that breaks JSON round-trip but is invisible to formats
-    // that don't carry variant names textually. Using token streams sidesteps
-    // that issue and lets us validate the rejection contract directly.
+    // We use `serde_test`'s token-level driver here for symmetry with the
+    // rejection contract — the inner field set's snake_case tag (e.g.
+    // `aggregate_count_on_range`) matches both the Serialize impl (which
+    // emits snake_case variant tags) and the Deserialize impl
+    // (`#[serde(field_identifier, rename_all = "snake_case")]`).
 
     #[cfg(feature = "serde")]
     #[test]
@@ -1845,6 +1855,91 @@ mod test {
              `key`, `range`, `range_inclusive`, `range_full`, `range_from`, \
              `range_to`, `range_to_inclusive`, `range_after`, `range_after_to`, \
              `range_after_to_inclusive`",
+        );
+    }
+
+    /// Regression: the Serialize impl emits variant tags in snake_case
+    /// so the round-trip with the snake_case `Field` enum on the
+    /// Deserialize side works for textual formats (JSON, YAML).
+    ///
+    /// Before this was fixed, the Serialize impl emitted PascalCase
+    /// (`"AggregateSumOnRange"`) while the Deserialize side expected
+    /// snake_case (`"aggregate_sum_on_range"`), so JSON round-trip
+    /// failed silently for every QueryItem variant. Bincode round-trip
+    /// was unaffected because it identifies variants by index, not by
+    /// the textual tag.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip_aggregate_sum_on_range_uses_snake_case_tag() {
+        use serde_test::{assert_tokens, Token};
+
+        let qi = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_tokens(
+            &qi,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
+        );
+    }
+
+    /// Mirror of the sum test: count side round-trips through
+    /// snake_case too. Pins the contract so both aggregate variants
+    /// stay in lockstep on the Serialize side.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip_aggregate_count_on_range_uses_snake_case_tag() {
+        use serde_test::{assert_tokens, Token};
+
+        let qi = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_tokens(
+            &qi,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
         );
     }
 }
