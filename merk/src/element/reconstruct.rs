@@ -78,6 +78,9 @@ impl ElementReconstructExtensions for Element {
             Element::NotSummed(inner) => inner
                 .reconstruct_with_root_key(maybe_root_key, aggregate_data)
                 .map(|reconstructed| Element::NotSummed(Box::new(reconstructed))),
+            Element::NotCountedOrSummed(inner) => inner
+                .reconstruct_with_root_key(maybe_root_key, aggregate_data)
+                .map(|reconstructed| Element::NotCountedOrSummed(Box::new(reconstructed))),
             _ => None,
         }
     }

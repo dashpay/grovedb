@@ -1110,7 +1110,7 @@ impl GroveDb {
                         );
                     }
                 }
-                Element::NonCounted(_) | Element::NotSummed(_) => {
+                Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                     unreachable!("unwrapped above")
                 }
             }

@@ -591,7 +591,9 @@ impl GroveDb {
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
-                            Ok(Element::NonCounted(_)) | Ok(Element::NotSummed(_)) => {
+                            Ok(Element::NonCounted(_))
+                            | Ok(Element::NotSummed(_))
+                            | Ok(Element::NotCountedOrSummed(_)) => {
                                 unreachable!("unwrapped above")
                             }
                             Err(e) => {
@@ -1501,7 +1503,9 @@ impl GroveDb {
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
-                            Ok(Element::NonCounted(_)) | Ok(Element::NotSummed(_)) => {
+                            Ok(Element::NonCounted(_))
+                            | Ok(Element::NotSummed(_))
+                            | Ok(Element::NotCountedOrSummed(_)) => {
                                 unreachable!("unwrapped above")
                             }
                             Err(e) => {

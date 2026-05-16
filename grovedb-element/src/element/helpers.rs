@@ -27,15 +27,37 @@ impl Element {
         matches!(self, Element::NotSummed(_))
     }
 
-    /// Returns the wrapped element if `self` is a wrapper (`NonCounted` or
-    /// `NotSummed`), else `self`. Use this when you need to inspect the
-    /// actual element type and don't care whether it is wrapped.
+    /// Returns `true` if this element is wrapped in
+    /// `Element::NotCountedOrSummed`. The wrapper suppresses BOTH count
+    /// and sum propagation to the parent tree but leaves all other
+    /// behavior (storage, hashing, internal aggregation) unchanged.
+    pub fn is_not_counted_or_summed(&self) -> bool {
+        matches!(self, Element::NotCountedOrSummed(_))
+    }
+
+    /// Returns `true` if this element is wrapped in any of the wrapper
+    /// variants (`NonCounted`, `NotSummed`, `NotCountedOrSummed`). Useful
+    /// for paths that need to add the +1 wrapper-byte cost overhead
+    /// regardless of which wrapper is in use.
+    pub fn is_wrapped(&self) -> bool {
+        matches!(
+            self,
+            Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_)
+        )
+    }
+
+    /// Returns the wrapped element if `self` is any wrapper (`NonCounted`,
+    /// `NotSummed`, or `NotCountedOrSummed`), else `self`. Use this when
+    /// you need to inspect the actual element type and don't care whether
+    /// it is wrapped.
     ///
     /// Only unwraps one level — the constructors and (de)serializers reject
     /// any wrapper nesting, so a single unwrap is always sufficient.
     pub fn underlying(&self) -> &Element {
         match self {
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner,
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner,
             other => other,
         }
     }
@@ -43,7 +65,9 @@ impl Element {
     /// Mutable variant of [`underlying`].
     pub fn underlying_mut(&mut self) -> &mut Element {
         match self {
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner,
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner,
             other => other,
         }
     }
@@ -51,7 +75,9 @@ impl Element {
     /// Owned variant of [`underlying`].
     pub fn into_underlying(self) -> Element {
         match self {
-            Element::NonCounted(inner) | Element::NotSummed(inner) => *inner,
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => *inner,
             other => other,
         }
     }
@@ -61,12 +87,12 @@ impl Element {
     ///
     /// `NonCounted` delegates to its inner element — sums still propagate
     /// when the wrapper is inserted into a sum-bearing parent.
-    /// `NotSummed` returns 0 — the wrapper's whole purpose is to contribute
-    /// nothing to the parent sum tree.
+    /// `NotSummed` and `NotCountedOrSummed` return 0 — the wrappers'
+    /// purpose is to contribute nothing to the parent sum tree.
     pub fn sum_value_or_default(&self) -> i64 {
         match self {
             Element::NonCounted(inner) => inner.sum_value_or_default(),
-            Element::NotSummed(_) => 0,
+            Element::NotSummed(_) | Element::NotCountedOrSummed(_) => 0,
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
@@ -79,12 +105,12 @@ impl Element {
     /// Decoded the integer value in the CountTree element type, returns 1 for
     /// everything else.
     ///
-    /// `NonCounted` returns 0 — the wrapper's whole purpose is to contribute
-    /// nothing to the parent count tree.
+    /// `NonCounted` and `NotCountedOrSummed` return 0 — both wrappers
+    /// suppress the parent count contribution.
     /// `NotSummed` delegates to its inner — counts still propagate.
     pub fn count_value_or_default(&self) -> u64 {
         match self {
-            Element::NonCounted(_) => 0,
+            Element::NonCounted(_) | Element::NotCountedOrSummed(_) => 0,
             Element::NotSummed(inner) => inner.count_value_or_default(),
             Element::CountTree(_, count_value, _)
             | Element::CountSumTree(_, count_value, ..)
@@ -101,10 +127,12 @@ impl Element {
     /// propagates.
     /// `NotSummed` returns `(inner_count, 0)` — sum is suppressed, count
     /// still propagates.
+    /// `NotCountedOrSummed` returns `(0, 0)` — both are suppressed.
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
         match self {
             Element::NonCounted(inner) => (0, inner.sum_value_or_default()),
             Element::NotSummed(inner) => (inner.count_value_or_default(), 0),
+            Element::NotCountedOrSummed(_) => (0, 0),
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _) => (1, *sum_value),
@@ -120,11 +148,11 @@ impl Element {
 
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else. `NonCounted` delegates to its inner. `NotSummed`
-    /// returns 0.
+    /// and `NotCountedOrSummed` return 0.
     pub fn big_sum_value_or_default(&self) -> i128 {
         match self {
             Element::NonCounted(inner) => inner.big_sum_value_or_default(),
-            Element::NotSummed(_) => 0,
+            Element::NotSummed(_) | Element::NotCountedOrSummed(_) => 0,
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
@@ -394,7 +422,9 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags(),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.get_flags(),
         }
     }
 
@@ -417,7 +447,9 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags_owned(),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.get_flags_owned(),
         }
     }
 
@@ -440,7 +472,9 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags_mut(),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.get_flags_mut(),
         }
     }
 
@@ -463,7 +497,9 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags) => *flags = new_flags,
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.set_flags(new_flags),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.set_flags(new_flags),
         }
     }
 

@@ -60,9 +60,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some((None, TreeType::DenseAppendOnlyFixedSizeTree(height)))
             }
-            Element::NonCounted(inner) | Element::NotSummed(inner) => {
-                inner.root_key_and_tree_type_owned()
-            }
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.root_key_and_tree_type_owned(),
             _ => None,
         }
     }
@@ -95,9 +95,9 @@ impl ElementTreeTypeExtensions for Element {
                 &NONE_ROOT_KEY,
                 TreeType::DenseAppendOnlyFixedSizeTree(*height),
             )),
-            Element::NonCounted(inner) | Element::NotSummed(inner) => {
-                inner.root_key_and_tree_type()
-            }
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.root_key_and_tree_type(),
             _ => None,
         }
     }
@@ -125,7 +125,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, flags) => {
                 Some((flags, TreeType::DenseAppendOnlyFixedSizeTree(*height)))
             }
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.tree_flags_and_type(),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.tree_flags_and_type(),
             _ => None,
         }
     }
@@ -151,7 +153,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.tree_type(),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.tree_type(),
             _ => None,
         }
     }
@@ -175,7 +179,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
             Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.tree_feature_type(),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.tree_feature_type(),
             _ => None,
         }
     }
@@ -201,7 +207,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
-            Element::NonCounted(inner) | Element::NotSummed(inner) => inner.maybe_tree_type(),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => inner.maybe_tree_type(),
             _ => MaybeTree::NotTree,
         }
     }
@@ -209,11 +217,13 @@ impl ElementTreeTypeExtensions for Element {
     /// Get the tree feature type.
     ///
     /// `count_value_or_default` and `count_sum_value_or_default` already
-    /// return 0 (resp. (0, inner_sum)) for `Element::NonCounted`, and
+    /// return 0 (resp. (0, inner_sum)) for `Element::NonCounted`,
     /// `sum_value_or_default` / `big_sum_value_or_default` /
     /// `count_sum_value_or_default` already return 0 (resp. (inner_count, 0))
-    /// for `Element::NotSummed`. So the existing dispatch produces the right
-    /// feature type for either wrapper without an explicit branch here.
+    /// for `Element::NotSummed`, and all four helpers return 0 (resp.
+    /// (0, 0)) for `Element::NotCountedOrSummed`. So the existing dispatch
+    /// produces the right feature type for every wrapper without an
+    /// explicit branch here.
     fn get_feature_type(&self, parent_tree_type: TreeType) -> Result<TreeFeatureType, Error> {
         match parent_tree_type {
             TreeType::NormalTree => Ok(BasicMerkNode),
