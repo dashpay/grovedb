@@ -1391,14 +1391,6 @@ where
             .split_last()
             .expect("path validated non-empty above");
 
-        let merk = match self.merks.entry(reference_path.to_vec()) {
-            HashMapEntry::Occupied(o) => o.into_mut(),
-            HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
-                &mut cost,
-                (self.get_merk_fn)(reference_path, false)
-            )),
-        };
-
         // Fast path: `recursions_allowed == 1` means the user-declared
         // `max_reference_hop` budget allows exactly one more hop. Under
         // the well-formed-user contract, that one hop must land on an
@@ -1418,6 +1410,14 @@ where
         // contract is the user's to uphold; we don't pay the price of
         // an extra dispatch on every well-formed hop=1 ref.
         if recursions_allowed == 1 {
+            let merk = match self.merks.entry(reference_path.to_vec()) {
+                HashMapEntry::Occupied(o) => o.into_mut(),
+                HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
+                    &mut cost,
+                    (self.get_merk_fn)(reference_path, false)
+                )),
+            };
+
             let referenced_element_value_hash_opt = cost_return_on_error!(
                 &mut cost,
                 merk.get_value_hash(
@@ -1451,7 +1451,9 @@ where
         }
 
         // Slow path: `recursions_allowed > 1`. Dispatch on whether the
-        // target is being modified in this same batch.
+        // target is being modified in this same batch. Neither branch
+        // needs the merk handle here — the helpers open (or reuse the
+        // cached) merk themselves via `self.merks.entry(..)`.
         if let Some(referenced_path) = intermediate_reference_info {
             // Target is in batch (refresh). Hop through the op's new
             // path; budget decrements by one for this hop.
@@ -1472,7 +1474,6 @@ where
             // Target is not in batch. Read the on-disk element and
             // dispatch by type (Item terminals return their simple
             // hash; References recurse).
-            let _ = merk; // already opened; the called helper re-resolves
             self.process_reference_with_hop_count_greater_than_one(
                 key,
                 reference_path,
