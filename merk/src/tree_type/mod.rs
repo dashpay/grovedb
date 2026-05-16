@@ -165,6 +165,19 @@ impl TreeType {
         )
     }
 
+    /// Returns whether this tree type carries BOTH a count and a sum
+    /// aggregate. Only these tree types may host
+    /// `Element::NotCountedOrSummed` children — in any other parent the
+    /// wrapper would suppress an aggregate the parent doesn't track, so it
+    /// is rejected at insert time. Equivalent to `is_count_bearing() &&
+    /// is_sum_bearing()`.
+    pub const fn is_count_and_sum_bearing(&self) -> bool {
+        matches!(
+            self,
+            TreeType::CountSumTree | TreeType::ProvableCountSumTree
+        )
+    }
+
     /// Returns whether this tree type allows sum items as children.
     pub fn allows_sum_item(&self) -> bool {
         match self {
@@ -358,6 +371,44 @@ mod tests {
         assert!(!TreeType::BulkAppendTree(0).is_sum_bearing());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_sum_bearing());
         assert!(TreeType::ProvableSumTree.is_sum_bearing());
+    }
+
+    #[test]
+    fn is_count_and_sum_bearing() {
+        assert!(!TreeType::NormalTree.is_count_and_sum_bearing());
+        assert!(!TreeType::SumTree.is_count_and_sum_bearing());
+        assert!(!TreeType::BigSumTree.is_count_and_sum_bearing());
+        assert!(!TreeType::CountTree.is_count_and_sum_bearing());
+        assert!(TreeType::CountSumTree.is_count_and_sum_bearing());
+        assert!(!TreeType::ProvableCountTree.is_count_and_sum_bearing());
+        assert!(TreeType::ProvableCountSumTree.is_count_and_sum_bearing());
+        assert!(!TreeType::CommitmentTree(0).is_count_and_sum_bearing());
+        assert!(!TreeType::MmrTree.is_count_and_sum_bearing());
+        assert!(!TreeType::BulkAppendTree(0).is_count_and_sum_bearing());
+        assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_count_and_sum_bearing());
+
+        // Equivalence: is_count_and_sum_bearing iff both is_count_bearing
+        // and is_sum_bearing.
+        for tt in [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::CommitmentTree(0),
+            TreeType::MmrTree,
+            TreeType::BulkAppendTree(0),
+            TreeType::DenseAppendOnlyFixedSizeTree(0),
+        ] {
+            assert_eq!(
+                tt.is_count_and_sum_bearing(),
+                tt.is_count_bearing() && tt.is_sum_bearing(),
+                "mismatch for {:?}",
+                tt
+            );
+        }
     }
 
     #[test]

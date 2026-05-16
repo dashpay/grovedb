@@ -51,9 +51,9 @@ pub trait ElementCostPrivateExtensions {
 }
 
 impl ElementCostPrivateExtensions for Element {
-    /// Get tree cost for the element. For `NonCounted` and `NotSummed`,
-    /// delegates to the inner element and adds 1 byte for the wrapper
-    /// discriminant.
+    /// Get tree cost for the element. For `NonCounted`, `NotSummed`, and
+    /// `NotCountedOrSummed`, delegates to the inner element and adds 1
+    /// byte for the wrapper discriminant.
     fn get_specialized_cost(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
         check_grovedb_v0!(
             "get_specialized_cost",
@@ -76,7 +76,9 @@ impl ElementCostPrivateExtensions for Element {
             // (Option<Vec<u8>>, i64, Option<Vec<u8>>). It uses the same
             // SUM_TREE_COST_SIZE.
             Element::ProvableSumTree(..) => Ok(SUM_TREE_COST_SIZE),
-            Element::NonCounted(inner) | Element::NotSummed(inner) => {
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => {
                 Ok(inner.get_specialized_cost(grove_version)? + 1)
             }
             _ => Err(Error::CorruptedCodeExecution(
@@ -110,7 +112,9 @@ impl ElementCostExtensions for Element {
         // that use cost-size constants, we add 1 byte of `wrapper_overhead`
         // to keep the on-disk byte count exact.
         let (element, wrapper_overhead) = match element {
-            Element::NonCounted(inner) | Element::NotSummed(inner) => (*inner, 1u32),
+            Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) => (*inner, 1u32),
             other => (other, 0u32),
         };
         let cost = match element {

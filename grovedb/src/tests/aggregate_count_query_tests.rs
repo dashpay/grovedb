@@ -3048,10 +3048,13 @@ mod tests {
     }
 
     #[test]
-    fn carrier_pagination_is_rejected_at_entry() {
-        // Carriers (like leaves) forbid SizedQuery::limit and offset.
-        // The PathQuery-level validator surfaces this before any proof
-        // bytes are decoded.
+    fn carrier_aggregate_count_rejects_offset() {
+        // Carriers still reject SizedQuery::offset: skipping the first
+        // M outer matches changes which (outer_key, u64) pairs end up in
+        // the proof, and the use case for that hasn't been designed
+        // yet. The PathQuery-level validator surfaces this before any
+        // proof bytes are decoded. (`limit` is now allowed — see
+        // `carrier_*_with_limit_*` tests below.)
         use grovedb_query::Query;
         let v = GroveVersion::latest();
         let mut carrier = Query::new();
@@ -3062,16 +3065,245 @@ mod tests {
         )));
         let path_query = PathQuery::new(
             vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
-            SizedQuery::new(carrier, Some(10), None),
+            SizedQuery::new(carrier, None, Some(2)),
         );
         let dummy_proof = vec![0u8; 8];
         let err = GroveDb::verify_aggregate_count_query_per_key(&dummy_proof, &path_query, v)
-            .expect_err("carrier aggregate-count with limit must be rejected at entry");
+            .expect_err("carrier aggregate-count with offset must be rejected at entry");
         match err {
             crate::Error::InvalidQuery(msg) => {
-                assert!(msg.contains("limit"), "unexpected message: {msg}")
+                assert!(msg.contains("offset"), "unexpected message: {msg}");
+                assert!(msg.contains("carrier"), "unexpected message: {msg}");
             }
             other => panic!("expected InvalidQuery, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn leaf_aggregate_count_still_rejects_limit() {
+        // The leaf shape continues to reject SizedQuery::limit. A leaf
+        // returns a single u64; pagination would silently change the
+        // answer. This is the byte-identical behavior the leaf path had
+        // before carrier limits were relaxed.
+        let v = GroveVersion::latest();
+        let mut path_query = PathQuery::new_aggregate_count_on_range(
+            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+        );
+        path_query.query.limit = Some(5);
+        let dummy_proof = vec![0u8; 8];
+
+        // Strict leaf verifier rejects.
+        let err = GroveDb::verify_aggregate_count_query(&dummy_proof, &path_query, v)
+            .expect_err("leaf aggregate-count with limit must be rejected at entry");
+        match err {
+            crate::Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("limit"), "unexpected message: {msg}");
+            }
+            other => panic!("expected InvalidQuery, got {:?}", other),
+        }
+
+        // The per-key entry point routes leaf queries through the leaf
+        // validator too and rejects identically.
+        let err = GroveDb::verify_aggregate_count_query_per_key(&dummy_proof, &path_query, v)
+            .expect_err("per-key entry must also reject leaf-with-limit");
+        match err {
+            crate::Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("limit"), "unexpected message: {msg}");
+            }
+            other => panic!("expected InvalidQuery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn carrier_keys_outer_with_limit_caps_results() {
+        // Carrier ACOR with `Keys` outer items and `SizedQuery::limit`
+        // set. The walk must stop after `limit` outer-key matches have
+        // produced their leaf-ACOR u64 — each match is a complete
+        // count, the inner range is not capped.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_color_carrier_tree(
+            v,
+            &[b"brand_000", b"brand_001", b"brand_002", b"brand_003"],
+            100,
+        );
+
+        let mut carrier = Query::new();
+        for k in [b"brand_000", b"brand_001", b"brand_002", b"brand_003"] {
+            carrier.insert_key(k.to_vec());
+        }
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+            b"color_00049".to_vec()..,
+        )));
+        // Cap the outer walk at 2 matches.
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, Some(2), None),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query (carrier with Keys outer + limit) should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify carrier with Keys outer + limit should succeed");
+        assert_eq!(got_root, expected_root, "root must match GroveDB root");
+        assert_eq!(results.len(), 2, "expected exactly `limit` outer matches");
+        // left_to_right defaults to true: first two brand keys ascending.
+        assert_eq!(results[0].0, b"brand_000".to_vec());
+        assert_eq!(results[1].0, b"brand_001".to_vec());
+        for (_, count) in &results {
+            // 100 colors per brand; > color_00049 leaves 50.
+            assert_eq!(*count, 50);
+        }
+    }
+
+    #[test]
+    fn carrier_range_outer_with_limit_caps_results() {
+        // Carrier ACOR with a `Range*` outer item and `SizedQuery::limit`
+        // set — the "Q8 with outer Range" upstream use case. With 4
+        // in-range brands and limit=2, the walk must return exactly 2
+        // `(outer_key, u64)` pairs.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) = setup_brand_color_carrier_tree(
+            v,
+            &[
+                b"brand_000",
+                b"brand_001",
+                b"brand_002",
+                b"brand_003",
+                b"brand_004",
+            ],
+            100,
+        );
+
+        let mut carrier = Query::new();
+        // After brand_000 → brand_001..=brand_004 (4 in range).
+        carrier
+            .items
+            .push(QueryItem::RangeAfter(b"brand_000".to_vec()..));
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+            b"color_00049".to_vec()..,
+        )));
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, Some(2), None),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove_query (carrier with Range outer + limit) should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify carrier with Range outer + limit should succeed");
+        assert_eq!(got_root, expected_root);
+        assert_eq!(
+            results.len(),
+            2,
+            "expected exactly `limit` outer matches from the range walk"
+        );
+        // RangeAfter("brand_000") + left_to_right=true: first two
+        // matches in ascending lex order.
+        assert_eq!(results[0].0, b"brand_001".to_vec());
+        assert_eq!(results[1].0, b"brand_002".to_vec());
+        for (_, count) in &results {
+            assert_eq!(*count, 50);
+        }
+    }
+
+    #[test]
+    fn carrier_range_outer_with_limit_zero_returns_no_results() {
+        // limit=0 caps the outer walk to zero matches. The proof still
+        // verifies (it commits to "no outer matches walked"), and the
+        // result vector is empty.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) =
+            setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001"], 100);
+
+        let mut carrier = Query::new();
+        carrier
+            .items
+            .push(QueryItem::RangeAfter(b"brand_000".to_vec()..));
+        carrier.set_subquery_path(vec![b"color".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeAfter(
+            b"color_00049".to_vec()..,
+        )));
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            SizedQuery::new(carrier, Some(0), None),
+        );
+
+        // The v0 generate.rs entry-point gate rejects `limit == 0` for
+        // proved queries unconditionally (it's been a long-standing
+        // rule that "proved path queries can not be for limit 0"). The
+        // no-proof per-key entry point, however, accepts limit=0 and
+        // honors it as "walk zero outer matches" — exercise that here
+        // since it's the path callers would use to dry-run the shape.
+        let no_proof = db
+            .grove_db
+            .query_aggregate_count_per_key(&path_query, None, v)
+            .unwrap()
+            .expect("no-proof per-key with limit=0 should succeed");
+        assert!(no_proof.is_empty(), "limit=0 must produce zero results");
+
+        // The expected root is unaffected by the no-proof walk; assert
+        // we haven't accidentally produced any side effects.
+        let root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+        assert_eq!(root, expected_root);
+    }
+
+    #[test]
+    fn carrier_range_outer_with_limit_exceeding_available_walks_all() {
+        // Limit set higher than the number of in-range outer keys: the
+        // walk produces all available matches and behaves identically
+        // to a query with no limit set.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, expected_root) =
+            setup_brand_color_carrier_tree(v, &[b"brand_000", b"brand_001", b"brand_002"], 100);
+
+        let mut carrier_with_limit = Query::new();
+        carrier_with_limit
+            .items
+            .push(QueryItem::RangeAfter(b"brand_000".to_vec()..));
+        carrier_with_limit.set_subquery_path(vec![b"color".to_vec()]);
+        carrier_with_limit.set_subquery(Query::new_aggregate_count_on_range(
+            QueryItem::RangeAfter(b"color_00049".to_vec()..),
+        ));
+        let path_query_with_limit = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"byBrand".to_vec()],
+            // Only 2 brands are in range (brand_001, brand_002); ask
+            // for up to 100.
+            SizedQuery::new(carrier_with_limit, Some(100), None),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query_with_limit, None, v)
+            .unwrap()
+            .expect("prove_query with oversized limit should succeed");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query_with_limit, v)
+                .expect("verify with oversized limit should succeed");
+        assert_eq!(got_root, expected_root);
+        assert_eq!(results.len(), 2, "all in-range outer keys returned");
+        assert_eq!(results[0].0, b"brand_001".to_vec());
+        assert_eq!(results[1].0, b"brand_002".to_vec());
+
+        // And the per-key no-proof walk agrees.
+        let no_proof = db
+            .grove_db
+            .query_aggregate_count_per_key(&path_query_with_limit, None, v)
+            .unwrap()
+            .expect("no-proof per-key with oversized limit should succeed");
+        assert_eq!(no_proof, results);
     }
 }

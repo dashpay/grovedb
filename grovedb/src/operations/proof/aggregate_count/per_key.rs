@@ -113,6 +113,11 @@ fn verify_v1_per_key(
             merk_bytes,
             path_query,
             outer_items,
+            // `SizedQuery::limit` (validated as carrier-only at entry) caps
+            // the outer walk. The prover truncates after this many outer
+            // matches; the verifier must apply the same cap so its merk
+            // walker stops at the same boundary.
+            path_query.query.limit,
             classification,
             grove_version,
         ),
@@ -123,11 +128,15 @@ fn verify_v1_per_key(
 /// matched outer key descend the `subquery_path` (if any) and the
 /// leaf count proof, enforcing the chain at each step. Returns one
 /// `(outer_key, count)` entry per match in query-direction order.
+///
+/// `outer_limit` is the carrier's `SizedQuery::limit` (when set, the
+/// outer walk stops after that many matched outer keys).
 fn verify_v1_carrier_layer(
     layer: &LayerProof,
     merk_bytes: &[u8],
     path_query: &PathQuery,
     outer_items: &[QueryItem],
+    outer_limit: Option<u16>,
     classification: &AggregateCountClassification,
     grove_version: &GroveVersion,
 ) -> Result<(CryptoHash, Vec<(Vec<u8>, u64)>), Error> {
@@ -135,6 +144,7 @@ fn verify_v1_carrier_layer(
         merk_bytes,
         outer_items,
         classification.carrier_left_to_right,
+        outer_limit,
         path_query,
     )?;
 

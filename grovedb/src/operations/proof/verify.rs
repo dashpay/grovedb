@@ -630,7 +630,9 @@ impl GroveDb {
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
                                 ));
                             }
-                            Element::NonCounted(_) | Element::NotSummed(_) => {
+                            Element::NonCounted(_)
+                            | Element::NotSummed(_)
+                            | Element::NotCountedOrSummed(_) => {
                                 unreachable!("unwrapped above")
                             }
                         }
@@ -1621,7 +1623,9 @@ impl GroveDb {
                                     "Proof has lower layer for a non Tree.".to_string(),
                                 ));
                             }
-                            Element::NonCounted(_) | Element::NotSummed(_) => {
+                            Element::NonCounted(_)
+                            | Element::NotSummed(_)
+                            | Element::NotCountedOrSummed(_) => {
                                 unreachable!("unwrapped above")
                             }
                         }

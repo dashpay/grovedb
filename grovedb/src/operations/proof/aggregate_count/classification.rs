@@ -38,8 +38,12 @@ pub(super) struct AggregateCountClassification {
 }
 
 /// Classify an `AggregateCountOnRange` path query and validate it at
-/// the PathQuery level — `SizedQuery::limit` / `offset` (which
-/// aggregate-count explicitly forbids) are enforced for both shapes.
+/// the PathQuery level. The shape-specific pagination rules are
+/// enforced through [`PathQuery::validate_aggregate_count_on_range`]:
+/// leaf queries reject both `SizedQuery::limit` and
+/// `SizedQuery::offset`; carrier queries accept `SizedQuery::limit`
+/// (caps the outer walk; threaded into the proof verifier via
+/// `path_query.query.limit`) but still reject `SizedQuery::offset`.
 pub(super) fn classify_aggregate_count_path_query(
     path_query: &PathQuery,
 ) -> Result<AggregateCountClassification, Error> {
