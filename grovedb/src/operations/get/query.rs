@@ -95,35 +95,38 @@ impl GroveDb {
                     // resolves; the wrapper is transparent at the query
                     // layer.
                     match element.into_underlying() {
-                        Element::Reference(reference_path, ..) => match reference_path {
-                            ReferencePathType::AbsolutePathReference(absolute_path) => {
-                                // While `map` on iterator is lazy, we should accumulate costs
-                                // even if `collect` will end in `Err`, so we'll use
-                                // external costs accumulator instead of
-                                // returning costs from `map` call.
-                                let maybe_item = self
-                                    .follow_reference(
-                                        absolute_path.as_slice().into(),
-                                        allow_cache,
-                                        transaction,
-                                        grove_version,
-                                    )
-                                    .unwrap_add_cost(&mut cost)?;
+                        Element::Reference(reference_path, ..)
+                        | Element::ReferenceWithSumItem(reference_path, ..) => {
+                            match reference_path {
+                                ReferencePathType::AbsolutePathReference(absolute_path) => {
+                                    // While `map` on iterator is lazy, we should accumulate costs
+                                    // even if `collect` will end in `Err`, so we'll use
+                                    // external costs accumulator instead of
+                                    // returning costs from `map` call.
+                                    let maybe_item = self
+                                        .follow_reference(
+                                            absolute_path.as_slice().into(),
+                                            allow_cache,
+                                            transaction,
+                                            grove_version,
+                                        )
+                                        .unwrap_add_cost(&mut cost)?;
 
-                                // Same treatment for the resolved value.
-                                match maybe_item.into_underlying() {
-                                    Element::Item(item, _) => Ok(item),
-                                    Element::ItemWithSumItem(item, ..) => Ok(item),
-                                    Element::SumItem(value, _) => Ok(value.encode_var_vec()),
-                                    _ => Err(Error::InvalidQuery(
-                                        "the reference must result in an item",
-                                    )),
+                                    // Same treatment for the resolved value.
+                                    match maybe_item.into_underlying() {
+                                        Element::Item(item, _) => Ok(item),
+                                        Element::ItemWithSumItem(item, ..) => Ok(item),
+                                        Element::SumItem(value, _) => Ok(value.encode_var_vec()),
+                                        _ => Err(Error::InvalidQuery(
+                                            "the reference must result in an item",
+                                        )),
+                                    }
                                 }
+                                _ => Err(Error::CorruptedCodeExecution(
+                                    "reference after query must have absolute paths",
+                                )),
                             }
-                            _ => Err(Error::CorruptedCodeExecution(
-                                "reference after query must have absolute paths",
-                            )),
-                        },
+                        }
                         _ => Err(Error::InvalidQuery(
                             "path_queries can only refer to references",
                         )),
@@ -226,7 +229,8 @@ where {
         // sole effect is on parent count aggregation.
         let element = element.into_underlying();
         match element {
-            Element::Reference(reference_path, ..) => {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
                 match reference_path {
                     ReferencePathType::AbsolutePathReference(absolute_path) => {
                         // While `map` on iterator is lazy, we should accumulate costs
@@ -237,6 +241,9 @@ where {
                         // Normalize the resolved value too, so a Reference
                         // pointing at NonCounted(Item) returns the same shape
                         // as a directly-queried NonCounted(Item).
+                        // `ReferenceWithSumItem` follows the same resolution
+                        // path; the sum carried on the source element does
+                        // not affect what `follow_reference` returns.
                         let maybe_item = self
                             .follow_reference(
                                 absolute_path.as_slice().into(),
@@ -364,7 +371,12 @@ where {
                     // NonCounted is transparent at this layer.
                     let element = element.into_underlying();
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        // `ReferenceWithSumItem` resolves to the target item
+                        // the same way `Reference` does; the carried sum is
+                        // ignored at this layer (use `query_item_value_or_sum`
+                        // to see it).
+                        Element::Reference(reference_path, ..)
+                        | Element::ReferenceWithSumItem(reference_path, ..) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -466,7 +478,12 @@ where {
                     // NonCounted is transparent at this layer.
                     let element = element.into_underlying();
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        // `ReferenceWithSumItem` resolves to the target item
+                        // exactly like `Reference`; the carried sum value
+                        // does not show up here (it's an aggregate-only
+                        // property that propagates to the parent tree).
+                        Element::Reference(reference_path, ..)
+                        | Element::ReferenceWithSumItem(reference_path, ..) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs
@@ -957,7 +974,13 @@ where {
                     // NonCounted is transparent at this layer.
                     let element = element.into_underlying();
                     match element {
-                        Element::Reference(reference_path, ..) => {
+                        // For `ReferenceWithSumItem` we follow the reference
+                        // just like `Reference` — the carried sum is a
+                        // parent-aggregation property, not the queryable
+                        // leaf value. Target must still be a SumItem for
+                        // `query_sums` to succeed.
+                        Element::Reference(reference_path, ..)
+                        | Element::ReferenceWithSumItem(reference_path, ..) => {
                             match reference_path {
                                 ReferencePathType::AbsolutePathReference(absolute_path) => {
                                     // While `map` on iterator is lazy, we should accumulate costs

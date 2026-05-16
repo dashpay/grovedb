@@ -740,6 +740,21 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             sibling_key,
             element_flags,
         }),
+        // TODO(grovedbg-types): add a dedicated `ReferenceWithSumItem` wire
+        // variant that carries `sum_item_value`. For now we render it as a
+        // plain `Reference` so the debugger UI can display the link target;
+        // the explicit sum is dropped from the wire format (it's still
+        // visible via the `feature_type` of the parent merk node).
+        crate::Element::ReferenceWithSumItem(
+            reference_path,
+            max_hop,
+            _sum_value,
+            element_flags,
+        ) => element_to_grovedbg(crate::Element::Reference(
+            reference_path,
+            max_hop,
+            element_flags,
+        )),
         crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
             value,
             element_flags,

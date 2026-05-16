@@ -127,6 +127,24 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
+            GroveOp::RefreshReferenceWithSumItem {
+                reference_path_type,
+                max_reference_hop,
+                sum_value,
+                flags,
+                ..
+            } => GroveDb::average_case_merk_replace_element(
+                key,
+                &Element::ReferenceWithSumItem(
+                    reference_path_type.clone(),
+                    *max_reference_hop,
+                    *sum_value,
+                    flags.clone(),
+                ),
+                in_tree_type,
+                propagate_if_input(),
+                grove_version,
+            ),
             GroveOp::Replace { element } => GroveDb::average_case_merk_replace_element(
                 key,
                 element,

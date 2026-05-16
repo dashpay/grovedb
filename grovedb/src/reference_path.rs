@@ -92,8 +92,12 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>>(
         // affect downstream cryptographic verification. `NotSummed` cannot
         // wrap a reference by construction (whitelist), but the unwrap is
         // forward-safe and symmetric to `NonCounted`.
+        // Both `Reference` and `ReferenceWithSumItem` are references — they
+        // share the resolution path. The carried sum on
+        // `ReferenceWithSumItem` is irrelevant to chain following: it's a
+        // parent-aggregation property, not a per-hop value.
         match element.into_underlying() {
-            Element::Reference(ref_path, ..) => {
+            Element::Reference(ref_path, ..) | Element::ReferenceWithSumItem(ref_path, ..) => {
                 current_path = referred_path;
                 current_key = referred_key;
                 current_ref = ref_path;

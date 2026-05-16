@@ -161,9 +161,10 @@ where
                     }
                     Ok(())
                 }
-                GroveOp::RefreshReference { .. } | GroveOp::Delete | GroveOp::DeleteTree(..) => {
-                    Ok(())
-                }
+                GroveOp::RefreshReference { .. }
+                | GroveOp::RefreshReferenceWithSumItem { .. }
+                | GroveOp::Delete
+                | GroveOp::DeleteTree(..) => Ok(()),
                 GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }

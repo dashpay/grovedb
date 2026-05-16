@@ -154,6 +154,35 @@ pub enum Element {
     /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`, or
     ///   any non-tree element.
     NotSummed(Box<Element>),
+    /// A reference that simultaneously carries an explicit `SumValue`.
+    ///
+    /// Resolves like `Element::Reference` on `get()` / `follow_reference()`
+    /// (hop-limited, cycle-detected, combined value hash) AND contributes
+    /// `sum_value` to any sum-bearing parent tree like `Element::SumItem` /
+    /// `Element::ItemWithSumItem`. The `sum_value` is **independent of the
+    /// resolved target's value** — it is the caller-supplied weight or amount
+    /// associated with the link itself.
+    ///
+    /// Use case: ranked / sortable index entries where the key encodes the
+    /// rank, the reference points to a canonical record elsewhere, and the
+    /// sum is the entry's monetary weight that aggregates into the parent's
+    /// total.
+    ///
+    /// May be inserted into any parent tree type. In non-sum parents (Tree,
+    /// CountTree, ProvableCountTree) the `sum_value` is silently ignored,
+    /// the same rule `Element::ItemWithSumItem` follows.
+    ///
+    /// Wrapper compatibility:
+    /// - **May** be wrapped in `NonCounted` to opt out of count propagation.
+    /// - **May NOT** be wrapped in `NotSummed` — the `NotSummed` whitelist
+    ///   accepts only the four sum-tree variants, not item-like or
+    ///   reference-like base variants.
+    ReferenceWithSumItem(
+        ReferencePathType,
+        MaxReferenceHop,
+        SumValue,
+        Option<ElementFlags>,
+    ),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -345,6 +374,18 @@ impl fmt::Display for Element {
             Element::NotSummed(inner) => {
                 write!(f, "NotSummed({})", inner)
             }
+            Element::ReferenceWithSumItem(path, max_hop, sum_value, flags) => {
+                write!(
+                    f,
+                    "ReferenceWithSumItem({}, max_hop: {}, sum: {}{})",
+                    path,
+                    max_hop.map_or("None".to_string(), |h| h.to_string()),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -373,6 +414,7 @@ impl Element {
             Element::MmrTree(..) => ElementType::MmrTree,
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
             Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
+            Element::ReferenceWithSumItem(..) => ElementType::ReferenceWithSumItem,
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -391,6 +433,7 @@ impl Element {
                 ElementType::DenseAppendOnlyFixedSizeTree => {
                     ElementType::NonCountedDenseAppendOnlyFixedSizeTree
                 }
+                ElementType::ReferenceWithSumItem => ElementType::NonCountedReferenceWithSumItem,
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
@@ -514,6 +557,12 @@ mod serde_impl {
         DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
         NonCounted(Box<ElementShadow>),
         NotSummed(Box<ElementShadow>),
+        ReferenceWithSumItem(
+            ReferencePathType,
+            MaxReferenceHop,
+            SumValue,
+            Option<ElementFlags>,
+        ),
     }
 
     impl From<ElementShadow> for Element {
@@ -543,6 +592,9 @@ mod serde_impl {
                 }
                 ElementShadow::NotSummed(inner) => {
                     Element::NotSummed(Box::new(Element::from(*inner)))
+                }
+                ElementShadow::ReferenceWithSumItem(p, h, s, f) => {
+                    Element::ReferenceWithSumItem(p, h, s, f)
                 }
             }
         }

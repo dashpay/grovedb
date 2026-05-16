@@ -78,7 +78,7 @@ pub use crate::batch::batch_structure::{OpsByLevelPath, OpsByPath};
 use crate::batch::estimated_costs::EstimatedCostsType;
 use crate::{
     batch::{batch_structure::BatchStructure, mode::BatchRunMode},
-    element::MaxReferenceHop,
+    element::{MaxReferenceHop, SumValue},
     operations::{delete::DeleteOptions, get::MAX_REFERENCE_HOPS, proof::util::hex_to_ascii},
     reference_path::{
         path_from_reference_path_type, path_from_reference_qualified_path_type, ReferencePathType,
@@ -195,9 +195,9 @@ impl NonMerkTreeMeta {
 /// Operations for batch processing.
 ///
 /// User-facing variants: `InsertWithKnownToNotAlreadyExist`, `InsertIfNotExists`,
-/// `InsertOrReplace`, `Replace`, `Patch`, `RefreshReference`, `Delete`,
-/// `DeleteTree`, `CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`,
-/// `DenseTreeInsert`.
+/// `InsertOrReplace`, `Replace`, `Patch`, `RefreshReference`,
+/// `RefreshReferenceWithSumItem`, `Delete`, `DeleteTree`,
+/// `CommitmentTreeInsert`, `MmrTreeAppend`, `BulkAppend`, `DenseTreeInsert`.
 ///
 /// Internal variants (`ReplaceTreeRootKey`, `InsertTreeWithRootHash`,
 /// `ReplaceNonMerkTreeRoot`, `InsertNonMerkTree`) are marked
@@ -345,6 +345,32 @@ pub enum GroveOp {
         /// If true, skip verifying the element on disk before writing.
         trust_refresh_reference: bool,
     },
+    /// Refresh a `ReferenceWithSumItem` with information provided.
+    ///
+    /// Mirrors [`RefreshReference`] but additionally carries `sum_value`
+    /// because the on-wire variant must be reconstructed with both the
+    /// reference path AND the explicit sum the entry contributes to its
+    /// parent's sum aggregate. Cross-type refresh (using
+    /// [`RefreshReference`] against a `ReferenceWithSumItem` on disk or
+    /// vice versa) is rejected at apply time — the on-disk variant must
+    /// match the refresh-op shape.
+    ///
+    /// If `trust_refresh_reference` is true, the element is not queried on
+    /// disk before write; otherwise the provided information is used only
+    /// for average / worst case cost models.
+    RefreshReferenceWithSumItem {
+        /// The type of reference path to use.
+        reference_path_type: ReferencePathType,
+        /// Maximum number of hops allowed when resolving the reference.
+        max_reference_hop: MaxReferenceHop,
+        /// Explicit sum value carried on the reference (independent of the
+        /// resolved target's sum).
+        sum_value: SumValue,
+        /// Optional element flags for the reference.
+        flags: Option<ElementFlags>,
+        /// If true, skip verifying the element on disk before writing.
+        trust_refresh_reference: bool,
+    },
     /// Delete
     Delete,
     /// Delete tree
@@ -395,6 +421,7 @@ impl GroveOp {
             GroveOp::DenseTreeInsert { .. } => 14,
             GroveOp::ReplaceNonMerkTreeRoot { .. } => 15,
             GroveOp::InsertNonMerkTree { .. } => 16,
+            GroveOp::RefreshReferenceWithSumItem { .. } => 17,
         }
     }
 }
@@ -642,6 +669,19 @@ impl fmt::Debug for QualifiedGroveDbOp {
                     reference_path_type, max_reference_hop, trust_refresh_reference
                 )
             }
+            GroveOp::RefreshReferenceWithSumItem {
+                reference_path_type,
+                max_reference_hop,
+                sum_value,
+                trust_refresh_reference,
+                ..
+            } => {
+                format!(
+                    "Refresh Reference With Sum Item: path {:?}, max_hop {:?}, sum {}, \
+                     trust_reference {} ",
+                    reference_path_type, max_reference_hop, sum_value, trust_refresh_reference
+                )
+            }
             GroveOp::Delete => "Delete".to_string(),
             GroveOp::DeleteTree(tree_type, check) => {
                 format!("Delete Tree {} ({:?})", tree_type, check)
@@ -820,6 +860,36 @@ impl QualifiedGroveDbOp {
             op: GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
+                flags,
+                trust_refresh_reference,
+            },
+        }
+    }
+
+    /// A refresh-reference-with-sum-item op using a known owned path and key.
+    ///
+    /// Sibling of [`refresh_reference_op`] for the
+    /// [`Element::ReferenceWithSumItem`] variant: refreshes both the
+    /// reference path AND the explicit sum value contributed to the
+    /// parent's sum aggregate. Cross-type refresh (this op against a plain
+    /// `Reference` on disk) is rejected at apply time.
+    pub fn refresh_reference_with_sum_item_op(
+        path: Vec<Vec<u8>>,
+        key: Vec<u8>,
+        reference_path_type: ReferencePathType,
+        max_reference_hop: MaxReferenceHop,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+        trust_refresh_reference: bool,
+    ) -> Self {
+        let path = KeyInfoPath::from_known_owned_path(path);
+        Self {
+            path,
+            key: Some(KnownKey(key)),
+            op: GroveOp::RefreshReferenceWithSumItem {
+                reference_path_type,
+                max_reference_hop,
+                sum_value,
                 flags,
                 trust_refresh_reference,
             },
@@ -1466,7 +1536,9 @@ where
                 let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                 Ok(val_hash).wrap_with_cost(cost)
             }
-            Element::Reference(path, ..) => {
+            // Both reference variants follow the same chain-resolution path
+            // to compute their effective value hash.
+            Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                 let path = cost_return_on_error_into_no_add!(
                     cost,
                     path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -1617,7 +1689,8 @@ where
                                 }
                             }
                         }
-                        Element::Reference(path, ..) => {
+                        // Both reference variants follow the same chain.
+                        Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                             let path = cost_return_on_error_into_no_add!(
                                 cost,
                                 path_from_reference_qualified_path_type(
@@ -1667,7 +1740,7 @@ where
                         let val_hash = value_hash(&serialized).unwrap_add_cost(&mut cost);
                         Ok(val_hash).wrap_with_cost(cost)
                     }
-                    Element::Reference(path, ..) => {
+                    Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
                         let path = cost_return_on_error_into_no_add!(
                             cost,
                             path_from_reference_qualified_path_type(path.clone(), qualified_path)
@@ -1707,8 +1780,17 @@ where
                     reference_path_type,
                     trust_refresh_reference,
                     ..
+                }
+                | GroveOp::RefreshReferenceWithSumItem {
+                    reference_path_type,
+                    trust_refresh_reference,
+                    ..
                 } => {
-                    // We are pointing towards a reference that will be refreshed
+                    // We are pointing towards a reference that will be
+                    // refreshed. Both refresh ops resolve through the same
+                    // chain — the sum carried on
+                    // `RefreshReferenceWithSumItem` is irrelevant to the
+                    // chain destination.
                     let reference_info = if *trust_refresh_reference {
                         Some(reference_path_type)
                     } else {
@@ -1907,7 +1989,21 @@ where
                     // element_at_key_already_exists) are wrapper-aware via the
                     // helper methods updated in grovedb-element.
                     match element.underlying() {
-                        Element::Reference(path_reference, element_max_reference_hop, _) => {
+                        // Both reference variants share this batch-insert
+                        // path. `ReferenceWithSumItem` has a 4-tuple shape
+                        // (path, max_hop, sum_value, flags); we only bind
+                        // the path and the max-hop here — the sum value is
+                        // included in the element's serialized bytes via
+                        // `insert_reference_into_batch_operations` and is
+                        // picked up by `get_feature_type` for the parent's
+                        // sum aggregation.
+                        Element::Reference(path_reference, element_max_reference_hop, _)
+                        | Element::ReferenceWithSumItem(
+                            path_reference,
+                            element_max_reference_hop,
+                            _,
+                            _,
+                        ) => {
                             // Check existence for InsertIfNotExists on references
                             if is_insert_if_not_exists
                                 || batch_apply_options.validate_insertion_does_not_override
@@ -2152,6 +2248,144 @@ where
                     };
 
                     let merk_feature_type = in_tree_type.empty_tree_feature_type();
+
+                    let path_reference = cost_return_on_error_into!(
+                        &mut cost,
+                        path_from_reference_path_type(
+                            path_reference.clone(),
+                            path,
+                            Some(key_info.as_slice())
+                        )
+                        .wrap_with_cost(OperationCost::default())
+                    );
+                    if path_reference.is_empty() {
+                        return Err(Error::CorruptedReferencePathNotFound(
+                            "attempting to refresh an empty reference".to_string(),
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+
+                    let referenced_element_value_hash = cost_return_on_error!(
+                        &mut cost,
+                        self.follow_reference_get_value_hash(
+                            path_reference.as_slice(),
+                            ops_by_qualified_paths,
+                            max_reference_hop.unwrap_or(MAX_REFERENCE_HOPS as u8),
+                            flags_update,
+                            split_removal_bytes,
+                            &mut HashSet::new(),
+                            grove_version
+                        )
+                    );
+
+                    cost_return_on_error_into!(
+                        &mut cost,
+                        element.insert_reference_into_batch_operations(
+                            key_info.get_key_clone(),
+                            referenced_element_value_hash,
+                            &mut batch_operations,
+                            merk_feature_type,
+                            grove_version
+                        )
+                    );
+                }
+                GroveOp::RefreshReferenceWithSumItem {
+                    reference_path_type,
+                    max_reference_hop,
+                    sum_value,
+                    flags,
+                    trust_refresh_reference,
+                } => {
+                    // Mirror RefreshReference, but reconstruct the
+                    // `ReferenceWithSumItem` variant so the on-disk shape
+                    // and the parent's sum aggregate both stay in sync.
+                    //
+                    // Cross-type rejection: when `trust_refresh_reference`
+                    // is false we deserialize the on-disk element and
+                    // require it to already be a `ReferenceWithSumItem`. A
+                    // plain `Reference` on disk is treated as a caller
+                    // mistake and rejected — the variants carry different
+                    // feature-type contributions and silently coercing
+                    // would corrupt parent aggregates.
+                    let element = if trust_refresh_reference {
+                        Element::ReferenceWithSumItem(
+                            reference_path_type,
+                            max_reference_hop,
+                            sum_value,
+                            flags,
+                        )
+                    } else {
+                        let merk = self.merks.get(path).expect("the Merk is cached");
+                        let value = cost_return_on_error!(
+                            &mut cost,
+                            merk.get(
+                                key_info.as_slice(),
+                                true,
+                                Some(Element::value_defined_cost_for_serialized_value),
+                                grove_version
+                            )
+                            .map(
+                                |result_value| result_value.map_err(Error::MerkError).and_then(
+                                    |maybe_value| maybe_value.ok_or(Error::InvalidInput(
+                                        "trying to refresh a non existing reference",
+                                    ))
+                                )
+                            )
+                        );
+                        let on_disk = cost_return_on_error_no_add!(
+                            cost,
+                            Element::deserialize(value.as_slice(), grove_version).map_err(|e| {
+                                Error::CorruptedData(format!("unable to deserialize element: {e}"))
+                            })
+                        );
+                        if !matches!(on_disk.underlying(), Element::ReferenceWithSumItem(..)) {
+                            return Err(Error::InvalidInput(
+                                "RefreshReferenceWithSumItem applied to non-RefWithSumItem on disk",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Preserve the on-disk wrapper (if any) by inserting
+                        // the rebuilt inner inside whatever wrapper layer
+                        // already existed. NonCounted is the only legal
+                        // wrapper; NotSummed is rejected by the whitelist
+                        // on construction.
+                        let rebuilt = Element::ReferenceWithSumItem(
+                            reference_path_type,
+                            max_reference_hop,
+                            sum_value,
+                            flags,
+                        );
+                        if on_disk.is_non_counted() {
+                            cost_return_on_error_no_add!(
+                                cost,
+                                Element::new_non_counted(rebuilt).map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "failed to rewrap refreshed reference: {e}"
+                                    ))
+                                })
+                            )
+                        } else {
+                            rebuilt
+                        }
+                    };
+
+                    let Element::ReferenceWithSumItem(path_reference, max_reference_hop, ..) =
+                        element.underlying()
+                    else {
+                        // Unreachable: the branch above always constructs
+                        // a ReferenceWithSumItem (possibly NonCounted-wrapped).
+                        return Err(Error::InvalidInput(
+                            "internal: refresh did not produce a ReferenceWithSumItem",
+                        ))
+                        .wrap_with_cost(cost);
+                    };
+
+                    let merk_feature_type = cost_return_on_error_into!(
+                        &mut cost,
+                        element
+                            .get_feature_type(in_tree_type)
+                            .wrap_with_cost(OperationCost::default())
+                    );
 
                     let path_reference = cost_return_on_error_into!(
                         &mut cost,
@@ -2912,7 +3146,8 @@ impl GroveDb {
                                                         .wrap_with_cost(cost);
                                                     }
                                                 }
-                                                GroveOp::RefreshReference { .. } => {
+                                                GroveOp::RefreshReference { .. }
+                                                | GroveOp::RefreshReferenceWithSumItem { .. } => {
                                                     return Err(Error::InvalidBatchOperation(
                                                         "insertion of element under a refreshed \
                                                          reference",
@@ -3364,9 +3599,13 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::Patch { .. } | GroveOp::RefreshReference { .. } => {
+                GroveOp::Patch { .. }
+                | GroveOp::RefreshReference { .. }
+                | GroveOp::RefreshReferenceWithSumItem { .. } => {
                     return Err(Error::NotSupported(
-                        "Patch and RefreshReference are batch-only operations".to_string(),
+                        "Patch, RefreshReference and RefreshReferenceWithSumItem are batch-only \
+                         operations"
+                            .to_string(),
                     ))
                     .wrap_with_cost(cost);
                 }

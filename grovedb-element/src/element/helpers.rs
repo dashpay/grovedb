@@ -63,6 +63,8 @@ impl Element {
     /// when the wrapper is inserted into a sum-bearing parent.
     /// `NotSummed` returns 0 — the wrapper's whole purpose is to contribute
     /// nothing to the parent sum tree.
+    /// `ReferenceWithSumItem` returns the explicit sum value carried on the
+    /// variant — independent of the resolved target's value.
     pub fn sum_value_or_default(&self) -> i64 {
         match self {
             Element::NonCounted(inner) => inner.sum_value_or_default(),
@@ -71,7 +73,8 @@ impl Element {
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
             | Element::CountSumTree(_, _, sum_value, _)
-            | Element::ProvableCountSumTree(_, _, sum_value, _) => *sum_value,
+            | Element::ProvableCountSumTree(_, _, sum_value, _)
+            | Element::ReferenceWithSumItem(_, _, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
@@ -101,13 +104,16 @@ impl Element {
     /// propagates.
     /// `NotSummed` returns `(inner_count, 0)` — sum is suppressed, count
     /// still propagates.
+    /// `ReferenceWithSumItem` returns `(1, sum_value)` — counts as one
+    /// element like a plain reference, contributes its explicit sum.
     pub fn count_sum_value_or_default(&self) -> (u64, i64) {
         match self {
             Element::NonCounted(inner) => (0, inner.sum_value_or_default()),
             Element::NotSummed(inner) => (inner.count_value_or_default(), 0),
             Element::SumItem(sum_value, _)
             | Element::ItemWithSumItem(_, sum_value, _)
-            | Element::SumTree(_, sum_value, _) => (1, *sum_value),
+            | Element::SumTree(_, sum_value, _)
+            | Element::ReferenceWithSumItem(_, _, sum_value, _) => (1, *sum_value),
             Element::CountTree(_, count_value, _) => (*count_value, 0),
             Element::CountSumTree(_, count_value, sum_value, _)
             | Element::ProvableCountSumTree(_, count_value, sum_value, _) => {
@@ -120,7 +126,8 @@ impl Element {
 
     /// Decoded the integer value in the SumItem element type, returns 0 for
     /// everything else. `NonCounted` delegates to its inner. `NotSummed`
-    /// returns 0.
+    /// returns 0. `ReferenceWithSumItem` returns its explicit i64 sum cast
+    /// to i128.
     pub fn big_sum_value_or_default(&self) -> i128 {
         match self {
             Element::NonCounted(inner) => inner.big_sum_value_or_default(),
@@ -129,28 +136,33 @@ impl Element {
             | Element::ItemWithSumItem(_, sum_value, _)
             | Element::SumTree(_, sum_value, _)
             | Element::CountSumTree(_, _, sum_value, _)
-            | Element::ProvableCountSumTree(_, _, sum_value, _) => *sum_value as i128,
+            | Element::ProvableCountSumTree(_, _, sum_value, _)
+            | Element::ReferenceWithSumItem(_, _, sum_value, _) => *sum_value as i128,
             Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
     }
 
     /// Decoded the integer value in the SumItem element type. Looks through
-    /// a `NonCounted` wrapper.
+    /// a `NonCounted` wrapper. Also returns the explicit sum from
+    /// `ReferenceWithSumItem`.
     pub fn as_sum_item_value(&self) -> Result<i64, ElementError> {
         match self.underlying() {
             Element::SumItem(value, _) => Ok(*value),
             Element::ItemWithSumItem(_, value, _) => Ok(*value),
+            Element::ReferenceWithSumItem(_, _, value, _) => Ok(*value),
             _ => Err(ElementError::WrongElementType("expected a sum item")),
         }
     }
 
     /// Decoded the integer value in the SumItem element type. Looks through
-    /// a `NonCounted` wrapper.
+    /// a `NonCounted` wrapper. Also returns the explicit sum from
+    /// `ReferenceWithSumItem`.
     pub fn into_sum_item_value(self) -> Result<i64, ElementError> {
         match self.into_underlying() {
             Element::SumItem(value, _) => Ok(value),
             Element::ItemWithSumItem(_, value, _) => Ok(value),
+            Element::ReferenceWithSumItem(_, _, value, _) => Ok(value),
             _ => Err(ElementError::WrongElementType("expected a sum item")),
         }
     }
@@ -194,10 +206,12 @@ impl Element {
     }
 
     /// Gives the reference path type in the Reference element type. Looks
-    /// through a `NonCounted` wrapper.
+    /// through a `NonCounted` wrapper. Accepts both `Reference` and
+    /// `ReferenceWithSumItem`.
     pub fn into_reference_path_type(self) -> Result<ReferencePathType, ElementError> {
         match self.into_underlying() {
             Element::Reference(value, ..) => Ok(value),
+            Element::ReferenceWithSumItem(value, ..) => Ok(value),
             _ => Err(ElementError::WrongElementType("expected a reference")),
         }
     }
@@ -334,9 +348,24 @@ impl Element {
         )
     }
 
-    /// Check if the element is a reference. Looks through `NonCounted`.
+    /// Check if the element is a reference. Looks through `NonCounted`. Both
+    /// `Reference` and `ReferenceWithSumItem` are references — they share
+    /// the resolution path and combined-value-hash proof shape; the only
+    /// difference is that `ReferenceWithSumItem` carries an additional
+    /// `SumValue` that propagates into sum-bearing parents.
     pub fn is_reference(&self) -> bool {
-        matches!(self.underlying(), Element::Reference(..))
+        matches!(
+            self.underlying(),
+            Element::Reference(..) | Element::ReferenceWithSumItem(..)
+        )
+    }
+
+    /// Check if the element is specifically a `ReferenceWithSumItem`. Looks
+    /// through `NonCounted`. Use `is_reference` when you only care that the
+    /// element is some kind of reference; use this when you need to
+    /// distinguish the sum-bearing variant.
+    pub fn is_reference_with_sum_item(&self) -> bool {
+        matches!(self.underlying(), Element::ReferenceWithSumItem(..))
     }
 
     /// Check if the element is an item. Looks through `NonCounted`.
@@ -393,7 +422,8 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::ReferenceWithSumItem(.., flags) => flags,
             Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags(),
         }
     }
@@ -416,7 +446,8 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::ReferenceWithSumItem(.., flags) => flags,
             Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags_owned(),
         }
     }
@@ -439,7 +470,8 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::ReferenceWithSumItem(.., flags) => flags,
             Element::NonCounted(inner) | Element::NotSummed(inner) => inner.get_flags_mut(),
         }
     }
@@ -462,7 +494,8 @@ impl Element {
             | Element::CommitmentTree(.., flags)
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
-            | Element::DenseAppendOnlyFixedSizeTree(.., flags) => *flags = new_flags,
+            | Element::DenseAppendOnlyFixedSizeTree(.., flags)
+            | Element::ReferenceWithSumItem(.., flags) => *flags = new_flags,
             Element::NonCounted(inner) | Element::NotSummed(inner) => inner.set_flags(new_flags),
         }
     }
@@ -504,6 +537,28 @@ impl Element {
                         Element::Reference(
                             ReferencePathType::AbsolutePathReference(absolute_path),
                             max_hop,
+                            flags.clone(),
+                        )
+                    }
+                }
+            }
+            Element::ReferenceWithSumItem(
+                ref reference_path_type,
+                max_hop,
+                sum_value,
+                ref flags,
+            ) => {
+                match reference_path_type {
+                    ReferencePathType::AbsolutePathReference(..) => self,
+                    _ => {
+                        // Mirror the Reference arm: rebuild as absolute,
+                        // preserving the sum value.
+                        let absolute_path =
+                            path_from_reference_path_type(reference_path_type.clone(), path, key)?;
+                        Element::ReferenceWithSumItem(
+                            ReferencePathType::AbsolutePathReference(absolute_path),
+                            max_hop,
+                            sum_value,
                             flags.clone(),
                         )
                     }
