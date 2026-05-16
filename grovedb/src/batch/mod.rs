@@ -7,7 +7,7 @@ mod batch_structure;
 /// keep the cidx propagation pattern self-contained and reusable for
 /// future aggregate-indexed tree shapes (e.g., the planned
 /// `SumIndexedTree`).
-mod cidx;
+mod count_indexed_tree;
 
 #[cfg(feature = "estimated_costs")]
 pub mod estimated_costs;
@@ -1192,81 +1192,6 @@ impl QualifiedGroveDbOp {
     }
 }
 
-/// Preflight check: reject any batch that both **creates** a
-/// `CountIndexedTree` / `ProvableCountIndexedTree` element AND
-/// contains other ops targeting paths inside the freshly-created
-/// cidx in the same batch.
-///
-/// Why: cidx propagation needs both primary and secondary root state
-/// to bubble up via the H1-A `combine_hash_three` composition. There
-/// is no `InsertAggregateIndexedTreeWithRootKeys` counterpart to
-/// `ReplaceAggregateIndexedTreeRootKeys`, and the secondary merk
-/// cannot be opened during propagation because the parent's cidx
-/// element bytes aren't on disk yet. Without this preflight, callers
-/// hit a confusing `MerkError(PathKeyNotFound)` mid-batch as the
-/// secondary-merk closure tries to read the cidx element from a
-/// parent merk that doesn't yet contain it.
-///
-/// Workaround: split into two batches. First batch creates the
-/// empty cidx; second batch populates it (or call
-/// `db.insert_into_count_indexed_tree` directly for individual
-/// items).
-fn reject_freshly_inserted_cidx_with_descendants(ops: &[QualifiedGroveDbOp]) -> Result<(), Error> {
-    use grovedb_element::Element;
-    // Collect paths where a cidx element is being CREATED in this batch
-    // (via any Insert-style op carrying a cidx Element). The path of the
-    // cidx primary is `op.path + op.key`.
-    let mut fresh_cidx_paths: Vec<Vec<Vec<u8>>> = Vec::new();
-    for op in ops {
-        let elem = match &op.op {
-            GroveOp::InsertOrReplace { element }
-            | GroveOp::InsertWithKnownToNotAlreadyExist { element }
-            | GroveOp::InsertIfNotExists { element, .. }
-            | GroveOp::Replace { element }
-            | GroveOp::Patch { element, .. } => element,
-            _ => continue,
-        };
-        if matches!(
-            elem.underlying(),
-            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
-        ) && let Some(key) = &op.key
-        {
-            let mut cidx_path = op.path.to_path();
-            cidx_path.push(key.get_key_clone());
-            fresh_cidx_paths.push(cidx_path);
-        }
-    }
-    if fresh_cidx_paths.is_empty() {
-        return Ok(());
-    }
-    // Reject any op whose effective target path is strictly under one
-    // of the fresh cidx paths. The effective path is
-    // `op.path + op.key` (keyless ops use just `op.path`). The
-    // cidx-creation op itself doesn't trigger (its target equals the
-    // cidx path exactly).
-    for op in ops {
-        let mut op_target = op.path.to_path();
-        if let Some(key) = &op.key {
-            op_target.push(key.get_key_clone());
-        }
-        for cidx_path in &fresh_cidx_paths {
-            if op_target.len() > cidx_path.len() && op_target[..cidx_path.len()] == cidx_path[..] {
-                return Err(Error::NotSupported(
-                    "populating a freshly-inserted CountIndexedTree / \
-                     ProvableCountIndexedTree in the same batch as its creation is not \
-                     supported (no Insert variant for aggregate-indexed two-Merk \
-                     propagation exists, and the secondary merk cannot be opened from \
-                     stale parent state during bubble-up). Split into two batches: \
-                     insert the empty cidx first, then populate it via \
-                     `db.insert_into_count_indexed_tree` or a follow-up batch."
-                        .to_string(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Results of a consistency check on an operation batch
 #[derive(Debug)]
 pub struct GroveDbOpConsistencyResults {
@@ -2081,12 +2006,16 @@ where
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
         // secondary entry needs to move; we capture it here too.
-        let cidx_pre_state: Option<HashMap<Vec<u8>, Option<u64>>> =
+        let cidx_pre_state: Option<BTreeMap<Vec<u8>, Option<u64>>> =
             if in_tree_type.is_count_indexed_primary() {
                 let merk = self.merks.get(path).expect("the Merk is cached");
                 Some(cost_return_on_error!(
                     &mut cost,
-                    cidx::capture_cidx_pre_state(merk, &ops_at_path_by_key, grove_version)
+                    count_indexed_tree::capture_cidx_pre_state(
+                        merk,
+                        &ops_at_path_by_key,
+                        grove_version,
+                    )
                 ))
             } else {
                 None
@@ -2158,123 +2087,24 @@ where
                             }
                         }
                     } else if op_could_overwrite && !matches!(&element, Element::Reference(..)) {
-                        // Tree-override protection is OFF for this batch.
-                        // For cidx overwrites, allow the SAFE SUBSET:
-                        //
-                        //   cidx → non-cidx element    → ALLOW + cleanup
-                        //   cidx → empty cidx          → ALLOW + cleanup
-                        //   cidx → non-empty cidx      → REJECT (ambiguous)
-                        //
-                        // The cleanup runs in apply_batch's post-apply
-                        // pass: walk find_subtrees on the old cidx
-                        // primary's path and clear each subtree's
-                        // storage, plus clear the secondary namespace
-                        // at Blake3(primary_prefix ‖ 0x01). Same shape
-                        // as the cidx DeleteTree cleanup (commit
-                        // 0688731a).
-                        //
-                        // Non-empty cidx replacement stays rejected
-                        // because the new element's primary_root_key /
-                        // secondary_root_key would point at on-disk
-                        // data while our post-apply cleanup of the OLD
-                        // cidx's prefixes also clears that data — the
-                        // storage-pointer semantics are ambiguous
-                        // (reuse old? fresh?) and the safe answer is to
-                        // force the caller through delete-then-recreate.
-                        let merk = self.merks.get_mut(path).expect("the Merk is cached");
-                        let maybe_existing = cost_return_on_error_into!(
+                        // Tree-override protection is OFF; let the
+                        // cidx helper classify the overwrite (safe
+                        // subset → schedule cleanup, ambiguous → err,
+                        // non-cidx → no-op).
+                        let merk = self.merks.get(path).expect("the Merk is cached");
+                        let maybe_cleanup_path = cost_return_on_error!(
                             &mut cost,
-                            merk.get(
-                                key_info.get_key_clone().as_slice(),
-                                true,
-                                Some(&Element::value_defined_cost_for_serialized_value,),
+                            count_indexed_tree::inspect_cidx_overwrite(
+                                merk,
+                                path,
+                                &key_info,
+                                &element,
+                                ops_by_qualified_paths,
                                 grove_version,
                             )
-                            .map_err(|e| {
-                                Error::CorruptedData(format!(
-                                    "unable to check for existing element: {e}"
-                                ))
-                            })
                         );
-                        if let Some(existing_bytes) = maybe_existing {
-                            let existing_element = cost_return_on_error_no_add!(
-                                cost,
-                                Element::deserialize(existing_bytes.as_slice(), grove_version)
-                                    .map_err(|_| {
-                                        Error::CorruptedData(
-                                            "unable to deserialize existing element".to_string(),
-                                        )
-                                    })
-                            );
-                            let existing_is_cidx = matches!(
-                                existing_element.underlying(),
-                                Element::CountIndexedTree(..)
-                                    | Element::ProvableCountIndexedTree(..)
-                            );
-                            if existing_is_cidx {
-                                // Classify the new element.
-                                let (new_is_cidx, new_is_empty_cidx) = match element.underlying() {
-                                    Element::CountIndexedTree(p, s, c, _)
-                                    | Element::ProvableCountIndexedTree(p, s, c, _) => {
-                                        (true, p.is_none() && s.is_none() && *c == 0)
-                                    }
-                                    _ => (false, false),
-                                };
-                                if new_is_cidx && !new_is_empty_cidx {
-                                    return Err(Error::NotSupported(
-                                        "overwriting an existing CountIndexedTree / \
-                                         ProvableCountIndexedTree with a NON-EMPTY cidx via \
-                                         the batch path is not supported (storage-pointer \
-                                         semantics are ambiguous: the new element's \
-                                         root_keys would refer to data while the \
-                                         post-apply cleanup also clears it). Empty the \
-                                         cidx via delete_from_count_indexed_tree, \
-                                         DeleteTree it via batch, and re-create with the \
-                                         new state in a follow-up batch"
-                                            .to_string(),
-                                    ))
-                                    .wrap_with_cost(cost);
-                                }
-                                // Safe subset: cidx → non-cidx OR
-                                // cidx → empty cidx. Schedule the OLD
-                                // cidx's storage namespaces for
-                                // cleanup. The cidx's path is
-                                // `path + key_info`.
-                                let mut cidx_path = path.to_vec();
-                                cidx_path.push(key_info.get_key_clone());
-
-                                // CONSISTENCY CHECK: writes UNDER the
-                                // cidx's path in the same batch would
-                                // be silently lost when the post-apply
-                                // cleanup clears the prefix. The
-                                // generic consistency check
-                                // (verify_consistency_of_operations)
-                                // only blocks writes under Delete /
-                                // DeleteTree paths; it doesn't know
-                                // about safe-subset cidx-overwrite
-                                // cleanup. Scan ops_by_qualified_paths
-                                // for any qualified path strictly
-                                // beneath this cidx's path and reject
-                                // if found.
-                                let cidx_path_len = cidx_path.len();
-                                for q_path in ops_by_qualified_paths.keys() {
-                                    if q_path.len() > cidx_path_len
-                                        && q_path[..cidx_path_len] == cidx_path[..]
-                                    {
-                                        return Err(Error::InvalidBatchOperation(
-                                            "batch contains a write under a cidx primary \
-                                             path that is being safe-subset-overwritten \
-                                             in the same batch; the post-apply cleanup \
-                                             would silently clear the descendant write. \
-                                             Split into two batches: delete + recreate \
-                                             first, then populate.",
-                                        ))
-                                        .wrap_with_cost(cost);
-                                    }
-                                }
-
-                                self.cidx_overwrite_cleanup_paths.push(cidx_path);
-                            }
+                        if let Some(cidx_path) = maybe_cleanup_path {
+                            self.cidx_overwrite_cleanup_paths.push(cidx_path);
                         }
                     }
 
@@ -3091,7 +2921,7 @@ where
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
             let (sec_hash, sec_root_key) = cost_return_on_error!(
                 &mut cost,
-                cidx::apply_cidx_secondary_mirror_post_apply(
+                count_indexed_tree::apply_cidx_secondary_mirror_post_apply(
                     primary_merk,
                     pre,
                     &mut secondary_merk,
@@ -4243,7 +4073,10 @@ impl GroveDb {
             }
         }
 
-        cost_return_on_error_no_add!(cost, reject_freshly_inserted_cidx_with_descendants(&ops));
+        cost_return_on_error_no_add!(
+            cost,
+            count_indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
+        );
 
         // `StorageBatch` collects all operations (preprocessing + apply_body)
         // for a single atomic commit at the end.
@@ -4735,7 +4568,10 @@ impl GroveDb {
             }
         }
 
-        cost_return_on_error_no_add!(cost, reject_freshly_inserted_cidx_with_descendants(&ops));
+        cost_return_on_error_no_add!(
+            cost,
+            count_indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
+        );
 
         // `StorageBatch` collects all operations (preprocessing + apply_body)
         // for a single atomic commit at the end.
