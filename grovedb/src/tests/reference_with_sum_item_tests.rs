@@ -1,5 +1,6 @@
 //! End-to-end tests for `Element::ReferenceWithSumItem` and the
-//! `GroveOp::RefreshReferenceWithSumItem` batch op.
+//! sum-item variant of the unified `GroveOp::RefreshReference` batch
+//! op (built via `QualifiedGroveDbOp::refresh_reference_with_sum_item_op`).
 //!
 //! The variant is a reference that ALSO carries an explicit `SumValue`. It
 //! resolves like `Element::Reference` on `get()` (hop-limited, cycle-detected,
@@ -421,7 +422,91 @@ mod tests {
         assert_eq!(agg, AggregateData::Sum(50));
     }
 
-    /// `RefreshReferenceWithSumItem` updates the link AND the sum atomically.
+    /// Structural regression test for the unification of
+    /// `GroveOp::RefreshReference` and the (now-removed)
+    /// `GroveOp::RefreshReferenceWithSumItem` into a single variant
+    /// distinguished by `sum_value: Option<SumValue>`.
+    ///
+    /// `refresh_reference_op` and `refresh_reference_with_sum_item_op`
+    /// must both construct `GroveOp::RefreshReference`, distinguished
+    /// only by whether `sum_value` is `None` or `Some(..)`. The op-tag
+    /// is the same in both cases.
+    #[test]
+    fn refresh_reference_constructors_share_unified_variant() {
+        use crate::batch::GroveOp;
+
+        let ref_path = ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]);
+
+        let plain = QualifiedGroveDbOp::refresh_reference_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            ref_path.clone(),
+            Some(2),
+            None,
+            /* trust_refresh_reference = */ true,
+        )
+        .op;
+
+        let with_sum = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            ref_path,
+            Some(2),
+            42,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ true,
+        )
+        .op;
+
+        // Both are `GroveOp::RefreshReference`.
+        assert!(
+            matches!(plain, GroveOp::RefreshReference { .. }),
+            "plain constructor must build unified RefreshReference"
+        );
+        assert!(
+            matches!(with_sum, GroveOp::RefreshReference { .. }),
+            "sum-item constructor must build unified RefreshReference"
+        );
+
+        // `sum_value` discriminates the two shapes.
+        let GroveOp::RefreshReference {
+            sum_value: plain_sum,
+            non_counted: plain_nc,
+            ..
+        } = plain
+        else {
+            unreachable!()
+        };
+        let GroveOp::RefreshReference {
+            sum_value: sum_sum,
+            non_counted: sum_nc,
+            ..
+        } = with_sum
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            plain_sum, None,
+            "refresh_reference_op must set sum_value=None"
+        );
+        assert!(
+            !plain_nc,
+            "refresh_reference_op must set non_counted=false (use the sum-item constructor to opt in)"
+        );
+        assert_eq!(
+            sum_sum,
+            Some(42),
+            "refresh_reference_with_sum_item_op must set sum_value=Some(..)"
+        );
+        assert!(
+            sum_nc,
+            "refresh_reference_with_sum_item_op must thread non_counted through"
+        );
+    }
+
+    /// The sum-item variant of `RefreshReference` updates the link AND the
+    /// sum atomically.
     /// The parent SumTree must reflect the delta (new_sum - old_sum).
     #[test]
     fn batch_refresh_reference_with_sum_item_updates_sum_and_path() {
@@ -767,21 +852,23 @@ mod tests {
         assert!(Element::new_not_summed(inner).is_err());
     }
 
-    /// Pins the new op's sort tag to exactly 17 (next free after
-    /// `InsertNonMerkTree = 16`). `GroveOp::to_u8` drives `Ord::cmp`
-    /// for batch op deduplication and the value is documented in
-    /// the apply pipeline — any renumbering would silently shift the
-    /// sort order. Asserting the exact value (not just relative
-    /// ordering) catches that drift.
+    /// Pins both refresh-reference constructor shapes to op-tag
+    /// `5` (the unified `GroveOp::RefreshReference` sort tag).
+    /// After `RefreshReferenceWithSumItem` was merged into
+    /// `RefreshReference` (with `sum_value: Option<SumValue>`), both
+    /// the plain and sum-item constructors must build the same op
+    /// variant and therefore share the same `to_u8`. The previous
+    /// dedicated tag `17` is now unused — leaving it as a "do not
+    /// reuse" hole avoids accidentally reassigning it to a new op.
     #[test]
-    fn refresh_reference_with_sum_item_op_tag_pin() {
+    fn refresh_reference_op_tag_pin() {
         use std::cmp::Ordering;
 
         let ref_path = ReferencePathType::AbsolutePathReference(vec![b"a".to_vec()]);
-        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+        let refresh_sum = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
             vec![b"p".to_vec()],
             b"k".to_vec(),
-            ref_path,
+            ref_path.clone(),
             None,
             5,
             None,
@@ -789,12 +876,27 @@ mod tests {
             true,
         )
         .op;
+        let refresh_plain = QualifiedGroveDbOp::refresh_reference_op(
+            vec![b"p".to_vec()],
+            b"k".to_vec(),
+            ref_path,
+            None,
+            None,
+            true,
+        )
+        .op;
 
-        // Exact pin: catches renumbering to any other value.
+        // Both constructors produce the unified GroveOp::RefreshReference
+        // with tag 5.
         assert_eq!(
-            refresh.to_u8(),
-            17,
-            "RefreshReferenceWithSumItem sort tag must remain 17",
+            refresh_sum.to_u8(),
+            5,
+            "refresh_reference_with_sum_item_op must build the unified RefreshReference (tag 5)",
+        );
+        assert_eq!(
+            refresh_plain.to_u8(),
+            5,
+            "refresh_reference_op must build the unified RefreshReference (tag 5)",
         );
 
         // Sanity: relative ordering against other ops continues to
@@ -806,14 +908,17 @@ mod tests {
             Element::new_item(b"x".to_vec()),
         )
         .op;
-        assert_eq!(delete.cmp(&refresh), Ordering::Less);
-        assert_eq!(insert.cmp(&refresh), Ordering::Less);
-        assert_eq!(refresh.cmp(&refresh.clone()), Ordering::Equal);
+        assert_eq!(delete.cmp(&refresh_sum), Ordering::Less);
+        assert_eq!(insert.cmp(&refresh_sum), Ordering::Greater);
+        assert_eq!(refresh_sum.cmp(&refresh_sum.clone()), Ordering::Equal);
     }
 
-    /// Debug formatter for `GroveOp::RefreshReferenceWithSumItem`
+    /// Debug formatter for the unified `GroveOp::RefreshReference`
     /// produces a string containing the path, max_hop, sum, and trust
-    /// flag — exercises the `fmt::Debug` arm.
+    /// flag — exercises the `fmt::Debug` arm for the sum-item shape.
+    /// The op-name label switches between "Refresh Reference" and
+    /// "Refresh Reference With Sum Item" depending on whether
+    /// `sum_value` is `Some` or `None`.
     #[test]
     fn refresh_reference_with_sum_item_debug_format() {
         let op = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
@@ -832,7 +937,10 @@ mod tests {
             "Debug should include op name: {s}"
         );
         assert!(s.contains("max_hop"), "Debug should mention max_hop: {s}");
-        assert!(s.contains("sum 42"), "Debug should include the sum: {s}");
+        assert!(
+            s.contains("sum Some(42)"),
+            "Debug should include the sum as Option: {s}",
+        );
         assert!(
             s.contains("trust_reference true"),
             "Debug should include trust flag: {s}"

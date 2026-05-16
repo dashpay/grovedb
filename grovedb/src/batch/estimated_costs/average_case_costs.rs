@@ -123,38 +123,30 @@ impl GroveOp {
             GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
-                flags,
-                ..
-            } => GroveDb::average_case_merk_replace_element(
-                key,
-                &Element::Reference(
-                    reference_path_type.clone(),
-                    *max_reference_hop,
-                    flags.clone(),
-                ),
-                in_tree_type,
-                propagate_if_input(),
-                grove_version,
-            ),
-            GroveOp::RefreshReferenceWithSumItem {
-                reference_path_type,
-                max_reference_hop,
                 sum_value,
                 flags,
                 non_counted,
                 ..
             } => {
-                // Build the element shape the apply path will actually
-                // write: bare or NonCounted-wrapped depending on the
-                // declared `non_counted` flag. Without this, the cost
-                // estimator under-counts the wrapper byte when
-                // non_counted=true.
-                let inner = Element::ReferenceWithSumItem(
-                    reference_path_type.clone(),
-                    *max_reference_hop,
-                    *sum_value,
-                    flags.clone(),
-                );
+                // Build the element shape the apply path will write:
+                // plain `Reference` when `sum_value=None`,
+                // `ReferenceWithSumItem` otherwise. Then apply the
+                // `NonCounted` wrapper if declared, so the cost
+                // estimator counts the wrapper byte that ends up
+                // on-disk.
+                let inner = match sum_value {
+                    None => Element::Reference(
+                        reference_path_type.clone(),
+                        *max_reference_hop,
+                        flags.clone(),
+                    ),
+                    Some(sum) => Element::ReferenceWithSumItem(
+                        reference_path_type.clone(),
+                        *max_reference_hop,
+                        *sum,
+                        flags.clone(),
+                    ),
+                };
                 let element = if *non_counted {
                     Element::NonCounted(Box::new(inner))
                 } else {

@@ -112,36 +112,27 @@ impl GroveOp {
             GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
-                flags,
-                ..
-            } => GroveDb::worst_case_merk_replace_element(
-                key,
-                &Element::Reference(
-                    reference_path_type.clone(),
-                    *max_reference_hop,
-                    flags.clone(),
-                ),
-                in_parent_tree_type,
-                propagate_if_input(),
-                grove_version,
-            ),
-            GroveOp::RefreshReferenceWithSumItem {
-                reference_path_type,
-                max_reference_hop,
                 sum_value,
                 flags,
                 non_counted,
                 ..
             } => {
-                // Build the element shape the apply path will actually
-                // write — see the corresponding comment in the
-                // average-case estimator.
-                let inner = Element::ReferenceWithSumItem(
-                    reference_path_type.clone(),
-                    *max_reference_hop,
-                    *sum_value,
-                    flags.clone(),
-                );
+                // Build the element shape the apply path will write —
+                // see the corresponding comment in the average-case
+                // estimator.
+                let inner = match sum_value {
+                    None => Element::Reference(
+                        reference_path_type.clone(),
+                        *max_reference_hop,
+                        flags.clone(),
+                    ),
+                    Some(sum) => Element::ReferenceWithSumItem(
+                        reference_path_type.clone(),
+                        *max_reference_hop,
+                        *sum,
+                        flags.clone(),
+                    ),
+                };
                 let element = if *non_counted {
                     Element::NonCounted(Box::new(inner))
                 } else {
