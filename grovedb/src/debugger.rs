@@ -828,9 +828,9 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
         }
         // The visualizer wire format has no wrapper variants; render the
         // inner element. The wrapper is invisible at the debug-UI layer.
-        crate::Element::NonCounted(inner) | crate::Element::NotSummed(inner) => {
-            element_to_grovedbg(*inner)
-        }
+        crate::Element::NonCounted(inner)
+        | crate::Element::NotSummed(inner)
+        | crate::Element::NotCountedOrSummed(inner) => element_to_grovedbg(*inner),
     }
 }
 

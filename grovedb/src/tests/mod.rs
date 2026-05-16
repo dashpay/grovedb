@@ -29,6 +29,7 @@ mod is_empty_tree_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;
 mod non_counted_tests;
+mod not_counted_or_summed_tests;
 mod not_summed_tests;
 mod operations_coverage_tests;
 mod partial_batch_consistency_tests;

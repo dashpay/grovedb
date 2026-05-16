@@ -281,7 +281,7 @@ where {
             | Element::DenseAppendOnlyFixedSizeTree(..) => {
                 Err(Error::InvalidQuery("path_queries can not refer to trees"))
             }
-            Element::NonCounted(_) | Element::NotSummed(_) => {
+            Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                 unreachable!("unwrapped above")
             }
         }
@@ -422,7 +422,9 @@ where {
                         | Element::DenseAppendOnlyFixedSizeTree(..) => Err(Error::InvalidQuery(
                             "path_queries can only refer to items and references",
                         )),
-                        Element::NonCounted(_) | Element::NotSummed(_) => {
+                        Element::NonCounted(_)
+                        | Element::NotSummed(_)
+                        | Element::NotCountedOrSummed(_) => {
                             unreachable!("unwrapped above")
                         }
                     }
@@ -582,7 +584,9 @@ where {
                             "path_queries can only refer to items, sum items, references and sum \
                              trees",
                         )),
-                        Element::NonCounted(_) | Element::NotSummed(_) => {
+                        Element::NonCounted(_)
+                        | Element::NotSummed(_)
+                        | Element::NotCountedOrSummed(_) => {
                             unreachable!("unwrapped above")
                         }
                     }
@@ -1029,7 +1033,9 @@ where {
                             "path_queries over sum items can only refer to sum items and \
                              references",
                         )),
-                        Element::NonCounted(_) | Element::NotSummed(_) => {
+                        Element::NonCounted(_)
+                        | Element::NotSummed(_)
+                        | Element::NotCountedOrSummed(_) => {
                             unreachable!("unwrapped above")
                         }
                     }

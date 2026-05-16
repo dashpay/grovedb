@@ -186,6 +186,11 @@ impl Visualize for Element {
                 drawer = inner.visualize(drawer)?;
                 drawer.write(b")")?;
             }
+            Element::NotCountedOrSummed(inner) => {
+                drawer.write(b"not_counted_or_summed(")?;
+                drawer = inner.visualize(drawer)?;
+                drawer.write(b")")?;
+            }
             Element::ReferenceWithSumItem(_ref, _max_hop, sum_value, flags) => {
                 drawer.write(format!("ref_with_sum_item: {sum_value}").as_bytes())?;
                 if let Some(f) = flags

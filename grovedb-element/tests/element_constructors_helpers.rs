@@ -709,17 +709,17 @@ fn reference_with_sum_item_round_trips_through_bincode() {
         Some(vec![1, 2, 3]),
     );
     let bytes = original.serialize(grove_version).expect("serialize ok");
-    // Discriminant byte is pinned to 17.
-    assert_eq!(bytes[0], 17, "first byte must be discriminant 17");
+    // Discriminant byte is pinned to 18.
+    assert_eq!(bytes[0], 18, "first byte must be discriminant 18");
     let back = Element::deserialize(&bytes, grove_version).expect("deserialize ok");
     assert_eq!(back, original);
 
     // Round trip through the NonCounted wrapper.
     let wrapped = Element::new_non_counted(original).expect("wrap ok");
     let wrapped_bytes = wrapped.serialize(grove_version).expect("serialize ok");
-    // First byte is the wrapper byte (15), second is the inner discriminant (17).
+    // First byte is the wrapper byte (15), second is the inner discriminant (18).
     assert_eq!(wrapped_bytes[0], 15);
-    assert_eq!(wrapped_bytes[1], 17);
+    assert_eq!(wrapped_bytes[1], 18);
     let back = Element::deserialize(&wrapped_bytes, grove_version).expect("deserialize ok");
     assert_eq!(back, wrapped);
 }

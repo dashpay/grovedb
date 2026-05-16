@@ -45,9 +45,11 @@ pub trait ElementCostSizeExtension {
 ///
 /// `serde::Deserialize` is implemented manually (under the `serde` feature)
 /// so it can enforce the same wrapper invariants as `Element::deserialize`:
-/// `NonCounted` and `NotSummed` may not nest in any combination, and
-/// `NotSummed` may only wrap a sum-tree variant. `serde::Serialize` is
-/// derived; serialization of valid `Element` values is always safe.
+/// `NonCounted`, `NotSummed`, and `NotCountedOrSummed` may not nest in any
+/// combination, and the sum-bearing wrappers (`NotSummed`,
+/// `NotCountedOrSummed`) may only wrap a sum-tree variant.
+/// `serde::Serialize` is derived; serialization of valid `Element` values is
+/// always safe.
 #[derive(Clone, Encode, Decode, PartialEq, Eq, Hash)]
 #[cfg_attr(not(feature = "visualize"), derive(Debug))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -151,9 +153,31 @@ pub enum Element {
     /// Invariants (enforced at construction, serialization, and
     /// deserialization):
     /// - The inner element MUST be one of the four sum-tree variants above.
-    /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`, or
-    ///   any non-tree element.
+    /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`,
+    ///   `NotCountedOrSummed`, or any non-tree element.
     NotSummed(Box<Element>),
+    /// Not-counted-or-summed wrapper: contains a sum-bearing tree variant
+    /// (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`) and
+    /// behaves identically to it for storage, hashing, and its own internal
+    /// aggregates, but contributes 0 to BOTH its parent's running sum AND
+    /// the parent's count when inserted.
+    ///
+    /// May only be inserted into count-AND-sum-bearing trees (`CountSumTree`,
+    /// `ProvableCountSumTree`) — the only tree types where suppressing both
+    /// axes is meaningful. Any other parent rejects the wrapper at insert.
+    ///
+    /// For `SumTree` / `BigSumTree` inners, this wrapper suppresses the
+    /// implicit count-of-one a subtree would contribute to a parent count
+    /// tree (it stores a sum internally, but counts as a single element).
+    /// For `CountSumTree` / `ProvableCountSumTree` inners, it suppresses
+    /// the explicit count value as well as the sum.
+    ///
+    /// Invariants (enforced at construction, serialization, and
+    /// deserialization):
+    /// - The inner element MUST be one of the four sum-tree variants above.
+    /// - A `NotCountedOrSummed` may not wrap any other wrapper or any
+    ///   non-tree element.
+    NotCountedOrSummed(Box<Element>),
     /// A reference that simultaneously carries an explicit `SumValue`.
     ///
     /// Resolves like `Element::Reference` on `get()` / `follow_reference()`
@@ -174,9 +198,9 @@ pub enum Element {
     ///
     /// Wrapper compatibility:
     /// - **May** be wrapped in `NonCounted` to opt out of count propagation.
-    /// - **May NOT** be wrapped in `NotSummed` — the `NotSummed` whitelist
-    ///   accepts only the four sum-tree variants, not item-like or
-    ///   reference-like base variants.
+    /// - **May NOT** be wrapped in `NotSummed` or `NotCountedOrSummed` —
+    ///   those whitelists accept only the four sum-tree variants, not
+    ///   item-like or reference-like base variants.
     ReferenceWithSumItem(
         ReferencePathType,
         MaxReferenceHop,
@@ -374,6 +398,9 @@ impl fmt::Display for Element {
             Element::NotSummed(inner) => {
                 write!(f, "NotSummed({})", inner)
             }
+            Element::NotCountedOrSummed(inner) => {
+                write!(f, "NotCountedOrSummed({})", inner)
+            }
             Element::ReferenceWithSumItem(path, max_hop, sum_value, flags) => {
                 write!(
                     f,
@@ -449,6 +476,17 @@ impl Element {
                 // unreachable case.
                 other => other,
             },
+            Element::NotCountedOrSummed(inner) => match inner.element_type() {
+                ElementType::SumTree => ElementType::NotCountedOrSummedSumTree,
+                ElementType::BigSumTree => ElementType::NotCountedOrSummedBigSumTree,
+                ElementType::CountSumTree => ElementType::NotCountedOrSummedCountSumTree,
+                ElementType::ProvableCountSumTree => {
+                    ElementType::NotCountedOrSummedProvableCountSumTree
+                }
+                // Inner is always one of the 4 sum-tree variants above —
+                // see comment on the NotSummed arm above.
+                other => other,
+            },
         }
     }
 
@@ -457,9 +495,11 @@ impl Element {
     }
 
     /// Verify the wrapper invariants for `self`:
-    /// - `NonCounted` and `NotSummed` may not nest in any combination.
-    /// - `NotSummed` may only wrap one of the four sum-tree variants
-    ///   (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`).
+    /// - `NonCounted`, `NotSummed`, and `NotCountedOrSummed` may not nest
+    ///   in any combination.
+    /// - `NotSummed` and `NotCountedOrSummed` may only wrap one of the four
+    ///   sum-tree variants (`SumTree`, `BigSumTree`, `CountSumTree`,
+    ///   `ProvableCountSumTree`).
     ///
     /// Constructors and the `serialize`/`deserialize` paths already enforce
     /// these rules; this helper exists so external callers (most importantly
@@ -470,7 +510,10 @@ impl Element {
     pub fn validate_wrapper_invariants(&self) -> Result<(), crate::error::ElementError> {
         match self {
             Element::NonCounted(inner) => {
-                if matches!(**inner, Element::NonCounted(_) | Element::NotSummed(_)) {
+                if matches!(
+                    **inner,
+                    Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_)
+                ) {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NonCounted cannot wrap another wrapper",
                     ));
@@ -485,6 +528,18 @@ impl Element {
                     return Err(crate::error::ElementError::InvalidInput(
                         "NotSummed inner element must be a sum-tree variant (SumTree, \
                          BigSumTree, CountSumTree, or ProvableCountSumTree)",
+                    ));
+                }
+            },
+            Element::NotCountedOrSummed(inner) => match **inner {
+                Element::SumTree(..)
+                | Element::BigSumTree(..)
+                | Element::CountSumTree(..)
+                | Element::ProvableCountSumTree(..) => {}
+                _ => {
+                    return Err(crate::error::ElementError::InvalidInput(
+                        "NotCountedOrSummed inner element must be a sum-tree variant \
+                         (SumTree, BigSumTree, CountSumTree, or ProvableCountSumTree)",
                     ));
                 }
             },
@@ -557,6 +612,7 @@ mod serde_impl {
         DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),
         NonCounted(Box<ElementShadow>),
         NotSummed(Box<ElementShadow>),
+        NotCountedOrSummed(Box<ElementShadow>),
         ReferenceWithSumItem(
             ReferencePathType,
             MaxReferenceHop,
@@ -593,6 +649,9 @@ mod serde_impl {
                 ElementShadow::NotSummed(inner) => {
                     Element::NotSummed(Box::new(Element::from(*inner)))
                 }
+                ElementShadow::NotCountedOrSummed(inner) => {
+                    Element::NotCountedOrSummed(Box::new(Element::from(*inner)))
+                }
                 ElementShadow::ReferenceWithSumItem(p, h, s, f) => {
                     Element::ReferenceWithSumItem(p, h, s, f)
                 }
@@ -625,7 +684,10 @@ mod serde_impl {
             element: &Element,
         ) -> Result<(), crate::error::ElementError> {
             element.validate_wrapper_invariants()?;
-            if let Element::NonCounted(inner) | Element::NotSummed(inner) = element {
+            if let Element::NonCounted(inner)
+            | Element::NotSummed(inner)
+            | Element::NotCountedOrSummed(inner) = element
+            {
                 Self::check_recursive_wrapper_invariants(inner)?;
             }
             Ok(())
@@ -644,11 +706,60 @@ mod serde_impl {
                 Element::SumTree(Some(b"r".to_vec()), 42, None),
                 Element::new_non_counted(Element::Item(b"x".to_vec(), None)).unwrap(),
                 Element::new_not_summed(Element::SumTree(None, 100, None)).unwrap(),
+                Element::new_not_counted_or_summed(Element::CountSumTree(None, 3, 100, None))
+                    .unwrap(),
+                Element::new_not_counted_or_summed(Element::SumTree(None, 50, None)).unwrap(),
             ];
             for original in cases {
                 let json = serde_json::to_string(&original).expect("serialize");
                 let back: Element = serde_json::from_str(&json).expect("deserialize");
                 assert_eq!(back, original, "round trip mismatch for {:?}", original);
+            }
+        }
+
+        /// `NotCountedOrSummed(NotCountedOrSummed(_))` and cross-nestings
+        /// involving the new wrapper must be rejected.
+        #[test]
+        fn serde_rejects_not_counted_or_summed_nesting() {
+            // Self-nest.
+            let payload =
+                r#"{"NotCountedOrSummed":{"NotCountedOrSummed":{"SumTree":[null,0,null]}}}"#;
+            assert!(serde_json::from_str::<Element>(payload).is_err());
+
+            // Cross with NonCounted (both directions).
+            let payload = r#"{"NotCountedOrSummed":{"NonCounted":{"SumTree":[null,0,null]}}}"#;
+            assert!(serde_json::from_str::<Element>(payload).is_err());
+            let payload = r#"{"NonCounted":{"NotCountedOrSummed":{"SumTree":[null,0,null]}}}"#;
+            assert!(serde_json::from_str::<Element>(payload).is_err());
+
+            // Cross with NotSummed (both directions).
+            let payload = r#"{"NotCountedOrSummed":{"NotSummed":{"SumTree":[null,0,null]}}}"#;
+            assert!(serde_json::from_str::<Element>(payload).is_err());
+            let payload = r#"{"NotSummed":{"NotCountedOrSummed":{"SumTree":[null,0,null]}}}"#;
+            assert!(serde_json::from_str::<Element>(payload).is_err());
+        }
+
+        /// `NotCountedOrSummed(non_sum_tree)` must be rejected for every
+        /// illegal inner type.
+        #[test]
+        fn serde_rejects_not_counted_or_summed_with_non_sum_tree_inner() {
+            let illegal_inners = [
+                r#"{"Item":[[120],null]}"#,
+                r#"{"SumItem":[7,null]}"#,
+                r#"{"Tree":[null,null]}"#,
+                r#"{"CountTree":[null,0,null]}"#,
+                r#"{"ProvableCountTree":[null,0,null]}"#,
+                r#"{"MmrTree":[0,null]}"#,
+            ];
+            for inner in illegal_inners {
+                let payload = format!(r#"{{"NotCountedOrSummed":{}}}"#, inner);
+                let result: Result<Element, _> = serde_json::from_str(&payload);
+                assert!(
+                    result.is_err(),
+                    "NotCountedOrSummed({}) must be rejected; got {:?}",
+                    inner,
+                    result
+                );
             }
         }
 
@@ -803,5 +914,74 @@ mod tests {
         let wrapped = Element::new_non_counted(inner).expect("wrap ok");
         let s = format!("{}", wrapped);
         assert!(s.starts_with("NonCounted("), "got: {}", s);
+    }
+
+    #[test]
+    fn display_renders_not_counted_or_summed_wrapper() {
+        let inner = Element::CountSumTree(Some(b"r".to_vec()), 3, 100, None);
+        let wrapped = Element::new_not_counted_or_summed(inner).expect("wrap ok");
+        let s = format!("{}", wrapped);
+        assert!(s.starts_with("NotCountedOrSummed("), "got: {}", s);
+        assert!(s.contains("CountSumTree"), "got: {}", s);
+    }
+
+    #[test]
+    fn element_type_resolves_not_counted_or_summed_twins() {
+        // Each of the four sum-tree variants maps to its
+        // NotCountedOrSummed twin.
+        let cases: [(Element, ElementType); 4] = [
+            (
+                Element::NotCountedOrSummed(Box::new(Element::SumTree(None, 0, None))),
+                ElementType::NotCountedOrSummedSumTree,
+            ),
+            (
+                Element::NotCountedOrSummed(Box::new(Element::BigSumTree(None, 0, None))),
+                ElementType::NotCountedOrSummedBigSumTree,
+            ),
+            (
+                Element::NotCountedOrSummed(Box::new(Element::CountSumTree(None, 0, 0, None))),
+                ElementType::NotCountedOrSummedCountSumTree,
+            ),
+            (
+                Element::NotCountedOrSummed(Box::new(Element::ProvableCountSumTree(
+                    None, 0, 0, None,
+                ))),
+                ElementType::NotCountedOrSummedProvableCountSumTree,
+            ),
+        ];
+        for (element, expected) in cases {
+            assert_eq!(element.element_type(), expected);
+            assert_eq!(element.type_str(), expected.as_str());
+        }
+    }
+
+    #[test]
+    fn validate_wrapper_invariants_covers_all_arms() {
+        // Valid: bare elements pass.
+        assert!(Element::Item(b"x".to_vec(), None)
+            .validate_wrapper_invariants()
+            .is_ok());
+
+        // Valid NonCounted/NotSummed/NotCountedOrSummed pass.
+        let nc = Element::NonCounted(Box::new(Element::Item(b"x".to_vec(), None)));
+        assert!(nc.validate_wrapper_invariants().is_ok());
+        let ns = Element::NotSummed(Box::new(Element::SumTree(None, 0, None)));
+        assert!(ns.validate_wrapper_invariants().is_ok());
+        let ncos = Element::NotCountedOrSummed(Box::new(Element::SumTree(None, 0, None)));
+        assert!(ncos.validate_wrapper_invariants().is_ok());
+
+        // Invalid: NonCounted wrapping another wrapper.
+        let bad = Element::NonCounted(Box::new(Element::NotCountedOrSummed(Box::new(
+            Element::SumTree(None, 0, None),
+        ))));
+        assert!(bad.validate_wrapper_invariants().is_err());
+
+        // Invalid: NotSummed with non-sum-tree inner.
+        let bad = Element::NotSummed(Box::new(Element::Item(b"x".to_vec(), None)));
+        assert!(bad.validate_wrapper_invariants().is_err());
+
+        // Invalid: NotCountedOrSummed with non-sum-tree inner.
+        let bad = Element::NotCountedOrSummed(Box::new(Element::Item(b"x".to_vec(), None)));
+        assert!(bad.validate_wrapper_invariants().is_err());
     }
 }

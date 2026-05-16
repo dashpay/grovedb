@@ -289,6 +289,12 @@ pub enum GroveOp {
         /// the wrapper and the parent sum tree's running sum excludes
         /// the subtree.
         not_summed: bool,
+        /// True if the original element was wrapped in
+        /// `Element::NotCountedOrSummed`. Set during propagation; on
+        /// execution the reconstructed sum-bearing-tree element is
+        /// re-wrapped so the on-disk bytes preserve the wrapper, and the
+        /// parent's running count AND sum both exclude the subtree.
+        not_counted_or_summed: bool,
     },
     /// **Internal only — do not construct directly.**
     /// Replace root hash for a non-Merk tree (CommitmentTree, MmrTree,
@@ -1570,7 +1576,7 @@ where
             // underlying() unwraps a single level; the constructor and
             // (de)serializer reject nested wrappers, so these are
             // unreachable by construction.
-            Element::NonCounted(_) | Element::NotSummed(_) => {
+            Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                 unreachable!("wrappers may not nest")
             }
         }
@@ -1725,7 +1731,9 @@ where
                             .wrap_with_cost(cost)
                         }
                         // Wrappers are unwrapped via underlying() above.
-                        Element::NonCounted(_) | Element::NotSummed(_) => {
+                        Element::NonCounted(_)
+                        | Element::NotSummed(_)
+                        | Element::NotCountedOrSummed(_) => {
                             unreachable!("unwrapped above")
                         }
                     }
@@ -1772,7 +1780,9 @@ where
                         .wrap_with_cost(cost)
                     }
                     // Wrappers are unwrapped via underlying() above.
-                    Element::NonCounted(_) | Element::NotSummed(_) => {
+                    Element::NonCounted(_)
+                    | Element::NotSummed(_)
+                    | Element::NotCountedOrSummed(_) => {
                         unreachable!("unwrapped above")
                     }
                 },
@@ -1981,6 +1991,16 @@ where
                     if element.is_not_summed() && !in_tree_type.is_sum_bearing() {
                         return Err(Error::InvalidBatchOperation(
                             "not-summed elements may only be inserted into sum-bearing trees",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    if element.is_not_counted_or_summed()
+                        && !in_tree_type.is_count_and_sum_bearing()
+                    {
+                        return Err(Error::InvalidBatchOperation(
+                            "not-counted-or-summed elements may only be inserted into trees \
+                             that bear BOTH count and sum (CountSumTree or \
+                             ProvableCountSumTree)",
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -2193,7 +2213,9 @@ where
                             }
                         }
                         // Wrappers are unwrapped via underlying() above.
-                        Element::NonCounted(_) | Element::NotSummed(_) => {
+                        Element::NonCounted(_)
+                        | Element::NotSummed(_)
+                        | Element::NotCountedOrSummed(_) => {
                             unreachable!("unwrapped above")
                         }
                     }
@@ -2505,6 +2527,7 @@ where
                     aggregate_data,
                     non_counted,
                     not_summed,
+                    not_counted_or_summed,
                 } => {
                     // Standard Merk trees — infer element from aggregate_data
                     let element = match aggregate_data {
@@ -2550,9 +2573,9 @@ where
                     // Re-wrap if the original element was wrapped, so the
                     // on-disk bytes preserve the wrapper and the parent's
                     // aggregate excludes this subtree from the right
-                    // dimension. The two flags are mutually exclusive — set
-                    // only one during propagation. The `element` here is a
-                    // freshly-constructed bare tree built from
+                    // dimension. The three flags are mutually exclusive —
+                    // set only one during propagation. The `element` here is
+                    // a freshly-constructed bare tree built from
                     // `aggregate_data` above, so the conditional wrappers
                     // should never see a pre-existing wrapper input — but
                     // surface a typed error rather than panic if the
@@ -2569,6 +2592,13 @@ where
                             Error::CorruptedCodeExecution(
                                 "into_not_summed called on a non-sum-tree or wrapped element \
                                  during InsertTreeWithRootHash propagation",
+                            )
+                        })
+                    } else if not_counted_or_summed {
+                        element.into_not_counted_or_summed().map_err(|_| {
+                            Error::CorruptedCodeExecution(
+                                "into_not_counted_or_summed called on a non-sum-tree or \
+                                 wrapped element during InsertTreeWithRootHash propagation",
                             )
                         })
                     } else {
@@ -2729,13 +2759,8 @@ where
                                 // path (the wrapper byte costs +1 over the
                                 // bare type, mirroring `wrapper_overhead`
                                 // in `merk/src/element/costs.rs`).
-                                let wrapper_overhead = if new_element.is_non_counted()
-                                    || new_element.is_not_summed()
-                                {
-                                    1u32
-                                } else {
-                                    0
-                                };
+                                let wrapper_overhead =
+                                    if new_element.is_wrapped() { 1u32 } else { 0 };
                                 match new_element.underlying() {
                                     Element::Tree(..)
                                     | Element::SumTree(..)
@@ -2968,11 +2993,14 @@ impl GroveDb {
                                                     // wrapper byte would be silently dropped
                                                     // from storage and the parent's aggregate
                                                     // would include a value it should not.
-                                                    // The two wrappers are mutually exclusive
-                                                    // (constructors reject nesting), so at
-                                                    // most one flag is true here.
+                                                    // The three wrappers are mutually
+                                                    // exclusive (constructors reject
+                                                    // nesting), so at most one flag is true
+                                                    // here.
                                                     let non_counted = element.is_non_counted();
                                                     let not_summed = element.is_not_summed();
+                                                    let not_counted_or_summed =
+                                                        element.is_not_counted_or_summed();
                                                     let element = element.underlying();
                                                     // Standard Merk trees
                                                     if let Element::Tree(_, flags) = element {
@@ -2985,6 +3013,7 @@ impl GroveDb {
                                                                     AggregateData::NoAggregateData,
                                                                 non_counted,
                                                                 not_summed,
+                                                                not_counted_or_summed,
                                                             }
                                                     } else if let Element::SumTree(.., flags) =
                                                         element
@@ -2997,6 +3026,7 @@ impl GroveDb {
                                                                 aggregate_data,
                                                                 non_counted,
                                                                 not_summed,
+                                                                not_counted_or_summed,
                                                             }
                                                     } else if let Element::BigSumTree(.., flags) =
                                                         element
@@ -3009,6 +3039,7 @@ impl GroveDb {
                                                                 aggregate_data,
                                                                 non_counted,
                                                                 not_summed,
+                                                                not_counted_or_summed,
                                                             }
                                                     } else if let Element::CountTree(.., flags) =
                                                         element
@@ -3021,6 +3052,7 @@ impl GroveDb {
                                                                 aggregate_data,
                                                                 non_counted,
                                                                 not_summed,
+                                                                not_counted_or_summed,
                                                             }
                                                     } else if let Element::CountSumTree(.., flags) =
                                                         element
@@ -3033,6 +3065,7 @@ impl GroveDb {
                                                                 aggregate_data,
                                                                 non_counted,
                                                                 not_summed,
+                                                                not_counted_or_summed,
                                                             }
                                                     } else if let Element::ProvableCountTree(
                                                         ..,
@@ -3047,6 +3080,7 @@ impl GroveDb {
                                                                 aggregate_data,
                                                                 non_counted,
                                                                 not_summed,
+                                                                not_counted_or_summed,
                                                             }
                                                     } else if let Element::ProvableCountSumTree(
                                                         ..,
@@ -3061,10 +3095,12 @@ impl GroveDb {
                                                                 aggregate_data,
                                                                 non_counted,
                                                                 not_summed,
+                                                                not_counted_or_summed,
                                                             }
                                                     // Non-Merk trees → InsertNonMerkTree
-                                                    // (none of these can be NotSummed —
-                                                    // they aren't sum-tree variants.)
+                                                    // (none of these can be NotSummed or
+                                                    // NotCountedOrSummed — they aren't
+                                                    // sum-tree variants.)
                                                     } else if let Element::CommitmentTree(
                                                         total_count,
                                                         chunk_power,
