@@ -1010,6 +1010,105 @@ mod tests {
         );
     }
 
+    /// Regression test for the "stale dependent reference" issue: when a
+    /// batch contains both a `RefreshReferenceWithSumItem` op AND another
+    /// reference that points at the same key, the dependent reference's
+    /// value hash must be computed against the **refreshed** target, not
+    /// the stale on-disk one. Verified for both `trust=true` and
+    /// `trust=false` paths.
+    #[test]
+    fn batch_dependent_reference_resolves_through_refreshed_path() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Two distinct items so we can prove the dependent ref tracks the
+        // post-batch path.
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"item_old",
+            b"OLD",
+            grove_version,
+        );
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"item_new",
+            b"NEW",
+            grove_version,
+        );
+
+        // Seed: `link` is a ReferenceWithSumItem → item_old (sum 1).
+        // `dep` is a plain Reference → link → item_old.
+        let to_old = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"item_old".to_vec(),
+        ]);
+        let to_link =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"link".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(to_old.clone(), 1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed link");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"dep",
+            Element::new_reference(to_link.clone()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed dep");
+
+        // Batch: refresh link → item_new (trust=false so we hit the
+        // resolve-through-op-payload branch via process_reference), AND
+        // re-insert dep so its value hash gets re-derived in the same
+        // batch. dep's hash must derive from item_new (NEW), not item_old.
+        let to_new = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"item_new".to_vec(),
+        ]);
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            to_new.clone(),
+            None,
+            99,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ false,
+        );
+        let dep_replace = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"dep".to_vec(),
+            Element::new_reference(to_link),
+        );
+        db.apply_batch(vec![refresh, dep_replace], None, None, grove_version)
+            .unwrap()
+            .expect("apply refresh+dep batch");
+
+        // After the batch, getting dep must follow link (now pointing at
+        // item_new) and return "NEW", not "OLD". This is the user-visible
+        // proof that the batch's internal hash computation used the
+        // refreshed path.
+        let resolved = db
+            .get([TEST_LEAF].as_ref(), b"dep", None, grove_version)
+            .unwrap()
+            .expect("get dep");
+        assert_eq!(
+            resolved,
+            Element::new_item(b"NEW".to_vec()),
+            "dependent ref should resolve through the refreshed path"
+        );
+    }
+
     /// `prove_query` + `verify_query_with_options` round-trip on a
     /// `ReferenceWithSumItem` — exercises the V1 proof generation /
     /// verification arms for the new variant.

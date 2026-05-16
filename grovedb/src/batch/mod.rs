@@ -1811,29 +1811,33 @@ where
                 },
                 GroveOp::RefreshReference {
                     reference_path_type,
-                    trust_refresh_reference,
                     ..
                 }
                 | GroveOp::RefreshReferenceWithSumItem {
                     reference_path_type,
-                    trust_refresh_reference,
                     ..
                 } => {
                     // We are pointing towards a reference that will be
-                    // refreshed. Both refresh ops resolve through the same
-                    // chain — the sum carried on
-                    // `RefreshReferenceWithSumItem` is irrelevant to the
-                    // chain destination.
-                    let reference_info = if *trust_refresh_reference {
-                        Some(reference_path_type)
-                    } else {
-                        None
-                    };
+                    // refreshed in this batch. Always thread the op's
+                    // `reference_path_type` to `process_reference` so a
+                    // dependent reference (another op in the batch
+                    // pointing at the refreshed key) resolves through the
+                    // post-batch path, not the stale on-disk one.
+                    //
+                    // The `trust_refresh_reference` flag is independent:
+                    // it only controls whether the on-disk element is
+                    // cross-checked at apply time in `execute_ops_on_path`.
+                    // It does not affect path resolution for batched
+                    // dependent references — `RefreshReferenceWithSumItem`
+                    // intentionally updates both path and sum atomically,
+                    // and `RefreshReference` keeps the path identical so
+                    // either way the op payload is the authoritative new
+                    // path.
                     self.process_reference(
                         qualified_path,
                         ops_by_qualified_paths,
                         recursions_allowed,
-                        reference_info,
+                        Some(reference_path_type),
                         flags_update,
                         split_removal_bytes,
                         visited,
