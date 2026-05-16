@@ -1739,6 +1739,125 @@ fn test_reference_to_item_with_sum_item_followed() {
 }
 
 #[test]
+fn test_reference_with_sum_item_chain_followed_to_sum_item() {
+    // A `ReferenceWithSumItem` is also a reference: aggregate-sum-query
+    // should follow the chain to a `SumItem` target. The sum value carried
+    // on the variant is a parent-aggregation property and does NOT affect
+    // what aggregate-sum-query returns (which is the target's sum).
+    let grove_version = GroveVersion::latest();
+    let db = make_test_sum_tree_grovedb(grove_version);
+
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"target",
+        Element::new_sum_item(7),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("cannot insert sum item target");
+    // Insert a ReferenceWithSumItem pointing to the sum item "target".
+    // The carried sum (999) is INDEPENDENT of the target's sum (7); the
+    // query returns the target's value, not the carried sum.
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"link",
+        Element::new_reference_with_sum_item(
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]),
+            999,
+        ),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("cannot insert ref-with-sum-item");
+
+    let aggregate_sum_query = AggregateSumQuery::new_single_key(b"link".to_vec(), 100);
+    let aggregate_sum_path_query = AggregateSumPathQuery {
+        path: vec![TEST_LEAF.to_vec()],
+        aggregate_sum_query,
+    };
+
+    let result = Element::get_aggregate_sum_query(
+        &db.db,
+        &aggregate_sum_path_query,
+        AggregateSumQueryOptions::default(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("expected successful get_query");
+
+    assert_eq!(result.results, vec![(b"link".to_vec(), 7)]);
+}
+
+#[test]
+fn test_reference_with_sum_item_chain_through_intermediate_reference() {
+    // `ReferenceWithSumItem` -> `Reference` -> `SumItem`. Exercises the
+    // chain-continuation arm in `aggregate_sum_query::process_reference`
+    // for the new variant.
+    let grove_version = GroveVersion::latest();
+    let db = make_test_sum_tree_grovedb(grove_version);
+
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"target",
+        Element::new_sum_item(13),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("cannot insert sum item target");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"middle",
+        Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"target".to_vec(),
+        ])),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("cannot insert middle reference");
+    db.insert(
+        [TEST_LEAF].as_ref(),
+        b"head",
+        Element::new_reference_with_sum_item(
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"middle".to_vec()]),
+            999,
+        ),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("cannot insert head ref-with-sum-item");
+
+    let aggregate_sum_query = AggregateSumQuery::new_single_key(b"head".to_vec(), 100);
+    let aggregate_sum_path_query = AggregateSumPathQuery {
+        path: vec![TEST_LEAF.to_vec()],
+        aggregate_sum_query,
+    };
+
+    let result = Element::get_aggregate_sum_query(
+        &db.db,
+        &aggregate_sum_path_query,
+        AggregateSumQueryOptions::default(),
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("expected successful get_query");
+
+    assert_eq!(result.results, vec![(b"head".to_vec(), 13)]);
+}
+
+#[test]
 fn test_reference_to_regular_item_errors() {
     // A reference that resolves to a regular Item (not a sum item) should error
     let grove_version = GroveVersion::latest();

@@ -1136,6 +1136,61 @@ mod tests {
     }
 
     #[test]
+    fn test_refresh_reference_with_sum_item_average_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            42, // sum_value
+            None,
+            true,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLevel(1, false),
+                estimated_layer_sizes: AllSubtrees(1, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::SumTree,
+                estimated_layer_count: PotentiallyAtMaxElements,
+                estimated_layer_sizes: AllItems(32, 64, None),
+            },
+        );
+        let result = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected average case costs for refresh reference with sum item");
+        // Same dispatch as `RefreshReference` but the rebuilt element carries
+        // an extra i64 sum, so the byte estimate is ~8 bytes larger.
+        assert!(
+            result.seek_count > 0,
+            "expected seek_count > 0, got {}",
+            result.seek_count
+        );
+        assert!(
+            result.hash_node_calls > 0,
+            "expected hash_node_calls > 0, got {}",
+            result.hash_node_calls
+        );
+    }
+
+    #[test]
     fn test_patch_average_case_cost() {
         let grove_version = GroveVersion::latest();
         let ops = vec![QualifiedGroveDbOp::patch_op(

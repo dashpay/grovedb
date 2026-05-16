@@ -12,14 +12,18 @@
 
 #[cfg(test)]
 mod tests {
-    use grovedb_merk::tree::AggregateData;
+    use grovedb_merk::{
+        proofs::{query::QueryItem, Query},
+        tree::AggregateData,
+    };
     use grovedb_version::version::GroveVersion;
 
     use crate::{
         batch::QualifiedGroveDbOp,
+        operations::get::QueryItemOrSumReturnType,
         reference_path::ReferencePathType,
         tests::{make_test_grovedb, TEST_LEAF},
-        Element,
+        Element, GroveDb, PathQuery,
     };
 
     fn insert_target_item(
@@ -610,5 +614,341 @@ mod tests {
         let ref_path = ReferencePathType::AbsolutePathReference(vec![b"a".to_vec()]);
         let inner = Element::new_reference_with_sum_item(ref_path, 1);
         assert!(Element::new_not_summed(inner).is_err());
+    }
+
+    /// `query_item_value` follows a `ReferenceWithSumItem` to the target
+    /// item bytes — same as `Reference`. Exercises the new arm in
+    /// [`crate::operations::get::query::GroveDb::query_item_value`].
+    #[test]
+    fn query_item_value_follows_reference_with_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"target",
+            b"payload",
+            grove_version,
+        );
+
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path, 99),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert link");
+
+        let mut query = Query::new();
+        query.insert_key(b"link".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let (items, _) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("query_item_value should succeed");
+        assert_eq!(items, vec![b"payload".to_vec()]);
+    }
+
+    /// `query_item_value_or_sum` follows a `ReferenceWithSumItem` and
+    /// returns the target item (same shape as following a `Reference`).
+    #[test]
+    fn query_item_value_or_sum_follows_reference_with_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // SumItem must live inside a sum-bearing tree.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+        db.insert(
+            [TEST_LEAF, b"st"].as_ref(),
+            b"target",
+            Element::new_sum_item(50),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum item target");
+
+        let ref_path = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"st".to_vec(),
+            b"target".to_vec(),
+        ]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            // Carried sum (999) is independent of target's sum (50); the
+            // query returns the target's sum.
+            Element::new_reference_with_sum_item(ref_path, 999),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert link");
+
+        let mut query = Query::new();
+        query.insert_key(b"link".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let (items_or_sums, _) = db
+            .query_item_value_or_sum(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("query_item_value_or_sum should succeed");
+        assert_eq!(items_or_sums, vec![QueryItemOrSumReturnType::SumValue(50)]);
+    }
+
+    /// `query_sums` follows a `ReferenceWithSumItem` chain to a `SumItem`
+    /// target and returns the **target's** sum, not the carried sum.
+    #[test]
+    fn query_sums_follows_reference_with_sum_item_to_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+        db.insert(
+            [TEST_LEAF, b"st"].as_ref(),
+            b"target",
+            Element::new_sum_item(77),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum item");
+
+        let ref_path = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"st".to_vec(),
+            b"target".to_vec(),
+        ]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path, 999),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert link");
+
+        let mut query = Query::new();
+        query.insert_key(b"link".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let (sums, _) = db
+            .query_sums(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("query_sums should succeed");
+        assert_eq!(sums, vec![77]);
+    }
+
+    /// `query_encoded_many` (multi-path) resolves a `ReferenceWithSumItem`
+    /// to its terminal item — covers the multi-path query arm in `query.rs`
+    /// near line 98.
+    #[test]
+    #[allow(deprecated)]
+    fn query_encoded_many_follows_reference_with_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"target",
+            b"payload",
+            grove_version,
+        );
+
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path, 7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert link");
+
+        let mut query = Query::new();
+        query.insert_key(b"link".to_vec());
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let items = db
+            .query_encoded_many(&[&path_query], true, true, true, None, grove_version)
+            .unwrap()
+            .expect("query_encoded_many should succeed");
+        assert_eq!(items, vec![b"payload".to_vec()]);
+    }
+
+    /// `RefreshReferenceWithSumItem` with `trust_refresh_reference = false`
+    /// reads the on-disk element to verify it is also a
+    /// `ReferenceWithSumItem` before applying the update. This exercises
+    /// the disk-read branch in the batch apply path.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_untrusted() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target_a", b"a", grove_version);
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target_b", b"b", grove_version);
+
+        let ref_a = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"target_a".to_vec(),
+        ]);
+        db.insert(
+            [TEST_LEAF, b"st"].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_a, 10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed link");
+
+        // Refresh with trust=false → batch path reads the on-disk element,
+        // confirms it is RefWithSumItem, then rebuilds with the new path
+        // and sum.
+        let ref_b = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"target_b".to_vec(),
+        ]);
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            b"link".to_vec(),
+            ref_b.clone(),
+            None,
+            42,
+            None,
+            /* trust_refresh_reference = */ false,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("untrusted refresh ref-with-sum-item should succeed");
+
+        // Confirm new sum is on disk.
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"st"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw refreshed link");
+        assert_eq!(raw, Element::new_reference_with_sum_item(ref_b, 42));
+    }
+
+    /// `prove_query` + `verify_query_with_options` round-trip on a
+    /// `ReferenceWithSumItem` — exercises the V1 proof generation /
+    /// verification arms for the new variant.
+    #[test]
+    fn prove_and_verify_reference_with_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"target",
+            b"target_payload",
+            grove_version,
+        );
+
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path, 7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert ref-with-sum-item");
+
+        let path_query = PathQuery::new_unsized(
+            vec![TEST_LEAF.to_vec()],
+            Query {
+                items: vec![QueryItem::Key(b"link".to_vec())],
+                default_subquery_branch: Default::default(),
+                left_to_right: true,
+                conditional_subquery_branches: None,
+                add_parent_tree_on_subquery: false,
+            },
+        );
+
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove ref-with-sum-item");
+
+        let (root_hash, result_set) = GroveDb::verify_query_with_options(
+            &proof,
+            &path_query,
+            grovedb_merk::proofs::query::VerifyOptions {
+                absence_proofs_for_non_existing_searched_keys: false,
+                verify_proof_succinctness: false,
+                include_empty_trees_in_result: false,
+            },
+            grove_version,
+        )
+        .expect("verify ref-with-sum-item proof");
+
+        let expected_root = db.grove_db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root, "root hash should match");
+        assert_eq!(result_set.len(), 1, "proof should return 1 result");
+        // The resolved value is the target item's payload (reference was
+        // followed in the proof post-processing step).
+        let (_path, key, element) = &result_set[0];
+        assert_eq!(key, b"link");
+        let element = element.as_ref().expect("element should be Some");
+        match element {
+            Element::Item(bytes, _) => assert_eq!(bytes, b"target_payload"),
+            other => panic!("expected resolved target Item, got {:?}", other),
+        }
     }
 }

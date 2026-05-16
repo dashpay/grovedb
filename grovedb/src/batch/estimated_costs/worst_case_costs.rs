@@ -872,6 +872,40 @@ mod tests {
     }
 
     #[test]
+    fn test_refresh_reference_with_sum_item_worst_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            42, // sum_value
+            None,
+            true,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for refresh reference with sum item");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
     fn test_patch_worst_case_cost() {
         let grove_version = GroveVersion::latest();
         let ops = vec![QualifiedGroveDbOp::patch_op(
