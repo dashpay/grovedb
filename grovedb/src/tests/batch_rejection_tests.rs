@@ -77,6 +77,7 @@ fn test_apply_batch_rejects_insert_tree_with_root_hash() {
 
             non_counted: false,
             not_summed: false,
+            not_counted_or_summed: false,
         },
     };
 

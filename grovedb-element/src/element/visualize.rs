@@ -186,6 +186,11 @@ impl Visualize for Element {
                 drawer = inner.visualize(drawer)?;
                 drawer.write(b")")?;
             }
+            Element::NotCountedOrSummed(inner) => {
+                drawer.write(b"not_counted_or_summed(")?;
+                drawer = inner.visualize(drawer)?;
+                drawer.write(b")")?;
+            }
         }
         Ok(drawer)
     }

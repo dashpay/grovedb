@@ -542,6 +542,7 @@ mod tests {
 
                 non_counted: false,
                 not_summed: false,
+                not_counted_or_summed: false,
             },
         };
 
