@@ -16,8 +16,23 @@ mod tests {
     use crate::{
         batch::QualifiedGroveDbOp,
         tests::{make_test_grovedb, TEST_LEAF},
-        Element,
+        Element, Error,
     };
+
+    /// Helper: assert the error is the typed `InvalidBatchOperation` whose
+    /// message mentions the NotCountedOrSummed guard. Pattern-matches the
+    /// concrete variant rather than the whole debug-format string so that
+    /// future error-context wording can change without breaking the test.
+    fn assert_is_not_counted_or_summed_guard_error(err: &Error) {
+        match err {
+            Error::InvalidBatchOperation(msg) => assert!(
+                msg.contains("not-counted-or-summed"),
+                "expected NotCountedOrSummed parent-type guard message, \
+                 got: {msg}"
+            ),
+            other => panic!("expected Error::InvalidBatchOperation, got: {other:?}"),
+        }
+    }
 
     /// Establish a count-sum tree under `TEST_LEAF/<key>` for use as a host
     /// parent in the tests below.
@@ -66,11 +81,7 @@ mod tests {
             .apply_batch(vec![op], None, None, grove_version)
             .unwrap()
             .expect_err("batch insert into NormalTree must fail");
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("not-counted-or-summed") || msg.contains("not_counted_or_summed"),
-            "expected NotCountedOrSummed parent-type guard error, got: {msg}"
-        );
+        assert_is_not_counted_or_summed_guard_error(&err);
     }
 
     #[test]
@@ -102,11 +113,7 @@ mod tests {
             .apply_batch(vec![op], None, None, grove_version)
             .unwrap()
             .expect_err("batch insert into CountTree must fail");
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("not-counted-or-summed") || msg.contains("not_counted_or_summed"),
-            "expected NotCountedOrSummed parent-type guard error, got: {msg}"
-        );
+        assert_is_not_counted_or_summed_guard_error(&err);
     }
 
     #[test]
@@ -138,11 +145,7 @@ mod tests {
             .apply_batch(vec![op], None, None, grove_version)
             .unwrap()
             .expect_err("batch insert into SumTree must fail");
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("not-counted-or-summed") || msg.contains("not_counted_or_summed"),
-            "expected NotCountedOrSummed parent-type guard error, got: {msg}"
-        );
+        assert_is_not_counted_or_summed_guard_error(&err);
     }
 
     #[test]

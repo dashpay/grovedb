@@ -414,7 +414,14 @@ impl Element {
     /// before calling.
     pub fn into_non_counted(self) -> Result<Self, ElementError> {
         match self {
-            Element::NonCounted(_) => Ok(self),
+            Element::NonCounted(_) => {
+                // Re-validate the idempotent path: even though only valid
+                // NonCounted values should reach here via construction, a
+                // hand-built nested-wrapper value would slip through without
+                // this check.
+                self.validate_wrapper_invariants()?;
+                Ok(self)
+            }
             Element::NotSummed(_) => Err(ElementError::InvalidInput(
                 "cannot wrap NotSummed in NonCounted; wrappers are mutually exclusive",
             )),
@@ -455,7 +462,12 @@ impl Element {
     /// Mirrors [`Element::into_non_counted`].
     pub fn into_not_summed(self) -> Result<Self, ElementError> {
         match self {
-            Element::NotSummed(_) => Ok(self),
+            Element::NotSummed(_) => {
+                // Re-validate the idempotent path; see `into_non_counted`
+                // for rationale.
+                self.validate_wrapper_invariants()?;
+                Ok(self)
+            }
             Element::NonCounted(_) => Err(ElementError::InvalidInput(
                 "cannot wrap NonCounted in NotSummed; wrappers are mutually exclusive",
             )),
@@ -498,7 +510,12 @@ impl Element {
     /// wrappers are mutually exclusive) or any non-sum-tree variant.
     pub fn into_not_counted_or_summed(self) -> Result<Self, ElementError> {
         match self {
-            Element::NotCountedOrSummed(_) => Ok(self),
+            Element::NotCountedOrSummed(_) => {
+                // Re-validate the idempotent path; see `into_non_counted`
+                // for rationale.
+                self.validate_wrapper_invariants()?;
+                Ok(self)
+            }
             Element::NonCounted(_) => Err(ElementError::InvalidInput(
                 "cannot wrap NonCounted in NotCountedOrSummed; wrappers are mutually exclusive",
             )),
