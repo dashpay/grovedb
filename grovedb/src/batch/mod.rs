@@ -353,41 +353,49 @@ pub enum GroveOp {
     },
     /// Refresh a `ReferenceWithSumItem` with information provided.
     ///
-    /// Mirrors [`RefreshReference`] but additionally carries `sum_value`
-    /// because the on-wire variant must be reconstructed with both the
-    /// reference path AND the explicit sum the entry contributes to its
-    /// parent's sum aggregate. Cross-type refresh (using
-    /// [`RefreshReference`] against a `ReferenceWithSumItem` on disk or
-    /// vice versa) is rejected at apply time — the on-disk variant must
-    /// match the refresh-op shape.
+    /// Mirrors [`RefreshReference`] but carries the explicit
+    /// `sum_value` the entry contributes to its parent's sum aggregate.
+    /// Cross-type refresh (using [`RefreshReference`] against a
+    /// `ReferenceWithSumItem` on disk or vice versa) is rejected at
+    /// apply time — the on-disk variant must match the refresh-op
+    /// shape.
     ///
-    /// `non_counted` declares whether the on-disk element is wrapped in
-    /// `NonCounted`. The trusted path skips the disk read, so the caller
-    /// must say. The untrusted path reads the on-disk element and
-    /// rejects with an error if `non_counted` disagrees with what is
-    /// found, preventing a silent wrapper drop that would corrupt the
-    /// parent's count aggregate.
+    /// Two modes (selected by `trust_refresh_reference`):
     ///
-    /// If `trust_refresh_reference` is true, the element is not queried on
-    /// disk before write; otherwise the provided information is used only
-    /// for average / worst case cost models.
+    /// * **`trust = true`**: the apply path writes the full op
+    ///   payload — `reference_path_type`, `max_reference_hop`,
+    ///   `sum_value`, `flags`, and `non_counted` are all taken at face
+    ///   value. No on-disk read. Use this to repoint and/or adjust the
+    ///   carried sum atomically.
+    ///
+    /// * **`trust = false`**: the apply path reads the on-disk
+    ///   element, cross-checks variant + wrapper (`non_counted`), and
+    ///   writes back with the on-disk path / max-hop / flags / wrapper
+    ///   — only `sum_value` is taken from the op. Use this to refresh
+    ///   the carried weight without asserting the path. Op fields
+    ///   `reference_path_type`, `max_reference_hop`, and `flags` are
+    ///   intentionally ignored in this mode.
     RefreshReferenceWithSumItem {
-        /// The type of reference path to use.
+        /// The reference path the op will write under `trust=true`.
+        /// Ignored under `trust=false` — on-disk path wins.
         reference_path_type: ReferencePathType,
-        /// Maximum number of hops allowed when resolving the reference.
+        /// Max hops the op will write under `trust=true`. Ignored
+        /// under `trust=false`.
         max_reference_hop: MaxReferenceHop,
-        /// Explicit sum value carried on the reference (independent of the
-        /// resolved target's sum).
+        /// Explicit sum value carried on the reference (independent of
+        /// the resolved target's sum). Used in BOTH trust modes — it
+        /// is the only field the untrusted mode reads from the op.
         sum_value: SumValue,
-        /// Optional element flags for the reference.
+        /// Element flags the op will write under `trust=true`. Ignored
+        /// under `trust=false`.
         flags: Option<ElementFlags>,
-        /// If true, wrap the rebuilt element in `NonCounted` (preserving
-        /// the wrapper that was on disk). When `trust_refresh_reference`
-        /// is true the caller's declaration is trusted; when false it is
-        /// cross-checked against the on-disk element and a mismatch is
-        /// rejected.
+        /// Declares whether the rebuilt element is wrapped in
+        /// `NonCounted`. Under `trust=true` written at face value;
+        /// under `trust=false` cross-checked against on-disk and a
+        /// mismatch is rejected (a silent wrapper drop would corrupt
+        /// the parent's count aggregate).
         non_counted: bool,
-        /// If true, skip verifying the element on disk before writing.
+        /// Selects the trust mode (see top-level doc).
         trust_refresh_reference: bool,
     },
     /// Delete
@@ -893,18 +901,29 @@ impl QualifiedGroveDbOp {
     /// A refresh-reference-with-sum-item op using a known owned path and key.
     ///
     /// Sibling of [`refresh_reference_op`] for the
-    /// [`Element::ReferenceWithSumItem`] variant: refreshes both the
-    /// reference path AND the explicit sum value contributed to the
-    /// parent's sum aggregate. Cross-type refresh (this op against a plain
-    /// `Reference` on disk) is rejected at apply time.
+    /// [`Element::ReferenceWithSumItem`] variant. Cross-type refresh
+    /// (this op against a plain `Reference` on disk) is rejected at
+    /// apply time.
     ///
-    /// `non_counted` declares whether the on-disk element is wrapped in
-    /// `NonCounted`. The trusted path takes the declaration at face value
-    /// (callers who pass `trust_refresh_reference=true` accept the
-    /// responsibility); the untrusted path reads the on-disk element and
-    /// rejects with an error if `non_counted` disagrees, preventing a
-    /// silent wrapper drop that would corrupt the parent's count
-    /// aggregate.
+    /// Two modes:
+    ///
+    /// * `trust_refresh_reference = true`: the apply path writes the
+    ///   full op payload — `reference_path_type`, `max_reference_hop`,
+    ///   `sum_value`, `flags`, and the `non_counted` wrapper bit are
+    ///   all taken from the op. Use this to repoint the reference
+    ///   and/or adjust the carried sum in a single atomic op. The
+    ///   caller accepts responsibility for the declared shape; no
+    ///   on-disk validation is performed.
+    ///
+    /// * `trust_refresh_reference = false`: the apply path reads disk,
+    ///   cross-checks the variant (`ReferenceWithSumItem`) and the
+    ///   wrapper (`non_counted`), then writes back with the on-disk
+    ///   path, max-hop, flags, and wrapper — only `sum_value` is taken
+    ///   from the op. Use this when the caller wants to "refresh the
+    ///   carried weight" against an unchanged link target without
+    ///   asserting the path. Fields `reference_path_type`,
+    ///   `max_reference_hop`, and `flags` on the op are intentionally
+    ///   ignored in this mode.
     pub fn refresh_reference_with_sum_item_op(
         path: Vec<Vec<u8>>,
         key: Vec<u8>,
@@ -1836,33 +1855,41 @@ where
                 },
                 GroveOp::RefreshReference {
                     reference_path_type,
+                    trust_refresh_reference,
                     ..
                 }
                 | GroveOp::RefreshReferenceWithSumItem {
                     reference_path_type,
+                    trust_refresh_reference,
                     ..
                 } => {
                     // We are pointing towards a reference that will be
-                    // refreshed in this batch. Always thread the op's
-                    // `reference_path_type` to `process_reference` so a
-                    // dependent reference (another op in the batch
-                    // pointing at the refreshed key) resolves through the
-                    // post-batch path, not the stale on-disk one.
+                    // refreshed in this batch. The dependent ref's value
+                    // hash must be computed against whatever the apply
+                    // path will write — which depends on `trust`:
                     //
-                    // The `trust_refresh_reference` flag is independent:
-                    // it only controls whether the on-disk element is
-                    // cross-checked at apply time in `execute_ops_on_path`.
-                    // It does not affect path resolution for batched
-                    // dependent references — `RefreshReferenceWithSumItem`
-                    // intentionally updates both path and sum atomically,
-                    // and `RefreshReference` keeps the path identical so
-                    // either way the op payload is the authoritative new
-                    // path.
+                    // * `trust=true`: apply writes the op's payload
+                    //   (`reference_path_type`). Thread it through so
+                    //   dependent refs resolve against the post-batch
+                    //   path. This is how an in-batch "repoint + adjust"
+                    //   stays consistent.
+                    //
+                    // * `trust=false`: apply keeps the on-disk path
+                    //   (only the carried `sum_value` is taken from the
+                    //   op for `RefreshReferenceWithSumItem`; for plain
+                    //   `RefreshReference` the entire element is taken
+                    //   from disk). Pass `None` so `process_reference`
+                    //   resolves through the (unchanged) on-disk path.
+                    let reference_info = if *trust_refresh_reference {
+                        Some(reference_path_type)
+                    } else {
+                        None
+                    };
                     self.process_reference(
                         qualified_path,
                         ops_by_qualified_paths,
                         recursions_allowed,
-                        Some(reference_path_type),
+                        reference_info,
                         flags_update,
                         split_removal_bytes,
                         visited,
@@ -2375,26 +2402,32 @@ where
                     non_counted,
                     trust_refresh_reference,
                 } => {
-                    // Mirror RefreshReference, but reconstruct the
-                    // `ReferenceWithSumItem` variant so the on-disk shape
-                    // and the parent's sum aggregate both stay in sync.
+                    // Build the element to write. The two modes are:
                     //
-                    // Cross-type rejection: when `trust_refresh_reference`
-                    // is false we deserialize the on-disk element and
-                    // require both the base variant AND wrapper state to
-                    // match the op's declaration. A plain `Reference` on
-                    // disk or a wrapper-mismatch is rejected — silently
-                    // coercing would corrupt the parent's count or sum
-                    // aggregate.
-                    let rebuilt_inner = Element::ReferenceWithSumItem(
-                        reference_path_type,
-                        max_reference_hop,
-                        sum_value,
-                        flags,
-                    );
+                    // * `trust=true`: caller supplies the full new shape
+                    //   (path, max_hop, sum_value, flags, non_counted).
+                    //   We trust them — no disk read. This is the path
+                    //   for "repoint this reference AND update its sum"
+                    //   use cases.
+                    //
+                    // * `trust=false`: caller is refreshing the carried
+                    //   `sum_value` only and does not assert anything
+                    //   about the path. We read disk and keep its path,
+                    //   max_hop, and flags; only `sum_value` is taken
+                    //   from the op. Variant + wrapper are cross-checked
+                    //   and a mismatch is rejected — coercing would
+                    //   corrupt the parent's count/sum aggregate. Op
+                    //   fields `reference_path_type`, `max_reference_hop`,
+                    //   and `flags` are intentionally unused in this
+                    //   mode; pass them as defaults or whatever value
+                    //   if the path is unknown to you.
                     let element = if trust_refresh_reference {
-                        // Trusted: caller's `non_counted` declaration is
-                        // taken at face value; we do not read disk.
+                        let rebuilt_inner = Element::ReferenceWithSumItem(
+                            reference_path_type,
+                            max_reference_hop,
+                            sum_value,
+                            flags,
+                        );
                         if non_counted {
                             cost_return_on_error_no_add!(
                                 cost,
@@ -2431,12 +2464,6 @@ where
                                 Error::CorruptedData(format!("unable to deserialize element: {e}"))
                             })
                         );
-                        if !matches!(on_disk.underlying(), Element::ReferenceWithSumItem(..)) {
-                            return Err(Error::InvalidInput(
-                                "RefreshReferenceWithSumItem applied to non-RefWithSumItem on disk",
-                            ))
-                            .wrap_with_cost(cost);
-                        }
                         // Cross-check the declared wrapper against disk.
                         // Mismatch is rejected — silent wrapper drop or
                         // injection would change `count_value_or_default`
@@ -2447,6 +2474,31 @@ where
                             ))
                             .wrap_with_cost(cost);
                         }
+                        // Extract on-disk's path / hop / flags. Variant
+                        // is cross-checked here (must be RefWithSumItem)
+                        // — a plain Reference or any other variant on
+                        // disk is rejected.
+                        let Element::ReferenceWithSumItem(
+                            disk_path,
+                            disk_max_hop,
+                            _disk_sum,
+                            disk_flags,
+                        ) = on_disk.underlying()
+                        else {
+                            return Err(Error::InvalidInput(
+                                "RefreshReferenceWithSumItem applied to non-RefWithSumItem on disk",
+                            ))
+                            .wrap_with_cost(cost);
+                        };
+                        // Build the new inner with on-disk path/hop/flags
+                        // and the op's sum_value. This is the "refresh
+                        // the carried weight, leave the link alone" path.
+                        let rebuilt_inner = Element::ReferenceWithSumItem(
+                            disk_path.clone(),
+                            *disk_max_hop,
+                            sum_value,
+                            disk_flags.clone(),
+                        );
                         if non_counted {
                             cost_return_on_error_no_add!(
                                 cost,

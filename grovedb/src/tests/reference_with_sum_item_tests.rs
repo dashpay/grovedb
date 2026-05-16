@@ -892,24 +892,20 @@ mod tests {
         assert!(!raw.is_non_counted(), "wrapper must not have been written");
     }
 
-    /// Regression test for the dependent-ref refresh-path bug: a
-    /// dependent reference re-inserted in the same batch as a
-    /// `RefreshReferenceWithSumItem` of its target must commit against
-    /// the **refreshed** target's value hash, not the stale on-disk
-    /// one.
+    /// Regression test: a dependent reference re-inserted in the same
+    /// batch as a trusted `RefreshReferenceWithSumItem` of its target
+    /// must commit its value_hash against the **refreshed** target,
+    /// not the stale on-disk one. Uses `trust=true` because that's the
+    /// mode where apply rewrites the path — under `trust=false` the
+    /// apply path keeps the on-disk path (see
+    /// `batch_untrusted_refresh_keeps_on_disk_path_only_sum_updates`).
     ///
-    /// Pre-fix: the `RefreshReference[WithSumItem]` arm in
-    /// `follow_reference_get_value_hash` gated the new path on
-    /// `trust_refresh_reference` — when `trust=false`, it passed `None`
-    /// to `process_reference`, which then resolved the dependent ref
-    /// against the **pre-batch** (stale) on-disk path. `verify_grovedb`
-    /// would later report a mismatch on `[test_leaf, dep]`.
-    ///
-    /// Post-fix: the new path is always threaded through
-    /// (`Some(reference_path_type)`) — the op payload IS the
-    /// authoritative new path during batch processing.
-    /// `trust_refresh_reference` is independent and only controls
-    /// on-disk cross-checking in the apply path.
+    /// The `RefreshReference[WithSumItem]` arm in
+    /// `follow_reference_get_value_hash` gates the path threaded into
+    /// `process_reference` on `trust_refresh_reference`: `Some(op_path)`
+    /// when trusted, `None` when not. This keeps the dependent-ref
+    /// resolution consistent with whichever path the apply step will
+    /// actually write.
     #[test]
     fn batch_dependent_ref_resolves_through_refreshed_path_via_chain() {
         let grove_version = GroveVersion::latest();
@@ -1247,9 +1243,11 @@ mod tests {
     }
 
     /// `RefreshReferenceWithSumItem` with `trust_refresh_reference = false`
-    /// reads the on-disk element to verify it is also a
-    /// `ReferenceWithSumItem` before applying the update. This exercises
-    /// the disk-read branch in the batch apply path.
+    /// is the "refresh the carried weight only" mode. The apply path
+    /// reads the on-disk element, cross-checks variant + wrapper, and
+    /// writes back with the on-disk path / max-hop / flags — only
+    /// `sum_value` is taken from the op. The op's `reference_path_type`
+    /// is intentionally ignored.
     #[test]
     fn batch_refresh_reference_with_sum_item_untrusted() {
         let grove_version = GroveVersion::latest();
@@ -1276,7 +1274,7 @@ mod tests {
         db.insert(
             [TEST_LEAF, b"st"].as_ref(),
             b"link",
-            Element::new_reference_with_sum_item(ref_a, 10),
+            Element::new_reference_with_sum_item(ref_a.clone(), 10),
             None,
             None,
             grove_version,
@@ -1284,9 +1282,8 @@ mod tests {
         .unwrap()
         .expect("seed link");
 
-        // Refresh with trust=false → batch path reads the on-disk element,
-        // confirms it is RefWithSumItem, then rebuilds with the new path
-        // and sum.
+        // Refresh with trust=false. Pass `ref_b` for the path: it must
+        // be IGNORED. Only `sum_value=42` is taken from the op.
         let ref_b = ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
             b"target_b".to_vec(),
@@ -1294,7 +1291,7 @@ mod tests {
         let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
             vec![TEST_LEAF.to_vec(), b"st".to_vec()],
             b"link".to_vec(),
-            ref_b.clone(),
+            ref_b,
             None,
             42,
             None,
@@ -1305,7 +1302,7 @@ mod tests {
             .unwrap()
             .expect("untrusted refresh ref-with-sum-item should succeed");
 
-        // Confirm new sum is on disk.
+        // Path stayed `ref_a` (on-disk); sum updated to 42 from the op.
         let raw = db
             .get_raw(
                 [TEST_LEAF, b"st"].as_ref().into(),
@@ -1315,7 +1312,7 @@ mod tests {
             )
             .unwrap()
             .expect("get_raw refreshed link");
-        assert_eq!(raw, Element::new_reference_with_sum_item(ref_b, 42));
+        assert_eq!(raw, Element::new_reference_with_sum_item(ref_a, 42));
     }
 
     /// `RefreshReferenceWithSumItem` with `non_counted=true` and
@@ -1445,11 +1442,16 @@ mod tests {
     }
 
     /// Regression test for the "stale dependent reference" issue: when a
-    /// batch contains both a `RefreshReferenceWithSumItem` op AND another
-    /// reference that points at the same key, the dependent reference's
-    /// value hash must be computed against the **refreshed** target, not
-    /// the stale on-disk one. Verified for both `trust=true` and
-    /// `trust=false` paths.
+    /// batch contains both a trusted `RefreshReferenceWithSumItem` op
+    /// (which writes the op's new path) AND another reference that
+    /// points at the same key, the dependent reference's value hash
+    /// must be computed against the **refreshed** target, not the stale
+    /// on-disk one.
+    ///
+    /// Uses `trust=true` because that's the only mode where the apply
+    /// path writes the op's `reference_path_type`. With `trust=false`
+    /// the apply path keeps the on-disk path (see the sibling test
+    /// `batch_untrusted_refresh_keeps_on_disk_path_only_sum_updates`).
     #[test]
     fn batch_dependent_reference_resolves_through_refreshed_path() {
         let grove_version = GroveVersion::latest();
@@ -1501,10 +1503,10 @@ mod tests {
         .unwrap()
         .expect("seed dep");
 
-        // Batch: refresh link → item_new (trust=false so we hit the
-        // resolve-through-op-payload branch via process_reference), AND
-        // re-insert dep so its value hash gets re-derived in the same
-        // batch. dep's hash must derive from item_new (NEW), not item_old.
+        // Batch: refresh link → item_new (trust=true, the only mode
+        // where apply rewrites the path), AND re-insert dep so its
+        // value hash gets re-derived in the same batch. dep's hash
+        // must derive from item_new (NEW), not item_old.
         let to_new = ReferencePathType::AbsolutePathReference(vec![
             TEST_LEAF.to_vec(),
             b"item_new".to_vec(),
@@ -1517,7 +1519,7 @@ mod tests {
             99,
             None,
             /* non_counted = */ false,
-            /* trust_refresh_reference = */ false,
+            /* trust_refresh_reference = */ true,
         );
         let dep_replace = QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec()],
@@ -1540,6 +1542,129 @@ mod tests {
             resolved,
             Element::new_item(b"NEW".to_vec()),
             "dependent ref should resolve through the refreshed path"
+        );
+
+        // verify_grovedb must be clean: dep's stored value_hash combines
+        // against item_new (NEW)'s simple hash, matching what a fresh
+        // chain walk recomputes.
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(
+            issues.is_empty(),
+            "verify_grovedb must be clean post-batch; got: {issues:?}"
+        );
+    }
+
+    /// `RefreshReferenceWithSumItem` with `trust=false` is the
+    /// "refresh-the-weight-only" mode: the apply path reads the on-disk
+    /// element, keeps its path / max_hop / flags / wrapper, and only
+    /// overwrites `sum_value` from the op. The op's
+    /// `reference_path_type` etc. are intentionally ignored in this
+    /// mode — callers who don't know (or don't want to assert) the path
+    /// can pass anything.
+    #[test]
+    fn batch_untrusted_refresh_keeps_on_disk_path_only_sum_updates() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"item_old",
+            b"OLD",
+            grove_version,
+        );
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"item_new",
+            b"NEW",
+            grove_version,
+        );
+
+        // Insert link under a SumTree so we can observe the parent's
+        // aggregate before / after.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sums",
+            Element::new_sum_tree(None),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed sum tree");
+
+        let to_old = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"item_old".to_vec(),
+        ]);
+        let to_new = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"item_new".to_vec(),
+        ]);
+        db.insert(
+            [TEST_LEAF, b"sums"].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(to_old.clone(), 1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed link");
+
+        // Untrusted refresh: pass `to_new` and `99` for the sum. Only
+        // the sum should land on disk; the path must stay `to_old`.
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec(), b"sums".to_vec()],
+            b"link".to_vec(),
+            to_new, // intentionally bogus under trust=false
+            None,
+            99,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ false,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("apply untrusted refresh");
+
+        // Path stayed on-disk: resolving link follows to_old → "OLD".
+        let resolved = db
+            .get([TEST_LEAF, b"sums"].as_ref(), b"link", None, grove_version)
+            .unwrap()
+            .expect("get link");
+        assert_eq!(
+            resolved,
+            Element::new_item(b"OLD".to_vec()),
+            "untrusted refresh must NOT repoint; op's reference_path_type \
+             is ignored when trust=false"
+        );
+
+        // Sum updated: the carried sum_value on disk is now 99 (was 1).
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"sums"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw link");
+        match raw {
+            Element::ReferenceWithSumItem(_, _, sum, _) => assert_eq!(sum, 99),
+            other => panic!("expected ReferenceWithSumItem, got {other:?}"),
+        }
+
+        // verify_grovedb must be clean.
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(
+            issues.is_empty(),
+            "verify_grovedb must be clean post-batch; got: {issues:?}"
         );
     }
 
