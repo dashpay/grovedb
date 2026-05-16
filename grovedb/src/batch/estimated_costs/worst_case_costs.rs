@@ -879,9 +879,10 @@ mod tests {
             b"ref_key".to_vec(),
             ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
             Some(5),
-            42, // sum_value
-            None,
-            true,
+            42,    // sum_value
+            None,  // flags
+            false, // non_counted
+            true,  // trust_refresh_reference
         )];
         let mut paths = HashMap::new();
         paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));

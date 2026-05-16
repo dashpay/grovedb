@@ -361,6 +361,13 @@ pub enum GroveOp {
     /// vice versa) is rejected at apply time — the on-disk variant must
     /// match the refresh-op shape.
     ///
+    /// `non_counted` declares whether the on-disk element is wrapped in
+    /// `NonCounted`. The trusted path skips the disk read, so the caller
+    /// must say. The untrusted path reads the on-disk element and
+    /// rejects with an error if `non_counted` disagrees with what is
+    /// found, preventing a silent wrapper drop that would corrupt the
+    /// parent's count aggregate.
+    ///
     /// If `trust_refresh_reference` is true, the element is not queried on
     /// disk before write; otherwise the provided information is used only
     /// for average / worst case cost models.
@@ -374,6 +381,12 @@ pub enum GroveOp {
         sum_value: SumValue,
         /// Optional element flags for the reference.
         flags: Option<ElementFlags>,
+        /// If true, wrap the rebuilt element in `NonCounted` (preserving
+        /// the wrapper that was on disk). When `trust_refresh_reference`
+        /// is true the caller's declaration is trusted; when false it is
+        /// cross-checked against the on-disk element and a mismatch is
+        /// rejected.
+        non_counted: bool,
         /// If true, skip verifying the element on disk before writing.
         trust_refresh_reference: bool,
     },
@@ -879,6 +892,14 @@ impl QualifiedGroveDbOp {
     /// reference path AND the explicit sum value contributed to the
     /// parent's sum aggregate. Cross-type refresh (this op against a plain
     /// `Reference` on disk) is rejected at apply time.
+    ///
+    /// `non_counted` declares whether the on-disk element is wrapped in
+    /// `NonCounted`. The trusted path takes the declaration at face value
+    /// (callers who pass `trust_refresh_reference=true` accept the
+    /// responsibility); the untrusted path reads the on-disk element and
+    /// rejects with an error if `non_counted` disagrees, preventing a
+    /// silent wrapper drop that would corrupt the parent's count
+    /// aggregate.
     pub fn refresh_reference_with_sum_item_op(
         path: Vec<Vec<u8>>,
         key: Vec<u8>,
@@ -886,6 +907,7 @@ impl QualifiedGroveDbOp {
         max_reference_hop: MaxReferenceHop,
         sum_value: SumValue,
         flags: Option<ElementFlags>,
+        non_counted: bool,
         trust_refresh_reference: bool,
     ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
@@ -897,6 +919,7 @@ impl QualifiedGroveDbOp {
                 max_reference_hop,
                 sum_value,
                 flags,
+                non_counted,
                 trust_refresh_reference,
             },
         }
@@ -1940,8 +1963,12 @@ where
                     };
 
                     // Check tree-override protection for all non-reference elements.
+                    // `is_reference()` looks through `NonCounted` and recognizes
+                    // both `Element::Reference` and `Element::ReferenceWithSumItem`,
+                    // so wrapped or sum-bearing references receive the same
+                    // exemption as plain references.
                     if batch_apply_options.validate_insertion_does_not_override_tree
-                        && !matches!(&element, Element::Reference(..))
+                        && !element.is_reference()
                     {
                         let merk = self.merks.get_mut(path).expect("the Merk is cached");
                         let maybe_existing = cost_return_on_error_into!(
@@ -2316,6 +2343,7 @@ where
                     max_reference_hop,
                     sum_value,
                     flags,
+                    non_counted,
                     trust_refresh_reference,
                 } => {
                     // Mirror RefreshReference, but reconstruct the
@@ -2324,18 +2352,32 @@ where
                     //
                     // Cross-type rejection: when `trust_refresh_reference`
                     // is false we deserialize the on-disk element and
-                    // require it to already be a `ReferenceWithSumItem`. A
-                    // plain `Reference` on disk is treated as a caller
-                    // mistake and rejected — the variants carry different
-                    // feature-type contributions and silently coercing
-                    // would corrupt parent aggregates.
+                    // require both the base variant AND wrapper state to
+                    // match the op's declaration. A plain `Reference` on
+                    // disk or a wrapper-mismatch is rejected — silently
+                    // coercing would corrupt the parent's count or sum
+                    // aggregate.
+                    let rebuilt_inner = Element::ReferenceWithSumItem(
+                        reference_path_type,
+                        max_reference_hop,
+                        sum_value,
+                        flags,
+                    );
                     let element = if trust_refresh_reference {
-                        Element::ReferenceWithSumItem(
-                            reference_path_type,
-                            max_reference_hop,
-                            sum_value,
-                            flags,
-                        )
+                        // Trusted: caller's `non_counted` declaration is
+                        // taken at face value; we do not read disk.
+                        if non_counted {
+                            cost_return_on_error_no_add!(
+                                cost,
+                                Element::new_non_counted(rebuilt_inner).map_err(|e| {
+                                    Error::CorruptedData(format!(
+                                        "failed to wrap refreshed reference in NonCounted: {e}"
+                                    ))
+                                })
+                            )
+                        } else {
+                            rebuilt_inner
+                        }
                     } else {
                         let merk = self.merks.get(path).expect("the Merk is cached");
                         let value = cost_return_on_error!(
@@ -2366,28 +2408,27 @@ where
                             ))
                             .wrap_with_cost(cost);
                         }
-                        // Preserve the on-disk wrapper (if any) by inserting
-                        // the rebuilt inner inside whatever wrapper layer
-                        // already existed. NonCounted is the only legal
-                        // wrapper; NotSummed is rejected by the whitelist
-                        // on construction.
-                        let rebuilt = Element::ReferenceWithSumItem(
-                            reference_path_type,
-                            max_reference_hop,
-                            sum_value,
-                            flags,
-                        );
-                        if on_disk.is_non_counted() {
+                        // Cross-check the declared wrapper against disk.
+                        // Mismatch is rejected — silent wrapper drop or
+                        // injection would change `count_value_or_default`
+                        // and break the parent's count aggregate.
+                        if on_disk.is_non_counted() != non_counted {
+                            return Err(Error::InvalidInput(
+                                "RefreshReferenceWithSumItem non_counted flag disagrees with on-disk wrapper",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        if non_counted {
                             cost_return_on_error_no_add!(
                                 cost,
-                                Element::new_non_counted(rebuilt).map_err(|e| {
+                                Element::new_non_counted(rebuilt_inner).map_err(|e| {
                                     Error::CorruptedData(format!(
                                         "failed to rewrap refreshed reference: {e}"
                                     ))
                                 })
                             )
                         } else {
-                            rebuilt
+                            rebuilt_inner
                         }
                     };
 

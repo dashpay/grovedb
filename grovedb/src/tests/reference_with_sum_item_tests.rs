@@ -475,6 +475,7 @@ mod tests {
             None,
             25,
             None,
+            /* non_counted = */ false,
             /* trust_refresh_reference = */ true,
         );
         db.apply_batch(vec![refresh], None, None, grove_version)
@@ -552,6 +553,7 @@ mod tests {
             None,
             42,
             None,
+            /* non_counted = */ false,
             /* trust_refresh_reference = */ false,
         );
         let err = db
@@ -862,6 +864,7 @@ mod tests {
             None,
             42,
             None,
+            /* non_counted = */ false,
             /* trust_refresh_reference = */ false,
         );
         db.apply_batch(vec![refresh], None, None, grove_version)
@@ -879,6 +882,132 @@ mod tests {
             .unwrap()
             .expect("get_raw refreshed link");
         assert_eq!(raw, Element::new_reference_with_sum_item(ref_b, 42));
+    }
+
+    /// `RefreshReferenceWithSumItem` with `non_counted=true` and
+    /// `trust_refresh_reference=true` rebuilds the element wrapped in
+    /// `NonCounted`. This locks in the wrapper-preservation behavior the
+    /// `non_counted` field on the op exists to provide.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_trusted_preserves_non_counted_wrapper() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // CountSumTree parent so count + sum aggregates are observable.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count-sum tree");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed a NonCounted(ReferenceWithSumItem) with sum 10. Count
+        // contribution is 0 (NonCounted), sum contribution is 10.
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        let nc_initial =
+            Element::new_non_counted(Element::new_reference_with_sum_item(ref_path.clone(), 10))
+                .expect("wrap ok");
+        db.insert(
+            [TEST_LEAF, b"cst"].as_ref(),
+            b"link",
+            nc_initial,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed nc link");
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"cst"], grove_version),
+            AggregateData::CountAndSum(0, 10),
+        );
+
+        // Trusted refresh with non_counted=true must preserve the wrapper.
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec(), b"cst".to_vec()],
+            b"link".to_vec(),
+            ref_path.clone(),
+            None,
+            25,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ true,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("apply trusted refresh");
+
+        // Count stays 0 (still NonCounted), sum becomes 25.
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"cst"], grove_version),
+            AggregateData::CountAndSum(0, 25),
+        );
+        // On-disk shape is still NonCounted(ReferenceWithSumItem(_, _, 25, _)).
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"cst"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw");
+        assert!(raw.is_non_counted(), "wrapper preserved after refresh");
+        assert_eq!(raw.sum_value_or_default(), 25);
+    }
+
+    /// `RefreshReferenceWithSumItem` with `trust_refresh_reference=false`
+    /// and `non_counted` flag disagreeing with disk is rejected — silent
+    /// wrapper drop or injection would corrupt the parent's count
+    /// aggregate.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_untrusted_rejects_wrapper_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed a BARE ReferenceWithSumItem (not wrapped) under TEST_LEAF.
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path.clone(), 1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed bare ref-with-sum-item");
+
+        // Untrusted refresh with non_counted=true must reject because the
+        // on-disk element is bare.
+        let bad = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            ref_path,
+            None,
+            7,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ false,
+        );
+        let err = db
+            .apply_batch(vec![bad], None, None, grove_version)
+            .unwrap()
+            .expect_err("wrapper-mismatch refresh must fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("non_counted") || msg.contains("wrapper") || msg.contains("disagrees"),
+            "expected wrapper-mismatch rejection, got: {msg}"
+        );
     }
 
     /// `prove_query` + `verify_query_with_options` round-trip on a
