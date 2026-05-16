@@ -1325,42 +1325,26 @@ where
             )),
         };
 
-        // Here the element being referenced doesn't change in the same batch
-        // and the max hop count is 1, meaning it should point directly to the base
-        // element at this point we can extract the value hash from the
-        // reference element directly
-        if recursions_allowed == 1 {
-            let referenced_element_value_hash_opt = cost_return_on_error!(
-                &mut cost,
-                merk.get_value_hash(
-                    key.as_ref(),
-                    true,
-                    Some(Element::value_defined_cost_for_serialized_value),
-                    grove_version,
-                )
-                .map_err(|e| Error::CorruptedData(e.to_string()))
-            );
-
-            let referenced_element_value_hash = cost_return_on_error!(
-                &mut cost,
-                referenced_element_value_hash_opt
-                    .ok_or({
-                        let reference_string = reference_path
-                            .iter()
-                            .map(hex::encode)
-                            .collect::<Vec<String>>()
-                            .join("/");
-                        Error::MissingReference(format!(
-                            "direct reference to path:`{}` key:`{}` in batch is missing",
-                            reference_string,
-                            hex::encode(key)
-                        ))
-                    })
-                    .wrap_with_cost(OperationCost::default())
-            );
-
-            Ok(referenced_element_value_hash).wrap_with_cost(cost)
-        } else if let Some(referenced_path) = intermediate_reference_info {
+        // Dispatch on whether the target is being modified in this same
+        // batch.
+        //
+        // (No `recursions_allowed == 1` fast path: a previous version of
+        // this function called `merk.get_value_hash(target_key)` at
+        // hop=1, which returns the target's merk-stored `value_hash`.
+        // That's correct ONLY when the target is an `Item` (whose merk
+        // value_hash equals `H(serialize(item))`). For a `Reference`
+        // target the merk value_hash is `combine_hash(H(serialize(ref)),
+        // referenced_value)` — not the terminal's simple hash, which is
+        // what `insert_reference` expects to bake into the dependent
+        // ref. The dispatch below reads the actual target element and
+        // recurses correctly, decrementing `recursions_allowed` per hop
+        // — Item terminals return their simple hash, References either
+        // recurse or hit `ReferenceLimit` when the user-set max_hop is
+        // exhausted (matches the documented behavior tested in
+        // `test_references`).)
+        if let Some(referenced_path) = intermediate_reference_info {
+            // Target is in batch (refresh). Hop through the op's new
+            // path; budget decrements by one for this hop.
             let path = cost_return_on_error_into_no_add!(
                 cost,
                 path_from_reference_qualified_path_type(referenced_path.clone(), qualified_path)
@@ -1375,10 +1359,10 @@ where
                 grove_version,
             )
         } else {
-            // Here the element being referenced doesn't change in the same batch
-            // but the hop count is greater than 1, we can't just take the value hash from
-            // the referenced element as an element further down in the chain might still
-            // change in the batch.
+            // Target is not in batch. Read the on-disk element and
+            // dispatch by type (Item terminals return their simple
+            // hash; References recurse).
+            let _ = merk; // already opened; the called helper re-resolves
             self.process_reference_with_hop_count_greater_than_one(
                 key,
                 reference_path,

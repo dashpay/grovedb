@@ -882,6 +882,179 @@ mod tests {
         assert!(!raw.is_non_counted(), "wrapper must not have been written");
     }
 
+    /// Regression test for the [P1] finding: a dependent reference
+    /// re-inserted in the same batch as a `RefreshReferenceWithSumItem`
+    /// of its target must commit against the **refreshed** target's
+    /// value hash, not the stale on-disk one.
+    ///
+    /// Pre-fix: `process_reference` had a `recursions_allowed == 1`
+    /// fast path that called `merk.get_value_hash(target_key)` —
+    /// returning the on-disk hash even when the target was being
+    /// refreshed in the same batch, AND returning the wrong hash for
+    /// Reference targets (combined merk hash, not the terminal's simple
+    /// hash). `verify_grovedb` would report a mismatch.
+    ///
+    /// Post-fix: the fast path is removed; in-batch refresh targets are
+    /// always resolved through the op's new path, and on-disk targets
+    /// are read and dispatched by type. `verify_grovedb` stays clean.
+    #[test]
+    fn batch_dependent_ref_resolves_through_refreshed_path_via_chain() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"target_a",
+            b"AAAA",
+            grove_version,
+        );
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"target_b",
+            b"BBBB",
+            grove_version,
+        );
+
+        // `link` is a ReferenceWithSumItem currently pointing at target_a.
+        let to_a = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"target_a".to_vec(),
+        ]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(to_a, 1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed link");
+
+        // `dep` is a plain Reference → link. No max_hop set (defaults
+        // to MAX_REFERENCE_HOPS) so the chain dep → link → target can
+        // resolve all the way to the terminal Item, which is the budget
+        // the direct insert path and `verify_grovedb` use.
+        let to_link =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"link".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"dep",
+            Element::new_reference(to_link.clone()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed dep");
+
+        // Pre-batch: verify_grovedb should be clean.
+        let issues_before = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify pre-batch");
+        assert!(
+            issues_before.is_empty(),
+            "pre-batch verify should be clean, got: {issues_before:?}"
+        );
+
+        // Batch: refresh `link` to point at target_b AND re-insert `dep`
+        // so its merk-stored value_hash gets recomputed. After the fix,
+        // dep's stored hash must combine with target_b's simple hash
+        // (the chain's terminal), not link's old merk-combined hash.
+        let to_b = ReferencePathType::AbsolutePathReference(vec![
+            TEST_LEAF.to_vec(),
+            b"target_b".to_vec(),
+        ]);
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            to_b,
+            None,
+            2,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ true,
+        );
+        let dep_replace = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"dep".to_vec(),
+            Element::new_reference(to_link),
+        );
+        db.apply_batch(vec![refresh, dep_replace], None, None, grove_version)
+            .unwrap()
+            .expect("apply batch");
+
+        // User-facing get follows the chain at read time.
+        let resolved = db
+            .get([TEST_LEAF].as_ref(), b"dep", None, grove_version)
+            .unwrap()
+            .expect("get dep");
+        assert_eq!(
+            resolved,
+            Element::new_item(b"BBBB".to_vec()),
+            "dep should resolve to target_b after refresh"
+        );
+
+        // Load-bearing check: verify_grovedb must NOT report any hash
+        // mismatches. Pre-fix this failed with a mismatch on [test_leaf,
+        // dep] because dep was committed against the stale link hash.
+        let issues_after = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify post-batch");
+        assert!(
+            issues_after.is_empty(),
+            "post-batch verify must be clean after the P1 fix; got: {issues_after:?}"
+        );
+    }
+
+    /// Companion test for the [P1] fix: a 1-hop reference (`max_hop =
+    /// Some(1)`) that points at another reference is rejected at batch
+    /// time with `ReferenceLimit`, because the chain depth (2+) exceeds
+    /// the user-declared budget. Documents the strict `max_hop`
+    /// enforcement that the test suite relies on (see
+    /// `batch::tests::test_references` for the canonical example).
+    /// Pre-fix this case silently committed a stale/wrong hash; the
+    /// fix replaces the silent corruption with an explicit error.
+    #[test]
+    fn batch_one_hop_dependent_ref_into_ref_chain_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+        let to_target =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(to_target, 1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed link");
+
+        // dep with max_hop=Some(1) → link (which is itself a reference).
+        // Batch insert must reject because the chain depth exceeds 1.
+        let to_link =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"link".to_vec()]);
+        let dep_insert = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"dep".to_vec(),
+            Element::new_reference_with_hops(to_link, Some(1)),
+        );
+        let err = db
+            .apply_batch(vec![dep_insert], None, None, grove_version)
+            .unwrap()
+            .expect_err("batch insert of 1-hop ref-into-ref must fail");
+        assert!(
+            matches!(err, crate::Error::ReferenceLimit),
+            "expected ReferenceLimit, got: {err:?}"
+        );
+    }
+
     /// `RefreshReferenceWithSumItem` against a non-existing key with
     /// `trust=false` errors out — exercises the "trying to refresh a
     /// non existing reference" branch in the apply path.
