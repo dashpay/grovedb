@@ -65,12 +65,20 @@ impl GroveOp {
             GroveOp::InsertTreeWithRootHash {
                 flags,
                 aggregate_data,
+                non_counted,
+                not_summed,
                 ..
             } => GroveDb::average_case_merk_insert_tree(
                 key,
                 flags,
                 aggregate_data.parent_tree_type(),
                 in_tree_type,
+                // Account for the wrapper byte if the op rebuilds the
+                // tree as `NonCounted(...)`, `NotSummed(...)`, or
+                // `NotCountedOrSummed(...)`. They share the same +1
+                // discriminant overhead and are mutually exclusive on
+                // the rebuilt element.
+                super::wrapper_overhead_for(*non_counted, *not_summed),
                 propagate_if_input(),
                 grove_version,
             ),
@@ -329,16 +337,23 @@ impl GroveOp {
                     grove_version,
                 )
             }
-            GroveOp::InsertNonMerkTree { flags, meta, .. } => {
-                GroveDb::average_case_merk_insert_tree(
-                    key,
-                    flags,
-                    meta.to_tree_type(),
-                    in_tree_type,
-                    propagate_if_input(),
-                    grove_version,
-                )
-            }
+            GroveOp::InsertNonMerkTree {
+                flags,
+                meta,
+                non_counted,
+                ..
+            } => GroveDb::average_case_merk_insert_tree(
+                key,
+                flags,
+                meta.to_tree_type(),
+                in_tree_type,
+                // `InsertNonMerkTree` only carries `non_counted` (the
+                // four non-Merk tree types are never sum-bearing, so
+                // `NotSummed` / `NotCountedOrSummed` can't apply).
+                if *non_counted { 1 } else { 0 },
+                propagate_if_input(),
+                grove_version,
+            ),
         }
     }
 }

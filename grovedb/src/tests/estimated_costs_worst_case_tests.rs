@@ -107,6 +107,7 @@ fn test_worst_case_merk_insert_tree_no_flags_no_propagate() {
         &flags,
         TreeType::NormalTree,
         TreeType::NormalTree,
+        0,
         None,
         grove_version,
     );
@@ -130,6 +131,7 @@ fn test_worst_case_merk_insert_tree_with_flags_and_propagate() {
         &flags,
         TreeType::NormalTree,
         TreeType::NormalTree,
+        0,
         Some(&layer_info),
         grove_version,
     );
@@ -155,6 +157,7 @@ fn test_worst_case_merk_insert_sum_tree() {
         &flags,
         TreeType::SumTree,
         TreeType::NormalTree,
+        0,
         None,
         grove_version,
     );

@@ -64,12 +64,16 @@ impl GroveOp {
             GroveOp::InsertTreeWithRootHash {
                 flags,
                 aggregate_data,
+                non_counted,
+                not_summed,
                 ..
             } => GroveDb::worst_case_merk_insert_tree(
                 key,
                 flags,
                 aggregate_data.parent_tree_type(),
                 in_parent_tree_type,
+                // See the comment in the corresponding average-case arm.
+                super::wrapper_overhead_for(*non_counted, *not_summed),
                 propagate_if_input(),
                 grove_version,
             ),
@@ -331,11 +335,19 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::InsertNonMerkTree { flags, meta, .. } => GroveDb::worst_case_merk_insert_tree(
+            GroveOp::InsertNonMerkTree {
+                flags,
+                meta,
+                non_counted,
+                ..
+            } => GroveDb::worst_case_merk_insert_tree(
                 key,
                 flags,
                 meta.to_tree_type(),
                 in_parent_tree_type,
+                // Non-Merk trees are never sum-bearing, so only the
+                // NonCounted wrapper applies.
+                if *non_counted { 1 } else { 0 },
                 propagate_if_input(),
                 grove_version,
             ),
