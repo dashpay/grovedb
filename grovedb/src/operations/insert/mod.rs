@@ -479,7 +479,7 @@ impl GroveDb {
             // forbidden by the constructor and (de)serializer, but the public
             // insert path can still receive a hand-built nested wrapper —
             // return a typed error rather than panic.
-            Element::NonCounted(_) | Element::NotSummed(_) => {
+            Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                 return Err(Error::InvalidInput(
                     "nested element wrappers are not allowed",
                 ))

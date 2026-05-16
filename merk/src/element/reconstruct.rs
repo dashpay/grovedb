@@ -93,6 +93,9 @@ impl ElementReconstructExtensions for Element {
             Element::NotSummed(inner) => inner
                 .reconstruct_with_root_key(maybe_root_key, aggregate_data)
                 .map(|reconstructed| Element::NotSummed(Box::new(reconstructed))),
+            Element::NotCountedOrSummed(inner) => inner
+                .reconstruct_with_root_key(maybe_root_key, aggregate_data)
+                .map(|reconstructed| Element::NotCountedOrSummed(Box::new(reconstructed))),
             _ => None,
         }
     }
@@ -176,5 +179,25 @@ mod tests {
         assert!(item
             .reconstruct_with_root_key(None, AggregateData::NoAggregateData)
             .is_none());
+    }
+
+    #[test]
+    fn reconstruct_preserves_not_counted_or_summed_wrapper() {
+        // Symmetric to reconstruct_preserves_non_counted_wrapper /
+        // reconstruct_preserves_not_summed_wrapper. A wrapped tree must come
+        // back wrapped after root-key propagation; otherwise the on-disk
+        // parent element would lose its wrapper on subtree mutations and the
+        // parent's aggregate would erroneously include the subtree.
+        let inner =
+            Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, 3, 100, None);
+        let wrapped = Element::new_not_counted_or_summed(inner).expect("wrap ok");
+        let new_root = Some(b"new_root".to_vec());
+        let reconstructed = wrapped
+            .reconstruct_with_root_key(new_root.clone(), AggregateData::CountAndSum(3, 100))
+            .expect("reconstruct ok");
+        assert!(matches!(reconstructed, Element::NotCountedOrSummed(_)));
+        if let Element::NotCountedOrSummed(boxed) = reconstructed {
+            assert!(matches!(*boxed, Element::CountSumTree(ref k, 3, 100, _) if k == &new_root));
+        }
     }
 }

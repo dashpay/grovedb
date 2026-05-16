@@ -530,7 +530,7 @@ impl GroveDb {
                     .map_err(Error::MerkError)
                 );
             }
-            Element::NonCounted(_) | Element::NotSummed(_) => {
+            Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                 unreachable!("underlying() unwraps wrappers")
             }
         };
