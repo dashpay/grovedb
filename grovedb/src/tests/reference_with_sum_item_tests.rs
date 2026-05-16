@@ -569,6 +569,155 @@ mod tests {
         );
     }
 
+    /// Contract pin: `RefreshReference` with `trust=true` against a
+    /// `ReferenceWithSumItem` on disk **silently coerces** it to a
+    /// plain `Reference` — the carried sum is dropped and the parent
+    /// SumTree's aggregate becomes inconsistent. Documented behavior
+    /// of the trusted mode: the caller is asserting the on-disk
+    /// variant and accepts the consequences.
+    ///
+    /// This is NOT a bug. If a future contributor adds cross-type
+    /// validation to the trusted path, this test will fail and force
+    /// them to reconsider the contract.
+    #[test]
+    fn batch_refresh_reference_trusted_silently_coerces_ref_with_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed a ReferenceWithSumItem with sum=10. Parent SumTree
+        // aggregate is +10.
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF, b"st"].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path.clone(), 10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed link");
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"st"], grove_version),
+            AggregateData::Sum(10),
+        );
+
+        // RefreshReference with trust=true. The apply path writes the
+        // op's payload as a plain `Element::Reference(...)` without
+        // checking on-disk. The sum is silently dropped.
+        let refresh = QualifiedGroveDbOp::refresh_reference_op(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            b"link".to_vec(),
+            ref_path.clone(),
+            None,
+            None,
+            /* trust_refresh_reference = */ true,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("trusted refresh succeeds (silent coercion)");
+
+        // On-disk is now a plain Reference (sum dropped).
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"st"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw");
+        assert!(
+            matches!(raw, Element::Reference(..)),
+            "trust=true must overwrite with the op's declared variant; got {raw:?}",
+        );
+    }
+
+    /// Contract pin (mirror of the above): `RefreshReferenceWithSumItem`
+    /// with `trust=true` against a plain `Reference` on disk
+    /// **silently coerces** it to a `ReferenceWithSumItem` carrying the
+    /// op's `sum_value`. The parent SumTree's aggregate jumps by
+    /// `+sum_value`. Caller's responsibility.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_trusted_silently_coerces_plain_reference() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed a plain Reference (no sum). Parent aggregate is 0.
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF, b"st"].as_ref(),
+            b"link",
+            Element::new_reference(ref_path.clone()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed plain reference");
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"st"], grove_version),
+            AggregateData::Sum(0),
+        );
+
+        // RefreshReferenceWithSumItem with trust=true. Apply writes
+        // the op's full payload without a disk read.
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            b"link".to_vec(),
+            ref_path,
+            None,
+            77,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ true,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("trusted refresh succeeds (silent coercion)");
+
+        // On-disk is now a ReferenceWithSumItem(sum=77).
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"st"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw");
+        match raw {
+            Element::ReferenceWithSumItem(_, _, sum, _) => assert_eq!(sum, 77),
+            other => panic!("expected ReferenceWithSumItem after coercion, got {other:?}"),
+        }
+    }
+
     /// `is_reference` and `is_reference_with_sum_item` predicates work in
     /// the end-to-end pipeline (post-deserialization).
     #[test]
