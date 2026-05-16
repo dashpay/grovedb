@@ -634,6 +634,27 @@ impl TreeNode {
 
     /// Computes and returns the hash of the root node, including aggregate data
     /// for ProvableCountTree, ProvableCountSumTree, and ProvableSumTree.
+    ///
+    /// # Fail-closed invariant
+    ///
+    /// The three `Provable*` arms expect `aggregate_data()` to return a
+    /// matching `AggregateData::Provable*` variant — that pairing is the
+    /// definition of a well-formed provable tree. If `aggregate_data()`
+    /// fails (e.g. arithmetic overflow during sum/count computation) or
+    /// returns an unrelated variant (which would mean the node's
+    /// `feature_type` field is inconsistent with the requested
+    /// `tree_type`), we **panic** instead of silently downgrading to
+    /// `self.hash()`.
+    ///
+    /// Earlier revisions of this code returned a plain `node_hash(...)`
+    /// in the fallback. That preserved soundness end-to-end (any caller
+    /// who later re-hashes the same tree via the provable path would get
+    /// a different result and verification would fail), but it stripped
+    /// the sum/count commitment at the source — a verifier expecting
+    /// `node_hash_with_sum` would see a plain `node_hash` and report a
+    /// confusing root mismatch with no indication of the underlying
+    /// invariant break. The fail-closed gate surfaces the corruption at
+    /// the failing call site instead.
     #[inline]
     pub fn hash_for_link(&self, tree_type: TreeType) -> CostContext<CryptoHash> {
         match tree_type {
@@ -641,7 +662,7 @@ impl TreeNode {
                 // For ProvableCountTree, include the aggregate count in the hash
                 let aggregate_data = self
                     .aggregate_data()
-                    .unwrap_or(AggregateData::NoAggregateData);
+                    .expect("ProvableCountTree::hash_for_link: aggregate_data() failed");
                 if let AggregateData::ProvableCount(count) = aggregate_data {
                     node_hash_with_count(
                         self.inner.kv.hash(),
@@ -650,15 +671,19 @@ impl TreeNode {
                         count,
                     )
                 } else {
-                    // Fallback to regular hash if aggregate data is unexpected
-                    self.hash()
+                    panic!(
+                        "ProvableCountTree::hash_for_link: expected \
+                         AggregateData::ProvableCount, got {:?}; the node's \
+                         feature_type is inconsistent with its tree_type",
+                        aggregate_data
+                    );
                 }
             }
             TreeType::ProvableCountSumTree => {
                 // For ProvableCountSumTree, include only the count in the hash (not the sum)
                 let aggregate_data = self
                     .aggregate_data()
-                    .unwrap_or(AggregateData::NoAggregateData);
+                    .expect("ProvableCountSumTree::hash_for_link: aggregate_data() failed");
                 if let AggregateData::ProvableCountAndSum(count, _) = aggregate_data {
                     node_hash_with_count(
                         self.inner.kv.hash(),
@@ -667,8 +692,12 @@ impl TreeNode {
                         count,
                     )
                 } else {
-                    // Fallback to regular hash if aggregate data is unexpected
-                    self.hash()
+                    panic!(
+                        "ProvableCountSumTree::hash_for_link: expected \
+                         AggregateData::ProvableCountAndSum, got {:?}; the node's \
+                         feature_type is inconsistent with its tree_type",
+                        aggregate_data
+                    );
                 }
             }
             TreeType::ProvableSumTree => {
@@ -677,7 +706,7 @@ impl TreeNode {
                 // diverge from a plain SumTree containing the same elements.
                 let aggregate_data = self
                     .aggregate_data()
-                    .unwrap_or(AggregateData::NoAggregateData);
+                    .expect("ProvableSumTree::hash_for_link: aggregate_data() failed");
                 if let AggregateData::ProvableSum(sum) = aggregate_data {
                     node_hash_with_sum(
                         self.inner.kv.hash(),
@@ -686,8 +715,12 @@ impl TreeNode {
                         sum,
                     )
                 } else {
-                    // Fallback to regular hash if aggregate data is unexpected
-                    self.hash()
+                    panic!(
+                        "ProvableSumTree::hash_for_link: expected \
+                         AggregateData::ProvableSum, got {:?}; the node's \
+                         feature_type is inconsistent with its tree_type",
+                        aggregate_data
+                    );
                 }
             }
             _ => self.hash(),
@@ -1727,5 +1760,63 @@ mod test {
             hash_a, hash_b,
             "mutating a node's sum must change the ProvableSumTree root hash"
         );
+    }
+
+    /// Calling `hash_for_link(TreeType::ProvableSumTree)` on a node whose
+    /// `feature_type` is anything other than `ProvableSummedMerkNode` is a
+    /// contract violation — the caller asked for a sum-bearing hash but
+    /// the node can't produce a `ProvableSum`. Earlier revisions of
+    /// `hash_for_link` silently downgraded to `self.hash()` in this
+    /// case, stripping the sum commitment and producing a hash that any
+    /// honest verifier would later reject with a confusing root
+    /// mismatch. The fail-closed gate now panics so the corruption is
+    /// surfaced at the failing call site.
+    #[test]
+    #[should_panic(expected = "ProvableSumTree::hash_for_link")]
+    fn provable_sum_tree_hash_for_link_panics_on_feature_type_mismatch() {
+        use crate::TreeType;
+
+        // Node with a plain `SummedMerkNode` (not provable). The merk
+        // tree-builder normally only emits matching feature_type for a
+        // given tree_type, but a corrupted on-disk record or a buggy
+        // caller could route a non-provable-summed node through this
+        // path — must abort instead of silently producing a stripped
+        // hash.
+        let mut tree = TreeNode::new(vec![0], vec![1], None, SummedMerkNode(42)).unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        // Trips the fail-closed `else` arm.
+        let _ = tree.hash_for_link(TreeType::ProvableSumTree);
+    }
+
+    /// Mirror for `ProvableCountTree`: a non-counted feature_type
+    /// shouldn't silently emit a stripped hash.
+    #[test]
+    #[should_panic(expected = "ProvableCountTree::hash_for_link")]
+    fn provable_count_tree_hash_for_link_panics_on_feature_type_mismatch() {
+        use crate::TreeType;
+
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        let _ = tree.hash_for_link(TreeType::ProvableCountTree);
+    }
+
+    /// Mirror for `ProvableCountSumTree`.
+    #[test]
+    #[should_panic(expected = "ProvableCountSumTree::hash_for_link")]
+    fn provable_count_sum_tree_hash_for_link_panics_on_feature_type_mismatch() {
+        use crate::TreeType;
+
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        let _ = tree.hash_for_link(TreeType::ProvableCountSumTree);
     }
 }
