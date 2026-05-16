@@ -356,6 +356,81 @@ mod tests {
     }
 
     #[test]
+    fn tree_type_extensions_look_through_not_counted_or_summed() {
+        // Every ElementTreeTypeExtensions method must delegate through
+        // NotCountedOrSummed to the inner sum-tree variant.
+        let inner_root = Some(b"r".to_vec());
+        let cases: [(Element, TreeType); 4] = [
+            (
+                Element::SumTree(inner_root.clone(), 100, None),
+                TreeType::SumTree,
+            ),
+            (
+                Element::BigSumTree(inner_root.clone(), 100, None),
+                TreeType::BigSumTree,
+            ),
+            (
+                Element::CountSumTree(inner_root.clone(), 7, 100, None),
+                TreeType::CountSumTree,
+            ),
+            (
+                Element::ProvableCountSumTree(inner_root.clone(), 7, 100, None),
+                TreeType::ProvableCountSumTree,
+            ),
+        ];
+
+        for (inner, expected_tree_type) in cases {
+            let wrapped = Element::new_not_counted_or_summed(inner.clone()).expect("wrap ok");
+
+            assert_eq!(wrapped.tree_type(), Some(expected_tree_type));
+            assert_eq!(
+                wrapped.maybe_tree_type(),
+                MaybeTree::Tree(expected_tree_type)
+            );
+            let (rk, tt) = wrapped.root_key_and_tree_type().expect("Some");
+            assert_eq!(*rk, inner_root);
+            assert_eq!(tt, expected_tree_type);
+            let (rk, tt) = wrapped
+                .clone()
+                .root_key_and_tree_type_owned()
+                .expect("Some");
+            assert_eq!(rk, inner_root);
+            assert_eq!(tt, expected_tree_type);
+
+            let (flags, tt) = wrapped.tree_flags_and_type().expect("Some");
+            assert!(flags.is_none());
+            assert_eq!(tt, expected_tree_type);
+
+            assert!(wrapped.tree_feature_type().is_some());
+        }
+    }
+
+    #[test]
+    fn get_feature_type_zeros_both_axes_for_not_counted_or_summed() {
+        // NotCountedOrSummed must zero out BOTH count and sum in
+        // count-and-sum-bearing parents.
+        let inner = Element::CountSumTree(None, 7, 100, None);
+        let ncos = Element::new_not_counted_or_summed(inner).expect("wrap ok");
+
+        // CountSumTree parent: count=0, sum=0.
+        assert_eq!(
+            ncos.get_feature_type(TreeType::CountSumTree).unwrap(),
+            CountedSummedMerkNode(0, 0)
+        );
+
+        // ProvableCountSumTree parent: same.
+        match ncos
+            .get_feature_type(TreeType::ProvableCountSumTree)
+            .unwrap()
+        {
+            TreeFeatureType::ProvableCountedSummedMerkNode(c, s) => {
+                assert_eq!((c, s), (0, 0));
+            }
+            other => panic!("expected ProvableCountedSummedMerkNode, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn get_feature_type_zeros_sum_for_not_summed_in_sum_parents() {
         // Every sum-bearing parent type must zero out the wrapped sum
         // through `get_feature_type`. Counts (in CountSumTree /

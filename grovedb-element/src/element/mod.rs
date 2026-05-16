@@ -863,4 +863,73 @@ mod tests {
         let s = format!("{}", wrapped);
         assert!(s.starts_with("NonCounted("), "got: {}", s);
     }
+
+    #[test]
+    fn display_renders_not_counted_or_summed_wrapper() {
+        let inner = Element::CountSumTree(Some(b"r".to_vec()), 3, 100, None);
+        let wrapped = Element::new_not_counted_or_summed(inner).expect("wrap ok");
+        let s = format!("{}", wrapped);
+        assert!(s.starts_with("NotCountedOrSummed("), "got: {}", s);
+        assert!(s.contains("CountSumTree"), "got: {}", s);
+    }
+
+    #[test]
+    fn element_type_resolves_not_counted_or_summed_twins() {
+        // Each of the four sum-tree variants maps to its
+        // NotCountedOrSummed twin.
+        let cases: [(Element, ElementType); 4] = [
+            (
+                Element::NotCountedOrSummed(Box::new(Element::SumTree(None, 0, None))),
+                ElementType::NotCountedOrSummedSumTree,
+            ),
+            (
+                Element::NotCountedOrSummed(Box::new(Element::BigSumTree(None, 0, None))),
+                ElementType::NotCountedOrSummedBigSumTree,
+            ),
+            (
+                Element::NotCountedOrSummed(Box::new(Element::CountSumTree(None, 0, 0, None))),
+                ElementType::NotCountedOrSummedCountSumTree,
+            ),
+            (
+                Element::NotCountedOrSummed(Box::new(Element::ProvableCountSumTree(
+                    None, 0, 0, None,
+                ))),
+                ElementType::NotCountedOrSummedProvableCountSumTree,
+            ),
+        ];
+        for (element, expected) in cases {
+            assert_eq!(element.element_type(), expected);
+            assert_eq!(element.type_str(), expected.as_str());
+        }
+    }
+
+    #[test]
+    fn validate_wrapper_invariants_covers_all_arms() {
+        // Valid: bare elements pass.
+        assert!(Element::Item(b"x".to_vec(), None)
+            .validate_wrapper_invariants()
+            .is_ok());
+
+        // Valid NonCounted/NotSummed/NotCountedOrSummed pass.
+        let nc = Element::NonCounted(Box::new(Element::Item(b"x".to_vec(), None)));
+        assert!(nc.validate_wrapper_invariants().is_ok());
+        let ns = Element::NotSummed(Box::new(Element::SumTree(None, 0, None)));
+        assert!(ns.validate_wrapper_invariants().is_ok());
+        let ncos = Element::NotCountedOrSummed(Box::new(Element::SumTree(None, 0, None)));
+        assert!(ncos.validate_wrapper_invariants().is_ok());
+
+        // Invalid: NonCounted wrapping another wrapper.
+        let bad = Element::NonCounted(Box::new(Element::NotCountedOrSummed(Box::new(
+            Element::SumTree(None, 0, None),
+        ))));
+        assert!(bad.validate_wrapper_invariants().is_err());
+
+        // Invalid: NotSummed with non-sum-tree inner.
+        let bad = Element::NotSummed(Box::new(Element::Item(b"x".to_vec(), None)));
+        assert!(bad.validate_wrapper_invariants().is_err());
+
+        // Invalid: NotCountedOrSummed with non-sum-tree inner.
+        let bad = Element::NotCountedOrSummed(Box::new(Element::Item(b"x".to_vec(), None)));
+        assert!(bad.validate_wrapper_invariants().is_err());
+    }
 }

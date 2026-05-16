@@ -373,6 +373,82 @@ mod tests {
     }
 
     #[test]
+    fn batch_propagation_preserves_wrapper_under_provable_count_sum_tree() {
+        // Same as the CountSumTree propagation test but with a
+        // ProvableCountSumTree parent — exercises the
+        // ProvableCountSumTree propagation arm in batch_structure.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        make_provable_count_sum_tree_parent(&db, b"outer", grove_version);
+
+        // Plain item contributes (1, 0).
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"plain",
+            Element::new_item(b"x".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert plain");
+
+        let wrapped =
+            Element::new_not_counted_or_summed(Element::new_provable_count_sum_tree(None))
+                .expect("wrap ok");
+        let inner_child = Element::new_sum_item(99);
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"outer".to_vec()],
+                b"w".to_vec(),
+                wrapped,
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"w".to_vec()],
+                b"child".to_vec(),
+                inner_child,
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch should succeed");
+
+        // Wrapper must survive propagation.
+        let stored = db
+            .get_raw(
+                grovedb_path::SubtreePath::from(&[TEST_LEAF, b"outer"]),
+                b"w",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw w");
+        assert!(
+            matches!(stored, Element::NotCountedOrSummed(_)),
+            "wrapper must survive batch propagation; got {:?}",
+            stored
+        );
+
+        // Outer aggregate: count=1 (plain only), sum=0.
+        use grovedb_storage::StorageBatch;
+        let batch = StorageBatch::new();
+        let tx = db.start_transaction();
+        let outer_merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"outer"].as_ref().into(),
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open outer merk");
+        let aggregate = outer_merk.aggregate_data().expect("read aggregate");
+        assert_eq!(aggregate.as_count_u64(), 1);
+        assert_eq!(aggregate.as_sum_i64(), 0);
+    }
+
+    #[test]
     fn check_subtree_exists_through_not_counted_or_summed_wrapper() {
         // A NotCountedOrSummed-wrapped tree at the parent path must satisfy
         // check_subtree_exists, otherwise APIs that gate on it would reject
