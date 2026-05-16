@@ -618,9 +618,12 @@ mod tests {
         assert!(Element::new_not_summed(inner).is_err());
     }
 
-    /// Cmp / Ord routes through `GroveOp::to_u8`. The new op's wire tag
-    /// must be stable at 17 (next free after `InsertNonMerkTree = 16`),
-    /// since that byte is part of the batch-serialization wire format.
+    /// Pins the new op's sort tag to exactly 17 (next free after
+    /// `InsertNonMerkTree = 16`). `GroveOp::to_u8` drives `Ord::cmp`
+    /// for batch op deduplication and the value is documented in
+    /// the apply pipeline — any renumbering would silently shift the
+    /// sort order. Asserting the exact value (not just relative
+    /// ordering) catches that drift.
     #[test]
     fn refresh_reference_with_sum_item_op_tag_pin() {
         use std::cmp::Ordering;
@@ -637,6 +640,16 @@ mod tests {
             true,
         )
         .op;
+
+        // Exact pin: catches renumbering to any other value.
+        assert_eq!(
+            refresh.to_u8(),
+            17,
+            "RefreshReferenceWithSumItem sort tag must remain 17",
+        );
+
+        // Sanity: relative ordering against other ops continues to
+        // match the documented sort hierarchy.
         let delete = QualifiedGroveDbOp::delete_op(vec![b"p".to_vec()], b"k".to_vec()).op;
         let insert = QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"p".to_vec()],
@@ -644,9 +657,6 @@ mod tests {
             Element::new_item(b"x".to_vec()),
         )
         .op;
-
-        // delete (to_u8 = 2) sorts before refresh-ref-with-sum-item (= 17)
-        // which sorts after every other user-facing op.
         assert_eq!(delete.cmp(&refresh), Ordering::Less);
         assert_eq!(insert.cmp(&refresh), Ordering::Less);
         assert_eq!(refresh.cmp(&refresh.clone()), Ordering::Equal);

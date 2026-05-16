@@ -421,7 +421,12 @@ pub enum GroveOp {
 }
 
 impl GroveOp {
-    fn to_u8(&self) -> u8 {
+    /// Stable per-variant sort tag used by [`Ord::cmp`] and exposed
+    /// `pub(crate)` so tests can pin the exact value (not just relative
+    /// ordering). Changing any of these numbers is observable to
+    /// downstream sort-order assumptions in the batch pipeline; the
+    /// associated tests are intentionally strict.
+    pub(crate) fn to_u8(&self) -> u8 {
         match self {
             GroveOp::DeleteTree(..) => 0,
             // 1 used to be used for the DeleteSumTree
