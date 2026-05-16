@@ -24,8 +24,12 @@ pub mod worst_case_costs;
 /// flags is ever true.
 #[cfg(feature = "minimal")]
 #[inline]
-pub(in crate::batch) fn wrapper_overhead_for(non_counted: bool, not_summed: bool) -> u32 {
-    if non_counted || not_summed {
+pub(in crate::batch) fn wrapper_overhead_for(
+    non_counted: bool,
+    not_summed: bool,
+    not_counted_or_summed: bool,
+) -> u32 {
+    if non_counted || not_summed || not_counted_or_summed {
         1
     } else {
         0

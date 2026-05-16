@@ -67,6 +67,7 @@ impl GroveOp {
                 aggregate_data,
                 non_counted,
                 not_summed,
+                not_counted_or_summed,
                 ..
             } => GroveDb::average_case_merk_insert_tree(
                 key,
@@ -78,7 +79,7 @@ impl GroveOp {
                 // `NotCountedOrSummed(...)`. They share the same +1
                 // discriminant overhead and are mutually exclusive on
                 // the rebuilt element.
-                super::wrapper_overhead_for(*non_counted, *not_summed),
+                super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
                 propagate_if_input(),
                 grove_version,
             ),
@@ -1701,6 +1702,101 @@ mod tests {
             cost.storage_cost.added_bytes > 0,
             "expected added_bytes > 0, got {}",
             cost.storage_cost.added_bytes
+        );
+    }
+
+    /// Covers the wrapper-byte accounting in
+    /// `GroveOp::InsertTreeWithRootHash::average_case_cost`. Each
+    /// wrapper bit (`non_counted` / `not_summed` /
+    /// `not_counted_or_summed`) prepends one bincode discriminant byte
+    /// to the rebuilt tree element; the cost estimator must include it
+    /// in `value_len`. Before the fix the arm dropped the wrapper byte
+    /// entirely. The three bits are mutually exclusive on any element
+    /// — we vary one at a time.
+    #[test]
+    fn test_insert_tree_with_root_hash_wrapper_bits_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let key = KeyInfo::KnownKey(b"merk_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(0),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost_for = |non_counted: bool, not_summed: bool, not_counted_or_summed: bool| {
+            let op = GroveOp::InsertTreeWithRootHash {
+                hash: [0xAAu8; 32],
+                root_key: None,
+                flags: None,
+                aggregate_data: AggregateData::NoAggregateData,
+                non_counted,
+                not_summed,
+                not_counted_or_summed,
+            };
+            op.average_case_cost(&key, &layer_info, false, grove_version)
+                .cost_as_result()
+                .expect("expected cost for InsertTreeWithRootHash")
+        };
+        let bare = cost_for(false, false, false);
+        let nc = cost_for(true, false, false);
+        let ns = cost_for(false, true, false);
+        let ncs = cost_for(false, false, true);
+        // Each wrapper bit must increase the estimated value_len by at
+        // least the +1 wrapper byte. We use `>=` because `add_bytes`
+        // can also pick up the varint-required-space overhead at
+        // payload-size boundaries.
+        assert!(
+            nc.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "non_counted should add wrapper byte; nc={:?}, bare={:?}",
+            nc,
+            bare,
+        );
+        assert!(
+            ns.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "not_summed should add wrapper byte; ns={:?}, bare={:?}",
+            ns,
+            bare,
+        );
+        assert!(
+            ncs.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "not_counted_or_summed should add wrapper byte; ncs={:?}, bare={:?}",
+            ncs,
+            bare,
+        );
+    }
+
+    /// Covers the wrapper-byte accounting in
+    /// `GroveOp::InsertNonMerkTree::average_case_cost`. Non-Merk trees
+    /// only carry the `non_counted` wrapper bit (they're never
+    /// sum-bearing).
+    #[test]
+    fn test_insert_non_merk_tree_non_counted_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let key = KeyInfo::KnownKey(b"inmerk_key".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(0),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+        let cost_for = |non_counted: bool| {
+            let op = GroveOp::InsertNonMerkTree {
+                hash: [0xCDu8; 32],
+                root_key: None,
+                flags: None,
+                aggregate_data: AggregateData::NoAggregateData,
+                meta: NonMerkTreeMeta::MmrTree { mmr_size: 50 },
+                non_counted,
+            };
+            op.average_case_cost(&key, &layer_info, false, grove_version)
+                .cost_as_result()
+                .expect("expected cost for InsertNonMerkTree")
+        };
+        let bare = cost_for(false);
+        let nc = cost_for(true);
+        assert!(
+            nc.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "InsertNonMerkTree non_counted should add wrapper byte; nc={:?}, bare={:?}",
+            nc,
+            bare,
         );
     }
 }
