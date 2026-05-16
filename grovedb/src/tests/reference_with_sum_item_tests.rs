@@ -618,6 +618,241 @@ mod tests {
         assert!(Element::new_not_summed(inner).is_err());
     }
 
+    /// Cmp / Ord routes through `GroveOp::to_u8`. The new op's wire tag
+    /// must be stable at 17 (next free after `InsertNonMerkTree = 16`),
+    /// since that byte is part of the batch-serialization wire format.
+    #[test]
+    fn refresh_reference_with_sum_item_op_tag_pin() {
+        use std::cmp::Ordering;
+
+        let ref_path = ReferencePathType::AbsolutePathReference(vec![b"a".to_vec()]);
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![b"p".to_vec()],
+            b"k".to_vec(),
+            ref_path,
+            None,
+            5,
+            None,
+            false,
+            true,
+        )
+        .op;
+        let delete = QualifiedGroveDbOp::delete_op(vec![b"p".to_vec()], b"k".to_vec()).op;
+        let insert = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"p".to_vec()],
+            b"k".to_vec(),
+            Element::new_item(b"x".to_vec()),
+        )
+        .op;
+
+        // delete (to_u8 = 2) sorts before refresh-ref-with-sum-item (= 17)
+        // which sorts after every other user-facing op.
+        assert_eq!(delete.cmp(&refresh), Ordering::Less);
+        assert_eq!(insert.cmp(&refresh), Ordering::Less);
+        assert_eq!(refresh.cmp(&refresh.clone()), Ordering::Equal);
+    }
+
+    /// Debug formatter for `GroveOp::RefreshReferenceWithSumItem`
+    /// produces a string containing the path, max_hop, sum, and trust
+    /// flag — exercises the `fmt::Debug` arm.
+    #[test]
+    fn refresh_reference_with_sum_item_debug_format() {
+        let op = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![b"parent".to_vec()],
+            b"child".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(3),
+            42,
+            None,
+            false,
+            true,
+        );
+        let s = format!("{op:?}");
+        assert!(
+            s.contains("Refresh Reference With Sum Item"),
+            "Debug should include op name: {s}"
+        );
+        assert!(s.contains("max_hop"), "Debug should mention max_hop: {s}");
+        assert!(s.contains("sum 42"), "Debug should include the sum: {s}");
+        assert!(
+            s.contains("trust_reference true"),
+            "Debug should include trust flag: {s}"
+        );
+    }
+
+    /// Trusted refresh with `non_counted = true` against a CountSumTree
+    /// parent goes through `Element::new_non_counted` on the rebuilt
+    /// inner. Reaffirms the wrap-on-write block in the trust=true path.
+    /// CountSumTree is both count- and sum-bearing, which is the only
+    /// parent that accepts NonCounted-wrapped reference variants.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_trusted_with_nc_wraps() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count-sum tree");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed link with NonCounted(RefWithSum(_, _, 8, _)).
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        let nc =
+            Element::new_non_counted(Element::new_reference_with_sum_item(ref_path.clone(), 8))
+                .expect("wrap ok");
+        db.insert(
+            [TEST_LEAF, b"cst"].as_ref(),
+            b"link",
+            nc,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed nc link");
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"cst"], grove_version),
+            AggregateData::CountAndSum(0, 8),
+        );
+
+        // Trusted refresh with non_counted=true rewraps in NonCounted.
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec(), b"cst".to_vec()],
+            b"link".to_vec(),
+            ref_path,
+            None,
+            33,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ true,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("apply trusted refresh");
+
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"cst"], grove_version),
+            AggregateData::CountAndSum(0, 33),
+        );
+        // Wrapper preserved on disk.
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"cst"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw");
+        assert!(raw.is_non_counted());
+    }
+
+    /// Untrusted refresh against a NonCounted(RefWithSum) with
+    /// `non_counted = true` succeeds — the disk shape matches the
+    /// declaration and the wrapper is preserved.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_untrusted_matches_wrapper_succeeds() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count-sum tree");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed wrapped variant.
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        let nc =
+            Element::new_non_counted(Element::new_reference_with_sum_item(ref_path.clone(), 1))
+                .expect("wrap ok");
+        db.insert(
+            [TEST_LEAF, b"cst"].as_ref(),
+            b"link",
+            nc,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed");
+
+        // Untrusted refresh with matching non_counted=true.
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec(), b"cst".to_vec()],
+            b"link".to_vec(),
+            ref_path,
+            None,
+            7,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ false,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("apply untrusted refresh");
+
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"cst"], grove_version),
+            AggregateData::CountAndSum(0, 7),
+        );
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"cst"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw");
+        assert!(raw.is_non_counted());
+    }
+
+    /// `RefreshReferenceWithSumItem` against a non-existing key with
+    /// `trust=false` errors out — exercises the "trying to refresh a
+    /// non existing reference" branch in the apply path.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_untrusted_missing_key_errors() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ref_path = ReferencePathType::AbsolutePathReference(vec![b"x".to_vec()]);
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"does_not_exist".to_vec(),
+            ref_path,
+            None,
+            1,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ false,
+        );
+        let err = db
+            .apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect_err("refresh of non-existing key must fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("non existing") || msg.contains("not") || msg.contains("MissingReference"),
+            "expected missing-key error, got: {msg}"
+        );
+    }
+
     /// `query_item_value` follows a `ReferenceWithSumItem` to the target
     /// item bytes — same as `Reference`. Exercises the new arm in
     /// [`crate::operations::get::query::GroveDb::query_item_value`].
