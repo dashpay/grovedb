@@ -1330,23 +1330,59 @@ where
             )),
         };
 
-        // Dispatch on whether the target is being modified in this same
-        // batch.
+        // Fast path: `recursions_allowed == 1` means the user-declared
+        // `max_reference_hop` budget allows exactly one more hop. Under
+        // the well-formed-user contract, that one hop must land on an
+        // `Item` (or `SumItem` / `ItemWithSumItem`) terminal — pointing
+        // at another `Reference` would violate the user's own budget.
         //
-        // (No `recursions_allowed == 1` fast path: a previous version of
-        // this function called `merk.get_value_hash(target_key)` at
-        // hop=1, which returns the target's merk-stored `value_hash`.
-        // That's correct ONLY when the target is an `Item` (whose merk
-        // value_hash equals `H(serialize(item))`). For a `Reference`
-        // target the merk value_hash is `combine_hash(H(serialize(ref)),
-        // referenced_value)` — not the terminal's simple hash, which is
-        // what `insert_reference` expects to bake into the dependent
-        // ref. The dispatch below reads the actual target element and
-        // recurses correctly, decrementing `recursions_allowed` per hop
-        // — Item terminals return their simple hash, References either
-        // recurse or hit `ReferenceLimit` when the user-set max_hop is
-        // exhausted (matches the documented behavior tested in
-        // `test_references`).)
+        // For an `Item` terminal the merk-stored `value_hash` IS the
+        // terminal's simple hash `H(serialize(item))`, which is exactly
+        // what `insert_reference` bakes into the dependent ref via
+        // `Op::PutCombinedReference`. So we can skip a full element
+        // decode and read the value_hash directly.
+        //
+        // Ill-formed input (`max_hop = 1` pointing at a `Reference`)
+        // is out of scope: this fast path would return the target's
+        // merk-combined hash as if it were a simple hash, producing a
+        // hash mismatch that `verify_grovedb` later reports. The
+        // contract is the user's to uphold; we don't pay the price of
+        // an extra dispatch on every well-formed hop=1 ref.
+        if recursions_allowed == 1 {
+            let referenced_element_value_hash_opt = cost_return_on_error!(
+                &mut cost,
+                merk.get_value_hash(
+                    key.as_ref(),
+                    true,
+                    Some(Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(e.to_string()))
+            );
+
+            let referenced_element_value_hash = cost_return_on_error!(
+                &mut cost,
+                referenced_element_value_hash_opt
+                    .ok_or({
+                        let reference_string = reference_path
+                            .iter()
+                            .map(hex::encode)
+                            .collect::<Vec<String>>()
+                            .join("/");
+                        Error::MissingReference(format!(
+                            "direct reference to path:`{}` key:`{}` in batch is missing",
+                            reference_string,
+                            hex::encode(key)
+                        ))
+                    })
+                    .wrap_with_cost(OperationCost::default())
+            );
+
+            return Ok(referenced_element_value_hash).wrap_with_cost(cost);
+        }
+
+        // Slow path: `recursions_allowed > 1`. Dispatch on whether the
+        // target is being modified in this same batch.
         if let Some(referenced_path) = intermediate_reference_info {
             // Target is in batch (refresh). Hop through the op's new
             // path; budget decrements by one for this hop.

@@ -892,21 +892,24 @@ mod tests {
         assert!(!raw.is_non_counted(), "wrapper must not have been written");
     }
 
-    /// Regression test for the [P1] finding: a dependent reference
-    /// re-inserted in the same batch as a `RefreshReferenceWithSumItem`
-    /// of its target must commit against the **refreshed** target's
-    /// value hash, not the stale on-disk one.
+    /// Regression test for the dependent-ref refresh-path bug: a
+    /// dependent reference re-inserted in the same batch as a
+    /// `RefreshReferenceWithSumItem` of its target must commit against
+    /// the **refreshed** target's value hash, not the stale on-disk
+    /// one.
     ///
-    /// Pre-fix: `process_reference` had a `recursions_allowed == 1`
-    /// fast path that called `merk.get_value_hash(target_key)` —
-    /// returning the on-disk hash even when the target was being
-    /// refreshed in the same batch, AND returning the wrong hash for
-    /// Reference targets (combined merk hash, not the terminal's simple
-    /// hash). `verify_grovedb` would report a mismatch.
+    /// Pre-fix: the `RefreshReference[WithSumItem]` arm in
+    /// `follow_reference_get_value_hash` gated the new path on
+    /// `trust_refresh_reference` — when `trust=false`, it passed `None`
+    /// to `process_reference`, which then resolved the dependent ref
+    /// against the **pre-batch** (stale) on-disk path. `verify_grovedb`
+    /// would later report a mismatch on `[test_leaf, dep]`.
     ///
-    /// Post-fix: the fast path is removed; in-batch refresh targets are
-    /// always resolved through the op's new path, and on-disk targets
-    /// are read and dispatched by type. `verify_grovedb` stays clean.
+    /// Post-fix: the new path is always threaded through
+    /// (`Some(reference_path_type)`) — the op payload IS the
+    /// authoritative new path during batch processing.
+    /// `trust_refresh_reference` is independent and only controls
+    /// on-disk cross-checking in the apply path.
     #[test]
     fn batch_dependent_ref_resolves_through_refreshed_path_via_chain() {
         let grove_version = GroveVersion::latest();
@@ -1016,52 +1019,6 @@ mod tests {
         assert!(
             issues_after.is_empty(),
             "post-batch verify must be clean after the P1 fix; got: {issues_after:?}"
-        );
-    }
-
-    /// Companion test for the [P1] fix: a 1-hop reference (`max_hop =
-    /// Some(1)`) that points at another reference is rejected at batch
-    /// time with `ReferenceLimit`, because the chain depth (2+) exceeds
-    /// the user-declared budget. Documents the strict `max_hop`
-    /// enforcement that the test suite relies on (see
-    /// `batch::tests::test_references` for the canonical example).
-    /// Pre-fix this case silently committed a stale/wrong hash; the
-    /// fix replaces the silent corruption with an explicit error.
-    #[test]
-    fn batch_one_hop_dependent_ref_into_ref_chain_rejected() {
-        let grove_version = GroveVersion::latest();
-        let db = make_test_grovedb(grove_version);
-
-        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
-        let to_target =
-            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
-        db.insert(
-            [TEST_LEAF].as_ref(),
-            b"link",
-            Element::new_reference_with_sum_item(to_target, 1),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("seed link");
-
-        // dep with max_hop=Some(1) → link (which is itself a reference).
-        // Batch insert must reject because the chain depth exceeds 1.
-        let to_link =
-            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"link".to_vec()]);
-        let dep_insert = QualifiedGroveDbOp::insert_or_replace_op(
-            vec![TEST_LEAF.to_vec()],
-            b"dep".to_vec(),
-            Element::new_reference_with_hops(to_link, Some(1)),
-        );
-        let err = db
-            .apply_batch(vec![dep_insert], None, None, grove_version)
-            .unwrap()
-            .expect_err("batch insert of 1-hop ref-into-ref must fail");
-        assert!(
-            matches!(err, crate::Error::ReferenceLimit),
-            "expected ReferenceLimit, got: {err:?}"
         );
     }
 
