@@ -125,19 +125,31 @@ impl GroveOp {
                 max_reference_hop,
                 sum_value,
                 flags,
+                non_counted,
                 ..
-            } => GroveDb::worst_case_merk_replace_element(
-                key,
-                &Element::ReferenceWithSumItem(
+            } => {
+                // Build the element shape the apply path will actually
+                // write — see the corresponding comment in the
+                // average-case estimator.
+                let inner = Element::ReferenceWithSumItem(
                     reference_path_type.clone(),
                     *max_reference_hop,
                     *sum_value,
                     flags.clone(),
-                ),
-                in_parent_tree_type,
-                propagate_if_input(),
-                grove_version,
-            ),
+                );
+                let element = if *non_counted {
+                    Element::NonCounted(Box::new(inner))
+                } else {
+                    inner
+                };
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    &element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
             GroveOp::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
@@ -904,6 +916,75 @@ mod tests {
         .expect("expected worst case costs for refresh reference with sum item");
         assert!(cost.seek_count > 0);
         assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_refresh_reference_with_sum_item_non_counted_worst_case_cost() {
+        // Symmetric to the average-case test: verify the non_counted=true
+        // variant's worst-case estimate is at least as large as the
+        // bare variant. Before the fix the estimator dropped the
+        // NonCounted wrapper byte from the cost model.
+        let grove_version = GroveVersion::latest();
+        let nc_ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            42,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ true,
+        )];
+        let bare_ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            42,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ true,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let nc_cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths.clone()),
+            nc_ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for non-counted refresh");
+        let bare_cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            bare_ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for bare refresh");
+
+        assert!(
+            nc_cost.storage_cost.added_bytes + nc_cost.storage_cost.replaced_bytes
+                >= bare_cost.storage_cost.added_bytes + bare_cost.storage_cost.replaced_bytes,
+            "non_counted=true cost should be >= bare cost; nc={:?}, bare={:?}",
+            nc_cost,
+            bare_cost,
+        );
+        assert!(nc_cost.seek_count > 0);
+        assert!(nc_cost.hash_node_calls > 0);
     }
 
     #[test]

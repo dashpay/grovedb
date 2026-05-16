@@ -2436,6 +2436,24 @@ where
                         }
                     };
 
+                    // Mirror the per-merk wrapper invariant enforced for
+                    // direct inserts at lines 2016-2021 of this file. The
+                    // refresh path constructs the element internally, so
+                    // without this guard a trusted refresh with
+                    // `non_counted = true` could persist a
+                    // `NonCounted(ReferenceWithSumItem(...))` into a
+                    // non-count-bearing parent (NormalTree, SumTree,
+                    // BigSumTree). That violates the invariant that
+                    // NonCounted-wrapped elements only live in
+                    // count-bearing trees.
+                    if element.is_non_counted() && !in_tree_type.is_count_bearing() {
+                        return Err(Error::InvalidBatchOperation(
+                            "RefreshReferenceWithSumItem with non_counted=true requires a \
+                             count-bearing parent",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+
                     let Element::ReferenceWithSumItem(path_reference, max_reference_hop, ..) =
                         element.underlying()
                     else {

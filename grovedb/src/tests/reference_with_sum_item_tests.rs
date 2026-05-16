@@ -823,6 +823,65 @@ mod tests {
         assert!(raw.is_non_counted());
     }
 
+    /// Regression test for the wrapper-invariant bypass: a trusted
+    /// `RefreshReferenceWithSumItem` with `non_counted = true` in a
+    /// non-count-bearing parent (here, a `NormalTree` under TEST_LEAF)
+    /// must be rejected. Without the apply-path guard, the trusted
+    /// branch would build `NonCounted(...)` and persist it into the
+    /// wrong tree type — violating the invariant that NonCounted-wrapped
+    /// elements only live in count-bearing trees.
+    #[test]
+    fn batch_refresh_reference_with_sum_item_trusted_with_nc_rejected_in_normal_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed bare ReferenceWithSumItem in a NormalTree (TEST_LEAF).
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path.clone(), 1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed bare ref-with-sum-item");
+
+        // Trusted refresh with non_counted=true. Without the guard the
+        // apply path would build NonCounted(...) and write it to disk
+        // under TEST_LEAF (NormalTree), silently violating the invariant.
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            ref_path,
+            None,
+            5,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ true,
+        );
+        let err = db
+            .apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect_err("trusted refresh with non_counted=true in normal tree must fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("count-bearing") || msg.contains("non_counted"),
+            "expected wrapper-invariant rejection, got: {msg}"
+        );
+
+        // And the on-disk shape is unchanged — still bare, count is 1.
+        let raw = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"link", None, grove_version)
+            .unwrap()
+            .expect("get_raw");
+        assert!(!raw.is_non_counted(), "wrapper must not have been written");
+    }
+
     /// `RefreshReferenceWithSumItem` against a non-existing key with
     /// `trust=false` errors out — exercises the "trying to refresh a
     /// non existing reference" branch in the apply path.
