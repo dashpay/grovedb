@@ -989,10 +989,14 @@ mod tests {
         .cost_as_result()
         .expect("expected worst case costs for bare refresh");
 
+        // Strict `>`: NonCounted-wrapped element must be at least one
+        // wrapper-discriminant byte larger than the bare variant. The
+        // bug we're pinning is an undercount that produces an
+        // *identical* estimate, so equality must fail this check.
         assert!(
             nc_cost.storage_cost.added_bytes + nc_cost.storage_cost.replaced_bytes
-                >= bare_cost.storage_cost.added_bytes + bare_cost.storage_cost.replaced_bytes,
-            "non_counted=true cost should be >= bare cost; nc={:?}, bare={:?}",
+                > bare_cost.storage_cost.added_bytes + bare_cost.storage_cost.replaced_bytes,
+            "non_counted=true cost must be strictly greater than bare cost; nc={:?}, bare={:?}",
             nc_cost,
             bare_cost,
         );

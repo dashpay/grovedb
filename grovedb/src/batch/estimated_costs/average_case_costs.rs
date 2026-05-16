@@ -1293,13 +1293,15 @@ mod tests {
 
         // The NonCounted-wrapped variant has at least one extra byte on
         // the wire (the wrapper discriminant), so its cost estimate
-        // must be at least as large as the bare variant. Before the
-        // fix the estimator ignored `non_counted` and produced an
-        // identical (under-counted) estimate.
+        // must be strictly larger than the bare variant (at least the
+        // +1 wrapper-discriminant byte). Strict `>` makes the test
+        // load-bearing: an undercount regression that produced an
+        // identical (under-counted) estimate — the exact bug being
+        // pinned — would fail this assertion.
         assert!(
             nc_cost.storage_cost.added_bytes + nc_cost.storage_cost.replaced_bytes
-                >= bare_cost.storage_cost.added_bytes + bare_cost.storage_cost.replaced_bytes,
-            "non_counted=true cost should be >= bare cost; nc={:?}, bare={:?}",
+                > bare_cost.storage_cost.added_bytes + bare_cost.storage_cost.replaced_bytes,
+            "non_counted=true cost must be strictly greater than bare cost; nc={:?}, bare={:?}",
             nc_cost,
             bare_cost,
         );
