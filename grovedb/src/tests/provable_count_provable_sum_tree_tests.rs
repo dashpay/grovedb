@@ -591,18 +591,57 @@ mod tests {
         pcps_reference_proof_round_trip_with(GroveVersion::latest());
     }
 
-    /// V0 dispatch (`GROVE_V2`) — exercises the v0 ref-rewrite loop's
-    /// `KVRefValueHashCountSum` arm. Before this fix the v0 loop
-    /// (line ~1285 of grovedb/src/operations/proof/generate.rs) had
-    /// the same defect as the v1 loop: PCPS Reference's
-    /// `ProvableCountedAndProvableSummedMerkNode` feature would fall
-    /// through to plain `KVRefValueHash`, dropping both hash-bound
-    /// aggregates. Without this test the v0 loop's PCPS arm would be
-    /// uncovered.
+    /// V0 dispatch (`GROVE_V2`) MUST REJECT a PCPS-rooted proof.
+    /// V0 proofs are LOCKED to the wire format shipped with grove
+    /// v1/v2; `ProvableCountProvableSumTree` (PCPS) was added after
+    /// the V0 envelope shipped and needs dual-axis Node variants
+    /// (`KVRefValueHashCountSum`, `HashWithCountAndSum`, etc.) that
+    /// the V0 post-processor doesn't emit. The V0 entry point in
+    /// `prove_subqueries` rejects a PCPS-rooted leaf merk at
+    /// dispatch time with `Error::NotSupported`; PCPS users must
+    /// produce proofs via V1 (grove v3+).
+    ///
+    /// This test pins the rejection so we don't accidentally re-add
+    /// V0 PCPS support (which would mean modifying the V0 prover —
+    /// a violation of the V0-locked contract).
     #[test]
-    fn pcps_reference_proof_round_trips_against_same_root_v0_envelope() {
+    fn pcps_proof_rejected_on_v0_envelope() {
         use grovedb_version::version::v2::GROVE_V2;
-        pcps_reference_proof_round_trip_with(&GROVE_V2);
+        let grove_version: &GroveVersion = &GROVE_V2;
+
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcps");
+        db.insert(
+            &[b"pcps".as_slice()],
+            b"a",
+            Element::new_item(vec![1, 2, 3]),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert item");
+
+        let mut q = Query::new();
+        q.insert_key(b"a".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"pcps".to_vec()], q);
+        let result = db.prove_query(&path_query, None, grove_version).unwrap();
+        let err = result.expect_err("V0 envelope must refuse PCPS proofs");
+        assert!(
+            matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("V1 proof envelopes")),
+            "expected NotSupported with V1-envelope message; got {:?}",
+            err
+        );
     }
 
     /// Regression for the GroveDB post-processing loop fix: a regular

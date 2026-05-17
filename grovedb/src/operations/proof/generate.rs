@@ -419,6 +419,28 @@ impl GroveDb {
             self.open_transactional_merk_at_path(path.as_slice().into(), &tx, None, grove_version)
         );
 
+        // V0 proofs are LOCKED to the wire format shipped with grove
+        // v1/v2; `ProvableCountProvableSumTree` (PCPS) was added
+        // later and its dual-axis node hash (`node_hash_with_count_and_sum`)
+        // needs proof Node variants that the V0 post-processor doesn't
+        // know how to emit/route (`KVCountSum`,
+        // `KVRefValueHashCountSum`, `HashWithCountAndSum`, etc.).
+        // Refuse the combination at dispatch time rather than silently
+        // produce a proof that drops the dual-axis aggregates from
+        // the hash chain. PCPS users must produce proofs via V1
+        // (grove v3+).
+        if matches!(
+            subtree.tree_type,
+            grovedb_merk::TreeType::ProvableCountProvableSumTree
+        ) {
+            return Err(Error::NotSupported(
+                "ProvableCountProvableSumTree hosts require V1 proof envelopes; \
+                 upgrade the grove version producing the proof to v3 or later"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
         let limit = if path.len() < path_query.path.len() {
             // There is no need for a limit because we are only asking for a single item
             None
@@ -535,11 +557,14 @@ impl GroveDb {
             //   trees/references
             // - KVCount: used by ProvableCountTree for Items (tamper-resistant with count)
             // - KVSum: used by ProvableSumTree for Items (tamper-resistant with sum)
-            // - KVCountSum: used by ProvableCountProvableSumTree (PCPS) for Items
-            //   (tamper-resistant with BOTH count and sum baked into the node
-            //   hash via node_hash_with_count_and_sum). Without this arm a
-            //   PCPS Item would be rewritten back to Node::KV by the Item
-            //   handler below, destroying the dual-axis hash binding.
+            //
+            // NOTE: V0 proofs are LOCKED — no PCPS handling here.
+            // `ProvableCountProvableSumTree` was added after the V0
+            // envelope shipped; users that need to prove PCPS-host
+            // queries must use V1 (grove v3+). V0 dispatch rejects
+            // PCPS-rooted leaf subtrees at the entry point of
+            // `prove_query_non_serialized_v0` via the
+            // `reject_pcps_leaf_under_v0` guard.
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
@@ -548,8 +573,6 @@ impl GroveDb {
                     | Op::PushInverted(Node::KVCount(..))
                     | Op::Push(Node::KVSum(..))
                     | Op::PushInverted(Node::KVSum(..))
-                    | Op::Push(Node::KVCountSum(..))
-                    | Op::PushInverted(Node::KVCountSum(..))
             );
             // Extract count if present for ProvableCountTree references
             let count_for_ref = match op {
@@ -573,32 +596,12 @@ impl GroveDb {
                 },
                 _ => None,
             };
-            // Extract BOTH count and sum for dual-axis (PCPS) references.
-            // The merk layer emits `KVValueHashFeatureType` with a
-            // `ProvableCountedAndProvableSummedMerkNode(count, sum)` feature
-            // for references under a `ProvableCountProvableSumTree`; the
-            // GroveDB layer must rewrite that to `KVRefValueHashCountSum`
-            // so the verifier can reconstruct `node_hash_with_count_and_sum`
-            // from the proof bytes. Without this, PCPS reference proofs
-            // would be downgraded to `KVRefValueHash` and the dual-axis
-            // aggregates would no longer be hash-bound.
-            let count_sum_for_ref = match op {
-                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
-                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
-                    TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
-                        Some((*count, *sum))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
-                    | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
@@ -647,32 +650,27 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                // Dispatch priority — the four ref-aggregate
-                                // flags are mutually exclusive (a ref child
-                                // sees exactly one parent tree type):
-                                //   ProvableCountProvableSumTree references
-                                //       -> KVRefValueHashCountSum (both axes)
-                                //   ProvableSumTree references
-                                //       -> KVRefValueHashSum
-                                //   ProvableCountTree references
-                                //       -> KVRefValueHashCount
-                                //   regular references
-                                //       -> KVRefValueHash
-                                // The dual-axis arm comes first because it
-                                // is the strictest invariant (BOTH count and
-                                // sum hash-bound); a defensive ordering in
-                                // case any future change accidentally sets
-                                // multiple flags would still emit the
-                                // strictest variant.
-                                *node = if let Some((count, sum)) = count_sum_for_ref {
-                                    Node::KVRefValueHashCountSum(
-                                        key.to_owned(),
-                                        serialized_referenced_elem.expect("confirmed ok above"),
-                                        value_hash(value).unwrap_add_cost(&mut cost),
-                                        count,
-                                        sum,
-                                    )
-                                } else if let Some(sum) = sum_for_ref {
+                                // Dispatch priority:
+                                //   ProvableSumTree references -> KVRefValueHashSum
+                                //   ProvableCountTree references -> KVRefValueHashCount
+                                //   regular references          -> KVRefValueHash
+                                //
+                                // NOTE: V0 proofs are LOCKED — no
+                                // `KVRefValueHashCountSum` arm here.
+                                // `ProvableCountProvableSumTree`
+                                // references must be proved via V1
+                                // (grove v3+); V0 dispatch rejects
+                                // PCPS-rooted leaf subtrees at the
+                                // entry point of
+                                // `prove_query_non_serialized_v0`.
+                                //
+                                // The two ref-aggregate flags are
+                                // mutually exclusive (a ref child sees
+                                // one parent tree type), but Sum takes
+                                // priority if both are erroneously
+                                // set — Sum-in-hash is the stricter
+                                // invariant.
+                                *node = if let Some(sum) = sum_for_ref {
                                     Node::KVRefValueHashSum(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
