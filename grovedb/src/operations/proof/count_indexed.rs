@@ -106,9 +106,9 @@ pub struct CountIndexedQueryResult {
 /// shape produced by
 /// `Merk::prove_count_offset_on_range(QueryItem::RangeFull, offset, ...)`
 /// against the cidx secondary (a `ProvableCountTree`). The skipped
-/// region collapses to `HashWithCount` ops so the proof is O(log n
-/// + k) regardless of offset, rather than O(offset + k) for a
-/// naively-paged range proof.
+/// region collapses to `HashWithCount` ops so the proof is
+/// `O(log n + k)` regardless of offset, rather than `O(offset + k)`
+/// for a naively-paged range proof.
 #[derive(Encode, Decode, Debug)]
 pub struct CountIndexedPaginatedProof {
     /// Single-key Merk proof per path layer, top-down. Same shape and
