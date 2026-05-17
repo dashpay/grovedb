@@ -499,14 +499,14 @@ impl GroveDb {
             // invariant the regular flow enforces. Items, references,
             // and empty trees inside a count tree are fine.
             for item in count_offset_result.returned_items.iter() {
-                if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version) {
-                    if elem.into_underlying().is_non_empty_tree() {
-                        return Err(Error::NotSupported(format!(
-                            "count-offset paginated proofs do not yet support \
-                             non-empty tree return values (key {})",
-                            hex::encode(&item.key)
-                        )));
-                    }
+                if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version)
+                    && elem.into_underlying().is_non_empty_tree()
+                {
+                    return Err(Error::NotSupported(format!(
+                        "count-offset paginated proofs do not yet support \
+                         non-empty tree return values (key {})",
+                        hex::encode(&item.key)
+                    )));
                 }
                 let proved_key_optional_value =
                     grovedb_merk::proofs::query::ProvedKeyOptionalValue {
@@ -1559,14 +1559,14 @@ impl GroveDb {
                 })?;
 
             for item in count_offset_result.returned_items.iter() {
-                if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version) {
-                    if elem.into_underlying().is_non_empty_tree() {
-                        return Err(Error::NotSupported(format!(
-                            "count-offset paginated proofs do not yet support \
-                             non-empty tree return values (key {})",
-                            hex::encode(&item.key)
-                        )));
-                    }
+                if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version)
+                    && elem.into_underlying().is_non_empty_tree()
+                {
+                    return Err(Error::NotSupported(format!(
+                        "count-offset paginated proofs do not yet support \
+                         non-empty tree return values (key {})",
+                        hex::encode(&item.key)
+                    )));
                 }
                 let proved_key_optional_value =
                     grovedb_merk::proofs::query::ProvedKeyOptionalValue {
