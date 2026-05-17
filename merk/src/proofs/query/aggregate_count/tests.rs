@@ -1764,15 +1764,20 @@ fn shape_walk_rejects_own_count_underflow() {
         .unwrap()
         .expect("prove succeeds");
 
-    // Find the LAST KVDigestCount op (deeper in the walk, more likely
-    // to be a parent boundary with children already pushed). Lower its
-    // count to 0 so any non-zero left_struct + right_struct exceeds
-    // the parent aggregate.
+    // Mutate ONLY the last KVDigestCount op (per CodeRabbit review):
+    // that's the parent boundary node whose children are already on
+    // the proof stack, so zeroing it specifically triggers the
+    // `checked_sub` underflow when the verifier computes
+    // `own_count = aggregate - left_struct - right_struct`. Mutating
+    // every KVDigestCount in the stream could trip an earlier,
+    // unrelated shape error before the verifier ever reaches this
+    // arm — making the test non-deterministic.
     let mut rewrote = false;
-    for op in ops.iter_mut() {
+    for op in ops.iter_mut().rev() {
         if let ProofOp::Push(Node::KVDigestCount(_, _, c)) = op {
             *c = 0;
             rewrote = true;
+            break;
         }
     }
     assert!(

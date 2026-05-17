@@ -1882,13 +1882,29 @@ mod test {
     /// `ProvableCountTree | ProvableCountSumTree`, so PCPS with
     /// `min_depth` would silently fall into the non-privacy path and
     /// leak small-subtree information.
+    ///
+    /// Tightened (per CodeRabbit review): the test now asserts the
+    /// returned `chunk_depths` matches the privacy function's output
+    /// AND that this differs from the non-privacy function's output,
+    /// so a regression that silently falls back to the non-privacy
+    /// path would fail this assertion.
     #[test]
     fn test_trunk_query_with_min_depth_engages_privacy_path_for_pcps() {
-        use crate::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode;
+        use crate::{
+            proofs::branch::depth::{calculate_chunk_depths, calculate_chunk_depths_with_minimum},
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode,
+        };
         let grove_version = GroveVersion::latest();
         let mut merk =
             TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
-        let batch: Vec<(Vec<u8>, crate::Op)> = (0u64..15)
+        // 25 keys → AVL tree depth ≥ 6 (Fibonacci-minimum
+        // 20=N(6) ≤ 25 < N(7)=33). At depth 6 with max_depth=4 and
+        // min_depth=4, the two depth-split functions return
+        // **different** vectors: non-privacy produces [3, 3] (the
+        // natural even split) while privacy produces [4, 2] (front
+        // chunk clamped up to min_depth). So a non-engaged privacy
+        // path is observable in the output.
+        let batch: Vec<(Vec<u8>, crate::Op)> = (0u64..25)
             .map(|n| {
                 (
                     n.to_be_bytes().to_vec(),
@@ -1903,18 +1919,39 @@ mod test {
             .unwrap()
             .expect("apply");
 
-        // min_depth = 5; tree_depth of 15 keys with privacy clamping
-        // engaged must produce a result whose chunk_depths reflect the
-        // minimum-clamped first chunk depth. We only check the call
-        // succeeds — the exact chunk_depths layout is an internal
-        // detail of `calculate_chunk_depths_with_minimum`. Without the
-        // PCPS arm in `is_provable_count_tree`, the privacy path
-        // wouldn't be engaged at all (silently fell back to the
-        // non-privacy depth calculation).
+        let max_depth = 4u8;
+        let min_depth = 4u8;
         let result = merk
-            .trunk_query(8, Some(5), grove_version)
+            .trunk_query(max_depth, Some(min_depth), grove_version)
             .unwrap()
             .expect("trunk_query with min_depth on PCPS must succeed");
         assert!(!result.proof.is_empty());
+
+        // The returned chunk_depths must equal the privacy function's
+        // output for (tree_depth, max_depth, min_depth) — this is the
+        // headline assertion: the PCPS arm in `is_provable_count_tree`
+        // routes to the privacy depth calculator.
+        let expected_privacy =
+            calculate_chunk_depths_with_minimum(result.tree_depth, max_depth, min_depth)
+                .expect("expected privacy chunk-depth calculation to succeed");
+        assert_eq!(
+            result.chunk_depths, expected_privacy,
+            "trunk_query on PCPS with min_depth must use the privacy depth split"
+        );
+
+        // Sanity: confirm the two depth functions actually return
+        // **different** vectors for these inputs so the equality
+        // assertion above isn't a coincidence — i.e. if we'd silently
+        // fallen into the non-privacy branch, the assertion above
+        // would have failed.
+        let non_privacy = calculate_chunk_depths(result.tree_depth, max_depth)
+            .expect("non-privacy chunk-depth calculation");
+        assert_ne!(
+            non_privacy, expected_privacy,
+            "test setup invariant: at tree_depth={}, max_depth={}, min_depth={}, the two depth \
+             functions must produce different vectors — otherwise the privacy-engaged assertion \
+             above is vacuous",
+            result.tree_depth, max_depth, min_depth,
+        );
     }
 }
