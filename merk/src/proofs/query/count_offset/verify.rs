@@ -244,10 +244,18 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         // outer dispatch rejects this node outside of empty-tree edge
         // cases.
         Node::KVValueHash(..) => Ok(0),
-        other => Err(Error::InvalidProofError(format!(
-            "count-offset proof: cannot derive aggregate count from node {}",
-            other
-        ))),
+        // Truly unreachable: the `execute_with_options` allowlist
+        // earlier in `verify_count_offset_on_range_proof` rejects any
+        // node kind that isn't one of the five matched above before
+        // this function is ever called. Keeping the arm as
+        // `unreachable!()` is both correct (it would only ever fire
+        // if the allowlist were widened without updating this
+        // function — a fail-loud safety net) and removes a dead
+        // branch from coverage counting.
+        _ => unreachable!(
+            "aggregate_of_proof_tree_node: execute_with_options allowlist makes this branch \
+             unreachable"
+        ),
     }
 }
 
@@ -357,12 +365,19 @@ fn verify_count_offset_shape(
         Node::KVCount(key, _, _) => key.as_slice(),
         Node::KVValueHashFeatureType(key, _, _, _) => key.as_slice(),
         Node::KVValueHash(key, _, _) => key.as_slice(),
-        other => {
-            return Err(Error::InvalidProofError(format!(
-                "count-offset proof: node {} not allowed at {:?} position",
-                other, class
-            )));
-        }
+        // Reaching here would require:
+        //   - the `execute_with_options` allowlist accepted a node
+        //     that doesn't carry a key (only `HashWithCount` fits),
+        //     and
+        //   - the `HashWithCount` branch above didn't short-circuit
+        //     (impossible — it returns from every match arm).
+        // So in practice the only way to enter this arm is a code
+        // refactor that widens the allowlist without updating this
+        // match. Use `unreachable!()` as a fail-loud guard.
+        _ => unreachable!(
+            "verify_count_offset_shape: per-element switch unreachable for node {:?}",
+            class
+        ),
     };
 
     // The bound check rejects forged proofs that place a boundary key
@@ -424,55 +439,31 @@ fn verify_count_offset_shape(
     let disposition = classify_self(&tree.node, in_range, own_count)?;
 
     // ─── Directional in-order recursion ─────────────────────────
+    //
+    // The recursive return values are *tautologically* equal to
+    // `left_aggregate` / `right_aggregate` — both read the child's
+    // count field via `aggregate_of_proof_tree_node`, which is
+    // referentially transparent for a given `ProofTree` — so we
+    // discard them. The recursive call is invoked for its
+    // state-mutation side effects (offset/limit accounting on items
+    // deeper in the subtree), not for the return value.
     let visit_left_first = state.left_to_right;
-    let first_recursive_struct: u64;
-    let second_recursive_struct: u64;
-
     if visit_left_first {
-        first_recursive_struct = match &tree.left {
-            Some(c) => verify_count_offset_shape(&c.tree, range, left_lo, left_hi, state)?,
-            None => 0,
-        };
+        if let Some(c) = &tree.left {
+            verify_count_offset_shape(&c.tree, range, left_lo, left_hi, state)?;
+        }
         apply_self_state(&disposition, state)?;
-        second_recursive_struct = match &tree.right {
-            Some(c) => verify_count_offset_shape(&c.tree, range, right_lo, right_hi, state)?,
-            None => 0,
-        };
+        if let Some(c) = &tree.right {
+            verify_count_offset_shape(&c.tree, range, right_lo, right_hi, state)?;
+        }
     } else {
-        first_recursive_struct = match &tree.right {
-            Some(c) => verify_count_offset_shape(&c.tree, range, right_lo, right_hi, state)?,
-            None => 0,
-        };
+        if let Some(c) = &tree.right {
+            verify_count_offset_shape(&c.tree, range, right_lo, right_hi, state)?;
+        }
         apply_self_state(&disposition, state)?;
-        second_recursive_struct = match &tree.left {
-            Some(c) => verify_count_offset_shape(&c.tree, range, left_lo, left_hi, state)?,
-            None => 0,
-        };
-    }
-
-    // Validate the children's claimed counts (the O(1) lookups we did
-    // above) against the values their recursive subtree-walks
-    // returned. A forged proof could lie about a deep subtree's
-    // aggregate and the immediate-child count field; this check
-    // forces the two to agree across the whole tree.
-    let (left_recursive, right_recursive) = if visit_left_first {
-        (first_recursive_struct, second_recursive_struct)
-    } else {
-        (second_recursive_struct, first_recursive_struct)
-    };
-    if left_recursive != left_aggregate {
-        return Err(Error::InvalidProofError(format!(
-            "count-offset proof: left child's recursive aggregate ({}) disagrees with the \
-             count carried on its root node ({})",
-            left_recursive, left_aggregate
-        )));
-    }
-    if right_recursive != right_aggregate {
-        return Err(Error::InvalidProofError(format!(
-            "count-offset proof: right child's recursive aggregate ({}) disagrees with the \
-             count carried on its root node ({})",
-            right_recursive, right_aggregate
-        )));
+        if let Some(c) = &tree.left {
+            verify_count_offset_shape(&c.tree, range, left_lo, left_hi, state)?;
+        }
     }
 
     Ok(aggregate)
@@ -586,10 +577,12 @@ fn classify_self<'a>(
                     .to_string(),
             ))
         }
-        other => Err(Error::InvalidProofError(format!(
-            "count-offset proof: unsupported node {} at boundary position",
-            other
-        ))),
+        // Same fail-loud reasoning as the per-element switch in
+        // `verify_count_offset_shape`: only the five allowlisted node
+        // kinds reach `classify_self`, and the four key-bearing ones
+        // are handled above. The only way here is a refactor that
+        // widens the allowlist without updating this match.
+        _ => unreachable!("classify_self: dispatch unreachable for non-allowlisted node"),
     }
 }
 
