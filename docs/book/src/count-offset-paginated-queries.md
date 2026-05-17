@@ -249,40 +249,49 @@ These rejection branches all have dedicated forging tests in
 
 ## Unsupported in-range value shapes (P1 / P2)
 
-The count-offset proof flow's scope is **plain `Item` /`SumItem` /
+The count-offset proof flow's scope is **plain `Item` / `SumItem` /
 `ItemWithSumItem` and empty trees inside a count tree**. Three shapes
-that *can* legally appear inside a `ProvableCountTree` are explicitly
-rejected — the prover refuses to descend through them at proof time,
-and the verifier refuses to accept them at verify time (defense in
-depth against forged proofs):
+are explicitly rejected by both the prover and the verifier:
 
-| Rejected shape                              | Why                                                                                                                                                                                                                                                          |
+| Rejected shape                              | Primary defense                                                                                                                                                                                                                                              |
 |---------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **`NonCounted`-wrapped in-range entry**     | Regular GroveDB returns the inner value; the count-offset flow has no way to emit it (own_count = 0 routes the prover to `KVDigestCount`, which carries only the key/hash). Silently dropping it would be a correctness divergence — we reject upfront.       |
-| **`Reference` / `ReferenceWithSumItem`**    | The regular flow's reference post-pass dereferences these to the target's value bytes. The count-offset short-circuit returns *before* that post-pass, so a verified result would expose the raw `Element::Reference` rather than the dereferenced target.    |
+| **`NonCounted`-wrapped entry**              | Rejected at **insert time** by PR [#672](https://github.com/dashpay/grovedb/pull/672) — `NonCounted` cannot be stored inside a `ProvableCountTree` / `ProvableCountSumTree` at all. The merk-level prover and the verifier still reject defensively (against pre-#672 data on disk or any lower-level builder that bypasses the insert restriction). |
+| **`Reference` / `ReferenceWithSumItem`**    | The regular flow's reference post-pass dereferences these to the target's value bytes. The count-offset short-circuit returns *before* that post-pass, so a verified result would expose the raw `Element::Reference` rather than the dereferenced target. Prover rejects at descent; verifier rejects in returned items. |
 | **Non-empty tree** (any tree variant)       | V1 strict-mode requires a `KVValueHashFeatureTypeWithChildHash` proof node for these, which the count-offset prover doesn't emit. Accepting one without that node would silently bypass the child-hash invariant the regular flow enforces.                    |
 
-When the prover encounters any of these inside its scan, it returns
-`Error::InvalidProofError` with a message naming the rejected shape and
-the limitation; the GroveDB caller surfaces this as
-`CostResult<_, Error>`. When the verifier encounters one in the
-reconstructed returned-items list, it returns `Error::NotSupported` for
-the first two and `Error::InvalidProof` for `NonCounted` (a
-`NonCounted`-wrapped entry should never be surfaced in
-`returned_items` by an honest prover, so a `NonCounted` value here
-indicates forgery rather than scope).
+### Why the `NonCounted` rejection is enforced at insert time
 
-Lifting any of these is straightforward follow-up work:
+A `ProvableCountTree` binds its count aggregate into every node hash
+via `node_hash_with_count`. The `HashWithCount` collapse rule in the
+prover (`Contained` subtree + `subtree_count ≤ offset_remaining`) folds
+an entire subtree into one self-verifying op whose committed count
+field is what consumes the offset budget.
+
+`NonCounted` children contribute `own_count = 0`, so they don't show up
+in `subtree_count` — but they *are* visible to regular GroveDB
+pagination. Allowing them in a `ProvableCountTree` would mean a
+contained subtree like `[counted-a, NonCounted-b, counted-c]` with
+`offset = 2, limit = 1` could collapse as `HashWithCount(count = 2)`
+and verify with `returned = []`, while regular pagination would return
+`[c]`. That's a silent semantic divergence.
+
+#672 closes the gap at the only place it can be closed without changing
+the proof wire format: the `Element::insert` / batch path refuses to
+store `NonCounted` inside a `Provable*` count parent. With that
+invariant in place, `subtree_count` always equals the actual entry
+count for these trees, and the collapse rule is safe.
+
+### Lifting the remaining restrictions (follow-up work)
 
 - **Non-empty trees**: emit `KVValueHashFeatureTypeWithChildHash` (mirroring
   the regular V1 prover) and drop the verifier-side rejection.
 - **References**: apply the same reference-post-pass the regular V1
   prover uses, rewriting `Reference` / `ReferenceWithSumItem` value
   nodes into `KVRefValueHashCount` with the dereferenced target's bytes.
-- **NonCounted entries**: emit them as value-bearing nodes with no
-  offset/limit state mutation, and update the verifier's
-  `classify_self` to accept value-bearing nodes with `own_count = 0`
-  inside the limit window.
+- **NonCounted entries** are unlikely to become legal here, since the
+  whole `ProvableCountTree` model depends on `subtree_count == entry
+  count`. If that semantic is ever wanted, the right path is a
+  different tree type, not relaxing the insert rule.
 
 ## API surface
 

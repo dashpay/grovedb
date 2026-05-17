@@ -826,77 +826,21 @@ mod tests {
         );
     }
 
-    /// Prover-side rejection for `NonCounted`-wrapped in-range entries.
-    /// Earlier drafts silently dropped these from the result (own_count
-    /// = 0 → no return); the merk prover now refuses to descend through
-    /// them, surfacing the divergence from regular-GroveDB semantics
-    /// explicitly.
-    #[test]
-    fn rejects_count_offset_with_non_counted_entry() {
-        let v = GroveVersion::latest();
-        let db = make_test_grovedb(v);
-        db.insert(
-            &[] as &[&[u8]],
-            b"counts",
-            Element::empty_provable_count_tree(),
-            None,
-            None,
-            v,
-        )
-        .unwrap()
-        .expect("insert count tree");
-
-        // Fixture: a = counted Item, b = NonCounted(Item), c = counted Item.
-        // With offset=1, the prover descends through b (skipping
-        // counted items in the tree's count-aware order). Hitting b
-        // must surface as an error rather than silently producing a
-        // proof that drops it.
-        db.insert(
-            &[b"counts"],
-            b"a",
-            Element::new_item(b"v_a".to_vec()),
-            None,
-            None,
-            v,
-        )
-        .unwrap()
-        .expect("insert a");
-        db.insert(
-            &[b"counts"],
-            b"b",
-            Element::new_non_counted(Element::new_item(b"v_b".to_vec())).expect("non_counted wrap"),
-            None,
-            None,
-            v,
-        )
-        .unwrap()
-        .expect("insert NonCounted(b)");
-        db.insert(
-            &[b"counts"],
-            b"c",
-            Element::new_item(b"v_c".to_vec()),
-            None,
-            None,
-            v,
-        )
-        .unwrap()
-        .expect("insert c");
-
-        let mut q = Query::new();
-        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
-        let path_query = PathQuery::new(
-            vec![b"counts".to_vec()],
-            SizedQuery::new(q, Some(2), Some(1)),
-        );
-        let result = db.prove_query(&path_query, None, v).unwrap();
-        let err = result.expect_err("prover must reject NonCounted in-range entry");
-        let msg = format!("{}", err);
-        assert!(
-            msg.contains("NonCounted"),
-            "prover rejection should mention NonCounted; got {}",
-            msg
-        );
-    }
+    // NOTE: an earlier draft of this file had a
+    // `rejects_count_offset_with_non_counted_entry` test that inserted
+    // a NonCounted entry into a ProvableCountTree and asserted the
+    // prover rejected on descent. PR
+    // [#672](https://github.com/dashpay/grovedb/pull/672) closed that
+    // shape at the insert path — see
+    // `p1_noncounted_in_provable_count_tree_rejected_at_insert` above
+    // for the authoritative regression. The merk-level prover-side
+    // guard at `emit.rs:236` remains as defense-in-depth against
+    // pre-#672 data on disk or any lower-level tree-builder paths that
+    // bypass the insert restriction, but cannot be exercised on the
+    // honest path now that #672 is in place. The merk-level unit test
+    // `rejects_kv_count_with_zero_own_count` (in
+    // `merk/src/proofs/query/count_offset/tests.rs`) covers the
+    // verifier symmetric.
 
     /// Prover-side rejection for `Reference` in-range entries. Earlier
     /// drafts returned the raw `Element::Reference` bytes verbatim
@@ -997,6 +941,65 @@ mod tests {
             "prover must reject offset against a nonexistent path with \
              InvalidQuery; got {:?}",
             result
+        );
+    }
+
+    /// Verifies the P1 finding's root cause is closed at the insert
+    /// path by PR [#672](https://github.com/dashpay/grovedb/pull/672)
+    /// — `NonCounted` into a `ProvableCountTree` is now rejected
+    /// before any proof can be generated. Without this rejection, a
+    /// fixture of [counted-a, NonCounted-b, counted-c] with `RangeFull`
+    /// `offset=2`, `limit=1` would let the prover collapse the whole
+    /// subtree via `HashWithCount(count=2)` and produce a verified
+    /// proof with `returned=[]`, while regular GroveDB pagination
+    /// would return `[c]`. With the insert-time rejection in place,
+    /// the unsafe state is unreachable.
+    #[test]
+    fn p1_noncounted_in_provable_count_tree_rejected_at_insert() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        db.insert(
+            &[b"counts"],
+            b"a",
+            Element::new_item(b"v_a".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert counted-a");
+
+        // The insert-time check from #672 must reject this — it's the
+        // only structural guarantee that `subtree_count` always equals
+        // entry count for a ProvableCountTree, which the count-offset
+        // collapse path relies on.
+        let attempt = db
+            .insert(
+                &[b"counts"],
+                b"b",
+                Element::new_non_counted(Element::new_item(b"v_b".to_vec()))
+                    .expect("wrap non_counted"),
+                None,
+                None,
+                v,
+            )
+            .unwrap();
+        assert!(
+            attempt.is_err(),
+            "PR #672 closes the P1 finding by rejecting NonCounted inserts into a \
+             ProvableCountTree; this insert must fail. If it succeeds, the \
+             count-offset collapse path can hide NonCounted entries behind \
+             HashWithCount and silently diverge from regular pagination."
         );
     }
 
