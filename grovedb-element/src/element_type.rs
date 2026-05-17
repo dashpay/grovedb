@@ -357,9 +357,9 @@ pub enum ElementType {
     NotCountedOrSummedProvableSumTree = 193,
     /// Not-counted-or-summed wrapper around `ProvableCountProvableSumTree`
     /// - discriminant 194 (`0xC2`), hand-assigned out of the `0xC0..=0xCF`
-    /// family range. Like `NotSummedProvableCountProvableSumTree` (0xB2)
-    /// it can't use the `prefix | base` formula because base 20 overflows
-    /// the low nibble.
+    ///   family range. Like `NotSummedProvableCountProvableSumTree` (0xB2)
+    ///   it can't use the `prefix | base` formula because base 20 overflows
+    ///   the low nibble.
     NotCountedOrSummedProvableCountProvableSumTree = 194,
 }
 
