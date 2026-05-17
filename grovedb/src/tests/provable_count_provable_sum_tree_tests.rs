@@ -202,39 +202,14 @@ mod tests {
     /// count proof AND a verifiable sum proof against the SAME root hash.
     ///
     /// This is what `ProvableCountProvableSumTree` exists for — the count
-    /// and sum proof modules must both accept the new variant and verify
-    /// against the shared root hash.
-    ///
-    /// **Known protocol gap (`#[ignore]`d):** the current
-    /// `aggregate_count/emit.rs` machinery emits `HashWithCount` /
-    /// `KVCount` / `KVDigestCount` / `KVHashCount` nodes, which the
-    /// verifier reconstructs via `node_hash_with_count(...)` — using
-    /// only the count to recompute the node hash. For
-    /// `ProvableCountProvableSumTree` the actual stored node hash is
-    /// `node_hash_with_count_and_sum(...)`, so the verifier's
-    /// reconstruction diverges from the parent's value_hash and the
-    /// hash-chain check fails. Symmetric issue on the sum side.
-    ///
-    /// Resolving this requires parametrizing both
-    /// `aggregate_count/emit.rs` and `aggregate_sum/emit.rs` on the
-    /// outer tree's `TreeType`, then dispatching:
-    /// - `HashWithCountAndSum` instead of `HashWithCount` when the tree
-    ///   is `ProvableCountProvableSumTree` (so the verifier has both
-    ///   axes to reconstruct the right hash);
-    /// - `KVCountSum` / `KVDigestCountSum` / `KVHashCountSum` /
-    ///   `KVRefValueHashCountSum` instead of their count-only
-    ///   counterparts at the leaf level;
-    /// - Symmetric changes in the sum-proof emitter.
-    ///
-    /// The Node-variant scaffolding is already in place (see the
-    /// `KVCountSum` / `KVHashCountSum` / etc. Node variants and the
-    /// matching `node_hash_with_count_and_sum` reconstruction in
-    /// `merk/src/proofs/tree.rs`); only the dispatch in the emitters is
-    /// missing.
+    /// and sum proof modules both accept the new variant and verify
+    /// against the shared root hash. Both emitters dispatch on the host
+    /// tree's `TreeType`: for `ProvableCountProvableSumTree`, they emit
+    /// dual-axis Node variants (`HashWithCountAndSum`, `KVDigestCountSum`)
+    /// so the verifier can reconstruct `node_hash_with_count_and_sum`.
+    /// Each proof returns its corresponding aggregate; both verify
+    /// against the exact same GroveDB root hash.
     #[test]
-    #[ignore = "proof crossover requires dual-axis Node emission in aggregate emit.rs — \
-                Node variants exist but emitter dispatch on TreeType::ProvableCountProvableSumTree \
-                is not yet implemented; see test docstring"]
     fn pcps_supports_both_count_and_sum_proofs_against_same_root() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
