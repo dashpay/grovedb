@@ -321,9 +321,9 @@ mod tests {
 
     #[test]
     fn validate_accepts_single_range_variants() {
-        // Sanity: every ordinary range / key variant passes.
+        // Sanity: every ordinary range variant passes. `Key` is
+        // deliberately excluded — see `validate_rejects_single_key`.
         let variants: Vec<QueryItem> = vec![
-            QueryItem::Key(b"a".to_vec()),
             QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
             QueryItem::RangeInclusive(b"a".to_vec()..=b"z".to_vec()),
             QueryItem::RangeFrom(b"a".to_vec()..),
@@ -346,6 +346,26 @@ mod tests {
                 result.err()
             );
         }
+    }
+
+    #[test]
+    fn validate_rejects_single_key() {
+        // `QueryItem::Key` matches at most one in-range item, so
+        // offset > 0 is structurally guaranteed to return zero items.
+        // We reject this combination as a user error rather than
+        // silently producing an empty result.
+        let mut q = Query::new();
+        q.insert_item(QueryItem::Key(b"a".to_vec()));
+        let sized = SizedQuery::new(q, Some(5), Some(1));
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("single-key + offset must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("QueryItem::Key"),
+            "error should mention the rejected variant; got {}",
+            msg
+        );
     }
 
     #[test]

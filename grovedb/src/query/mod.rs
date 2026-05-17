@@ -268,13 +268,20 @@ impl SizedQuery {
             ));
         }
         let item = &self.query.items[0];
-        // Any of the ordinary range / key variants is fine. Aggregate
-        // wrappers were rejected earlier; reject anything else here
-        // explicitly so adding a new QueryItem variant elsewhere
-        // produces a compile-time visit.
+        // Range-shaped variants are fine. `QueryItem::Key(_)` is
+        // **rejected**: it matches at most one key, so an offset > 0
+        // is structurally guaranteed to return zero items — pagination
+        // semantics on a single-key match are nonsensical and almost
+        // always a user error (the caller probably meant a range).
+        // Returning an explicit `InvalidQuery` here is clearer than
+        // silently producing an empty result.
+        //
+        // Aggregate wrappers were rejected earlier; the explicit
+        // match-all-variants pattern below means adding a new
+        // `QueryItem` variant elsewhere produces a compile-time visit
+        // to this match.
         match item {
-            QueryItem::Key(_)
-            | QueryItem::Range(_)
+            QueryItem::Range(_)
             | QueryItem::RangeInclusive(_)
             | QueryItem::RangeFrom(_)
             | QueryItem::RangeFull(_)
@@ -283,6 +290,11 @@ impl SizedQuery {
             | QueryItem::RangeAfter(_)
             | QueryItem::RangeAfterTo(_)
             | QueryItem::RangeAfterToInclusive(_) => Ok(item),
+            QueryItem::Key(_) => Err(Error::InvalidQuery(
+                "count-offset paginated queries do not support QueryItem::Key — a \
+                 single-key match has at most one in-range item, so offset > 0 is \
+                 guaranteed to return zero items. Use a range variant instead",
+            )),
             QueryItem::AggregateCountOnRange(_) | QueryItem::AggregateSumOnRange(_) => {
                 Err(Error::InvalidQuery(
                     "count-offset paginated queries cannot wrap an aggregate QueryItem",
