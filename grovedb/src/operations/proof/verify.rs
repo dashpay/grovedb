@@ -54,11 +54,14 @@ impl GroveDb {
             ))?;
         }
 
-        // must have no offset
-        if query.query.offset.is_some() {
-            return Err(Error::NotSupported(
-                "offsets in path queries are not supported for proofs".to_string(),
-            ));
+        if query.query.offset.is_some() && query.query.offset != Some(0) {
+            // Mirror of the prover-side relaxation: a non-zero offset
+            // is only honored when the query validates as offset-
+            // paginated against a ProvableCountTree / ProvableCountSumTree
+            // (the tree-type check happens at leaf-dispatch time).
+            // Syntactically-invalid offset queries surface the precise
+            // error from the validator.
+            query.validate_count_offset_paginated()?;
         }
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
@@ -419,6 +422,85 @@ impl GroveDb {
                 ));
             }
         };
+
+        // Count-offset paginated dispatch (v1 verify). Fires when:
+        //   - we're at the leaf level (current_path == query.path), and
+        //   - the path query has a non-zero offset, and
+        //   - it validates as count-offset-paginated (syntactic gate
+        //     already passed at the top entry, so this should
+        //     always succeed for honest callers but we double-check
+        //     to surface invariant violations cleanly).
+        //
+        // On match: route to the merk-level
+        // `verify_count_offset_on_range_proof`, convert the returned
+        // items into `ProvedPathKeyOptionalValue`s the rest of the
+        // verifier pipeline expects, and return the leaf merk's root
+        // hash so the parent layer's `combine_hash(H(value),
+        // lower_hash)` chain check matches.
+        if current_path.len() == query.path.len() && query.has_non_zero_offset() {
+            let inner_range = query.validate_count_offset_paginated()?.clone();
+            let offset = query.query.offset.map(|o| o as u64).unwrap_or(0);
+            let limit_u64 = query.query.limit.map(|l| l as u64);
+            let internal_query_for_dir = query
+                .query_items_at_path(current_path, grove_version)?
+                .ok_or(Error::CorruptedPath(format!(
+                    "verify v1 count-offset: path {} should be part of path_query {}",
+                    current_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    query
+                )))?;
+            let count_offset_result =
+                grovedb_merk::proofs::query::verify_count_offset_on_range_proof(
+                    merk_proof_bytes,
+                    &inner_range,
+                    offset,
+                    limit_u64,
+                    internal_query_for_dir.left_to_right,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("count-offset merk proof failed to verify: {}", e),
+                    )
+                })?;
+
+            // Push each returned item into the result list. Each item
+            // becomes a `ProvedPathKeyOptionalValue` with `proof =
+            // value_hash(value)` so the wire-format invariant
+            // (`proof` is the value_hash committed at this position)
+            // is satisfied for downstream conversions.
+            for item in count_offset_result.returned_items.iter() {
+                let v_hash = value_hash(item.value.as_slice()).unwrap();
+                // We construct `ProvedKeyOptionalValue` directly (rather
+                // than going through `ProvedKeyValue::from`) so we can
+                // explicitly mark `child_hash_verified = true`. For
+                // count-tree returned items the flag is structurally
+                // irrelevant — the items aren't
+                // tree-with-child-hash nodes — but the V1 strict-mode
+                // post-checks downstream insist on it being true for
+                // non-empty trees, and false would trip those.
+                let proved_key_optional_value =
+                    grovedb_merk::proofs::query::ProvedKeyOptionalValue {
+                        key: item.key.clone(),
+                        value: Some(item.value.clone()),
+                        proof: v_hash,
+                        child_hash_verified: true,
+                    };
+                let path_key_optional_value = ProvedPathKeyOptionalValue::from_proved_key_value(
+                    current_path.iter().map(|p| p.to_vec()).collect(),
+                    proved_key_optional_value,
+                );
+                result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+                limit_left
+                    .iter_mut()
+                    .for_each(|limit| *limit = limit.saturating_sub(1));
+            }
+            return Ok(count_offset_result.root_hash);
+        }
 
         let internal_query = query
             .query_items_at_path(current_path, grove_version)?
@@ -1400,6 +1482,63 @@ impl GroveDb {
                 .proof
                 .verify_layer_proof
         );
+
+        // Count-offset paginated dispatch (v0 verify). Mirror of the
+        // v1 verifier's leaf-level dispatch. The v0 envelope wraps the
+        // merk proof bytes directly in `MerkOnlyLayerProof.merk_proof`
+        // (no `ProofBytes` enum), so dispatch is structurally simpler.
+        if current_path.len() == query.path.len() && query.has_non_zero_offset() {
+            let inner_range = query.validate_count_offset_paginated()?.clone();
+            let offset = query.query.offset.map(|o| o as u64).unwrap_or(0);
+            let limit_u64 = query.query.limit.map(|l| l as u64);
+            let internal_query_for_dir = query
+                .query_items_at_path(current_path, grove_version)?
+                .ok_or(Error::CorruptedPath(format!(
+                    "verify v0 count-offset: path {} should be part of path_query {}",
+                    current_path
+                        .iter()
+                        .map(hex::encode)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    query
+                )))?;
+            let count_offset_result =
+                grovedb_merk::proofs::query::verify_count_offset_on_range_proof(
+                    layer_proof.merk_proof.as_slice(),
+                    &inner_range,
+                    offset,
+                    limit_u64,
+                    internal_query_for_dir.left_to_right,
+                )
+                .unwrap()
+                .map_err(|e| {
+                    Error::InvalidProof(
+                        query.clone(),
+                        format!("count-offset merk proof failed to verify: {}", e),
+                    )
+                })?;
+
+            for item in count_offset_result.returned_items.iter() {
+                let v_hash = value_hash(item.value.as_slice()).unwrap();
+                let proved_key_optional_value =
+                    grovedb_merk::proofs::query::ProvedKeyOptionalValue {
+                        key: item.key.clone(),
+                        value: Some(item.value.clone()),
+                        proof: v_hash,
+                        child_hash_verified: true,
+                    };
+                let path_key_optional_value = ProvedPathKeyOptionalValue::from_proved_key_value(
+                    current_path.iter().map(|p| p.to_vec()).collect(),
+                    proved_key_optional_value,
+                );
+                result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+                limit_left
+                    .iter_mut()
+                    .for_each(|limit| *limit = limit.saturating_sub(1));
+            }
+            return Ok(count_offset_result.root_hash);
+        }
+
         let internal_query = query
             .query_items_at_path(current_path, grove_version)?
             .ok_or(Error::CorruptedPath(format!(

@@ -181,6 +181,50 @@ impl GroveDb {
         }
     }
 
+    /// Helper for the top-level count-offset gate in
+    /// `prove_query_non_serialized_v{0,1}`. Opens the merk at
+    /// `path_query.path` and confirms its `tree_type` is one of the
+    /// two count-bearing flavors. Run only when the caller has set a
+    /// non-zero offset *and* the syntactic gate
+    /// (`validate_count_offset_paginated`) already passed.
+    ///
+    /// Why this lives at the top entry rather than only at the
+    /// leaf-level short-circuit: for an empty NormalTree at the
+    /// target path, the descent inside `prove_subqueries_v{0,1}`
+    /// hits the empty-tree arm and *doesn't* recurse into the leaf
+    /// merk, so the leaf-level tree-type check never fires. Doing it
+    /// here gives callers a clear up-front error in that case.
+    fn check_count_offset_target_tree_type(
+        &self,
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        use grovedb_merk::TreeType as MerkTreeType;
+        let mut cost = OperationCost::default();
+        let tx = self.start_transaction();
+        let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+        let target = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path_slices.as_slice().into(),
+                &tx,
+                None,
+                grove_version,
+            )
+        );
+        if !matches!(
+            target.tree_type,
+            MerkTreeType::ProvableCountTree | MerkTreeType::ProvableCountSumTree
+        ) {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries are only valid against \
+                 ProvableCountTree / ProvableCountSumTree merks",
+            ))
+            .wrap_with_cost(cost);
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
     /// V0: Generates a Merk-only proof without serialization.
     pub(crate) fn prove_query_non_serialized_v0(
         &self,
@@ -193,10 +237,20 @@ impl GroveDb {
         let prove_options = prove_options.unwrap_or_default();
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
-            return Err(Error::InvalidQuery(
-                "proved path queries can not have offsets",
-            ))
-            .wrap_with_cost(cost);
+            // See the matching block in `prove_query_non_serialized_v1`
+            // for the rationale: a non-zero offset is only honored when
+            // the query validates as offset-paginated against a count
+            // tree. We do both the syntactic check (single range, no
+            // subqueries, offset > 0) and the merk-open tree-type
+            // check here so empty NormalTree targets fail with a
+            // clear error instead of silently producing a no-op proof.
+            if let Err(e) = path_query.validate_count_offset_paginated() {
+                return Err(e).wrap_with_cost(cost);
+            }
+            cost_return_on_error!(
+                &mut cost,
+                self.check_count_offset_target_tree_type(path_query, grove_version)
+            );
         }
 
         if path_query.query.limit == Some(0) {
@@ -373,6 +427,52 @@ impl GroveDb {
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(sum_ops.iter(), &mut serialized);
+            return Ok(MerkOnlyLayerProof {
+                merk_proof: serialized,
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
+        // Count-offset paginated short-circuit (v0 path). Mirror of the
+        // v1 branch above — same contract, different envelope
+        // (`MerkOnlyLayerProof` vs `LayerProof`/`ProofBytes::Merk`).
+        if path.len() == path_query.path.len() && path_query.has_non_zero_offset() {
+            use grovedb_merk::TreeType as MerkTreeType;
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_count_offset_paginated().cloned()
+            );
+            if !matches!(
+                subtree.tree_type,
+                MerkTreeType::ProvableCountTree | MerkTreeType::ProvableCountSumTree
+            ) {
+                return Err(Error::InvalidQuery(
+                    "count-offset paginated queries are only valid against \
+                     ProvableCountTree / ProvableCountSumTree merks",
+                ))
+                .wrap_with_cost(cost);
+            }
+            let offset = path_query.query.offset.map(|o| o as u64).unwrap_or(0);
+            let limit_u64 = path_query.query.limit.map(|l| l as u64);
+            let prove_result = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_count_offset_on_range(
+                        &inner_range,
+                        offset,
+                        limit_u64,
+                        query.left_to_right,
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(prove_result.ops.iter(), &mut serialized);
+            if let Some(outer_limit) = overall_limit.as_mut() {
+                let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
+                *outer_limit = outer_limit.saturating_sub(returned_u16);
+            }
             return Ok(MerkOnlyLayerProof {
                 merk_proof: serialized,
                 lower_layers: BTreeMap::new(),
@@ -1094,10 +1194,32 @@ impl GroveDb {
         let prove_options = prove_options.unwrap_or_default();
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
-            return Err(Error::InvalidQuery(
-                "proved path queries can not have offsets",
-            ))
-            .wrap_with_cost(cost);
+            // A non-zero offset is honored *only* if the surrounding
+            // query is an offset-paginated range query against a
+            // ProvableCountTree / ProvableCountSumTree (see
+            // `SizedQuery::validate_count_offset_paginated`).
+            //
+            // We do two checks here at the top entry:
+            //   1. Syntactic gate via `validate_count_offset_paginated`
+            //      (single range item, no subqueries, offset > 0).
+            //   2. Open the target leaf merk and confirm its
+            //      `tree_type` is one of the two allowed flavors.
+            //
+            // Step 2 has to be done at the top because the leaf-level
+            // short-circuit in `prove_subqueries_v1` only fires after
+            // the descent reaches the leaf — and for an empty
+            // NormalTree at the target path the descent's empty-tree
+            // arm decrements the limit and returns instead of
+            // recursing, so the leaf check would silently accept.
+            // Doing the merk-open here gives a clear up-front error
+            // for that case.
+            if let Err(e) = path_query.validate_count_offset_paginated() {
+                return Err(e).wrap_with_cost(cost);
+            }
+            cost_return_on_error!(
+                &mut cost,
+                self.check_count_offset_target_tree_type(path_query, grove_version)
+            );
         }
         if path_query.query.limit == Some(0) {
             return Err(Error::InvalidQuery(
@@ -1219,6 +1341,64 @@ impl GroveDb {
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(sum_ops.iter(), &mut serialized);
+            return Ok(LayerProof {
+                merk_proof: ProofBytes::Merk(serialized),
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
+        // Count-offset paginated short-circuit (v1 path). Mirror of the
+        // aggregate-count/sum branches. Only fires at the leaf level
+        // (path is the full path_query.path) and only when the caller
+        // requested a non-zero offset on a syntactically-eligible query.
+        // The tree-type check happens here — the syntactic gate at the
+        // top entry already ran, so a mismatched tree type is a
+        // hard-error case (the caller asked for count-offset pagination
+        // against something that isn't a count tree).
+        if path.len() == path_query.path.len() && path_query.has_non_zero_offset() {
+            use grovedb_merk::TreeType as MerkTreeType;
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_count_offset_paginated().cloned()
+            );
+            if !matches!(
+                subtree.tree_type,
+                MerkTreeType::ProvableCountTree | MerkTreeType::ProvableCountSumTree
+            ) {
+                return Err(Error::InvalidQuery(
+                    "count-offset paginated queries are only valid against \
+                     ProvableCountTree / ProvableCountSumTree merks",
+                ))
+                .wrap_with_cost(cost);
+            }
+            let offset = path_query.query.offset.map(|o| o as u64).unwrap_or(0);
+            // Carry the SizedQuery::limit into the merk-level proof so
+            // the prover stops emitting value nodes once the requested
+            // page is full. After the merk prover returns, decrement
+            // the outer overall_limit accordingly so the upstream
+            // multi-layer accounting (if any) reflects the consumed
+            // slots.
+            let limit_u64 = path_query.query.limit.map(|l| l as u64);
+            let prove_result = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_count_offset_on_range(
+                        &inner_range,
+                        offset,
+                        limit_u64,
+                        query.left_to_right,
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(prove_result.ops.iter(), &mut serialized);
+            // Apply consumed limit slots to the outer accounting.
+            if let Some(outer_limit) = overall_limit.as_mut() {
+                let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
+                *outer_limit = outer_limit.saturating_sub(returned_u16);
+            }
             return Ok(LayerProof {
                 merk_proof: ProofBytes::Merk(serialized),
                 lower_layers: BTreeMap::new(),
