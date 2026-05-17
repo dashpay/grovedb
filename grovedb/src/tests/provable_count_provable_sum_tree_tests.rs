@@ -604,6 +604,62 @@ mod tests {
     /// This test pins the rejection so we don't accidentally re-add
     /// V0 PCPS support (which would mean modifying the V0 prover —
     /// a violation of the V0-locked contract).
+    /// Batch operation exercising the PCPS arms in
+    /// `grovedb/src/batch/mod.rs`: the `LayeredValueDefinedCost`
+    /// flag-update closure and the `InsertTreeWithRootHash` propagation
+    /// branch both gained `Element::ProvableCountProvableSumTree` arms
+    /// in this PR. This test inserts a PCPS subtree + child items in
+    /// a single batch — the propagation step converts the original
+    /// PCPS insert op into an `InsertTreeWithRootHash`, which triggers
+    /// the new arm at `batch/mod.rs:3264`.
+    ///
+    /// Asserts the batch applies cleanly and the resulting PCPS
+    /// aggregate reflects the children's count and sum.
+    #[test]
+    fn pcps_batch_apply_propagates_aggregate() {
+        use crate::{batch::QualifiedGroveDbOp, tests::TEST_LEAF};
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec()],
+                b"pcps".to_vec(),
+                Element::empty_provable_count_provable_sum_tree(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"pcps".to_vec()],
+                b"a".to_vec(),
+                Element::new_sum_item(10),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"pcps".to_vec()],
+                b"b".to_vec(),
+                Element::new_sum_item(20),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"pcps".to_vec()],
+                b"c".to_vec(),
+                Element::new_sum_item(30),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("batch apply on PCPS host");
+
+        // Verify aggregates propagated correctly: count = 3 children,
+        // sum = 10 + 20 + 30 = 60.
+        let parent = db
+            .get(&[TEST_LEAF], b"pcps", None, grove_version)
+            .unwrap()
+            .expect("get parent PCPS");
+        let (count, sum) = parent
+            .as_provable_count_provable_sum_tree_value()
+            .expect("pcps value");
+        assert_eq!(count, 3, "PCPS count after batch must reflect 3 children");
+        assert_eq!(sum, 60, "PCPS sum after batch must be 10 + 20 + 30 = 60");
+    }
+
     #[test]
     fn pcps_proof_rejected_on_v0_envelope() {
         use grovedb_version::version::v2::GROVE_V2;
