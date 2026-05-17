@@ -482,21 +482,14 @@ mod tests {
         assert_eq!(sum, 0, "NotCountedOrSummed must suppress sum");
     }
 
-    /// 6. References under a `ProvableCountProvableSumTree` parent must
-    /// survive the GroveDB proof post-processor's reference rewrite as
-    /// `KVRefValueHashCountSum` — carrying BOTH the count and sum
-    /// aggregates that the merk-layer node hash committed via
-    /// `node_hash_with_count_and_sum`. The previous post-processor only
-    /// looked for `ProvableCountedMerkNode` and `ProvableSummedMerkNode`
-    /// features, so a PCPS reference's
-    /// `ProvableCountedAndProvableSummedMerkNode` feature would fall
-    /// through to plain `KVRefValueHash` and drop both axes from the
-    /// proof. This test pins that the proof round-trips end-to-end:
-    /// generated against a PCPS-host Reference, the verifier
-    /// reconstructs the root hash exactly.
-    #[test]
-    fn pcps_reference_proof_round_trips_against_same_root() {
-        let grove_version = GroveVersion::latest();
+    /// Shared body of the PCPS reference proof round-trip tests
+    /// below. Parametrized on grove version so we exercise both the
+    /// v1 ref-rewrite loop (`GroveVersion::latest()`) and the v0
+    /// ref-rewrite loop (`GROVE_V2`). Both loops have the same defect
+    /// fixed in this PR — without the `KVRefValueHashCountSum`
+    /// dispatch arm, a PCPS Reference proof would surface a
+    /// "lower layer hash" mismatch at the verifier.
+    fn pcps_reference_proof_round_trip_with(grove_version: &GroveVersion) {
         let db = make_test_grovedb(grove_version);
 
         // Container PCPS at root.
@@ -593,5 +586,26 @@ mod tests {
             ),
             None => panic!("expected resolved value, got absence"),
         }
+    }
+
+    /// V1 dispatch (the latest grove version) — exercises the v1
+    /// ref-rewrite loop's `KVRefValueHashCountSum` arm.
+    #[test]
+    fn pcps_reference_proof_round_trips_against_same_root() {
+        pcps_reference_proof_round_trip_with(GroveVersion::latest());
+    }
+
+    /// V0 dispatch (`GROVE_V2`) — exercises the v0 ref-rewrite loop's
+    /// `KVRefValueHashCountSum` arm. Before this fix the v0 loop
+    /// (line ~1285 of grovedb/src/operations/proof/generate.rs) had
+    /// the same defect as the v1 loop: PCPS Reference's
+    /// `ProvableCountedAndProvableSummedMerkNode` feature would fall
+    /// through to plain `KVRefValueHash`, dropping both hash-bound
+    /// aggregates. Without this test the v0 loop's PCPS arm would be
+    /// uncovered.
+    #[test]
+    fn pcps_reference_proof_round_trips_against_same_root_v0_envelope() {
+        use grovedb_version::version::v2::GROVE_V2;
+        pcps_reference_proof_round_trip_with(&GROVE_V2);
     }
 }

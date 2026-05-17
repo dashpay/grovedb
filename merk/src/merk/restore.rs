@@ -1764,54 +1764,98 @@ mod tests {
 
     // ---------- write_chunk node dispatch coverage ----------
     //
-    // The new KVSum / KVCountSum write-chunk arms produce
-    // `TreeFeatureType::ProvableSummedMerkNode` and
-    // `ProvableCountedAndProvableSummedMerkNode` entries respectively.
-    // These tests pin the byte-level encoding the arms produce so a
-    // future change can't accidentally drop or reshuffle the
-    // dual-axis aggregates during restoration.
+    // Single-leaf chunk round-trips exercise the new `KVSum` and
+    // `KVCountSum` write-chunk arms end-to-end. For a single-leaf
+    // tree (no children) the on-disk feature_type's OWN value equals
+    // the chunk's reported AGGREGATE value, so the restored root
+    // hash matches the source's root hash. (Multi-key chunks on
+    // Provable* trees have a separate pre-existing
+    // OWN-vs-AGGREGATE issue affecting `ProvableCountTree` too;
+    // that's out of scope here.)
 
-    #[test]
-    fn write_chunk_kvsum_node_produces_provable_summed_feature_type() {
-        // KVSum should pass the verify_chunk allowlist and trigger the
-        // KVSum write arm. We can't easily run the full write_chunk
-        // path without a restorer, but we can at least confirm
-        // verify_chunk accepts a KVSum node — which is the only gate
-        // that previously rejected the chunk outright.
-        let kvs_proof = vec![Op::Push(Node::KVSum(vec![5], vec![1, 2, 3], -42))];
-        let result =
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kvs_proof, &[0; 32], &None);
-        // Verify chunk now accepts KVSum (it will still fail on root
-        // hash mismatch, which is fine — we only care that the node
-        // type itself passes the allowlist).
-        assert!(
-            !matches!(
-                result,
-                Err(ChunkRestoringError(InvalidChunkProof(
-                    "expected chunk proof to contain only kv or hash nodes",
-                )))
-            ),
-            "KVSum chunks must pass the allowlist"
+    fn single_leaf_chunk_round_trip(tree_type: TreeType, feature_type: TreeFeatureType) {
+        let grove_version = GroveVersion::latest();
+
+        // Source merk: one leaf with the given feature_type.
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut source_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            tree_type,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        let batch: Vec<(Vec<u8>, crate::tree::Op)> = vec![(
+            vec![0x42],
+            crate::tree::Op::Put(vec![1, 2, 3], feature_type),
+        )];
+        source_merk
+            .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply leaf");
+
+        // Empty restoration merk with the matching tree_type.
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            tree_type,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Chunk-produce + chunk-process: should drive write_chunk's
+        // KVSum / KVCountSum arm.
+        let mut chunk_producer =
+            ChunkProducer::new(&source_merk).expect("should create chunk producer");
+        let mut restorer = Restorer::new(restoration_merk, source_merk.root_hash().unwrap(), None);
+        let (chunk, next_chunk_id) = chunk_producer
+            .chunk(&[], grove_version)
+            .expect("first chunk");
+        restorer
+            .process_chunk(&[], chunk, grove_version)
+            .expect("process leaf chunk");
+        assert_eq!(
+            next_chunk_id, None,
+            "single-leaf tree should produce exactly one chunk"
+        );
+
+        let restored_merk = restorer.finalize(grove_version).expect("finalize");
+        assert_eq!(
+            source_merk.root_hash().unwrap(),
+            restored_merk.root_hash().unwrap(),
+            "single-leaf restored root must match source root for {:?}",
+            tree_type
         );
     }
 
+    /// Single-leaf `ProvableSumTree` chunk round-trip — exercises the
+    /// new `Node::KVSum` arm in `write_chunk`.
     #[test]
-    fn write_chunk_kvcountsum_node_produces_dual_axis_feature_type() {
-        // Same shape as the KVSum test but for the PCPS-host
-        // dual-axis variant — verifies the allowlist accepts
-        // KVCountSum without falling through to the rejection arm.
-        let kvcs_proof = vec![Op::Push(Node::KVCountSum(vec![5], vec![1, 2, 3], 7, -42))];
-        let result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            kvcs_proof, &[0; 32], &None,
+    fn restore_single_leaf_kvsum_for_provable_sum_tree() {
+        single_leaf_chunk_round_trip(
+            TreeType::ProvableSumTree,
+            TreeFeatureType::ProvableSummedMerkNode(7),
         );
-        assert!(
-            !matches!(
-                result,
-                Err(ChunkRestoringError(InvalidChunkProof(
-                    "expected chunk proof to contain only kv or hash nodes",
-                )))
-            ),
-            "KVCountSum chunks must pass the allowlist"
+    }
+
+    /// Single-leaf `ProvableCountProvableSumTree` chunk round-trip —
+    /// exercises the new `Node::KVCountSum` arm in `write_chunk`.
+    /// Without the arm the chunk's KVCountSum would fall into
+    /// `write_chunk`'s no-match path and panic via `unreachable!()`.
+    #[test]
+    fn restore_single_leaf_kvcountsum_for_provable_count_provable_sum_tree() {
+        single_leaf_chunk_round_trip(
+            TreeType::ProvableCountProvableSumTree,
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 7),
         );
     }
 }
