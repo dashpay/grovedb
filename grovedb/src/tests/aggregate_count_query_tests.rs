@@ -1,9 +1,14 @@
 //! End-to-end GroveDB tests for `AggregateCountOnRange` queries.
 //!
 //! These exercise the full prove → encode → decode → verify pipeline against
-//! both `ProvableCountTree` and `ProvableCountSumTree` (and their
-//! `NonCounted*` wrappers via being the *parent* tree, not the queried one),
-//! at various path depths and across the full set of allowed range variants.
+//! both `ProvableCountTree` and `ProvableCountSumTree` at various path
+//! depths and across the full set of allowed range variants.
+//!
+//! NonCounted/NotCountedOrSummed wrappers are NOT accepted as children of
+//! Provable* count parents (the count is cryptographically committed; see
+//! `TreeType::accepts_non_counted_children`). The dedicated rejection
+//! coverage lives in `non_counted_tests.rs` /
+//! `not_counted_or_summed_tests.rs`.
 
 #[cfg(test)]
 mod tests {
@@ -896,26 +901,21 @@ mod tests {
         assert!(pq.validate_aggregate_count_on_range().is_err());
     }
 
-    /// `Element::NonCounted` wrappers tell the parent tree to **skip** the
-    /// wrapped element when aggregating its own count.
-    /// `AggregateCountOnRange` honors that: NonCounted children are
-    /// excluded from the result.
+    /// `Element::NonCounted` wrappers are NOT accepted as children of
+    /// `ProvableCountTree` (or any other `Provable*` count parent).
+    /// The aggregate count baked into every node hash via
+    /// `node_hash_with_count` IS the answer to an
+    /// `AggregateCountOnRange` query, and an opt-out from that count
+    /// would commit a cryptographic value that disagrees with the
+    /// actual number of stored elements. The merk-layer insert guard
+    /// rejects the wrapper before any data lands.
     ///
-    /// Mechanics — every node in a `ProvableCountTree` carries an
-    /// own_count of 1 (normal) or 0 (NonCounted). The merk-recorded
-    /// aggregate at any subtree = sum of own_counts in the subtree
-    /// (NonCounted entries contribute 0). The verifier's shape walk
-    /// derives each boundary node's own_count as
-    /// `node_aggregate − left_struct − right_struct` and credits **only
-    /// own_count** to the in-range total when the key falls in range.
-    /// For a NonCounted leaf, own_count = 0 and the wrapped key
-    /// contributes nothing. The structural counts threaded through the
-    /// walk are hash-bound at every step (every count-bearing proof node
-    /// feeds its count into `node_hash_with_count`), so a malicious
-    /// prover can't lie about a NonCounted node's status without
-    /// breaking the parent's hash chain.
+    /// This test pins the rejection so the `AggregateCountOnRange`
+    /// query never has to reason about a "NonCounted leaf in a
+    /// ProvableCountTree" shape — the shape is impossible to construct
+    /// going forward.
     #[test]
-    fn non_counted_children_are_excluded_from_aggregate_count() {
+    fn non_counted_child_rejected_in_provable_count_tree() {
         use crate::tests::TEST_LEAF;
 
         let v = GroveVersion::latest();
@@ -931,45 +931,16 @@ mod tests {
         .unwrap()
         .expect("insert ct");
 
-        // Five regular items — each contributes 1.
-        for c in [b'a', b'b', b'c', b'd', b'e'] {
-            db.insert(
-                [TEST_LEAF, b"ct"].as_ref(),
-                &[c],
-                Element::new_item(vec![c]),
-                None,
-                None,
-                v,
-            )
-            .unwrap()
-            .expect("insert regular item");
-        }
-
-        // One NonCounted-wrapped item, key "f" — in-range but contributes
-        // 0 (own_count = 0).
         let nc_item =
             Element::new_non_counted(Element::new_item(b"hidden".to_vec())).expect("wrap ok");
-        db.insert([TEST_LEAF, b"ct"].as_ref(), b"f", nc_item, None, None, v)
+        let err = db
+            .insert([TEST_LEAF, b"ct"].as_ref(), b"f", nc_item, None, None, v)
             .unwrap()
-            .expect("insert NonCounted item");
-
-        let root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
-
-        let path_query = PathQuery::new_aggregate_count_on_range(
-            vec![TEST_LEAF.to_vec(), b"ct".to_vec()],
-            QueryItem::RangeInclusive(b"a".to_vec()..=b"z".to_vec()),
-        );
-        let proof = db
-            .grove_db
-            .prove_query(&path_query, None, v)
-            .unwrap()
-            .expect("prove");
-        let (got_root, got_count) =
-            GroveDb::verify_aggregate_count_query(&proof, &path_query, v).expect("verify");
-        assert_eq!(got_root, root, "root mismatch");
-        assert_eq!(
-            got_count, 5,
-            "NonCounted-wrapped child must be excluded from the aggregate count"
+            .expect_err("insert NonCounted into ProvableCountTree must fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("non-counted"),
+            "expected NonCounted parent-type guard error, got: {msg}"
         );
     }
 

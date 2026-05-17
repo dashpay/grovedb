@@ -1,10 +1,13 @@
 //! Regression tests for `Element::NotCountedOrSummed` end-to-end behavior.
 //!
 //! Symmetric to `not_summed_tests.rs` / `non_counted_tests.rs`. The wrapper:
-//! - May only be inserted into trees that bear BOTH a count and a sum
-//!   (`CountSumTree`, `ProvableCountSumTree`).
-//! - Inner element must be one of the four sum-tree variants (`SumTree`,
-//!   `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`).
+//! - May only be inserted into `CountSumTree` (the non-provable
+//!   count-and-sum-bearing parent). `ProvableCountSumTree` rejects the
+//!   wrapper at insert time because the count is cryptographically
+//!   committed and must reflect actual contents.
+//! - Inner element must be one of the five sum-bearing tree variants
+//!   (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
+//!   `ProvableSumTree`).
 //! - Contributes 0 to BOTH the parent's running sum AND its count. Internal
 //!   aggregates of the wrapped tree itself remain intact.
 
@@ -227,60 +230,43 @@ mod tests {
     }
 
     #[test]
-    fn direct_insert_not_counted_or_summed_in_provable_count_sum_tree_excludes_both_axes() {
-        // Same scenario but with a ProvableCountSumTree parent.
+    fn direct_insert_not_counted_or_summed_rejected_in_provable_count_sum_tree() {
+        // `ProvableCountSumTree` commits its aggregate count into every
+        // node hash, so a `NotCountedOrSummed` child would commit a
+        // cryptographic count that diverges from the actual element
+        // count. The direct-insert path must reject it. The only
+        // accepted count-and-sum parent for the wrapper is the
+        // non-provable `CountSumTree` (covered by
+        // `direct_insert_not_counted_or_summed_in_count_sum_tree_excludes_both_axes`).
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
         make_provable_count_sum_tree_parent(&db, b"outer", grove_version);
 
-        // A plain item contributes (1, 0).
-        db.insert(
-            [TEST_LEAF, b"outer"].as_ref(),
-            b"plain",
-            Element::new_item(b"x".to_vec()),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert plain item");
-
-        // NotCountedOrSummed(ProvableCountSumTree(_, 3, 100)) contributes
-        // (0, 0) even though the inner aggregates are non-trivial.
         let inner = Element::new_provable_count_sum_tree_with_flags_and_sum_and_count_value(
             None, 3, 100, None,
         );
         let wrapped = Element::new_not_counted_or_summed(inner).expect("wrap ok");
-        db.insert(
-            [TEST_LEAF, b"outer"].as_ref(),
-            b"w",
-            wrapped,
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert wrapped provable count sum tree");
 
-        // Aggregate must be (count=1, sum=0): only `plain` contributes the
-        // count; the wrapped tree's count=3 and sum=100 are both suppressed.
-        let batch = StorageBatch::new();
-        let tx = db.start_transaction();
-        let outer_merk = db
-            .open_transactional_merk_at_path(
-                [TEST_LEAF, b"outer"].as_ref().into(),
-                &tx,
-                Some(&batch),
+        let err = db
+            .insert(
+                [TEST_LEAF, b"outer"].as_ref(),
+                b"w",
+                wrapped,
+                None,
+                None,
                 grove_version,
             )
             .unwrap()
-            .expect("open outer merk");
-        let aggregate = outer_merk
-            .aggregate_data()
-            .expect("read outer aggregate data");
-        assert_eq!(aggregate.as_count_u64(), 1);
-        assert_eq!(aggregate.as_sum_i64(), 0);
+            .expect_err("insert into ProvableCountSumTree must fail");
+        // Direct insert surfaces the merk-layer guard as
+        // `InvalidInputError`, not the batch-flavored
+        // `InvalidBatchOperation`.
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("not-counted-or-summed"),
+            "expected NotCountedOrSummed parent-type guard error, got: {msg}"
+        );
     }
 
     #[test]
@@ -371,59 +357,35 @@ mod tests {
     }
 
     #[test]
-    fn direct_insert_not_counted_or_summed_provable_sum_tree_in_provable_count_sum_tree_excludes_both_axes(
-    ) {
-        // Same as the test above but with a ProvableCountSumTree parent —
-        // confirms the wrapper also works against the provable variant of
-        // the count-and-sum-bearing parent.
+    fn direct_insert_not_counted_or_summed_provable_sum_tree_rejected_in_provable_count_sum_tree() {
+        // Same parent-type rejection as
+        // `direct_insert_not_counted_or_summed_rejected_in_provable_count_sum_tree`,
+        // but with a `ProvableSumTree` inner — exercises that the guard
+        // fires on the parent type alone and does not depend on the
+        // wrapped variant.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
         make_provable_count_sum_tree_parent(&db, b"outer", grove_version);
 
-        // Plain item contributes (1, 0).
-        db.insert(
-            [TEST_LEAF, b"outer"].as_ref(),
-            b"plain",
-            Element::new_item(b"x".to_vec()),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert plain item");
-
-        // NotCountedOrSummed(ProvableSumTree) → contributes (0, 0).
-        let inner = Element::new_provable_sum_tree(None);
-        let wrapped = Element::new_not_counted_or_summed(inner).expect("wrap ok");
-        db.insert(
-            [TEST_LEAF, b"outer"].as_ref(),
-            b"w",
-            wrapped,
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert wrapped provable sum tree");
-
-        // Outer aggregate must be (count=1, sum=0).
-        let batch = StorageBatch::new();
-        let tx = db.start_transaction();
-        let outer_merk = db
-            .open_transactional_merk_at_path(
-                [TEST_LEAF, b"outer"].as_ref().into(),
-                &tx,
-                Some(&batch),
+        let wrapped = Element::new_not_counted_or_summed(Element::new_provable_sum_tree(None))
+            .expect("wrap ok");
+        let err = db
+            .insert(
+                [TEST_LEAF, b"outer"].as_ref(),
+                b"w",
+                wrapped,
+                None,
+                None,
                 grove_version,
             )
             .unwrap()
-            .expect("open outer merk");
-        let aggregate = outer_merk
-            .aggregate_data()
-            .expect("read outer aggregate data");
-        assert_eq!(aggregate.as_count_u64(), 1);
-        assert_eq!(aggregate.as_sum_i64(), 0);
+            .expect_err("insert into ProvableCountSumTree must fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("not-counted-or-summed"),
+            "expected NotCountedOrSummed parent-type guard error, got: {msg}"
+        );
     }
 
     #[test]
@@ -519,79 +481,33 @@ mod tests {
     }
 
     #[test]
-    fn batch_propagation_preserves_wrapper_under_provable_count_sum_tree() {
-        // Same as the CountSumTree propagation test but with a
-        // ProvableCountSumTree parent — exercises the
-        // ProvableCountSumTree propagation arm in batch_structure.
+    fn batch_insert_rejects_not_counted_or_summed_into_provable_count_sum_tree() {
+        // Mirror of `batch_propagation_preserves_wrapper_under_count_sum_tree`,
+        // but the parent is `ProvableCountSumTree` — which commits its
+        // aggregate count into every node hash and therefore rejects the
+        // wrapper at the batch validation guard before any propagation
+        // can run. The corresponding accepted case (non-provable
+        // `CountSumTree` parent) lives in
+        // `batch_propagation_preserves_not_counted_or_summed_wrapper_on_subtree`.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
         make_provable_count_sum_tree_parent(&db, b"outer", grove_version);
 
-        // Plain item contributes (1, 0).
-        db.insert(
-            [TEST_LEAF, b"outer"].as_ref(),
-            b"plain",
-            Element::new_item(b"x".to_vec()),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert plain");
-
         let wrapped =
             Element::new_not_counted_or_summed(Element::new_provable_count_sum_tree(None))
                 .expect("wrap ok");
-        let inner_child = Element::new_sum_item(99);
-        let ops = vec![
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![TEST_LEAF.to_vec(), b"outer".to_vec()],
-                b"w".to_vec(),
-                wrapped,
-            ),
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"w".to_vec()],
-                b"child".to_vec(),
-                inner_child,
-            ),
-        ];
-        db.apply_batch(ops, None, None, grove_version)
-            .unwrap()
-            .expect("batch should succeed");
-
-        // Wrapper must survive propagation.
-        let stored = db
-            .get_raw(
-                grovedb_path::SubtreePath::from(&[TEST_LEAF, b"outer"]),
-                b"w",
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("get_raw w");
-        assert!(
-            matches!(stored, Element::NotCountedOrSummed(_)),
-            "wrapper must survive batch propagation; got {:?}",
-            stored
+        let op = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec()],
+            b"w".to_vec(),
+            wrapped,
         );
 
-        // Outer aggregate: count=1 (plain only), sum=0.
-        use grovedb_storage::StorageBatch;
-        let batch = StorageBatch::new();
-        let tx = db.start_transaction();
-        let outer_merk = db
-            .open_transactional_merk_at_path(
-                [TEST_LEAF, b"outer"].as_ref().into(),
-                &tx,
-                Some(&batch),
-                grove_version,
-            )
+        let err = db
+            .apply_batch(vec![op], None, None, grove_version)
             .unwrap()
-            .expect("open outer merk");
-        let aggregate = outer_merk.aggregate_data().expect("read aggregate");
-        assert_eq!(aggregate.as_count_u64(), 1);
-        assert_eq!(aggregate.as_sum_i64(), 0);
+            .expect_err("batch insert into ProvableCountSumTree must fail");
+        assert_is_not_counted_or_summed_guard_error(&err);
     }
 
     #[test]
