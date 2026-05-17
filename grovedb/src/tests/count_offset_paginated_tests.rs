@@ -999,4 +999,198 @@ mod tests {
             result
         );
     }
+
+    // ──────── Forged-proof tests for verifier defense-in-depth ────────
+    //
+    // The merk-level prover now refuses to emit NonCounted-wrapped /
+    // Reference / non-empty-tree in-range entries (see the three
+    // `rejects_count_offset_with_*` tests above). That makes the
+    // GroveDB-layer defense-in-depth checks in
+    // `run_count_offset_layer_dispatch` (verify.rs ~537-566) unreachable
+    // by **honest** proofs. To keep those branches exercised — they're
+    // the only guard against a forged proof that bypassed the prover —
+    // these tests build a legitimate proof, surgically rewrite one
+    // value-bearing proof node in the leaf merk to carry forged value
+    // bytes, and confirm each defense-in-depth branch rejects the
+    // expected element shape.
+    //
+    // Forge mechanism: replace `KVCount(key, value, count)` (what the
+    // prover emits for ProvableCountedMerkNode Items) with
+    // `KVValueHashFeatureType(key, FORGED_VALUE, H(original_value),
+    // ProvableCountedMerkNode(count))`. The merk-level kv_hash is
+    // computed from the committed value_hash field, not from the
+    // value bytes — so the merk-level chain hash stays intact, the
+    // count check (`provable_count_from_aggregate`) still returns the
+    // right count, and the count-offset verifier surfaces the forged
+    // value bytes into `CountOffsetReturnedItem.value`. The
+    // GroveDB-layer `Element::deserialize` then triggers the right
+    // defense-in-depth rejection.
+
+    /// Helper for the forge: take an honest proof, find the
+    /// `KVCount(key, value, count)` op for `target_key` in the leaf
+    /// merk_proof under `b"counts"`, replace it with a forged
+    /// `KVValueHashFeatureType` carrying `forged_value` (and the
+    /// original value_hash so the merk chain still verifies), re-encode
+    /// the proof, and return the tampered envelope bytes.
+    fn forge_count_offset_proof_replacing_value(
+        honest_proof: Vec<u8>,
+        target_key: &[u8],
+        forged_value: Vec<u8>,
+    ) -> Vec<u8> {
+        use std::collections::LinkedList;
+
+        use bincode::{decode_from_slice, encode_to_vec};
+        use grovedb_merk::{
+            proofs::{encode_into, Decoder, Node, Op},
+            tree::{kv_digest_to_kv_hash as _, value_hash, TreeFeatureType},
+        };
+
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes};
+
+        let cfg = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (decoded, _) =
+            decode_from_slice::<GroveDBProof, _>(honest_proof.as_slice(), cfg).expect("decode");
+        let GroveDBProof::V1(GroveDBProofV1 { mut root_layer }) = decoded else {
+            panic!("expected V1 proof");
+        };
+
+        // The leaf merk_proof lives under "counts".
+        let leaf = root_layer
+            .lower_layers
+            .get_mut(b"counts".as_slice())
+            .expect("leaf layer at counts");
+        let original_bytes = match &leaf.merk_proof {
+            ProofBytes::Merk(b) => b.clone(),
+            _ => panic!("leaf merk_proof must be ProofBytes::Merk"),
+        };
+
+        // Walk the ops; replace the first matching KVCount op.
+        let mut ops: LinkedList<Op> = LinkedList::new();
+        let decoder = Decoder::new(&original_bytes);
+        let mut replaced = false;
+        for op in decoder {
+            let op = op.expect("decode proof op");
+            let new_op = match op {
+                Op::Push(Node::KVCount(ref key, ref value, count)) if key == target_key => {
+                    let vh = value_hash(value).unwrap();
+                    replaced = true;
+                    Op::Push(Node::KVValueHashFeatureType(
+                        key.clone(),
+                        forged_value.clone(),
+                        vh,
+                        TreeFeatureType::ProvableCountedMerkNode(count),
+                    ))
+                }
+                other => other,
+            };
+            ops.push_back(new_op);
+        }
+        assert!(
+            replaced,
+            "forge: target_key {:?} not found as KVCount in the honest proof — \
+             test fixture / proof layout has diverged",
+            target_key
+        );
+
+        let mut new_bytes = Vec::with_capacity(original_bytes.len() + forged_value.len());
+        encode_into(ops.iter(), &mut new_bytes);
+        leaf.merk_proof = ProofBytes::Merk(new_bytes);
+
+        encode_to_vec(GroveDBProof::V1(GroveDBProofV1 { root_layer }), cfg)
+            .expect("encode tampered envelope")
+    }
+
+    /// Builds the standard 15-item ProvableCountTree fixture, generates
+    /// an honest offset-paginated proof returning {"f", "g", "h"}, then
+    /// returns the proof and the path-query so individual forge tests
+    /// can target one of the in-range keys.
+    fn forge_fixture() -> (crate::tests::TempGroveDb, Vec<u8>, PathQuery) {
+        let v = GroveVersion::latest();
+        let (db, _) = make_provable_count_tree_with_n_items(15, v);
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(3), Some(5)),
+        );
+        let honest = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove honest");
+        (db, honest, path_query)
+    }
+
+    /// Defense-in-depth: a forged proof that surfaces a NonCounted
+    /// element in `returned_items` must be rejected as `InvalidProof`
+    /// mentioning "NonCounted" — the merk prover refuses to emit these,
+    /// so reaching the GroveDB-layer check means the proof was forged.
+    #[test]
+    fn verifier_rejects_forged_non_counted_returned_item() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        let forged_elem =
+            Element::new_non_counted(Element::new_item(b"forged_item".to_vec())).expect("wrap nc");
+        let forged_bytes = forged_elem.serialize(v).expect("serialize forged");
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err("forged NonCounted return must be rejected");
+        assert!(
+            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("NonCounted")),
+            "forged NonCounted return should reject as InvalidProof mentioning NonCounted; got {:?}",
+            err,
+        );
+    }
+
+    /// Defense-in-depth: a forged proof that surfaces a Reference
+    /// element in `returned_items` must be rejected as `NotSupported`
+    /// mentioning "Reference" — the count-offset short-circuit doesn't
+    /// run the regular flow's reference post-pass, so accepting one
+    /// would surface a raw `Element::Reference` to the caller.
+    #[test]
+    fn verifier_rejects_forged_reference_returned_item() {
+        use crate::reference_path::ReferencePathType;
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        let forged_elem = Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+            b"counts".to_vec(),
+            b"a".to_vec(),
+        ]));
+        let forged_bytes = forged_elem.serialize(v).expect("serialize forged");
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err("forged Reference return must be rejected");
+        assert!(
+            matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("Reference")),
+            "forged Reference return should reject as NotSupported mentioning Reference; got {:?}",
+            err,
+        );
+    }
+
+    /// Defense-in-depth: a forged proof that surfaces a non-empty Tree
+    /// (i.e. an inner subtree with a `Some(root_key)`) must be rejected
+    /// as `NotSupported` — V1 strict-mode would require a
+    /// `KVValueHashFeatureTypeWithChildHash` proof node, which the
+    /// current count-offset prover never emits.
+    #[test]
+    fn verifier_rejects_forged_non_empty_tree_returned_item() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        // A bare `Element::Tree(Some(root_key), flags)` has
+        // `is_non_empty_tree() == true`. The root key bytes are
+        // arbitrary — the defense-in-depth check fires on the type
+        // shape alone.
+        let forged_elem = Element::Tree(Some(vec![0xAB; 32]), None);
+        let forged_bytes = forged_elem.serialize(v).expect("serialize forged");
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err("forged non-empty tree return must be rejected");
+        assert!(
+            matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("non-empty tree")),
+            "forged non-empty tree return should reject as NotSupported mentioning \
+             non-empty tree; got {:?}",
+            err,
+        );
+    }
 }
