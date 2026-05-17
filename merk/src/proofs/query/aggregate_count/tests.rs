@@ -1037,6 +1037,122 @@ fn regular_query_verifier_rejects_hash_with_count_and_sum_node() {
     );
 }
 
+/// Regular `Merk::prove` on a `ProvableCountProvableSumTree` must emit
+/// the dual-axis proof node variants. Queried items yield `KVCountSum`
+/// (via `to_kv_count_sum_node`); non-queried path nodes use
+/// `KVHashCountSum` (via `to_kvhash_count_sum_node`). This exercises
+/// the dual-axis-node helper functions whose only callers are inside
+/// `create_proof_internal`. Mirrors the sum-side
+/// `regular_prove_on_provable_sum_tree_emits_kv_sum_and_kvhash_sum`.
+#[test]
+fn regular_prove_on_pcps_emits_dual_axis_helpers() {
+    use crate::{
+        proofs::{query::Query, Decoder, Node, Op as ProofOp},
+        tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode,
+    };
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountProvableSumTree);
+    // 15 entries; the value byte stored is 0 which deserializes as
+    // ElementType::Item, so proof_node_type dispatches to KvCountSum.
+    for c in b'a'..=b'o' {
+        merk.apply::<_, Vec<_>>(
+            &[(
+                vec![c],
+                Op::Put(vec![0u8], ProvableCountedAndProvableSummedMerkNode(1, 1)),
+            )],
+            &[],
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("apply");
+    }
+    merk.commit(v);
+
+    // Query a few keys, leaving most unqueried so we get both queried
+    // (KVCountSum) and path (KVHashCountSum) nodes.
+    let mut q = Query::new();
+    q.insert_key(b"a".to_vec());
+    q.insert_key(b"h".to_vec());
+    q.insert_key(b"o".to_vec());
+    let proof_result = merk.prove(q, None, v).unwrap().expect("regular prove");
+    let ops: Vec<ProofOp> = Decoder::new(&proof_result.proof)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decode");
+
+    let saw_kv_cs = ops.iter().any(|op| {
+        matches!(
+            op,
+            ProofOp::Push(Node::KVCountSum(..)) | ProofOp::PushInverted(Node::KVCountSum(..))
+        )
+    });
+    let saw_kv_hash_cs = ops.iter().any(|op| {
+        matches!(
+            op,
+            ProofOp::Push(Node::KVHashCountSum(..))
+                | ProofOp::PushInverted(Node::KVHashCountSum(..))
+        )
+    });
+    assert!(
+        saw_kv_cs,
+        "expected at least one KVCountSum op — to_kv_count_sum_node helper coverage"
+    );
+    assert!(
+        saw_kv_hash_cs,
+        "expected at least one KVHashCountSum op — to_kvhash_count_sum_node helper coverage"
+    );
+}
+
+/// Regular `Merk::prove` on a `ProvableCountProvableSumTree` produces
+/// `KVDigestCountSum` at the boundary when the query key is **absent**.
+/// This is the only path that calls `to_kvdigest_count_sum_node`.
+/// Mirrors the sum-side `regular_prove_on_provable_sum_tree_emits_kvdigest_sum`.
+#[test]
+fn regular_prove_on_pcps_absent_key_emits_kvdigestcountsum() {
+    use crate::{
+        proofs::{query::Query, Decoder, Node, Op as ProofOp},
+        tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode,
+    };
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountProvableSumTree);
+    // Single-key tree: querying any absent key forces a boundary emission.
+    merk.apply::<_, Vec<_>>(
+        &[(
+            b"m".to_vec(),
+            Op::Put(vec![0u8], ProvableCountedAndProvableSummedMerkNode(1, 7)),
+        )],
+        &[],
+        None,
+        v,
+    )
+    .unwrap()
+    .expect("apply");
+    merk.commit(v);
+
+    let mut q = Query::new();
+    q.insert_key(b"zz".to_vec()); // absent, above the single key
+    let proof_result = merk.prove(q, None, v).unwrap().expect("regular prove");
+    let ops: Vec<ProofOp> = Decoder::new(&proof_result.proof)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decode");
+
+    let saw_digest = ops.iter().any(|op| {
+        matches!(
+            op,
+            ProofOp::Push(Node::KVDigestCountSum(..))
+                | ProofOp::PushInverted(Node::KVDigestCountSum(..))
+        )
+    });
+    assert!(
+        saw_digest,
+        "expected KVDigestCountSum at the boundary for an absent-key proof on a PCPS tree — \
+         to_kvdigest_count_sum_node helper coverage; got ops: {:?}",
+        ops
+    );
+}
+
 /// `KVHashCountSum` (non-queried-path dual-axis kv-hash) must be
 /// rejected by the regular query verifier — it carries an aggregate that
 /// is meaningful only inside an aggregate proof.
