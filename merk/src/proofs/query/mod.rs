@@ -6,7 +6,11 @@ pub use grovedb_query::*;
 mod merk_integration_tests;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
+mod aggregate_common;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_count;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod aggregate_sum;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod map;
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -14,6 +18,8 @@ mod verify;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use aggregate_count::verify_aggregate_count_on_range_proof;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use aggregate_sum::verify_aggregate_sum_on_range_proof;
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};
@@ -76,12 +82,12 @@ where
 
     /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
     /// root node
-    /// Note: For ProvableCountTree and ProvableCountSumTree, uses aggregate
-    /// count to match hash calculation
+    /// Note: For ProvableCountTree, ProvableCountSumTree, and ProvableSumTree,
+    /// uses aggregate value to match hash calculation
     pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
-        // For ProvableCountTree and ProvableCountSumTree, we need to use the aggregate
-        // count (sum of self + children) because the hash calculation uses
-        // aggregate_data(), not feature_type()
+        // For ProvableCountTree, ProvableCountSumTree, and ProvableSumTree
+        // we need to use the aggregate value (sum of self + children) because
+        // the hash calculation uses aggregate_data(), not feature_type()
         let feature_type = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => {
                 TreeFeatureType::ProvableCountedMerkNode(count)
@@ -89,6 +95,7 @@ where
             Ok(AggregateData::ProvableCountAndSum(count, sum)) => {
                 TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
             }
+            Ok(AggregateData::ProvableSum(sum)) => TreeFeatureType::ProvableSummedMerkNode(sum),
             _ => self.tree().feature_type(),
         };
         Node::KVValueHashFeatureType(
@@ -166,6 +173,45 @@ where
             self.tree().key().to_vec(),
             self.tree().value_as_slice().to_vec(),
             count,
+        )
+    }
+
+    /// Creates a `Node::KVDigestSum` from the key/value_hash pair and sum
+    /// of the root node. Parallel to `to_kvdigest_count_node` for
+    /// ProvableSumTree boundary nodes (proving absence). Uses aggregate sum
+    /// (self + children) to match the `node_hash_with_sum` calculation.
+    pub(crate) fn to_kvdigest_sum_node(&self) -> Node {
+        let sum = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableSum(sum)) => sum,
+            _ => 0,
+        };
+        Node::KVDigestSum(self.tree().key().to_vec(), *self.tree().value_hash(), sum)
+    }
+
+    /// Creates a `Node::KVHashSum` from the kv hash and sum of the root
+    /// node. Parallel to `to_kvhash_count_node` for ProvableSumTree
+    /// non-queried nodes on the path.
+    pub(crate) fn to_kvhash_sum_node(&self) -> Node {
+        let sum = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableSum(sum)) => sum,
+            _ => 0,
+        };
+        Node::KVHashSum(*self.tree().kv_hash(), sum)
+    }
+
+    /// Creates a `Node::KVSum` from the key/value pair and sum of the root
+    /// node. Parallel to `to_kv_count_node` for queried Items in a
+    /// ProvableSumTree. Tamper-resistant (verifier computes hash from value)
+    /// while including the sum in the node hash.
+    pub(crate) fn to_kv_sum_node(&self) -> Node {
+        let sum = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableSum(sum)) => sum,
+            _ => 0,
+        };
+        Node::KVSum(
+            self.tree().key().to_vec(),
+            self.tree().value_as_slice().to_vec(),
+            sum,
         )
     }
 
@@ -312,13 +358,22 @@ where
             TreeFeatureType::ProvableCountedMerkNode(_)
                 | TreeFeatureType::ProvableCountedSummedMerkNode(..)
         );
+        // Sibling family for ProvableSumTree, whose nodes carry the i64 sum
+        // in their feature_type.
+        let is_provable_sum_tree = matches!(
+            self.tree().feature_type(),
+            TreeFeatureType::ProvableSummedMerkNode(_)
+        );
+        let is_provable_aggregate_tree = is_provable_count_tree || is_provable_sum_tree;
 
-        // Convert is_provable_count_tree to parent tree type for proof_node_type()
-        // Both ProvableCountTree and ProvableCountSumTree use count in hash
+        // Convert the tree kind to an `ElementType` so `proof_node_type()`
+        // can dispatch — the Count family folds to `ProvableCountTree`
+        // (count-in-hash) and the Sum family folds to `ProvableSumTree`
+        // (sum-in-hash). The two families are distinct.
         let parent_tree_type = if is_provable_count_tree {
-            // Use ProvableCountTree for both since proof handling is the same (count in
-            // hash)
             Some(ElementType::ProvableCountTree)
+        } else if is_provable_sum_tree {
+            Some(ElementType::ProvableSumTree)
         } else {
             None // Regular tree or unknown - treated the same
         };
@@ -350,6 +405,7 @@ where
             let node = match proof_node_type {
                 ProofNodeType::Kv => self.to_kv_node(),
                 ProofNodeType::KvCount => self.to_kv_count_node(),
+                ProofNodeType::KvSum => self.to_kv_sum_node(),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
                 // References: at merk level, generate same node type as non-ref counterpart
@@ -358,6 +414,11 @@ where
                 // ProvableCountTree references: generate KVValueHashFeatureType
                 // GroveDB will post-process to KVRefValueHashCount with dereferenced value
                 ProofNodeType::KvRefValueHashCount => self.to_kv_value_hash_feature_type_node(),
+                // ProvableSumTree references: same merk-level shape as
+                // KvRefValueHashCount — emit KVValueHashFeatureType so the
+                // feature_type carries the sum, then GroveDB post-processes
+                // to KVRefValueHashSum with the dereferenced value.
+                ProofNodeType::KvRefValueHashSum => self.to_kv_value_hash_feature_type_node(),
             };
 
             if proof_params.left_to_right {
@@ -366,10 +427,12 @@ where
                 Op::PushInverted(node)
             }
         } else if on_boundary_not_found || left_absence.1 || right_absence.0 {
-            // On boundary (proving absence): use KVDigest or KVDigestCount
-            // depending on whether this is a ProvableCountTree
+            // On boundary (proving absence): use KVDigest / KVDigestCount /
+            // KVDigestSum depending on the parent's aggregate kind.
             let node = if is_provable_count_tree {
                 self.to_kvdigest_count_node()
+            } else if is_provable_sum_tree {
+                self.to_kvdigest_sum_node()
             } else {
                 self.to_kvdigest_node()
             };
@@ -378,11 +441,19 @@ where
             } else {
                 Op::PushInverted(node)
             }
-        } else if is_provable_count_tree {
-            if proof_params.left_to_right {
-                Op::Push(self.to_kvhash_count_node())
+        } else if is_provable_aggregate_tree {
+            // Non-queried path nodes carry the aggregate (count or sum) so
+            // the verifier can recompute the node hash.
+            let node = if is_provable_count_tree {
+                self.to_kvhash_count_node()
             } else {
-                Op::PushInverted(self.to_kvhash_count_node())
+                // is_provable_sum_tree
+                self.to_kvhash_sum_node()
+            };
+            if proof_params.left_to_right {
+                Op::Push(node)
+            } else {
+                Op::PushInverted(node)
             }
         } else if proof_params.left_to_right {
             Op::Push(self.to_kvhash_node())

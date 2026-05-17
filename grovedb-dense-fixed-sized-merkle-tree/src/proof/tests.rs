@@ -339,6 +339,47 @@ mod proof_tests {
         assert!(positions.is_empty());
     }
 
+    #[test]
+    fn test_query_to_positions_rejects_aggregate_count_on_range() {
+        // Dense fixed-size trees don't bind count into the node hash, so
+        // AggregateCountOnRange is invalid input at the index-resolution
+        // helper. Exercise that rejection arm directly.
+        use grovedb_query::QueryItem;
+        let mut query = Query::new();
+        query.items.push(QueryItem::AggregateCountOnRange(Box::new(
+            QueryItem::Range(vec![0]..vec![3]),
+        )));
+        let err =
+            query_to_positions(&query, 7).expect_err("AggregateCountOnRange must be rejected");
+        match err {
+            crate::DenseMerkleError::InvalidProof(msg) => assert!(
+                msg.contains("dense fixed-size") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_query_to_positions_rejects_aggregate_sum_on_range() {
+        // Same rationale for sum.
+        use grovedb_query::QueryItem;
+        let mut query = Query::new();
+        query
+            .items
+            .push(QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+                vec![0]..vec![3],
+            ))));
+        let err = query_to_positions(&query, 7).expect_err("AggregateSumOnRange must be rejected");
+        match err {
+            crate::DenseMerkleError::InvalidProof(msg) => assert!(
+                msg.contains("dense fixed-size") || msg.contains("provable sum"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
     // =======================================================================
     // Byte encoding: 1-byte, 2-byte, invalid
     // =======================================================================

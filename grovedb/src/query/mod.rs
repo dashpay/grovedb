@@ -204,10 +204,31 @@ impl SizedQuery {
         }
         Ok(())
     }
+
+    /// Mirror of [`Self::validate_aggregate_count_on_range`] for
+    /// `AggregateSumOnRange`. Forwards to
+    /// [`Query::validate_aggregate_sum_on_range`] and additionally rejects
+    /// any non-`None` `limit` or `offset`.
+    pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.limit.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateSumOnRange queries may not set SizedQuery::limit",
+            ));
+        }
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateSumOnRange queries may not set SizedQuery::offset",
+            ));
+        }
+        self.query
+            .validate_aggregate_sum_on_range()
+            .map_err(sum_query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
 }
 
-/// Converts a `Query::validate_aggregate_count_on_range` error into a
-/// `&'static str`. Validation only ever returns
+/// Converts an aggregate-count-validation error into a `&'static str`.
+/// Validation only ever returns
 /// `grovedb_query::error::Error::InvalidOperation(&'static str)`, so this is
 /// just a projection of that variant; any other error variant (which would
 /// indicate an unrelated bug) is forwarded as a generic catch-all label.
@@ -215,6 +236,18 @@ pub(crate) fn query_validation_error_to_static_str(e: grovedb_query::error::Erro
     match e {
         grovedb_query::error::Error::InvalidOperation(msg) => msg,
         _ => "AggregateCountOnRange query validation failed",
+    }
+}
+
+/// Sum-side mirror of [`query_validation_error_to_static_str`]. Same
+/// projection contract; only the catch-all label differs so logs and
+/// error surfaces stay self-describing per-aggregate-variant.
+pub(crate) fn sum_query_validation_error_to_static_str(
+    e: grovedb_query::error::Error,
+) -> &'static str {
+    match e {
+        grovedb_query::error::Error::InvalidOperation(msg) => msg,
+        _ => "AggregateSumOnRange query validation failed",
     }
 }
 
@@ -254,13 +287,61 @@ impl PathQuery {
         Self::new_unsized(path, Query::new_aggregate_count_on_range(range))
     }
 
+    /// Mirror of [`Self::new_aggregate_count_on_range`] for
+    /// `AggregateSumOnRange`. Builds a `PathQuery` whose underlying query
+    /// asks for the cryptographically-verifiable sum of children with keys
+    /// in `range` against the `ProvableSumTree` rooted at `path`.
+    pub fn new_aggregate_sum_on_range(path: Vec<Vec<u8>>, range: QueryItem) -> Self {
+        Self::new_unsized(path, Query::new_aggregate_sum_on_range(range))
+    }
+
     /// Validates that this `PathQuery` is a well-formed
     /// `AggregateCountOnRange` query in either the leaf or carrier shape.
     /// On success, returns a reference to the leaf inner range item.
     ///
+    /// Rejects empty paths up-front. The GroveDB root merk is always a
+    /// `NormalTree` by API construction (and never a `ProvableCountTree`),
+    /// so a root-level aggregate-count query has no valid target —
+    /// `verify_v0_layer` and `verify_v1_layer` would otherwise hit the
+    /// `depth == path_keys.len()` short-circuit at depth 0, going
+    /// straight to the merk-level count verifier without ever invoking
+    /// the terminal-type gate in `enforce_lower_chain`. Although the
+    /// merk-level hash-divergence between `node_hash` and
+    /// `node_hash_with_count` makes a numeric forgery infeasible, an
+    /// up-front rejection gives a clear error and removes the gate
+    /// dependency on cryptographic hash analysis.
+    ///
     /// Forwards to [`SizedQuery::validate_aggregate_count_on_range`].
     pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountOnRange queries may not target the root merk: \
+                 the GroveDB root is always a NormalTree, never a \
+                 ProvableCountTree / ProvableCountSumTree, so a count \
+                 aggregate at the root layer has no valid target",
+            ));
+        }
         self.query.validate_aggregate_count_on_range()
+    }
+
+    /// Validates that this `PathQuery` is a well-formed
+    /// `AggregateSumOnRange` query. On success, returns a reference to the
+    /// inner range item.
+    ///
+    /// Rejects empty paths up-front for the same reason as
+    /// [`Self::validate_aggregate_count_on_range`] — the GroveDB root
+    /// merk is always a `NormalTree`, never a `ProvableSumTree`. Forwards
+    /// to [`SizedQuery::validate_aggregate_sum_on_range`].
+    pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateSumOnRange queries may not target the root merk: \
+                 the GroveDB root is always a NormalTree, never a \
+                 ProvableSumTree, so a sum aggregate at the root layer has \
+                 no valid target",
+            ));
+        }
+        self.query.validate_aggregate_sum_on_range()
     }
 
     /// Strict variant of [`Self::validate_aggregate_count_on_range`] that
@@ -276,6 +357,11 @@ impl PathQuery {
     /// well-formedness.
     pub fn has_aggregate_count_on_range(&self) -> bool {
         self.query.query.aggregate_count_on_range().is_some()
+    }
+
+    /// Mirror of [`Self::has_aggregate_count_on_range`] for the sum variant.
+    pub fn has_aggregate_sum_on_range(&self) -> bool {
+        self.query.query.aggregate_sum_on_range().is_some()
     }
 
     /// The max depth of the query, this is the maximum layers we could get back

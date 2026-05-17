@@ -284,6 +284,149 @@ mod tests {
     }
 
     #[test]
+    fn direct_insert_not_counted_or_summed_provable_sum_tree_in_count_sum_tree_excludes_both_axes()
+    {
+        // A bare ProvableSumTree inserted into a CountSumTree contributes
+        // (1, internal_sum) to the parent's (count, sum). Wrapped in
+        // NotCountedOrSummed it must contribute (0, 0). This exercises the
+        // ProvableSumTree branch of the NotCountedOrSummed inner allow-list
+        // (added when the wrapper inherited PR #666's contract on top of
+        // the ProvableSumTree feature).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        make_count_sum_tree_parent(&db, b"outer", grove_version);
+
+        // A plain sum item contributes (1, 7) so the aggregate is non-zero
+        // and we can read the precise suppression effect off the wrapped
+        // subtree.
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"plain",
+            Element::new_sum_item(7),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert plain sum item");
+
+        // NotCountedOrSummed(ProvableSumTree(_, 0)) wrapper.
+        let inner = Element::new_provable_sum_tree(None);
+        let wrapped = Element::new_not_counted_or_summed(inner).expect("wrap ok");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"w",
+            wrapped,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert wrapped provable sum tree");
+
+        // Add a sum item under the wrapped subtree so the inner ProvableSumTree
+        // carries a non-trivial aggregate that must NOT bubble up to the
+        // CountSumTree parent.
+        db.insert(
+            [TEST_LEAF, b"outer", b"w"].as_ref(),
+            b"inner",
+            Element::new_sum_item(42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert inner sum item under wrapped ProvableSumTree");
+
+        // Outer aggregate must be (count=1, sum=7): only `plain` contributes;
+        // the wrapped ProvableSumTree's implicit count-of-one and its
+        // inner sum=42 are both suppressed.
+        let batch = StorageBatch::new();
+        let tx = db.start_transaction();
+        let outer_merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"outer"].as_ref().into(),
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open outer merk");
+        let aggregate = outer_merk
+            .aggregate_data()
+            .expect("read outer aggregate data");
+        assert_eq!(
+            aggregate.as_count_u64(),
+            1,
+            "wrapped ProvableSumTree must not contribute to outer count; got {:?}",
+            aggregate
+        );
+        assert_eq!(
+            aggregate.as_sum_i64(),
+            7,
+            "wrapped ProvableSumTree must not contribute to outer sum; got {:?}",
+            aggregate
+        );
+    }
+
+    #[test]
+    fn direct_insert_not_counted_or_summed_provable_sum_tree_in_provable_count_sum_tree_excludes_both_axes(
+    ) {
+        // Same as the test above but with a ProvableCountSumTree parent —
+        // confirms the wrapper also works against the provable variant of
+        // the count-and-sum-bearing parent.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        make_provable_count_sum_tree_parent(&db, b"outer", grove_version);
+
+        // Plain item contributes (1, 0).
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"plain",
+            Element::new_item(b"x".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert plain item");
+
+        // NotCountedOrSummed(ProvableSumTree) → contributes (0, 0).
+        let inner = Element::new_provable_sum_tree(None);
+        let wrapped = Element::new_not_counted_or_summed(inner).expect("wrap ok");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"w",
+            wrapped,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert wrapped provable sum tree");
+
+        // Outer aggregate must be (count=1, sum=0).
+        let batch = StorageBatch::new();
+        let tx = db.start_transaction();
+        let outer_merk = db
+            .open_transactional_merk_at_path(
+                [TEST_LEAF, b"outer"].as_ref().into(),
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open outer merk");
+        let aggregate = outer_merk
+            .aggregate_data()
+            .expect("read outer aggregate data");
+        assert_eq!(aggregate.as_count_u64(), 1);
+        assert_eq!(aggregate.as_sum_i64(), 0);
+    }
+
+    #[test]
     fn batch_propagation_preserves_not_counted_or_summed_wrapper_on_subtree() {
         // A batch that inserts a NotCountedOrSummed(SumTree) AND writes a
         // child under it forces propagation through InsertTreeWithRootHash.
@@ -490,13 +633,14 @@ mod tests {
 
     #[test]
     fn constructor_invariants() {
-        // Only the four sum-bearing tree variants are accepted as inner.
+        // All five sum-bearing tree variants are accepted as inner.
         assert!(Element::new_not_counted_or_summed(Element::new_sum_tree(None)).is_ok());
         assert!(Element::new_not_counted_or_summed(Element::new_big_sum_tree(None)).is_ok());
         assert!(Element::new_not_counted_or_summed(Element::new_count_sum_tree(None)).is_ok());
         assert!(
             Element::new_not_counted_or_summed(Element::new_provable_count_sum_tree(None)).is_ok()
         );
+        assert!(Element::new_not_counted_or_summed(Element::new_provable_sum_tree(None)).is_ok());
 
         // Non-sum-tree inners are rejected.
         assert!(Element::new_not_counted_or_summed(Element::new_item(b"x".to_vec())).is_err());

@@ -82,12 +82,21 @@ fn verify_v1_per_key(
             classification,
             grove_version,
         )?;
+        // Terminal here only in the LEAF shape — where the path's final
+        // element is itself the ProvableCount(Sum)Tree. In carrier shape
+        // the final path element is the carrier (which could be any
+        // tree containing ProvableCountTrees as children); the terminal
+        // type check is enforced deeper, on each outer-key match in
+        // `verify_v1_carrier_layer` / `verify_v1_subquery_path`.
+        let is_terminal =
+            depth + 1 == path_keys.len() && classification.carrier_outer_items.is_none();
         enforce_lower_chain(
             path_query,
             &next_key,
             &proven_value_bytes,
             &lower_hash,
             &parent_proof_hash,
+            is_terminal,
             grove_version,
         )?;
         return Ok((parent_root_hash, results));
@@ -179,12 +188,18 @@ fn verify_v1_carrier_layer(
             grove_version,
         )?;
 
+        // Terminal here when the subquery_path is empty — the outer
+        // match goes directly to the leaf merk. When subquery_path has
+        // depth > 0, the leaf-terminal check fires inside
+        // `verify_v1_subquery_path` instead.
+        let is_terminal = subquery_path.is_empty();
         enforce_lower_chain(
             path_query,
             &outer_key,
             &value_bytes,
             &lower_root,
             &commitment_hash,
+            is_terminal,
             grove_version,
         )?;
         results.push((outer_key, count));
@@ -228,12 +243,14 @@ fn verify_v1_subquery_path(
         inner_range,
         grove_version,
     )?;
+    let is_terminal = depth + 1 == subquery_path.len();
     enforce_lower_chain(
         path_query,
         &next_key,
         &proven_value_bytes,
         &lower_hash,
         &parent_proof_hash,
+        is_terminal,
         grove_version,
     )?;
     Ok((parent_root_hash, count))

@@ -495,6 +495,7 @@ impl GroveDb {
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
+            | Element::ProvableSumTree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)

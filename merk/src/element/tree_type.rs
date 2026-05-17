@@ -50,6 +50,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
+            Element::ProvableSumTree(root_key, ..) => Some((root_key, TreeType::ProvableSumTree)),
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some((None, TreeType::CommitmentTree(chunk_power)))
             }
@@ -94,6 +95,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(root_key, ..) => {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
+            Element::ProvableSumTree(root_key, ..) => Some((root_key, TreeType::ProvableSumTree)),
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some((&NONE_ROOT_KEY, TreeType::CommitmentTree(*chunk_power)))
             }
@@ -131,6 +133,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
+            Element::ProvableSumTree(_, _, flags) => Some((flags, TreeType::ProvableSumTree)),
             Element::CommitmentTree(_, chunk_power, flags) => {
                 Some((flags, TreeType::CommitmentTree(*chunk_power)))
             }
@@ -163,6 +166,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => Some(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
+            Element::ProvableSumTree(..) => Some(TreeType::ProvableSumTree),
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some(TreeType::CommitmentTree(*chunk_power))
             }
@@ -197,6 +201,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountSumTree(_, count, sum, _) => {
                 Some(TreeFeatureType::ProvableCountedSummedMerkNode(*count, *sum))
             }
+            Element::ProvableSumTree(_, value, _) => {
+                Some(TreeFeatureType::ProvableSummedMerkNode(*value))
+            }
             Element::CommitmentTree(..) => Some(BasicMerkNode),
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
@@ -226,6 +233,7 @@ impl ElementTreeTypeExtensions for Element {
             Element::CountSumTree(..) => MaybeTree::Tree(TreeType::CountSumTree),
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
+            Element::ProvableSumTree(..) => MaybeTree::Tree(TreeType::ProvableSumTree),
             Element::CommitmentTree(_, chunk_power, _) => {
                 MaybeTree::Tree(TreeType::CommitmentTree(*chunk_power))
             }
@@ -278,6 +286,14 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::MmrTree => Ok(BasicMerkNode),
             TreeType::BulkAppendTree(_) => Ok(BasicMerkNode),
             TreeType::DenseAppendOnlyFixedSizeTree(_) => Ok(BasicMerkNode),
+            // ProvableSumTree aggregates an i64 sum (same arithmetic
+            // shape as plain SumTree) but carries it via
+            // `ProvableSummedMerkNode` so the sum is baked into every
+            // node's hash via `node_hash_with_sum` — making sum
+            // tampering catchable through proof verification.
+            TreeType::ProvableSumTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
+                self.sum_value_or_default(),
+            )),
             // CountIndexedTree's primary aggregates like CountTree.
             TreeType::CountIndexedTree => Ok(CountedMerkNode(self.count_value_or_default())),
             // ProvableCountIndexedTree's primary aggregates like ProvableCountTree.
@@ -500,6 +516,139 @@ mod tests {
             }
             other => panic!("expected ProvableCountedSummedMerkNode, got {:?}", other),
         }
+
+        // Sum-bearing parent: ProvableSumTree must also zero out the wrapped
+        // sum so the wrapper semantics stay consistent across the family.
+        // The sum-bearing branch uses the `ProvableSummedMerkNode(0)`
+        // feature type.
+        match ns.get_feature_type(TreeType::ProvableSumTree).unwrap() {
+            TreeFeatureType::ProvableSummedMerkNode(s) => assert_eq!(s, 0),
+            other => panic!("expected ProvableSummedMerkNode(0), got {:?}", other),
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Per-variant extension-method coverage: each tree-bearing variant
+    // has match arms in `root_key_and_tree_type`, `tree_flags_and_type`,
+    // `tree_type`, `tree_feature_type`, and `maybe_tree_type`. The
+    // existing tests above don't drive every variant directly; the
+    // following do.
+    // -------------------------------------------------------------------
+
+    fn assert_provable_sum_tree_arms(e: &Element) {
+        let (rk, tt) = e.root_key_and_tree_type().expect("Some");
+        assert!(rk.is_none());
+        assert_eq!(tt, TreeType::ProvableSumTree);
+
+        assert_eq!(e.tree_type(), Some(TreeType::ProvableSumTree));
+        assert_eq!(
+            e.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::ProvableSumTree)
+        );
+        let (flags, tt) = e.tree_flags_and_type().expect("Some");
+        assert_eq!(flags, e.get_flags());
+        assert_eq!(tt, TreeType::ProvableSumTree);
+
+        match e.tree_feature_type() {
+            Some(TreeFeatureType::ProvableSummedMerkNode(_)) => {}
+            other => panic!("expected ProvableSummedMerkNode, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn provable_sum_tree_extension_arms_direct() {
+        // Directly drive every per-variant arm for ProvableSumTree without
+        // wrappers, covering the lines that the wrapper-delegation test
+        // can't reach.
+        let e = Element::ProvableSumTree(None, 42, Some(vec![9, 8]));
+        assert_provable_sum_tree_arms(&e);
+    }
+
+    #[test]
+    fn commitment_tree_extension_arms_direct() {
+        // CommitmentTree carries a chunk_power that flows through every
+        // helper. Drive the per-variant arms directly.
+        let chunk_power = 4u8;
+        let e = Element::CommitmentTree(0, chunk_power, Some(vec![1]));
+
+        let (rk, tt) = e.root_key_and_tree_type().expect("Some");
+        assert!(rk.is_none());
+        assert_eq!(tt, TreeType::CommitmentTree(chunk_power));
+
+        assert_eq!(e.tree_type(), Some(TreeType::CommitmentTree(chunk_power)));
+        assert_eq!(
+            e.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::CommitmentTree(chunk_power))
+        );
+
+        let (flags, tt) = e.tree_flags_and_type().expect("Some");
+        assert!(flags.is_some());
+        assert_eq!(tt, TreeType::CommitmentTree(chunk_power));
+        assert_eq!(e.tree_feature_type(), Some(BasicMerkNode));
+    }
+
+    #[test]
+    fn bulk_append_tree_extension_arms_direct() {
+        let chunk_power = 8u8;
+        let e = Element::BulkAppendTree(0, chunk_power, None);
+
+        let (rk, tt) = e.root_key_and_tree_type().expect("Some");
+        assert!(rk.is_none());
+        assert_eq!(tt, TreeType::BulkAppendTree(chunk_power));
+
+        assert_eq!(e.tree_type(), Some(TreeType::BulkAppendTree(chunk_power)));
+        assert_eq!(
+            e.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::BulkAppendTree(chunk_power))
+        );
+        let (flags, tt) = e.tree_flags_and_type().expect("Some");
+        assert!(flags.is_none());
+        assert_eq!(tt, TreeType::BulkAppendTree(chunk_power));
+        assert_eq!(e.tree_feature_type(), Some(BasicMerkNode));
+    }
+
+    #[test]
+    fn dense_append_only_tree_extension_arms_direct() {
+        let height = 5u8;
+        let e = Element::DenseAppendOnlyFixedSizeTree(0, height, Some(vec![]));
+
+        let (rk, tt) = e.root_key_and_tree_type().expect("Some");
+        assert!(rk.is_none());
+        assert_eq!(tt, TreeType::DenseAppendOnlyFixedSizeTree(height));
+
+        assert_eq!(
+            e.tree_type(),
+            Some(TreeType::DenseAppendOnlyFixedSizeTree(height))
+        );
+        assert_eq!(
+            e.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree(height))
+        );
+
+        let (flags, tt) = e.tree_flags_and_type().expect("Some");
+        assert!(flags.is_some());
+        assert_eq!(tt, TreeType::DenseAppendOnlyFixedSizeTree(height));
+        assert_eq!(e.tree_feature_type(), Some(BasicMerkNode));
+    }
+
+    #[test]
+    fn mmr_tree_extension_arms_direct() {
+        let e = Element::MmrTree(0, None);
+        let (rk, tt) = e.root_key_and_tree_type().expect("Some");
+        assert!(rk.is_none());
+        assert_eq!(tt, TreeType::MmrTree);
+
+        assert_eq!(e.tree_type(), Some(TreeType::MmrTree));
+        assert_eq!(e.maybe_tree_type(), MaybeTree::Tree(TreeType::MmrTree));
+        assert_eq!(e.tree_feature_type(), Some(BasicMerkNode));
+    }
+
+    #[test]
+    fn provable_sum_tree_through_not_summed_wrapper() {
+        // Drive the look-through arm for ProvableSumTree specifically.
+        let inner = Element::ProvableSumTree(None, 99, None);
+        let ns = Element::new_not_summed(inner).expect("wrap ok");
+        assert_provable_sum_tree_arms(&ns);
     }
 
     // =====================================================================

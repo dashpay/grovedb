@@ -135,6 +135,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 query_item_value_or_sum: 0,
                 query_aggregate_sums: 0,
                 query_aggregate_count_on_range: 0,
+                query_aggregate_sum_on_range: 0,
                 query_sums: 0,
                 query_raw: 0,
                 query_keys_optional: 0,

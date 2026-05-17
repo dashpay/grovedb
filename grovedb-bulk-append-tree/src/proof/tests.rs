@@ -292,6 +292,47 @@ mod proof_tests {
     }
 
     #[test]
+    fn test_query_to_ranges_rejects_aggregate_count_on_range() {
+        // BulkAppendTree has no count commitment in its node hash, so the
+        // index-resolution helper must reject AggregateCountOnRange
+        // outright rather than silently fall through.
+        let mut query = Query::default();
+        query.items.push(QueryItem::AggregateCountOnRange(Box::new(
+            QueryItem::Range(pos_bytes(0)..pos_bytes(5)),
+        )));
+        let err = super::super::query_to_ranges(&query, 10)
+            .expect_err("AggregateCountOnRange must be rejected");
+        match err {
+            BulkAppendError::InvalidInput(msg) => assert!(
+                msg.contains("BulkAppendTree") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_query_to_ranges_rejects_aggregate_sum_on_range() {
+        // Same rationale as count: BulkAppendTree has no sum commitment
+        // either, so AggregateSumOnRange is rejected at index resolution.
+        let mut query = Query::default();
+        query
+            .items
+            .push(QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+                pos_bytes(0)..pos_bytes(5),
+            ))));
+        let err = super::super::query_to_ranges(&query, 10)
+            .expect_err("AggregateSumOnRange must be rejected");
+        match err {
+            BulkAppendError::InvalidInput(msg) => assert!(
+                msg.contains("BulkAppendTree") || msg.contains("provable sum"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_query_to_ranges_merges_clamps_and_filters() {
         let mut query = Query::default();
         query

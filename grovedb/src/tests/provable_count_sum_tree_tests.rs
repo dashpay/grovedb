@@ -78,11 +78,15 @@ mod tests {
                 Node::KVDigestCount(k, ..) => k.clone(),
                 Node::KVRefValueHash(k, ..) => k.clone(),
                 Node::KVRefValueHashCount(k, ..) => k.clone(),
+                Node::KVSum(k, ..) => k.clone(),
+                Node::KVDigestSum(k, ..) => k.clone(),
+                Node::KVRefValueHashSum(k, ..) => k.clone(),
                 Node::KVHashCount(..) => vec![],
                 Node::Hash(_) | Node::KVHash(_) => vec![],
                 // HashWithCount is keyless (collapsed subtree representation
                 // for AggregateCountOnRange proofs).
                 Node::HashWithCount(..) => vec![],
+                Node::KVHashSum(..) | Node::HashWithSum(..) => vec![],
             };
             results.push((key, count));
         }

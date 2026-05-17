@@ -46,7 +46,8 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
-                | Element::ProvableCountSumTree(..) => {}
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "NotSummed inner must be a sum-tree variant".to_string(),
@@ -59,10 +60,11 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
-                | Element::ProvableCountSumTree(..) => {}
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
-                        "NotCountedOrSummed inner must be a sum-tree variant".to_string(),
+                        "NotCountedOrSummed inner must be a sum-bearing tree variant".to_string(),
                     ));
                 }
             }
@@ -144,7 +146,8 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
-                | Element::ProvableCountSumTree(..) => {}
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "deserialized NotSummed with non-sum-tree inner".to_string(),
@@ -157,10 +160,12 @@ impl Element {
                 Element::SumTree(..)
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
-                | Element::ProvableCountSumTree(..) => {}
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
-                        "deserialized NotCountedOrSummed with non-sum-tree inner".to_string(),
+                        "deserialized NotCountedOrSummed with non-sum-bearing-tree inner"
+                            .to_string(),
                     ));
                 }
             }

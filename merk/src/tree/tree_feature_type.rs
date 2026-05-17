@@ -29,6 +29,14 @@ pub enum AggregateData {
     ProvableCount(u64),
     /// A provable combined element count and sum.
     ProvableCountAndSum(u64, i64),
+    /// A provable signed 64-bit sum value (sum baked into node hash).
+    ///
+    /// Distinct from `Sum` so the hash dispatch in `Tree::hash_for_link` and
+    /// the `commit` path can route a `ProvableSumTree` aggregate through
+    /// `node_hash_with_sum` instead of the plain `node_hash`. Arithmetic
+    /// semantics are identical to `Sum` (i64, checked-add aggregation);
+    /// only the hash treatment differs.
+    ProvableSum(i64),
 }
 
 #[cfg(feature = "minimal")]
@@ -43,6 +51,7 @@ impl AggregateData {
             AggregateData::CountAndSum(..) => TreeType::CountSumTree,
             AggregateData::ProvableCount(_) => TreeType::ProvableCountTree,
             AggregateData::ProvableCountAndSum(..) => TreeType::ProvableCountSumTree,
+            AggregateData::ProvableSum(_) => TreeType::ProvableSumTree,
         }
     }
 
@@ -64,6 +73,7 @@ impl AggregateData {
             AggregateData::CountAndSum(_, s) => *s,
             AggregateData::ProvableCount(_) => 0,
             AggregateData::ProvableCountAndSum(_, s) => *s,
+            AggregateData::ProvableSum(s) => *s,
         }
     }
 
@@ -77,6 +87,7 @@ impl AggregateData {
             AggregateData::CountAndSum(c, _) => *c,
             AggregateData::ProvableCount(c) => *c,
             AggregateData::ProvableCountAndSum(c, _) => *c,
+            AggregateData::ProvableSum(_) => 0,
         }
     }
 
@@ -90,6 +101,7 @@ impl AggregateData {
             AggregateData::CountAndSum(_, s) => *s as i128,
             AggregateData::ProvableCount(_) => 0,
             AggregateData::ProvableCountAndSum(_, s) => *s as i128,
+            AggregateData::ProvableSum(s) => *s as i128,
         }
     }
 }
@@ -107,6 +119,12 @@ impl From<TreeFeatureType> for AggregateData {
             TreeFeatureType::ProvableCountedSummedMerkNode(count, sum) => {
                 AggregateData::ProvableCountAndSum(count, sum)
             }
+            // `ProvableSummedMerkNode` maps to its own
+            // `AggregateData::ProvableSum` variant so the hash dispatch
+            // (in `Tree::hash_for_link` and `commit`) can route a
+            // ProvableSumTree through `node_hash_with_sum`. Arithmetic
+            // semantics still mirror a plain `Sum` aggregation.
+            TreeFeatureType::ProvableSummedMerkNode(val) => AggregateData::ProvableSum(val),
         }
     }
 }
@@ -143,6 +161,10 @@ mod tests {
             AggregateData::ProvableCountAndSum(1, 2).parent_tree_type(),
             TreeType::ProvableCountSumTree
         );
+        assert_eq!(
+            AggregateData::ProvableSum(7).parent_tree_type(),
+            TreeType::ProvableSumTree
+        );
     }
 
     #[test]
@@ -165,6 +187,8 @@ mod tests {
         assert_eq!(AggregateData::CountAndSum(5, 20).as_sum_i64(), 20);
         assert_eq!(AggregateData::ProvableCount(3).as_sum_i64(), 0);
         assert_eq!(AggregateData::ProvableCountAndSum(1, -7).as_sum_i64(), -7);
+        assert_eq!(AggregateData::ProvableSum(42).as_sum_i64(), 42);
+        assert_eq!(AggregateData::ProvableSum(-1).as_sum_i64(), -1);
     }
 
     #[test]
@@ -176,6 +200,7 @@ mod tests {
         assert_eq!(AggregateData::CountAndSum(5, 20).as_count_u64(), 5);
         assert_eq!(AggregateData::ProvableCount(3).as_count_u64(), 3);
         assert_eq!(AggregateData::ProvableCountAndSum(7, -1).as_count_u64(), 7);
+        assert_eq!(AggregateData::ProvableSum(42).as_count_u64(), 0);
     }
 
     #[test]
@@ -190,6 +215,8 @@ mod tests {
             AggregateData::ProvableCountAndSum(1, 50).as_summed_i128(),
             50
         );
+        assert_eq!(AggregateData::ProvableSum(42).as_summed_i128(), 42);
+        assert_eq!(AggregateData::ProvableSum(-1).as_summed_i128(), -1);
     }
 
     #[test]
@@ -221,6 +248,16 @@ mod tests {
         assert_eq!(
             AggregateData::from(TreeFeatureType::ProvableCountedSummedMerkNode(1, 2)),
             AggregateData::ProvableCountAndSum(1, 2)
+        );
+        // `ProvableSummedMerkNode` maps to its dedicated
+        // `AggregateData::ProvableSum` variant.
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableSummedMerkNode(42)),
+            AggregateData::ProvableSum(42)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableSummedMerkNode(-1)),
+            AggregateData::ProvableSum(-1)
         );
     }
 }

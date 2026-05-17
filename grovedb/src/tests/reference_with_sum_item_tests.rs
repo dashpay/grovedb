@@ -2122,4 +2122,325 @@ mod tests {
             other => panic!("expected resolved target Item, got {:?}", other),
         }
     }
+
+    // ====================================================================
+    // Crossover: Element::ReferenceWithSumItem × Element::ProvableSumTree
+    // --------------------------------------------------------------------
+    // `ReferenceWithSumItem` (added in PR #667) and `ProvableSumTree`
+    // (added in this PR) were developed in parallel. They interact at one
+    // critical surface: a `ReferenceWithSumItem` inserted into a
+    // `ProvableSumTree` parent must propagate its explicit `sum_value`
+    // into the parent's CRYPTOGRAPHICALLY-BOUND aggregate sum (the sum
+    // that `node_hash_with_sum` bakes into every node hash, which makes
+    // `AggregateSumOnRange` proofs verifiable). Plain `SumTree` already
+    // had this exercised in `insert_in_sum_tree_aggregates_sum`; the
+    // tests below verify the same contract for the provable flavor and
+    // for the full proof round-trip.
+    // ====================================================================
+
+    /// Insert a `ReferenceWithSumItem` directly into a `ProvableSumTree`
+    /// parent. Its explicit sum_value must propagate into the parent's
+    /// running sum just like it does in a plain SumTree — but the binding
+    /// here is stronger: the sum is baked into the parent merk's node
+    /// hashes via `node_hash_with_sum`, so any forge attempt would
+    /// produce a different root hash.
+    #[test]
+    fn insert_reference_with_sum_item_in_provable_sum_tree_aggregates_sum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pst",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert provable sum tree");
+
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"target",
+            b"target_payload",
+            grove_version,
+        );
+
+        // Reference-with-sum-item pointing at the target, carrying sum 50.
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        let element = Element::new_reference_with_sum_item(ref_path, 50);
+        db.insert(
+            [TEST_LEAF, b"pst"].as_ref(),
+            b"link",
+            element,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert ref-with-sum-item into provable sum tree");
+
+        // The parent ProvableSumTree's aggregate must equal the explicit
+        // sum carried on the link — independent of the resolved target.
+        let agg = open_merk_aggregate(&db, &[TEST_LEAF, b"pst"], grove_version);
+        assert_eq!(
+            agg,
+            AggregateData::ProvableSum(50),
+            "RWSI sum_value must propagate into ProvableSumTree's bound aggregate"
+        );
+    }
+
+    /// Multiple `ReferenceWithSumItem`s in the same `ProvableSumTree`
+    /// each independently contribute their sum_values. Verifies the
+    /// hash-bound aggregate adds them correctly (including negative
+    /// values).
+    #[test]
+    fn multiple_reference_with_sum_items_in_provable_sum_tree_accumulate() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pst",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert provable sum tree");
+
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target_a", b"a", grove_version);
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target_b", b"b", grove_version);
+
+        // Three RWSI links: 30 + (-8) + 100 = 122. Two of them point to
+        // the same target — sum is link-level, not target-level.
+        for (key, target, sum) in [
+            (b"link_a".as_ref(), b"target_a".as_ref(), 30i64),
+            (b"link_b".as_ref(), b"target_b".as_ref(), -8),
+            (b"link_c".as_ref(), b"target_a".as_ref(), 100),
+        ] {
+            let ref_path =
+                ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), target.to_vec()]);
+            db.insert(
+                [TEST_LEAF, b"pst"].as_ref(),
+                key,
+                Element::new_reference_with_sum_item(ref_path, sum),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert link");
+        }
+
+        let agg = open_merk_aggregate(&db, &[TEST_LEAF, b"pst"], grove_version);
+        assert_eq!(agg, AggregateData::ProvableSum(122));
+    }
+
+    /// Aggregate-sum proof round-trip: build a `ProvableSumTree`
+    /// populated entirely with `ReferenceWithSumItem` entries, run a
+    /// range query that covers a subset of them, prove + verify, and
+    /// assert that the verified sum is exactly the sum of the
+    /// link-carried weights inside the range.
+    ///
+    /// This is the strongest combination test: it exercises the merk
+    /// `aggregate_sum` prover/verifier, the GroveDB envelope walker,
+    /// the terminal-type gate (must accept ProvableSumTree of RWSI),
+    /// and the `node_hash_with_sum` binding all at once.
+    #[test]
+    fn aggregate_sum_on_range_over_reference_with_sum_item_in_provable_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pst",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert provable sum tree");
+
+        // Target the references point at. Sum on the link, NOT on the
+        // target, so the target itself is just a plain Item.
+        insert_target_item(
+            &db,
+            [TEST_LEAF].as_ref(),
+            b"target",
+            b"payload",
+            grove_version,
+        );
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+
+        // 15 RWSI links keyed a..=o with weights 1..=15 — same shape as
+        // setup_15_key_provable_sum_tree in aggregate_sum_query_tests but
+        // with RWSI in place of plain SumItem.
+        for (i, c) in (b'a'..=b'o').enumerate() {
+            let weight = (i as i64) + 1;
+            db.insert(
+                [TEST_LEAF, b"pst"].as_ref(),
+                &[c],
+                Element::new_reference_with_sum_item(ref_path.clone(), weight),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert RWSI link");
+        }
+
+        let root_hash = db
+            .grove_db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root hash");
+
+        // Sub-range c..=l: weights 3 + 4 + ... + 12 = 75.
+        let path_query = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"pst".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query should succeed");
+        let (verified_root, verified_sum) =
+            GroveDb::verify_aggregate_sum_query(&proof, &path_query, grove_version)
+                .expect("verify_aggregate_sum_query should succeed");
+        assert_eq!(verified_root, root_hash);
+        assert_eq!(
+            verified_sum, 75,
+            "verified sum must equal the sum of in-range RWSI link weights"
+        );
+    }
+
+    /// Negative-sum proof round-trip: a single RWSI with a negative
+    /// weight in a `ProvableSumTree` must verify to that exact negative
+    /// sum. Confirms the i64-signed contract on the verifier side
+    /// works for RWSI-carried weights.
+    #[test]
+    fn aggregate_sum_handles_negative_weight_from_reference_with_sum_item() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pst",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pst");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"t", b"v", grove_version);
+
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"t".to_vec()]);
+        db.insert(
+            [TEST_LEAF, b"pst"].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path, -42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert RWSI with negative weight");
+
+        let path_query = PathQuery::new_aggregate_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"pst".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let (_root, sum) = GroveDb::verify_aggregate_sum_query(&proof, &path_query, grove_version)
+            .expect("verify");
+        assert_eq!(sum, -42);
+    }
+
+    /// `NonCounted(ReferenceWithSumItem)` is REJECTED at insert time
+    /// when the parent is a `ProvableSumTree` — the `NonCounted`
+    /// wrapper's contract is "may only be inserted into count-bearing
+    /// trees", and `ProvableSumTree` is sum-only, not count-bearing.
+    /// This is the same rule that rejects `NonCounted(RWSI)` from
+    /// `SumTree`/`BigSumTree`; it's just easy to forget when thinking
+    /// about RWSI specifically because the wrapper conceptually does
+    /// nothing here (no count to suppress).
+    ///
+    /// If a caller wants a sum-only contribution they should insert the
+    /// bare `RWSI` directly — that's exactly what the
+    /// `insert_reference_with_sum_item_in_provable_sum_tree_aggregates_sum`
+    /// test above covers.
+    #[test]
+    fn non_counted_reference_with_sum_item_rejected_in_provable_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pst",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pst");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"t", b"v", grove_version);
+
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"t".to_vec()]);
+        let rwsi = Element::new_reference_with_sum_item(ref_path, 77);
+        let wrapped = Element::new_non_counted(rwsi).expect("NonCounted wrap accepted");
+
+        let err = db
+            .insert(
+                [TEST_LEAF, b"pst"].as_ref(),
+                b"link",
+                wrapped,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect_err("NonCounted parent-type guard must reject");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("count-bearing")
+                || msg.contains("non-counted")
+                || msg.contains("NonCounted"),
+            "expected NonCounted parent-type guard error, got: {msg}"
+        );
+    }
+
+    /// `NotCountedOrSummed` may only wrap sum-BEARING tree variants
+    /// (SumTree/BigSumTree/CountSumTree/ProvableCountSumTree/
+    /// ProvableSumTree). `ReferenceWithSumItem` is a reference — not a
+    /// tree — so the constructor must reject it. PR #667 already covers
+    /// the `NotSummed` rejection in `new_not_summed_rejects_reference_with_sum_item`;
+    /// this is the matching `NotCountedOrSummed` parity test that
+    /// landed alongside our `NotCountedOrSummed` wrapper rule.
+    #[test]
+    fn new_not_counted_or_summed_rejects_reference_with_sum_item() {
+        let rwsi = Element::new_reference_with_sum_item(
+            ReferencePathType::SiblingReference(b"k".to_vec()),
+            10,
+        );
+        assert!(
+            Element::new_not_counted_or_summed(rwsi).is_err(),
+            "NotCountedOrSummed must reject ReferenceWithSumItem inner — only \
+             sum-bearing tree variants are allowed"
+        );
+    }
 }
