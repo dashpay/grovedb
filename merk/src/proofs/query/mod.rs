@@ -12,6 +12,8 @@ pub mod aggregate_count;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_sum;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod count_offset;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod map;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
@@ -20,6 +22,10 @@ mod verify;
 pub use aggregate_count::verify_aggregate_count_on_range_proof;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use aggregate_sum::verify_aggregate_sum_on_range_proof;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use count_offset::{
+    verify_count_offset_on_range_proof, CountOffsetProofResult, CountOffsetReturnedItem,
+};
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{cost_return_on_error, CostContext, CostResult, CostsExt, OperationCost};

@@ -54,12 +54,11 @@ impl GroveDb {
             ))?;
         }
 
-        // must have no offset
-        if query.query.offset.is_some() {
-            return Err(Error::NotSupported(
-                "offsets in path queries are not supported for proofs".to_string(),
-            ));
-        }
+        // Offset gate is centralized in `verify_proof_internal` — it
+        // sees the envelope version and applies V0-rejects /
+        // V1-relaxes uniformly across all entry points
+        // (verify_query_with_options, verify_query_raw,
+        // verify_query_get_parent_tree_info_with_options).
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
@@ -162,12 +161,49 @@ impl GroveDb {
         ),
         Error,
     > {
+        // Offset gate centralized in `apply_count_offset_envelope_gate`:
+        // V0 envelopes reject any non-zero offset (V0 is a shipped
+        // wire format that never supported `SizedQuery::offset`);
+        // V1 envelopes honor a non-zero offset iff the query
+        // validates as offset-paginated. The tree-type check
+        // (ProvableCountTree / ProvableCountSumTree) happens at
+        // leaf-dispatch time inside `run_count_offset_layer_dispatch`.
+        Self::apply_count_offset_envelope_gate(proof, query)?;
+
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_v0_internal(proof_v0, query, options, grove_version)
             }
             GroveDBProof::V1(proof_v1) => {
                 Self::verify_proof_v1_internal(proof_v1, query, options, grove_version)
+            }
+        }
+    }
+
+    /// Shared offset-envelope gate used by both `verify_proof_internal`
+    /// and `verify_proof_raw_internal`. Returns `Ok(())` when the query
+    /// has no non-zero offset (regular flow) or when the envelope is
+    /// V1 and the query validates as offset-paginated. Returns
+    /// `Error::NotSupported` when an offset is paired with a V0
+    /// envelope (V0 never supported offsets and widening it would be a
+    /// consensus-breaking change for shipped grove v1/v2), or whatever
+    /// `validate_count_offset_paginated` returns for malformed V1
+    /// offset queries. Factoring this out keeps the V0-rejects /
+    /// V1-relaxes contract identical across every public entry point.
+    fn apply_count_offset_envelope_gate(
+        proof: &GroveDBProof,
+        query: &PathQuery,
+    ) -> Result<(), Error> {
+        if !query.has_non_zero_offset() {
+            return Ok(());
+        }
+        match proof {
+            GroveDBProof::V0(_) => Err(Error::NotSupported(
+                "offsets in path queries are not supported for proofs".to_string(),
+            )),
+            GroveDBProof::V1(_) => {
+                query.validate_count_offset_paginated()?;
+                Ok(())
             }
         }
     }
@@ -265,6 +301,10 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
+        // Same V0-rejects / V1-relaxes envelope gate as
+        // `verify_proof_internal` — see `apply_count_offset_envelope_gate`.
+        Self::apply_count_offset_envelope_gate(proof, query)?;
+
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_raw_internal_v0(proof_v0, query, options, grove_version)
@@ -384,6 +424,161 @@ impl GroveDb {
         Ok((root_hash, last_tree_feature_type, result))
     }
 
+    /// Shared count-offset leaf-dispatch helper used by both
+    /// `verify_layer_proof` (V0) and `verify_layer_proof_v1`. Their V0
+    /// and V1 envelopes wrap the merk proof bytes differently
+    /// (`MerkOnlyLayerProof.merk_proof: Vec<u8>` vs
+    /// `LayerProof.merk_proof: ProofBytes::Merk(Vec<u8>)`), so callers
+    /// pass the unwrapped `merk_proof_bytes` and the
+    /// `lower_layers_empty` flag explicitly. Everything else (
+    /// `validate_count_offset_paginated`, the `verify_count_offset_on_range_proof`
+    /// call, item translation, V1 strict-mode-style rejection of
+    /// non-empty tree returns) is identical.
+    fn run_count_offset_layer_dispatch<T>(
+        query: &PathQuery,
+        merk_proof_bytes: &[u8],
+        lower_layers_empty: bool,
+        current_path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        let inner_range = query.validate_count_offset_paginated()?.clone();
+        let offset = query.query.offset.map(|o| o as u64).unwrap_or(0);
+        let limit_u64 = query.query.limit.map(|l| l as u64);
+        let internal_query_for_dir = query
+            .query_items_at_path(current_path, grove_version)?
+            .ok_or(Error::CorruptedPath(format!(
+                "count-offset verify: path {} should be part of path_query {}",
+                current_path
+                    .iter()
+                    .map(hex::encode)
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                query
+            )))?;
+
+        // The validator rejects subqueries, so an honest count-offset
+        // leaf proof always has empty `lower_layers`. A non-empty
+        // map here means the prover attached arbitrary child layers
+        // that we would otherwise silently ignore (and which the V1
+        // succinctness post-pass would not catch because we
+        // short-circuit before it runs).
+        if !lower_layers_empty {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "count-offset leaf proof has unexpected lower_layers — \
+                 validate_count_offset_paginated disallows subqueries, so \
+                 no child layers should be present"
+                    .to_string(),
+            ));
+        }
+
+        let count_offset_result = grovedb_merk::proofs::query::verify_count_offset_on_range_proof(
+            merk_proof_bytes,
+            &inner_range,
+            offset,
+            limit_u64,
+            internal_query_for_dir.left_to_right,
+        )
+        .unwrap()
+        .map_err(|e| {
+            Error::InvalidProof(
+                query.clone(),
+                format!("count-offset merk proof failed to verify: {}", e),
+            )
+        })?;
+
+        // Translate each returned item into a `ProvedPathKeyOptionalValue`.
+        // Use the merk-surfaced `value_hash` and `child_hash_verified`
+        // verbatim rather than recomputing `value_hash(value)` — the
+        // latter is wrong for tree-flavored entries (whose committed
+        // value-hash is `combine_hash(H(value), child_root)`).
+        //
+        // Defense-in-depth: reject any returned value whose deserialized
+        // element type is one of the three shapes the count-offset
+        // proof flow doesn't yet support. The prover-side checks in
+        // `emit_count_offset_proof` already block these, so an honest
+        // proof will never reach this loop with them — but a forged
+        // proof might, and we don't want to silently pass tampered
+        // values through. The three rejected shapes are:
+        //
+        //   • **NonCounted-wrapped** entries — silently dropped in
+        //     normal traversal (own_count = 0) and not surfaced via
+        //     the merk's `returned_items`. If one appears here, the
+        //     proof was forged.
+        //   • **Reference / ReferenceWithSumItem** — would need the
+        //     regular flow's reference post-pass to dereference the
+        //     target; we don't run that on the count-offset
+        //     short-circuit, so a raw reference here would be returned
+        //     verbatim. Reject.
+        //   • **Non-empty tree** — V1 strict-mode would require a
+        //     `KVValueHashFeatureTypeWithChildHash` proof node here;
+        //     accepting one without that would silently bypass the
+        //     child-hash invariant the regular flow enforces.
+        for item in count_offset_result.returned_items.iter() {
+            if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version) {
+                // NonCounted-wrapped values are checked **before**
+                // unwrapping via `into_underlying`, since the wrapper
+                // itself is the rejected shape. The merk-level prover
+                // already refuses to emit NonCounted entries as
+                // value-bearing nodes, so an honest proof can never
+                // surface one here. Reject as `InvalidProof`
+                // (forgery) rather than `NotSupported` to make the
+                // distinction visible.
+                if elem.is_non_counted() {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "count-offset paginated proofs do not surface \
+                             NonCounted-wrapped entries in returned items — proof at \
+                             key {} appears forged",
+                            hex::encode(&item.key)
+                        ),
+                    ));
+                }
+                let inner = elem.into_underlying();
+                if inner.is_non_empty_tree() {
+                    return Err(Error::NotSupported(format!(
+                        "count-offset paginated proofs do not yet support \
+                         non-empty tree return values (key {})",
+                        hex::encode(&item.key)
+                    )));
+                }
+                if inner.is_reference() {
+                    return Err(Error::NotSupported(format!(
+                        "count-offset paginated proofs do not yet support \
+                         Reference / ReferenceWithSumItem return values (key {}); the \
+                         regular flow's reference post-pass isn't applied on the \
+                         count-offset short-circuit, so an accepted reference here \
+                         would surface the raw Element::Reference rather than the \
+                         dereferenced target",
+                        hex::encode(&item.key)
+                    )));
+                }
+            }
+            let proved_key_optional_value = grovedb_merk::proofs::query::ProvedKeyOptionalValue {
+                key: item.key.clone(),
+                value: Some(item.value.clone()),
+                proof: item.value_hash,
+                child_hash_verified: item.child_hash_verified,
+            };
+            let path_key_optional_value = ProvedPathKeyOptionalValue::from_proved_key_value(
+                current_path.iter().map(|p| p.to_vec()).collect(),
+                proved_key_optional_value,
+            );
+            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
+        }
+        Ok(count_offset_result.root_hash)
+    }
+
     pub(crate) fn verify_layer_proof_v1<T>(
         layer_proof: &LayerProof,
         prove_options: &ProveOptions,
@@ -419,6 +614,32 @@ impl GroveDb {
                 ));
             }
         };
+
+        // Count-offset paginated dispatch (v1 verify). Fires when:
+        //   - we're at the leaf level (current_path == query.path), and
+        //   - the path query has a non-zero offset, and
+        //   - it validates as count-offset-paginated (syntactic gate
+        //     already passed at the top entry, so this should
+        //     always succeed for honest callers but we double-check
+        //     to surface invariant violations cleanly).
+        //
+        // On match: route to the merk-level
+        // `verify_count_offset_on_range_proof`, convert the returned
+        // items into `ProvedPathKeyOptionalValue`s the rest of the
+        // verifier pipeline expects, and return the leaf merk's root
+        // hash so the parent layer's `combine_hash(H(value),
+        // lower_hash)` chain check matches.
+        if current_path.len() == query.path.len() && query.has_non_zero_offset() {
+            return Self::run_count_offset_layer_dispatch(
+                query,
+                merk_proof_bytes,
+                layer_proof.lower_layers.is_empty(),
+                current_path,
+                limit_left,
+                result,
+                grove_version,
+            );
+        }
 
         let internal_query = query
             .query_items_at_path(current_path, grove_version)?
@@ -1372,6 +1593,19 @@ impl GroveDb {
         Ok(positions)
     }
 
+    /// ╔══════════════════════════════════════════════════════════════════╗
+    /// ║                  ⚠⚠⚠  DO NOT MODIFY V0 PROOFS  ⚠⚠⚠               ║
+    /// ╠══════════════════════════════════════════════════════════════════╣
+    /// ║ This is the V0 layer verifier. Grove versions v1 and v2 emit    ║
+    /// ║ V0 proofs in production; the bytes they accept are part of      ║
+    /// ║ those versions' wire format. Changing what V0 accepts (e.g.     ║
+    /// ║ widening to count-offset paginated proofs, accepting new node   ║
+    /// ║ kinds, relaxing rejection conditions) is consensus-breaking     ║
+    /// ║ for already-deployed validators. Put new verifier features on   ║
+    /// ║ V1 (`verify_layer_proof_v1`) behind a fresh grove version       ║
+    /// ║ instead. See `prove_query_non_serialized_v0` in generate.rs     ║
+    /// ║ for the full rationale.                                          ║
+    /// ╚══════════════════════════════════════════════════════════════════╝
     pub(crate) fn verify_layer_proof<T>(
         layer_proof: &MerkOnlyLayerProof,
         prove_options: &ProveOptions,
@@ -1402,6 +1636,7 @@ impl GroveDb {
                 .proof
                 .verify_layer_proof
         );
+
         let internal_query = query
             .query_items_at_path(current_path, grove_version)?
             .ok_or(Error::CorruptedPath(format!(
