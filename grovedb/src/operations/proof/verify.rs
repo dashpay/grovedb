@@ -387,6 +387,116 @@ impl GroveDb {
         Ok((root_hash, last_tree_feature_type, result))
     }
 
+    /// Shared count-offset leaf-dispatch helper used by both
+    /// `verify_layer_proof` (V0) and `verify_layer_proof_v1`. Their V0
+    /// and V1 envelopes wrap the merk proof bytes differently
+    /// (`MerkOnlyLayerProof.merk_proof: Vec<u8>` vs
+    /// `LayerProof.merk_proof: ProofBytes::Merk(Vec<u8>)`), so callers
+    /// pass the unwrapped `merk_proof_bytes` and the
+    /// `lower_layers_empty` flag explicitly. Everything else (
+    /// `validate_count_offset_paginated`, the `verify_count_offset_on_range_proof`
+    /// call, item translation, V1 strict-mode-style rejection of
+    /// non-empty tree returns) is identical.
+    fn run_count_offset_layer_dispatch<T>(
+        query: &PathQuery,
+        merk_proof_bytes: &[u8],
+        lower_layers_empty: bool,
+        current_path: &[&[u8]],
+        limit_left: &mut Option<u16>,
+        result: &mut Vec<T>,
+        grove_version: &GroveVersion,
+    ) -> Result<CryptoHash, Error>
+    where
+        T: TryFromVersioned<ProvedPathKeyOptionalValue>,
+        Error: From<<T as TryFromVersioned<ProvedPathKeyOptionalValue>>::Error>,
+    {
+        let inner_range = query.validate_count_offset_paginated()?.clone();
+        let offset = query.query.offset.map(|o| o as u64).unwrap_or(0);
+        let limit_u64 = query.query.limit.map(|l| l as u64);
+        let internal_query_for_dir = query
+            .query_items_at_path(current_path, grove_version)?
+            .ok_or(Error::CorruptedPath(format!(
+                "count-offset verify: path {} should be part of path_query {}",
+                current_path
+                    .iter()
+                    .map(hex::encode)
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                query
+            )))?;
+
+        // The validator rejects subqueries, so an honest count-offset
+        // leaf proof always has empty `lower_layers`. A non-empty
+        // map here means the prover attached arbitrary child layers
+        // that we would otherwise silently ignore (and which the V1
+        // succinctness post-pass would not catch because we
+        // short-circuit before it runs).
+        if !lower_layers_empty {
+            return Err(Error::InvalidProof(
+                query.clone(),
+                "count-offset leaf proof has unexpected lower_layers — \
+                 validate_count_offset_paginated disallows subqueries, so \
+                 no child layers should be present"
+                    .to_string(),
+            ));
+        }
+
+        let count_offset_result = grovedb_merk::proofs::query::verify_count_offset_on_range_proof(
+            merk_proof_bytes,
+            &inner_range,
+            offset,
+            limit_u64,
+            internal_query_for_dir.left_to_right,
+        )
+        .unwrap()
+        .map_err(|e| {
+            Error::InvalidProof(
+                query.clone(),
+                format!("count-offset merk proof failed to verify: {}", e),
+            )
+        })?;
+
+        // Translate each returned item into a `ProvedPathKeyOptionalValue`.
+        // Use the merk-surfaced `value_hash` and `child_hash_verified`
+        // verbatim rather than recomputing `value_hash(value)` — the
+        // latter is wrong for tree-flavored entries (whose committed
+        // value-hash is `combine_hash(H(value), child_root)`).
+        //
+        // Non-empty tree returned items are rejected here: this PR's
+        // count-offset prover never emits the
+        // `KVValueHashFeatureTypeWithChildHash` node a non-empty tree
+        // return would need for V1 strict-mode soundness, so
+        // accepting one would silently bypass the child-hash invariant
+        // the regular flow enforces. Items, references, and empty
+        // trees inside a count tree are fine.
+        for item in count_offset_result.returned_items.iter() {
+            if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version)
+                && elem.into_underlying().is_non_empty_tree()
+            {
+                return Err(Error::NotSupported(format!(
+                    "count-offset paginated proofs do not yet support \
+                     non-empty tree return values (key {})",
+                    hex::encode(&item.key)
+                )));
+            }
+            let proved_key_optional_value = grovedb_merk::proofs::query::ProvedKeyOptionalValue {
+                key: item.key.clone(),
+                value: Some(item.value.clone()),
+                proof: item.value_hash,
+                child_hash_verified: item.child_hash_verified,
+            };
+            let path_key_optional_value = ProvedPathKeyOptionalValue::from_proved_key_value(
+                current_path.iter().map(|p| p.to_vec()).collect(),
+                proved_key_optional_value,
+            );
+            result.push(path_key_optional_value.try_into_versioned(grove_version)?);
+            limit_left
+                .iter_mut()
+                .for_each(|limit| *limit = limit.saturating_sub(1));
+        }
+        Ok(count_offset_result.root_hash)
+    }
+
     pub(crate) fn verify_layer_proof_v1<T>(
         layer_proof: &LayerProof,
         prove_options: &ProveOptions,
@@ -438,93 +548,15 @@ impl GroveDb {
         // hash so the parent layer's `combine_hash(H(value),
         // lower_hash)` chain check matches.
         if current_path.len() == query.path.len() && query.has_non_zero_offset() {
-            let inner_range = query.validate_count_offset_paginated()?.clone();
-            let offset = query.query.offset.map(|o| o as u64).unwrap_or(0);
-            let limit_u64 = query.query.limit.map(|l| l as u64);
-            let internal_query_for_dir = query
-                .query_items_at_path(current_path, grove_version)?
-                .ok_or(Error::CorruptedPath(format!(
-                    "verify v1 count-offset: path {} should be part of path_query {}",
-                    current_path
-                        .iter()
-                        .map(hex::encode)
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    query
-                )))?;
-
-            // The validator rejects subqueries, so an honest count-offset
-            // leaf proof always has empty `lower_layers`. A non-empty
-            // map here means the prover attached arbitrary child
-            // layers that we would otherwise silently ignore (and which
-            // the V1 succinctness post-pass would not catch because we
-            // short-circuit before it runs). Reject.
-            if !layer_proof.lower_layers.is_empty() {
-                return Err(Error::InvalidProof(
-                    query.clone(),
-                    "count-offset leaf proof has unexpected lower_layers — \
-                     validate_count_offset_paginated disallows subqueries, so \
-                     no child layers should be present"
-                        .to_string(),
-                ));
-            }
-
-            let count_offset_result =
-                grovedb_merk::proofs::query::verify_count_offset_on_range_proof(
-                    merk_proof_bytes,
-                    &inner_range,
-                    offset,
-                    limit_u64,
-                    internal_query_for_dir.left_to_right,
-                )
-                .unwrap()
-                .map_err(|e| {
-                    Error::InvalidProof(
-                        query.clone(),
-                        format!("count-offset merk proof failed to verify: {}", e),
-                    )
-                })?;
-
-            // Translate each returned item into a `ProvedPathKeyOptionalValue`.
-            // Use the merk-surfaced `value_hash` and `child_hash_verified`
-            // verbatim rather than recomputing `value_hash(value)` — the
-            // latter is wrong for tree-flavored entries (whose committed
-            // value-hash is `combine_hash(H(value), child_root)`).
-            //
-            // Non-empty tree returned items are rejected here: this
-            // PR's count-offset prover never emits the
-            // `KVValueHashFeatureTypeWithChildHash` node a non-empty
-            // tree return would need for V1 strict-mode soundness, so
-            // accepting one would silently bypass the child-hash
-            // invariant the regular flow enforces. Items, references,
-            // and empty trees inside a count tree are fine.
-            for item in count_offset_result.returned_items.iter() {
-                if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version)
-                    && elem.into_underlying().is_non_empty_tree()
-                {
-                    return Err(Error::NotSupported(format!(
-                        "count-offset paginated proofs do not yet support \
-                         non-empty tree return values (key {})",
-                        hex::encode(&item.key)
-                    )));
-                }
-                let proved_key_optional_value =
-                    grovedb_merk::proofs::query::ProvedKeyOptionalValue {
-                        key: item.key.clone(),
-                        value: Some(item.value.clone()),
-                        proof: item.value_hash,
-                        child_hash_verified: item.child_hash_verified,
-                    };
-                let path_key_optional_value = ProvedPathKeyOptionalValue::from_proved_key_value(
-                    current_path.iter().map(|p| p.to_vec()).collect(),
-                    proved_key_optional_value,
-                );
-                result.push(path_key_optional_value.try_into_versioned(grove_version)?);
-                limit_left
-                    .iter_mut()
-                    .for_each(|limit| *limit = limit.saturating_sub(1));
-            }
-            return Ok(count_offset_result.root_hash);
+            return Self::run_count_offset_layer_dispatch(
+                query,
+                merk_proof_bytes,
+                layer_proof.lower_layers.is_empty(),
+                current_path,
+                limit_left,
+                result,
+                grove_version,
+            );
         }
 
         let internal_query = query
@@ -1517,74 +1549,15 @@ impl GroveDb {
         // identical to the v1 path; see that block for the full
         // rationale.
         if current_path.len() == query.path.len() && query.has_non_zero_offset() {
-            let inner_range = query.validate_count_offset_paginated()?.clone();
-            let offset = query.query.offset.map(|o| o as u64).unwrap_or(0);
-            let limit_u64 = query.query.limit.map(|l| l as u64);
-            let internal_query_for_dir = query
-                .query_items_at_path(current_path, grove_version)?
-                .ok_or(Error::CorruptedPath(format!(
-                    "verify v0 count-offset: path {} should be part of path_query {}",
-                    current_path
-                        .iter()
-                        .map(hex::encode)
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                    query
-                )))?;
-
-            if !layer_proof.lower_layers.is_empty() {
-                return Err(Error::InvalidProof(
-                    query.clone(),
-                    "count-offset leaf proof has unexpected lower_layers — \
-                     validate_count_offset_paginated disallows subqueries, so \
-                     no child layers should be present"
-                        .to_string(),
-                ));
-            }
-
-            let count_offset_result =
-                grovedb_merk::proofs::query::verify_count_offset_on_range_proof(
-                    layer_proof.merk_proof.as_slice(),
-                    &inner_range,
-                    offset,
-                    limit_u64,
-                    internal_query_for_dir.left_to_right,
-                )
-                .unwrap()
-                .map_err(|e| {
-                    Error::InvalidProof(
-                        query.clone(),
-                        format!("count-offset merk proof failed to verify: {}", e),
-                    )
-                })?;
-
-            for item in count_offset_result.returned_items.iter() {
-                if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version)
-                    && elem.into_underlying().is_non_empty_tree()
-                {
-                    return Err(Error::NotSupported(format!(
-                        "count-offset paginated proofs do not yet support \
-                         non-empty tree return values (key {})",
-                        hex::encode(&item.key)
-                    )));
-                }
-                let proved_key_optional_value =
-                    grovedb_merk::proofs::query::ProvedKeyOptionalValue {
-                        key: item.key.clone(),
-                        value: Some(item.value.clone()),
-                        proof: item.value_hash,
-                        child_hash_verified: item.child_hash_verified,
-                    };
-                let path_key_optional_value = ProvedPathKeyOptionalValue::from_proved_key_value(
-                    current_path.iter().map(|p| p.to_vec()).collect(),
-                    proved_key_optional_value,
-                );
-                result.push(path_key_optional_value.try_into_versioned(grove_version)?);
-                limit_left
-                    .iter_mut()
-                    .for_each(|limit| *limit = limit.saturating_sub(1));
-            }
-            return Ok(count_offset_result.root_hash);
+            return Self::run_count_offset_layer_dispatch(
+                query,
+                layer_proof.merk_proof.as_slice(),
+                layer_proof.lower_layers.is_empty(),
+                current_path,
+                limit_left,
+                result,
+                grove_version,
+            );
         }
 
         let internal_query = query
