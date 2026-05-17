@@ -759,4 +759,59 @@ mod tests {
             ));
         }
     }
+
+    /// `encoding_length` must agree with the actual byte length produced
+    /// by `encode_into` for every dual-axis variant — otherwise size
+    /// estimates feed wrong buffer allocations downstream. The check
+    /// covers Push and PushInverted plus small/large value variants
+    /// where applicable.
+    #[test]
+    fn encoding_length_matches_actual_byte_length_for_dual_axis() {
+        use ed::{Encode, Terminated};
+        let _ = <Op as Terminated>::assert_terminated;
+
+        let dual_axis_nodes = [
+            Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 3, -7),
+            Node::KVCountSum(b"k".to_vec(), vec![0xAA; 70_000], u64::MAX, i64::MAX),
+            Node::KVHashCountSum([0xAB; HASH_LENGTH], 42, 100),
+            Node::KVRefValueHashCountSum(
+                b"k".to_vec(),
+                b"v".to_vec(),
+                [0xCD; HASH_LENGTH],
+                7,
+                -3,
+            ),
+            Node::KVRefValueHashCountSum(
+                b"k".to_vec(),
+                vec![0xBB; 70_000],
+                [0xCD; HASH_LENGTH],
+                0,
+                i64::MIN,
+            ),
+            Node::KVDigestCountSum(b"k".to_vec(), [0xEF; HASH_LENGTH], u64::MAX, i64::MIN),
+            Node::HashWithCountAndSum(
+                [0x11; HASH_LENGTH],
+                [0x22; HASH_LENGTH],
+                [0x33; HASH_LENGTH],
+                100,
+                200,
+            ),
+        ];
+
+        for node in dual_axis_nodes {
+            for op in [Op::Push(node.clone()), Op::PushInverted(node.clone())] {
+                let mut buf = Vec::new();
+                op.encode_into(&mut buf).expect("encode");
+                let predicted = op.encoding_length().expect("encoding_length");
+                assert_eq!(
+                    predicted,
+                    buf.len(),
+                    "encoding_length predicted {} but encode produced {} for {:?}",
+                    predicted,
+                    buf.len(),
+                    op
+                );
+            }
+        }
+    }
 }

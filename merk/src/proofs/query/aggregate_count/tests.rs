@@ -987,6 +987,110 @@ fn regular_query_verifier_rejects_hash_with_count_node() {
     );
 }
 
+/// Parallel guard for the dual-axis variant: the regular query verifier
+/// must reject `HashWithCountAndSum` on sight, since it's only valid in
+/// aggregate proofs against `ProvableCountProvableSumTree`.
+#[test]
+fn regular_query_verifier_rejects_hash_with_count_and_sum_node() {
+    use crate::proofs::query::QueryProofVerify;
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new(v);
+    for i in 0u8..5 {
+        merk.apply::<_, Vec<_>>(
+            &[(
+                vec![i],
+                Op::Put(vec![i], crate::TreeFeatureType::BasicMerkNode),
+            )],
+            &[],
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("apply");
+    }
+    merk.commit(v);
+    let q =
+        crate::proofs::query::Query::new_single_query_item(QueryItem::Range(vec![0u8]..vec![5u8]));
+
+    let (mut ops, _) = merk
+        .prove_unchecked_query_items(&[QueryItem::Range(vec![0u8]..vec![5u8])], None, true, v)
+        .unwrap()
+        .expect("prove");
+    // Splice in HashWithCountAndSum — only valid in aggregate proofs
+    // against PCPS; the regular verifier must refuse it.
+    ops.push_front(ProofOp::Push(Node::HashWithCountAndSum(
+        [0u8; 32], [0u8; 32], [0u8; 32], 0, 0,
+    )));
+    let bytes = encode_proof(&ops);
+
+    let result = q.execute_proof(&bytes, None, true, 0).unwrap();
+    let err = result.expect_err(
+        "regular query verifier must reject HashWithCountAndSum on sight (aggregate proofs only)",
+    );
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("HashWithCountAndSum")
+            || msg.contains("aggregate-count")
+            || msg.contains("aggregate-sum"),
+        "expected HashWithCountAndSum-rejection message, got: {msg}"
+    );
+}
+
+/// `KVHashCountSum` (non-queried-path dual-axis kv-hash) must be
+/// rejected by the regular query verifier — it carries an aggregate that
+/// is meaningful only inside an aggregate proof.
+#[test]
+fn regular_query_verifier_rejects_kv_hash_count_sum_node() {
+    use crate::proofs::query::QueryProofVerify;
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new(v);
+    for i in 0u8..5 {
+        merk.apply::<_, Vec<_>>(
+            &[(
+                vec![i],
+                Op::Put(vec![i], crate::TreeFeatureType::BasicMerkNode),
+            )],
+            &[],
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("apply");
+    }
+    merk.commit(v);
+    let q =
+        crate::proofs::query::Query::new_single_query_item(QueryItem::Range(vec![0u8]..vec![5u8]));
+
+    let (mut ops, _) = merk
+        .prove_unchecked_query_items(&[QueryItem::Range(vec![0u8]..vec![5u8])], None, true, v)
+        .unwrap()
+        .expect("prove");
+    ops.push_front(ProofOp::Push(Node::KVHashCountSum([0u8; 32], 0, 0)));
+    let bytes = encode_proof(&ops);
+
+    let result = q.execute_proof(&bytes, None, true, 0).unwrap();
+    // KVHashCountSum is a path-hash node (no key, no value), so it
+    // doesn't trigger an "unexpected node type" path — instead, splicing
+    // it into a valid proof leaves the proof tree malformed (the extra
+    // op produces more than one stack item at the end), which the
+    // verifier also rejects. Either rejection path counts: the goal is
+    // that the regular query verifier doesn't accept the dual-axis
+    // path-hash variant as a substitute for a normal kv-hash node.
+    let err = result
+        .expect_err("regular query verifier must reject KVHashCountSum-bearing proofs");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("unexpected")
+            || msg.contains("KVHash")
+            || msg.contains("missing data")
+            || msg.contains("stack")
+            || msg.contains("proof"),
+        "expected proof-level rejection, got: {msg}"
+    );
+}
+
 // ---------- byte-mutation fuzzer ----------
 //
 // Stronger forgery-resistance check than the three hand-crafted attack
