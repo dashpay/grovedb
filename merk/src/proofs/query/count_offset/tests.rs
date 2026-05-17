@@ -495,6 +495,386 @@ fn rejects_trailing_garbage() {
     }
 }
 
+// ─────────── Forged-proof tests targeting verifier error branches ───────────
+//
+// These build proof byte streams from hand-crafted `Op` sequences and
+// feed them straight to the verifier (bypassing the prover). Each one
+// targets a specific rejection branch in
+// `verify_count_offset_on_range_proof` / `verify_count_offset_shape` /
+// `classify_self` that the happy-path round-trips don't exercise.
+
+use crate::proofs::Node;
+
+/// Encode a hand-crafted op sequence into proof bytes for direct
+/// verification.
+fn encode_ops(ops: &[ProofOp]) -> Vec<u8> {
+    let list: LinkedList<ProofOp> = ops.iter().cloned().collect();
+    encode_proof(&list)
+}
+
+/// Forged proof using a `Hash(_)` node (not on the verifier's
+/// allowlist). The visit-node callback in `execute_with_options`
+/// rejects it before tree reconstruction completes.
+#[test]
+fn rejects_unknown_node_kind_in_proof() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::Hash([0u8; 32]))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject Hash(_) (not on count-offset allowlist); got {:?}",
+        res
+    );
+}
+
+/// Forged proof with a single `KVValueHash` returned-item — the
+/// verifier rejects in `classify_self` because the count-offset flow
+/// requires count-bearing variants.
+#[test]
+fn rejects_kv_value_hash_inside_count_tree() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHash(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVValueHash in a count-offset proof; got {:?}",
+        res
+    );
+}
+
+/// Forged proof emitting a `KVValueHashFeatureType` with a non-count
+/// feature type. `aggregate_of_proof_tree_node` rejects.
+#[test]
+fn rejects_kv_value_hash_feature_type_with_basic_feature() {
+    use crate::TreeFeatureType;
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHashFeatureType(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+        TreeFeatureType::BasicMerkNode, // not a count feature
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVValueHashFeatureType with non-count feature type; got {:?}",
+        res
+    );
+}
+
+/// Forged proof with a single `KVDigestCount` carrying a key
+/// **outside** the inherited subtree bounds (which at the root call
+/// are `(None, None)` — so this fires only at descended levels). We
+/// build a parent `KVDigestCount` with key "m" and attach a left
+/// child whose own key is "z" (impossible at left-subtree position,
+/// which must have keys < "m"). The verifier's
+/// `key_strictly_inside` check rejects.
+#[test]
+fn rejects_boundary_key_outside_inherited_bounds() {
+    let bytes = encode_ops(&[
+        // left child: KVDigestCount("z", ...)  — key > parent's "m" but
+        // appears under parent's left child, violating the bound.
+        ProofOp::Push(Node::KVDigestCount(b"z".to_vec(), [0u8; 32], 1)),
+        // parent: KVDigestCount("m", ...)
+        ProofOp::Push(Node::KVDigestCount(b"m".to_vec(), [0u8; 32], 2)),
+        // attach left
+        ProofOp::Parent,
+    ]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        2,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject a boundary key outside its inherited subtree window; \
+         got {:?}",
+        res
+    );
+}
+
+/// Forged proof with an internal `HashWithCount` carrying a child —
+/// `HashWithCount` must be a leaf at any classification. Construct a
+/// `Push HashWithCount`, then `Push KVDigestCount`, then `Parent` to
+/// attach the digest as the hash node's left child. The verifier
+/// rejects with the "must be a leaf" check.
+#[test]
+fn rejects_hash_with_count_with_attached_child() {
+    let bytes = encode_ops(&[
+        // child slot
+        ProofOp::Push(Node::KVDigestCount(b"a".to_vec(), [0u8; 32], 1)),
+        // hash node (would-be parent)
+        ProofOp::Push(Node::HashWithCount([0u8; 32], [0u8; 32], [0u8; 32], 2)),
+        // attach child as the hash node's left
+        ProofOp::Parent,
+    ]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        2,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject HashWithCount with an attached child; got {:?}",
+        res
+    );
+}
+
+/// Forged proof with `HashWithCount` at a position the verifier
+/// classifies as `Boundary`. We use a non-trivial range so that the
+/// root subtree-bounds (None, None) classify as Boundary, then place
+/// `HashWithCount` there — the verifier rejects with the "cannot
+/// appear at a Boundary position" check.
+#[test]
+fn rejects_hash_with_count_at_boundary_position() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::HashWithCount(
+        [0u8; 32], [0u8; 32], [0u8; 32], 3,
+    ))]);
+    let range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let res = verify_count_offset_on_range_proof(&bytes, &range, 0, Some(5), true).unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject HashWithCount at Boundary classification; got {:?}",
+        res
+    );
+}
+
+/// Forged proof with children claiming more aggregate count than the
+/// parent. Two `KVDigestCount` children (count=5 each) attached
+/// under a parent with count=2 — the verifier's `checked_sub` for
+/// own_count derivation fails with "child structural counts exceed
+/// parent's aggregate".
+#[test]
+fn rejects_child_counts_exceeding_parent_aggregate() {
+    let bytes = encode_ops(&[
+        ProofOp::Push(Node::KVDigestCount(b"a".to_vec(), [0u8; 32], 5)),
+        ProofOp::Push(Node::KVDigestCount(b"m".to_vec(), [0u8; 32], 2)),
+        ProofOp::Parent,
+        ProofOp::Push(Node::KVDigestCount(b"z".to_vec(), [0u8; 32], 5)),
+        ProofOp::Child,
+    ]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        10,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject when child counts exceed parent's aggregate; got {:?}",
+        res
+    );
+}
+
+/// Forged proof where a child's recursive structural count disagrees
+/// with the count it claims via its immediate count field. We build
+/// a parent with one leaf child whose recursive sum says aggregate=1
+/// but the parent's `left_aggregate` snapshot says... hmm actually
+/// that one's hard to forge in isolation because the immediate-child
+/// read and the recursive return are computed from the same node.
+/// Skip — the other checks cover the same code path.
+
+/// Forged `KVCount` returned-item at an out-of-range key. The
+/// verifier's `classify_self` rejects in the !in_range arm of the
+/// `KVCount` branch.
+#[test]
+fn rejects_kv_count_at_out_of_range_position() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVCount(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        1,
+    ))]);
+    // Range "x"..="z" doesn't contain "a".
+    let range = QueryItem::RangeInclusive(b"x".to_vec()..=b"z".to_vec());
+    let res = verify_count_offset_on_range_proof(&bytes, &range, 0, Some(5), true).unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVCount at out-of-range position; got {:?}",
+        res
+    );
+}
+
+/// Forged `KVCount` leaf with count=2 (so derived own_count=2). The
+/// `classify_self` KVCount-branch rejects on `own_count != 1`.
+#[test]
+fn rejects_kv_count_with_wrong_own_count() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVCount(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        2, // own_count derived = 2 (leaf, no children), expected 1
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVCount with own_count != 1; got {:?}",
+        res
+    );
+}
+
+/// Forged `KVValueHashFeatureType` returned-item at out-of-range
+/// position.
+#[test]
+fn rejects_kv_value_hash_feature_type_at_out_of_range() {
+    use crate::TreeFeatureType;
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHashFeatureType(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+        TreeFeatureType::ProvableCountedMerkNode(1),
+    ))]);
+    let range = QueryItem::RangeInclusive(b"x".to_vec()..=b"z".to_vec());
+    let res = verify_count_offset_on_range_proof(&bytes, &range, 0, Some(5), true).unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVValueHashFeatureType at out-of-range position; got {:?}",
+        res
+    );
+}
+
+/// Forged `KVValueHashFeatureType` leaf with count=2. `own_count`
+/// derived = 2, classify_self rejects on `own_count != 1`.
+#[test]
+fn rejects_kv_value_hash_feature_type_with_wrong_own_count() {
+    use crate::TreeFeatureType;
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHashFeatureType(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+        TreeFeatureType::ProvableCountedMerkNode(2),
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVValueHashFeatureType with own_count != 1; got {:?}",
+        res
+    );
+}
+
+/// Forged `KVDigestCount` at an in-range counted position with
+/// `offset_remaining = 0` but `limit_remaining` not yet exhausted —
+/// an honest prover would have emitted a value-bearing node here.
+/// The verifier's `apply_self_state` rejects in the
+/// `InRangeCountedDigest` branch.
+#[test]
+fn rejects_kv_digest_count_with_limit_remaining() {
+    // Leaf KVDigestCount with count=1 (own_count=1). Pass offset=0,
+    // limit=5 — verifier sees a digest where a value should be.
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVDigestCount(
+        b"a".to_vec(),
+        [0u8; 32],
+        1,
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVDigestCount at offset=0 with limit slots free; got {:?}",
+        res
+    );
+}
+
+/// Forged `HashWithCount` at a Contained position with offset=0 and
+/// limit > 0 — an honest prover would have descended to emit the
+/// values. The verifier rejects in the "collapse only valid in
+/// offset window or past limit" branch.
+#[test]
+fn rejects_hash_with_count_at_contained_with_limit_remaining() {
+    // RangeFull → root subtree (None, None) is Contained for any
+    // range that's unbounded both sides... actually RangeFull is
+    // Contained-trivial. Set offset=0, limit=5.
+    let bytes = encode_ops(&[ProofOp::Push(Node::HashWithCount(
+        [0u8; 32], [0u8; 32], [0u8; 32], 3,
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject HashWithCount-collapse at Contained position when neither \
+         offset window nor past-limit; got {:?}",
+        res
+    );
+}
+
+/// Forged `HashWithCount` at a Contained position with count
+/// exceeding `offset_remaining` — the prover's collapse rule is
+/// `count ≤ offset_remaining`, so the verifier rejects.
+#[test]
+fn rejects_hash_with_count_exceeding_offset_remaining() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::HashWithCount(
+        [0u8; 32], [0u8; 32], [0u8; 32], 10,
+    ))]);
+    // offset=3 < count=10
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        3,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject HashWithCount-collapse with count > offset_remaining; got {:?}",
+        res
+    );
+}
+
 #[test]
 fn rejects_non_provable_count_tree() {
     // Regular Normal merk: prover entry must reject.
