@@ -247,7 +247,10 @@ pub fn node_hash_with_count_and_sum(
 mod tests {
     use grovedb_costs::CostsExt;
 
-    use super::{node_hash, node_hash_with_sum, CryptoHash, HASH_LENGTH};
+    use super::{
+        node_hash, node_hash_with_count, node_hash_with_count_and_sum, node_hash_with_sum,
+        CryptoHash, HASH_LENGTH,
+    };
 
     fn h(byte: u8) -> CryptoHash {
         [byte; HASH_LENGTH]
@@ -306,5 +309,94 @@ mod tests {
         let a = node_hash_with_sum(&kv, &l, &r, -7).unwrap();
         let b = node_hash_with_sum(&kv, &l, &r, -7).unwrap();
         assert_eq!(a, b);
+    }
+
+    // node_hash_with_count_and_sum tests — mirror the sum tests but cover
+    // the dual-axis hash function. Each test asserts the function commits
+    // both aggregates into the hash so verification can detect tampering
+    // on either axis.
+
+    #[test]
+    fn node_hash_with_count_and_sum_is_deterministic() {
+        let kv = h(0xaa);
+        let l = h(0xbb);
+        let r = h(0xcc);
+        let a = node_hash_with_count_and_sum(&kv, &l, &r, 7, -3).unwrap();
+        let b = node_hash_with_count_and_sum(&kv, &l, &r, 7, -3).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn node_hash_with_count_and_sum_differs_from_plain_and_singletons() {
+        // The dual-axis hash MUST be distinct from every other hash flavor
+        // (plain, count-only, sum-only) for the same kv/l/r inputs — that
+        // distinctness is what makes the ProvableCountProvableSumTree root
+        // hash diverge from the ProvableCountTree, ProvableSumTree, and
+        // plain-tree roots over the same contents.
+        let kv = h(1);
+        let l = h(2);
+        let r = h(3);
+        let dual = node_hash_with_count_and_sum(&kv, &l, &r, 0, 0).unwrap();
+        let plain = node_hash(&kv, &l, &r).unwrap();
+        let count_only = node_hash_with_count(&kv, &l, &r, 0).unwrap();
+        let sum_only = node_hash_with_sum(&kv, &l, &r, 0).unwrap();
+        assert_ne!(dual, plain);
+        assert_ne!(dual, count_only);
+        assert_ne!(dual, sum_only);
+    }
+
+    #[test]
+    fn node_hash_with_count_and_sum_sensitive_to_each_input() {
+        let kv = h(4);
+        let l = h(5);
+        let r = h(6);
+        let baseline = node_hash_with_count_and_sum(&kv, &l, &r, 10, 20).unwrap();
+        // Changing kv changes the hash.
+        let mut_kv = node_hash_with_count_and_sum(&h(40), &l, &r, 10, 20).unwrap();
+        assert_ne!(mut_kv, baseline);
+        // Changing left changes the hash.
+        let mut_l = node_hash_with_count_and_sum(&kv, &h(50), &r, 10, 20).unwrap();
+        assert_ne!(mut_l, baseline);
+        // Changing right changes the hash.
+        let mut_r = node_hash_with_count_and_sum(&kv, &l, &h(60), 10, 20).unwrap();
+        assert_ne!(mut_r, baseline);
+        // Changing count changes the hash (with sum unchanged).
+        let mut_c = node_hash_with_count_and_sum(&kv, &l, &r, 11, 20).unwrap();
+        assert_ne!(mut_c, baseline);
+        // Changing sum changes the hash (with count unchanged).
+        let mut_s = node_hash_with_count_and_sum(&kv, &l, &r, 10, 21).unwrap();
+        assert_ne!(mut_s, baseline);
+    }
+
+    #[test]
+    fn node_hash_with_count_and_sum_distinguishes_axis_swap() {
+        // (count=A, sum=B) and (count=B, sum=A) hash to different values —
+        // the encoding orders count before sum, so the byte layout
+        // differentiates the two arrangements even when A and B fit both
+        // axes (e.g. small positive integers).
+        let kv = h(7);
+        let l = h(8);
+        let r = h(9);
+        let ab = node_hash_with_count_and_sum(&kv, &l, &r, 3, 5).unwrap();
+        let ba = node_hash_with_count_and_sum(&kv, &l, &r, 5, 3).unwrap();
+        assert_ne!(ab, ba);
+    }
+
+    #[test]
+    fn node_hash_with_count_and_sum_extremes_distinct() {
+        let kv = h(0xfe);
+        let l = h(0xfd);
+        let r = h(0xfc);
+        let max_max = node_hash_with_count_and_sum(&kv, &l, &r, u64::MAX, i64::MAX).unwrap();
+        let max_min = node_hash_with_count_and_sum(&kv, &l, &r, u64::MAX, i64::MIN).unwrap();
+        let zero_zero = node_hash_with_count_and_sum(&kv, &l, &r, 0, 0).unwrap();
+        let zero_neg_one = node_hash_with_count_and_sum(&kv, &l, &r, 0, -1).unwrap();
+        assert_ne!(max_max, max_min);
+        assert_ne!(max_max, zero_zero);
+        assert_ne!(zero_zero, zero_neg_one);
+        // Negative sums hash deterministically via two's-complement big-endian.
+        let neg_one_a = node_hash_with_count_and_sum(&kv, &l, &r, 42, -1).unwrap();
+        let neg_one_b = node_hash_with_count_and_sum(&kv, &l, &r, 42, -1).unwrap();
+        assert_eq!(neg_one_a, neg_one_b);
     }
 }
