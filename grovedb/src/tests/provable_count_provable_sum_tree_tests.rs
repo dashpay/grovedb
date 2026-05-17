@@ -604,4 +604,182 @@ mod tests {
         use grovedb_version::version::v2::GROVE_V2;
         pcps_reference_proof_round_trip_with(&GROVE_V2);
     }
+
+    /// Regression for the GroveDB post-processing loop fix: a regular
+    /// `prove_query` on a PCPS host with Item children must:
+    ///   1. Emit each Item as `Node::KVCountSum` (committed via
+    ///      `proof_node_type` for the dual-axis host).
+    ///   2. In the GroveDB post-processing loop, preserve the
+    ///      `KVCountSum` node type (do not rewrite to `Node::KV`)
+    ///      so the dual-axis count+sum stay hash-bound.
+    ///   3. Decrement `overall_limit` and set `has_a_result_at_level`
+    ///      for each matched PCPS Item — same as `KVCount` / `KVSum`
+    ///      for the single-axis hosts.
+    ///
+    /// Before fix: the GroveDB post-processing loop only matched
+    /// `KV | KVValueHash | KVCount | KVSum | KVValueHashFeatureType`
+    /// in its Item-class arm and `KVCount | KVSum |
+    /// KVValueHashFeatureType` in its `should_preserve_node_type`
+    /// allowlist. A PCPS Item arriving as `Node::KVCountSum` would
+    /// hash-verify but skip the Item-class branch via the loop's
+    /// `_ => continue` fall-through — so `overall_limit` wouldn't
+    /// decrement and `has_a_result_at_level` wouldn't be set.
+    ///
+    /// Smoke check (single-layer): the proof round-trips and the
+    /// hash chain stays intact. The over-prove behavior is bounded
+    /// by the merk-level limit, so a single-layer query is robust
+    /// against this bug — but the `has_a_result_at_level` failure
+    /// mode below exposes the real harm.
+    #[test]
+    fn pcps_regular_query_with_limit_round_trips() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcps");
+        for c in b'a'..=b'e' {
+            db.insert(
+                &[b"pcps".as_slice()],
+                &[c],
+                Element::new_item(vec![c]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+        let root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash");
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"a".to_vec()..=b"e".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"pcps".to_vec()],
+            crate::SizedQuery::new(query, Some(2), None),
+        );
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let (proven_root, proved) =
+            GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+        assert_eq!(proven_root, root_hash);
+        assert_eq!(proved.len(), 2);
+        let keys: Vec<Vec<u8>> = proved.iter().map(|(_p, k, _v)| k.clone()).collect();
+        assert_eq!(keys, vec![b"a".to_vec(), b"b".to_vec()]);
+    }
+
+    /// Regression for the `has_a_result_at_level` half of the
+    /// post-processing fix: a **multi-layer** query whose **subquery**
+    /// targets a PCPS host with Items must surface the PCPS Items in
+    /// the final result set.
+    ///
+    /// Before fix: the outer post-processing loop iterates over the
+    /// PCPS layer's merk_proof.proof, sees `Node::KVCountSum` ops
+    /// for the PCPS Items, doesn't match any Item-class arm
+    /// (`KV | KVValueHash | KVCount | KVSum | KVValueHashFeatureType`),
+    /// falls through to the `_ => continue` arm. `overall_limit`
+    /// doesn't decrement and — critically for multi-layer queries —
+    /// `has_a_result_at_level` doesn't get set. The outer layer
+    /// records the PCPS layer as if it returned nothing, even though
+    /// the merk-level proof contains real items. End-to-end verify
+    /// then sees zero results from the PCPS subtree.
+    ///
+    /// This test stages a 2-layer query (outer Tree → PCPS subquery)
+    /// and asserts the inner PCPS Items actually surface in the
+    /// verified result set. Without the fix, the assertion on
+    /// `proved.len() > 0` fails (the PCPS layer is silently pruned).
+    #[test]
+    fn pcps_subquery_items_surface_in_verified_result() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Outer container: a plain Tree at root key "outer".
+        db.insert(
+            &[] as &[&[u8]],
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert outer tree");
+        // PCPS host as a child of the outer Tree at "outer/pcps".
+        db.insert(
+            &[b"outer".as_slice()],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcps under outer");
+        // PCPS-host Items: each emits as Node::KVCountSum via the
+        // dual-axis proof_node_type dispatch.
+        for c in b'a'..=b'c' {
+            db.insert(
+                &[b"outer".as_slice(), b"pcps".as_slice()],
+                &[c],
+                Element::new_item(vec![c]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert pcps item");
+        }
+        let root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash");
+
+        // 2-layer query: outer path matches the "pcps" key, with a
+        // subquery that ranges over all Items inside the PCPS host.
+        let mut subquery = Query::new();
+        subquery.insert_range_inclusive(b"a".to_vec()..=b"c".to_vec());
+        let mut outer_query = Query::new();
+        outer_query.insert_key(b"pcps".to_vec());
+        outer_query.default_subquery_branch.subquery = Some(Box::new(subquery));
+
+        let path_query = PathQuery::new_unsized(vec![b"outer".to_vec()], outer_query);
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove 2-layer");
+        let (proven_root, proved) =
+            GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+        assert_eq!(
+            proven_root, root_hash,
+            "multi-layer PCPS-subquery proof must verify against GroveDB root"
+        );
+        assert_eq!(
+            proved.len(),
+            3,
+            "PCPS subquery items must surface in the verified result set. \
+             Without the post-processing fix the outer loop sees KVCountSum ops, \
+             falls into the `_ => continue` arm, doesn't set has_a_result_at_level, \
+             and the PCPS layer gets silently pruned. Got {} items.",
+            proved.len(),
+        );
+        let keys: Vec<Vec<u8>> = proved.iter().map(|(_p, k, _v)| k.clone()).collect();
+        assert_eq!(
+            keys,
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+            "all three PCPS Items must surface in sorted order; got {:?}",
+            keys
+        );
+    }
 }

@@ -535,6 +535,11 @@ impl GroveDb {
             //   trees/references
             // - KVCount: used by ProvableCountTree for Items (tamper-resistant with count)
             // - KVSum: used by ProvableSumTree for Items (tamper-resistant with sum)
+            // - KVCountSum: used by ProvableCountProvableSumTree (PCPS) for Items
+            //   (tamper-resistant with BOTH count and sum baked into the node
+            //   hash via node_hash_with_count_and_sum). Without this arm a
+            //   PCPS Item would be rewritten back to Node::KV by the Item
+            //   handler below, destroying the dual-axis hash binding.
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
@@ -543,6 +548,8 @@ impl GroveDb {
                     | Op::PushInverted(Node::KVCount(..))
                     | Op::Push(Node::KVSum(..))
                     | Op::PushInverted(Node::KVSum(..))
+                    | Op::Push(Node::KVCountSum(..))
+                    | Op::PushInverted(Node::KVCountSum(..))
             );
             // Extract count if present for ProvableCountTree references
             let count_for_ref = match op {
@@ -591,6 +598,7 @@ impl GroveDb {
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
@@ -1506,7 +1514,11 @@ impl GroveDb {
         for op in merk_proof.proof.iter_mut() {
             done_with_results |= overall_limit == &Some(0);
             // Mirror generate.rs's first ref-rewriting loop — preserve
-            // ProvableSumTree special nodes too.
+            // ProvableSumTree special nodes too, plus the dual-axis
+            // KVCountSum used by ProvableCountProvableSumTree (PCPS)
+            // for Items. Without the KVCountSum arm here a PCPS Item
+            // would be rewritten back to Node::KV by the Item handler
+            // below, destroying the dual-axis hash binding.
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
@@ -1515,6 +1527,8 @@ impl GroveDb {
                     | Op::PushInverted(Node::KVCount(..))
                     | Op::Push(Node::KVSum(..))
                     | Op::PushInverted(Node::KVSum(..))
+                    | Op::Push(Node::KVCountSum(..))
+                    | Op::PushInverted(Node::KVCountSum(..))
             );
             let count_for_ref = match op {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
@@ -1553,6 +1567,7 @@ impl GroveDb {
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
                     | Node::KVSum(key, value, _)
+                    | Node::KVCountSum(key, value, ..)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
