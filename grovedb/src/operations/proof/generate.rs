@@ -251,6 +251,27 @@ impl GroveDb {
     }
 
     /// V0: Generates a Merk-only proof without serialization.
+    ///
+    /// ╔══════════════════════════════════════════════════════════════════╗
+    /// ║                  ⚠⚠⚠  DO NOT MODIFY V0 PROOFS  ⚠⚠⚠               ║
+    /// ╠══════════════════════════════════════════════════════════════════╣
+    /// ║ V0 is a **shipped wire format**. Live grove versions v1 and v2   ║
+    /// ║ produce and verify V0 proofs in production (see                  ║
+    /// ║ `grovedb-version` — `prove_query_non_serialized: 0` for both).   ║
+    /// ║ ANY change to the bytes V0 produces — adding new accepted        ║
+    /// ║ query shapes, accepting offsets that were previously rejected,   ║
+    /// ║ emitting new node variants, anything — silently changes what     ║
+    /// ║ deployed validators accept and is a consensus-breaking change.   ║
+    /// ║                                                                   ║
+    /// ║ New proof features go on V1 (`prove_query_non_serialized_v1`     ║
+    /// ║ in this file, `verify_layer_proof_v1` in verify.rs) and a fresh  ║
+    /// ║ `GroveVersion` that selects them. The V0 entry points must keep  ║
+    /// ║ behaving exactly as they did when v1/v2 shipped, including       ║
+    /// ║ rejecting every input v1/v2 rejected.                            ║
+    /// ║                                                                   ║
+    /// ║ If you find yourself wanting to "just adjust" something here:    ║
+    /// ║ STOP. Add the feature to V1 and bump the grove version instead.  ║
+    /// ╚══════════════════════════════════════════════════════════════════╝
     pub(crate) fn prove_query_non_serialized_v0(
         &self,
         path_query: &PathQuery,
@@ -262,20 +283,10 @@ impl GroveDb {
         let prove_options = prove_options.unwrap_or_default();
 
         if path_query.query.offset.is_some() && path_query.query.offset != Some(0) {
-            // See the matching block in `prove_query_non_serialized_v1`
-            // for the rationale: a non-zero offset is only honored when
-            // the query validates as offset-paginated against a count
-            // tree. We do both the syntactic check (single range, no
-            // subqueries, offset > 0) and the merk-open tree-type
-            // check here so empty NormalTree targets fail with a
-            // clear error instead of silently producing a no-op proof.
-            if let Err(e) = path_query.validate_count_offset_paginated() {
-                return Err(e).wrap_with_cost(cost);
-            }
-            cost_return_on_error!(
-                &mut cost,
-                self.check_count_offset_target_tree_type(path_query, grove_version)
-            );
+            return Err(Error::InvalidQuery(
+                "proved path queries can not have offsets",
+            ))
+            .wrap_with_cost(cost);
         }
 
         if path_query.query.limit == Some(0) {
@@ -352,7 +363,19 @@ impl GroveDb {
     }
 
     /// Perform a pre-order traversal of the tree based on the provided
-    /// subqueries
+    /// subqueries.
+    ///
+    /// ╔══════════════════════════════════════════════════════════════════╗
+    /// ║                  ⚠⚠⚠  DO NOT MODIFY V0 PROOFS  ⚠⚠⚠               ║
+    /// ╠══════════════════════════════════════════════════════════════════╣
+    /// ║ This function produces V0 proof bytes that are consumed by      ║
+    /// ║ grove versions v1 and v2 in production. Any change to the       ║
+    /// ║ accepted query shapes, the emitted op stream, or the wrapper    ║
+    /// ║ envelope is a consensus-breaking change. Add new features on    ║
+    /// ║ V1 (`prove_subqueries_v1`) behind a fresh grove version         ║
+    /// ║ instead. See `prove_query_non_serialized_v0` for the full       ║
+    /// ║ rationale.                                                       ║
+    /// ╚══════════════════════════════════════════════════════════════════╝
     pub(crate) fn prove_subqueries(
         &self,
         path: Vec<&[u8]>,
@@ -459,61 +482,15 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
-        // Count-offset paginated short-circuit (v0 path). Mirror of the
-        // v1 branch above — same contract, different envelope
-        // (`MerkOnlyLayerProof` vs `LayerProof`/`ProofBytes::Merk`).
-        if path.len() == path_query.path.len() && path_query.has_non_zero_offset() {
-            use grovedb_merk::TreeType as MerkTreeType;
-            let inner_range = cost_return_on_error_no_add!(
-                cost,
-                path_query.validate_count_offset_paginated().cloned()
-            );
-            if !matches!(
-                subtree.tree_type,
-                MerkTreeType::ProvableCountTree | MerkTreeType::ProvableCountSumTree
-            ) {
-                return Err(Error::InvalidQuery(
-                    "count-offset paginated queries are only valid against \
-                     ProvableCountTree / ProvableCountSumTree merks",
-                ))
-                .wrap_with_cost(cost);
-            }
-            let offset = path_query.query.offset.map(|o| o as u64).unwrap_or(0);
-            let limit_u64 = path_query.query.limit.map(|l| l as u64);
-            let prove_result = cost_return_on_error!(
-                &mut cost,
-                subtree
-                    .prove_count_offset_on_range(
-                        &inner_range,
-                        offset,
-                        limit_u64,
-                        query.left_to_right,
-                        grove_version,
-                    )
-                    // Wrap with operational context so a downstream
-                    // proof failure (corrupted merk, invariant
-                    // violation in the prover, etc.) is identifiable
-                    // as a count-offset-specific failure rather than
-                    // an opaque `MerkError`. Mirrors the
-                    // `prove_aggregate_sum_on_range` wrapping a few
-                    // hundred lines up.
-                    .map_err(|e| Error::CorruptedData(format!(
-                        "prove_count_offset_on_range failed: {}",
-                        e
-                    )))
-            );
-            let mut serialized = Vec::with_capacity(128);
-            encode_into(prove_result.ops.iter(), &mut serialized);
-            if let Some(outer_limit) = overall_limit.as_mut() {
-                let returned_u16: u16 = prove_result.returned.min(u16::MAX as u64) as u16;
-                *outer_limit = outer_limit.saturating_sub(returned_u16);
-            }
-            return Ok(MerkOnlyLayerProof {
-                merk_proof: serialized,
-                lower_layers: BTreeMap::new(),
-            })
-            .wrap_with_cost(cost);
-        }
+        // NOTE: count-offset paginated proofs are intentionally NOT
+        // supported on V0. The V0 envelope is a shipped wire format
+        // (grove versions v1 and v2 produce it in production); adding
+        // new accepted query shapes here would be a consensus-breaking
+        // change for already-deployed validators. The
+        // `prove_query_non_serialized_v0` entry-point rejects
+        // non-zero offsets unconditionally, so this short-circuit
+        // never needed to fire — leaving it out keeps the V0 proof
+        // surface identical to what shipped.
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,

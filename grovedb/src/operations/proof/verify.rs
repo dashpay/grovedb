@@ -54,15 +54,11 @@ impl GroveDb {
             ))?;
         }
 
-        if query.has_non_zero_offset() {
-            // Mirror of the prover-side relaxation: a non-zero offset
-            // is only honored when the query validates as offset-
-            // paginated against a ProvableCountTree / ProvableCountSumTree
-            // (the tree-type check happens at leaf-dispatch time).
-            // Syntactically-invalid offset queries surface the precise
-            // error from the validator.
-            query.validate_count_offset_paginated()?;
-        }
+        // Offset gate is centralized in `verify_proof_internal` — it
+        // sees the envelope version and applies V0-rejects /
+        // V1-relaxes uniformly across all entry points
+        // (verify_query_with_options, verify_query_raw,
+        // verify_query_get_parent_tree_info_with_options).
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
@@ -165,6 +161,33 @@ impl GroveDb {
         ),
         Error,
     > {
+        // Offset gate. V0 proofs are a shipped wire format that
+        // never supported `SizedQuery::offset`; widening that here
+        // would be a consensus-breaking change for grove v1/v2.
+        // Reject offsets unconditionally on V0. V1 proofs honor a
+        // non-zero offset iff the query validates as
+        // offset-paginated against a ProvableCountTree /
+        // ProvableCountSumTree; the tree-type check happens at
+        // leaf-dispatch time inside `run_count_offset_layer_dispatch`.
+        //
+        // Centralizing this gate here means every caller of
+        // `verify_proof_internal` (verify_query_with_options,
+        // verify_query_raw, verify_query_get_parent_tree_info_with_options)
+        // gets the same V0-rejects/V1-relaxes contract uniformly,
+        // without each entry point needing to duplicate the dispatch.
+        if query.has_non_zero_offset() {
+            match proof {
+                GroveDBProof::V0(_) => {
+                    return Err(Error::NotSupported(
+                        "offsets in path queries are not supported for proofs".to_string(),
+                    ));
+                }
+                GroveDBProof::V1(_) => {
+                    query.validate_count_offset_paginated()?;
+                }
+            }
+        }
+
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_v0_internal(proof_v0, query, options, grove_version)
@@ -268,6 +291,24 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
+        // Mirror of the offset gate in `verify_proof_internal`. See
+        // that function for the full rationale — V0 proofs are a
+        // shipped wire format that never supported
+        // `SizedQuery::offset`; V1 honors it iff
+        // `validate_count_offset_paginated` succeeds.
+        if query.has_non_zero_offset() {
+            match proof {
+                GroveDBProof::V0(_) => {
+                    return Err(Error::NotSupported(
+                        "offsets in path queries are not supported for proofs".to_string(),
+                    ));
+                }
+                GroveDBProof::V1(_) => {
+                    query.validate_count_offset_paginated()?;
+                }
+            }
+        }
+
         match proof {
             GroveDBProof::V0(proof_v0) => {
                 Self::verify_proof_raw_internal_v0(proof_v0, query, options, grove_version)
@@ -1509,6 +1550,19 @@ impl GroveDb {
         Ok(positions)
     }
 
+    /// ╔══════════════════════════════════════════════════════════════════╗
+    /// ║                  ⚠⚠⚠  DO NOT MODIFY V0 PROOFS  ⚠⚠⚠               ║
+    /// ╠══════════════════════════════════════════════════════════════════╣
+    /// ║ This is the V0 layer verifier. Grove versions v1 and v2 emit    ║
+    /// ║ V0 proofs in production; the bytes they accept are part of      ║
+    /// ║ those versions' wire format. Changing what V0 accepts (e.g.     ║
+    /// ║ widening to count-offset paginated proofs, accepting new node   ║
+    /// ║ kinds, relaxing rejection conditions) is consensus-breaking     ║
+    /// ║ for already-deployed validators. Put new verifier features on   ║
+    /// ║ V1 (`verify_layer_proof_v1`) behind a fresh grove version       ║
+    /// ║ instead. See `prove_query_non_serialized_v0` in generate.rs     ║
+    /// ║ for the full rationale.                                          ║
+    /// ╚══════════════════════════════════════════════════════════════════╝
     pub(crate) fn verify_layer_proof<T>(
         layer_proof: &MerkOnlyLayerProof,
         prove_options: &ProveOptions,
@@ -1539,26 +1593,6 @@ impl GroveDb {
                 .proof
                 .verify_layer_proof
         );
-
-        // Count-offset paginated dispatch (v0 verify). Mirror of the
-        // v1 verifier's leaf-level dispatch. The v0 envelope wraps the
-        // merk proof bytes directly in `MerkOnlyLayerProof.merk_proof`
-        // (no `ProofBytes` enum), so dispatch is structurally simpler.
-        // Soundness gates (lower_layers empty, no non-empty tree
-        // returns, surfaced value_hash + child_hash_verified) are
-        // identical to the v1 path; see that block for the full
-        // rationale.
-        if current_path.len() == query.path.len() && query.has_non_zero_offset() {
-            return Self::run_count_offset_layer_dispatch(
-                query,
-                layer_proof.merk_proof.as_slice(),
-                layer_proof.lower_layers.is_empty(),
-                current_path,
-                limit_left,
-                result,
-                grove_version,
-            );
-        }
 
         let internal_query = query
             .query_items_at_path(current_path, grove_version)?
