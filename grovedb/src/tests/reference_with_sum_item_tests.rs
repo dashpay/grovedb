@@ -445,6 +445,7 @@ mod tests {
             ref_path.clone(),
             Some(2),
             None,
+            /* non_counted = */ true, // <- exercise the new parameter
             /* trust_refresh_reference = */ true,
         )
         .op;
@@ -455,6 +456,7 @@ mod tests {
             ref_path.clone(),
             Some(2),
             None,
+            /* non_counted = */ false,
             /* trust_refresh_reference = */ false,
         )
         .op;
@@ -541,6 +543,25 @@ mod tests {
         assert!(mode_of(&with_sum_trusted).is_trusted());
         assert!(!mode_of(&with_sum_untrusted).is_trusted());
         assert!(!mode_of(&keep_sum).is_trusted());
+
+        // `non_counted` is threaded through by all three constructors.
+        let non_counted_of = |op: &GroveOp| -> bool {
+            let GroveOp::RefreshReference { non_counted, .. } = op else {
+                unreachable!()
+            };
+            *non_counted
+        };
+        assert!(
+            non_counted_of(&plain_trusted),
+            "refresh_reference_op must thread non_counted=true through"
+        );
+        assert!(
+            !non_counted_of(&plain_untrusted),
+            "refresh_reference_op with non_counted=false must NOT set the wrapper bit"
+        );
+        assert!(non_counted_of(&with_sum_trusted));
+        assert!(!non_counted_of(&with_sum_untrusted));
+        assert!(!non_counted_of(&keep_sum));
     }
 
     /// The sum-item variant of `RefreshReference` updates the link AND the
@@ -747,6 +768,7 @@ mod tests {
             ref_path.clone(),
             None,
             None,
+            /* non_counted = */ false,
             /* trust_refresh_reference = */ true,
         );
         db.apply_batch(vec![refresh], None, None, grove_version)
@@ -920,6 +942,7 @@ mod tests {
             ref_path,
             None,
             None,
+            /* non_counted = */ false,
             true,
         )
         .op;

@@ -1124,6 +1124,7 @@ mod tests {
             ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
             Some(5),
             None,
+            /* non_counted = */ false,
             true,
         )];
         let mut paths = HashMap::new();

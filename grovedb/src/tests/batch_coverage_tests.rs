@@ -109,6 +109,7 @@ mod tests {
             ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]),
             Some(5),
             None,
+            /* non_counted = */ false,
             true,
         )];
 
@@ -314,6 +315,7 @@ mod tests {
             ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]),
             Some(5),
             None,
+            /* non_counted = */ false,
             true,
         )];
 
@@ -1796,6 +1798,7 @@ mod tests {
             ref_path,
             Some(5),
             None,
+            /* non_counted = */ false,
             false, // untrusted: read from disk
         )];
 
@@ -2614,6 +2617,7 @@ mod tests {
                 ]),
                 Some(5),
                 None,
+                /* non_counted = */ false,
                 true,
             ),
         ];

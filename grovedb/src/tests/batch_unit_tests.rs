@@ -396,6 +396,7 @@ mod tests {
                     ReferencePathType::AbsolutePathReference(vec![]),
                     None,
                     None,
+                    /* non_counted = */ false,
                     false,
                 ),
                 "Refresh Reference",
@@ -1176,6 +1177,7 @@ mod tests {
             ]),
             None,
             None,
+            /* non_counted = */ false,
             false,
         )];
 
@@ -1395,6 +1397,7 @@ mod tests {
                 ]),
                 Some(2),
                 None,
+                /* non_counted = */ false,
                 true, // trust_refresh_reference
             ),
             QualifiedGroveDbOp::insert_or_replace_op(
@@ -1461,6 +1464,7 @@ mod tests {
                 ]),
                 Some(2),
                 None,
+                /* non_counted = */ false,
                 false, // trust_refresh_reference = false
             ),
             QualifiedGroveDbOp::insert_or_replace_op(
@@ -1586,6 +1590,7 @@ mod tests {
                 ]),
                 Some(2),
                 None,
+                /* non_counted = */ false,
                 true,
             ),
             QualifiedGroveDbOp::insert_or_replace_op(

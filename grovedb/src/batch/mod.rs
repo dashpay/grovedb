@@ -872,8 +872,13 @@ impl QualifiedGroveDbOp {
     /// [`Element::Reference`] (no carried sum-item). Thin wrapper
     /// that builds the unified `GroveOp::RefreshReference` with
     /// `mode = PlainReferenceTrusted` or `PlainReferenceUntrusted`
-    /// based on `trust_refresh_reference`. `non_counted` is set to
-    /// `false`.
+    /// based on `trust_refresh_reference`.
+    ///
+    /// `non_counted` declares whether the rebuilt element is wrapped
+    /// in `Element::NonCounted` (suppresses the count contribution
+    /// in a count-bearing parent). Under trusted mode it's written
+    /// at face value; under untrusted mode it's cross-checked
+    /// against the on-disk wrapper and a mismatch is rejected.
     ///
     /// See the [`RefreshReferenceMode`] doc for the trust-mode
     /// contract.
@@ -888,6 +893,7 @@ impl QualifiedGroveDbOp {
         reference_path_type: ReferencePathType,
         max_reference_hop: MaxReferenceHop,
         flags: Option<ElementFlags>,
+        non_counted: bool,
         trust_refresh_reference: bool,
     ) -> Self {
         let mode = if trust_refresh_reference {
@@ -904,7 +910,7 @@ impl QualifiedGroveDbOp {
                 max_reference_hop,
                 mode,
                 flags,
-                non_counted: false,
+                non_counted,
             },
         }
     }
