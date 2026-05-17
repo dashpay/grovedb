@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn tree_type_try_from_invalid() {
-        assert!(TreeType::try_from(12u8).is_err());
+        assert!(TreeType::try_from(13u8).is_err());
         assert!(TreeType::try_from(255u8).is_err());
     }
 

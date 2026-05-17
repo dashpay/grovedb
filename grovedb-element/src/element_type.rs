@@ -938,13 +938,18 @@ mod tests {
             ElementType::try_from(19).unwrap(),
             ElementType::ProvableSumTree
         );
-        // 20..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(20).is_err());
+        // Base discriminant 20 is ProvableCountProvableSumTree.
+        assert_eq!(
+            ElementType::try_from(20).unwrap(),
+            ElementType::ProvableCountProvableSumTree
+        );
+        // 21..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(21).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
-        // ReferenceWithSumItem twin) and 147 (= 0x80|19 = ProvableSumTree
-        // twin).
+        // ReferenceWithSumItem twin), 147 (= 0x80|19 = ProvableSumTree
+        // twin), and 148 (= 0x80|20 = ProvableCountProvableSumTree twin).
         assert_eq!(
             ElementType::try_from(128).unwrap(),
             ElementType::NonCountedItem
@@ -965,6 +970,10 @@ mod tests {
             ElementType::try_from(147).unwrap(),
             ElementType::NonCountedProvableSumTree
         );
+        assert_eq!(
+            ElementType::try_from(148).unwrap(),
+            ElementType::NonCountedProvableCountProvableSumTree
+        );
         // Bytes between the base and NonCounted-twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
         // 143 (= 0x80|15), 144 (= 0x80|16), 145 (= 0x80|17): wrapper bytes
@@ -972,18 +981,20 @@ mod tests {
         assert!(ElementType::try_from(143).is_err());
         assert!(ElementType::try_from(144).is_err());
         assert!(ElementType::try_from(145).is_err());
-        // 148..=176 (between NonCounted-twin and NotSummed-twin ranges) are
-        // invalid (with the exception of 177 = NotSummedProvableSumTree).
-        assert!(ElementType::try_from(148).is_err());
+        // 149..=176 (between NonCounted-twin and NotSummed-twin ranges) are
+        // invalid (with the exception of 177 = NotSummedProvableSumTree and
+        // 178 = NotSummedProvableCountProvableSumTree).
+        assert!(ElementType::try_from(149).is_err());
         assert!(ElementType::try_from(176).is_err());
 
         // NotSummed twins live in 0xB0..=0xBF with explicit per-variant
-        // slot assignments — not a formula. Five slots are populated:
-        //   SumTree              -> 180 (0xB4)
-        //   BigSumTree           -> 181 (0xB5)
-        //   CountSumTree         -> 183 (0xB7)
-        //   ProvableCountSumTree -> 186 (0xBA)
-        //   ProvableSumTree      -> 177 (0xB1)
+        // slot assignments — not a formula. Six slots are populated:
+        //   SumTree                       -> 180 (0xB4)
+        //   BigSumTree                    -> 181 (0xB5)
+        //   CountSumTree                  -> 183 (0xB7)
+        //   ProvableCountSumTree          -> 186 (0xBA)
+        //   ProvableSumTree               -> 177 (0xB1)
+        //   ProvableCountProvableSumTree  -> 178 (0xB2)
         assert_eq!(
             ElementType::try_from(180).unwrap(),
             ElementType::NotSummedSumTree
@@ -1004,10 +1015,14 @@ mod tests {
             ElementType::try_from(177).unwrap(),
             ElementType::NotSummedProvableSumTree
         );
+        assert_eq!(
+            ElementType::try_from(178).unwrap(),
+            ElementType::NotSummedProvableCountProvableSumTree
+        );
         // All unallocated slots in 0xB0..=0xBF are invalid.
         for bad in [
             0xb0u8, // wrapper byte 16, never a twin
-            0xb2, 0xb3, 0xb6, 0xb8, 0xb9, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+            0xb3, 0xb6, 0xb8, 0xb9, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
         ] {
             assert!(
                 ElementType::try_from(bad).is_err(),
@@ -1019,11 +1034,12 @@ mod tests {
         assert!(ElementType::try_from(187).is_err());
         assert!(ElementType::try_from(195).is_err());
 
-        // NotCountedOrSummed twins: the five sum-bearing tree bases
-        // {4, 5, 7, 10, 19} are legal → discriminants {196, 197, 199,
-        // 202, 193}. `0xc0 | base` only works for bases 4/5/7/10;
+        // NotCountedOrSummed twins: the six sum-bearing tree bases
+        // {4, 5, 7, 10, 19, 20} are legal → discriminants {196, 197, 199,
+        // 202, 193, 194}. `0xc0 | base` only works for bases 4/5/7/10;
         // ProvableSumTree (base 19) gets an explicit hand-assigned slot
-        // at 0xC1 (193), same shape as NotSummedProvableSumTree at 0xB1.
+        // at 0xC1 (193), and ProvableCountProvableSumTree (base 20) at
+        // 0xC2 (194), same shape as the corresponding NotSummed twins.
         assert_eq!(
             ElementType::try_from(196).unwrap(),
             ElementType::NotCountedOrSummedSumTree
@@ -1044,10 +1060,12 @@ mod tests {
             ElementType::try_from(193).unwrap(),
             ElementType::NotCountedOrSummedProvableSumTree
         );
+        assert_eq!(
+            ElementType::try_from(194).unwrap(),
+            ElementType::NotCountedOrSummedProvableCountProvableSumTree
+        );
         // Other bytes in 0xc0..=0xcf (non-sum-bearing-tree bases) are invalid.
-        for bad in [
-            0xc0u8, 0xc2, 0xc3, 0xc6, 0xc8, 0xc9, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
-        ] {
+        for bad in [0xc0u8, 0xc3, 0xc6, 0xc8, 0xc9, 0xcb, 0xcc, 0xcd, 0xce, 0xcf] {
             assert!(
                 ElementType::try_from(bad).is_err(),
                 "{:#x} should be rejected",
@@ -1538,10 +1556,10 @@ mod tests {
         assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
         // Wrapper with an unallocated mid-range inner byte (16, 17,
-        // 20..=127) is also rejected, even though it has no high bit set.
+        // 21..=127) is also rejected, even though it has no high bit set.
         assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 17]).is_err());
-        assert!(ElementType::from_serialized_value(&[15, 20]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 21]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
 
         // Inner byte 18 (ReferenceWithSumItem) IS a legal base; resolves to
@@ -1549,6 +1567,13 @@ mod tests {
         assert_eq!(
             ElementType::from_serialized_value(&[15, 18]).unwrap(),
             ElementType::NonCountedReferenceWithSumItem
+        );
+        // Inner byte 20 (ProvableCountProvableSumTree) IS also a legal
+        // base; resolves to NonCountedProvableCountProvableSumTree
+        // (twin slot 148 = 0x80|20).
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 20]).unwrap(),
+            ElementType::NonCountedProvableCountProvableSumTree
         );
         // Inner byte 19 (ProvableSumTree) IS also a legal base; resolves to
         // NonCountedProvableSumTree (twin slot 147 = 0x80|19).
