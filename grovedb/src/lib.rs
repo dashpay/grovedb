@@ -1603,7 +1603,29 @@ impl GroveDb {
                     // actual-aggregate hash in the "actual" slot; the
                     // "root" slot reuses the inner-Merk root hash for
                     // path-locality.
-                    if !element.uses_non_merk_data_storage() {
+                    //
+                    // Cidx primary children: skip this check. Children of a
+                    // `CountIndexedTree` / `ProvableCountIndexedTree` primary
+                    // carry an explicit `count_value` field that encodes the
+                    // child's cidx index key (the count under which this child
+                    // sorts in the secondary index) — NOT the aggregate of
+                    // the child's own inner Merk. A `CountTree(None, 42, None)`
+                    // inserted at a cidx primary level legitimately has
+                    // recorded=42 with an empty inner Merk; the user-supplied
+                    // 42 is the cidx ordering key, not a self-consistency
+                    // claim about inner content. The cidx-specific check at
+                    // the primary-level (lines ~1380-1497) already validates
+                    // that each child's recorded count matches the secondary
+                    // index entry. Applying the generic aggregate-consistency
+                    // check here would emit false positives for every cidx
+                    // primary child whose recorded count is non-zero with an
+                    // empty inner Merk — and worse, the placeholder hashes
+                    // collide across children with the same Element variant
+                    // (the labels only mention the variant, not the value),
+                    // making the surfaced "issues" indistinguishable.
+                    if !element.uses_non_merk_data_storage()
+                        && !merk.tree_type.is_count_indexed_primary()
+                    {
                         let actual_aggregate = inner_merk.aggregate_data().map_err(MerkError)?;
                         if let Some((recorded_label, actual_label)) =
                             aggregate_consistency_labels(&element, &actual_aggregate)
