@@ -1200,13 +1200,14 @@ fn shape_walk_rejects_kvdigestcountsum_outside_inherited_bounds_pcps_sum() {
 
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    // Either Phase 1's key-ordering check fires (now that
+    // execute_with_options also enforces BST-order on dual-axis
+    // nodes) or Phase 2's inherited-bounds check does. Both are
+    // acceptable rejections.
     let err =
         result.expect_err("KVDigestCountSum outside inherited bounds must be rejected (sum side)");
     match err {
-        Error::InvalidProofError(msg) => assert!(
-            msg.contains("falls outside its inherited subtree bounds"),
-            "unexpected message: {msg}"
-        ),
+        Error::InvalidProofError(_) => {}
         other => panic!("expected InvalidProofError, got {:?}", other),
     }
 }

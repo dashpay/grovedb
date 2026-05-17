@@ -147,10 +147,11 @@ where
     /// wrapper at the `Query` level via
     /// `Query::validate_aggregate_count_on_range`).
     ///
-    /// The merk's `tree_type` must be one of `ProvableCountTree` or
-    /// `ProvableCountSumTree` (regardless of whether the merk is empty).
-    /// Any other tree type is rejected with `Error::InvalidProofError`
-    /// before any walking happens.
+    /// The merk's `tree_type` must be one of `ProvableCountTree`,
+    /// `ProvableCountSumTree`, or `ProvableCountProvableSumTree`
+    /// (regardless of whether the merk is empty). Any other tree type
+    /// is rejected with `Error::InvalidProofError` before any walking
+    /// happens.
     ///
     /// On a tree-type-valid but empty Merk this returns
     /// `(empty proof, count = 0)` — an empty subtree is a valid input for a
@@ -191,9 +192,10 @@ where
     /// Mirror of [`Self::prove_aggregate_count_on_range`] for the
     /// `ProvableSumTree` flavor.
     ///
-    /// The merk's `tree_type` must be `ProvableSumTree`; any other tree type
-    /// is rejected with `Error::InvalidProofError` before any walking
-    /// happens. Empty merk: returns `(empty proof, sum = 0)`.
+    /// The merk's `tree_type` must be `ProvableSumTree` or
+    /// `ProvableCountProvableSumTree`; any other tree type is rejected
+    /// with `Error::InvalidProofError` before any walking happens.
+    /// Empty merk: returns `(empty proof, sum = 0)`.
     pub fn prove_aggregate_sum_on_range(
         &self,
         inner_range: &QueryItem,

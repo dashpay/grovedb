@@ -1698,12 +1698,14 @@ fn shape_walk_rejects_kvdigestcountsum_outside_inherited_bounds_pcps() {
 
     let bytes = encode_proof(&ops);
     let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    // Either Phase 1's key-ordering check trips (now that the
+    // execute_with_options BST-order match covers dual-axis nodes) or
+    // Phase 2's "falls outside its inherited subtree bounds" check
+    // does. Either rejection is acceptable: the goal is that an
+    // out-of-bounds boundary key never produces a successful verify.
     let err = result.expect_err("KVDigestCountSum outside inherited bounds must be rejected");
     match err {
-        Error::InvalidProofError(msg) => assert!(
-            msg.contains("falls outside its inherited subtree bounds"),
-            "unexpected message: {msg}"
-        ),
+        Error::InvalidProofError(_) => {}
         other => panic!("expected InvalidProofError, got {:?}", other),
     }
 }
@@ -1843,10 +1845,11 @@ fn provable_count_from_aggregate_accepts_all_count_bearing_variants() {
 #[test]
 fn provable_count_from_aggregate_rejects_non_count_variants() {
     // Reject every aggregate variant that doesn't carry a count.
-    // Each rejection surfaces an `InvalidProofError` because reaching
+    // Each rejection surfaces a `CorruptedData` error because reaching
     // this predicate with a non-count aggregate means the host tree's
-    // type-tag disagrees with its in-memory state — a corruption
-    // condition that callers must propagate.
+    // type-tag disagrees with its in-memory state — a local
+    // corruption condition that callers must propagate (per the
+    // repo error-handling convention).
     for case in [
         AggregateData::NoAggregateData,
         AggregateData::Sum(7),
@@ -1855,11 +1858,11 @@ fn provable_count_from_aggregate_rejects_non_count_variants() {
     ] {
         let result = provable_count_from_aggregate(case);
         match result {
-            Err(Error::InvalidProofError(msg)) => assert!(
+            Err(Error::CorruptedData(msg)) => assert!(
                 msg.contains("expected ProvableCount aggregate data"),
                 "unexpected message: {msg}"
             ),
-            other => panic!("expected InvalidProofError, got {:?}", other),
+            other => panic!("expected CorruptedData, got {:?}", other),
         }
     }
 }

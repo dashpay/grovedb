@@ -103,7 +103,11 @@ where
         let aggregate = match walker.tree().aggregate_data() {
             Ok(a) => a,
             Err(e) => {
-                return Err(Error::InvalidProofError(format!("aggregate_data: {}", e)))
+                // Local prover-side walk over our own merk — if the
+                // node refuses to surface aggregate_data, that is a
+                // storage/state corruption, not a peer-supplied
+                // invalid proof.
+                return Err(Error::CorruptedData(format!("aggregate_data: {}", e)))
                     .wrap_with_cost(cost);
             }
         };
@@ -133,7 +137,11 @@ where
             let subtree_sum = match aggregate {
                 AggregateData::ProvableCountAndProvableSum(_, s) => s,
                 other => {
-                    return Err(Error::InvalidProofError(format!(
+                    // Prover-side: a host tree declared as
+                    // ProvableCountProvableSumTree must carry a
+                    // ProvableCountAndProvableSum aggregate. Anything
+                    // else is local state corruption.
+                    return Err(Error::CorruptedData(format!(
                         "expected ProvableCountAndProvableSum for \
                          ProvableCountProvableSumTree, got {:?}",
                         other
@@ -178,7 +186,9 @@ where
     let node_aggregate = match walker
         .tree()
         .aggregate_data()
-        .map_err(|e| Error::InvalidProofError(format!("aggregate_data: {}", e)))
+        // Local prover-side walk — failure to read aggregate_data is
+        // local state corruption, not a peer-supplied invalid proof.
+        .map_err(|e| Error::CorruptedData(format!("aggregate_data: {}", e)))
     {
         Ok(a) => a,
         Err(e) => return Err(e).wrap_with_cost(cost),
@@ -260,7 +270,11 @@ where
         let node_sum = match node_aggregate {
             AggregateData::ProvableCountAndProvableSum(_, s) => s,
             other => {
-                return Err(Error::InvalidProofError(format!(
+                // Prover-side invariant: a host tree declared as
+                // ProvableCountProvableSumTree must carry the dual-axis
+                // aggregate at every node. Anything else is local
+                // state corruption.
+                return Err(Error::CorruptedData(format!(
                     "expected ProvableCountAndProvableSum for \
                      ProvableCountProvableSumTree, got {:?}",
                     other

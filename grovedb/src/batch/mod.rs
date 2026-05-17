@@ -2910,6 +2910,7 @@ where
                                     | Element::ProvableCountTree(..)
                                     | Element::ProvableCountSumTree(..)
                                     | Element::ProvableSumTree(..)
+                                    | Element::ProvableCountProvableSumTree(..)
                                     | Element::CommitmentTree(..)
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
@@ -3242,6 +3243,22 @@ impl GroveDb {
                                                         ..,
                                                         flags,
                                                     ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                non_counted,
+                                                                not_summed,
+                                                                not_counted_or_summed,
+                                                            }
+                                                    } else if let
+                                                        Element::ProvableCountProvableSumTree(
+                                                            ..,
+                                                            flags,
+                                                        ) = element
                                                     {
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertTreeWithRootHash {

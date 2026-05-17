@@ -365,10 +365,11 @@ where
     /// merk-level cost is O(log n) in the number of distinct keys, the same
     /// as the proof variant.
     ///
-    /// The merk's `tree_type` must be one of `ProvableCountTree` or
-    /// `ProvableCountSumTree`; any other tree type is rejected with
-    /// `Error::InvalidProofError` before any walking happens. On an empty
-    /// merk this returns `count = 0`.
+    /// The merk's `tree_type` must be one of `ProvableCountTree`,
+    /// `ProvableCountSumTree`, or `ProvableCountProvableSumTree`; any
+    /// other tree type is rejected with `Error::InvalidProofError`
+    /// before any walking happens. On an empty merk this returns
+    /// `count = 0`.
     ///
     /// The returned count is **not** independently verifiable — callers
     /// trust the merk's reads. Use `prove_aggregate_count_on_range` +
@@ -412,9 +413,10 @@ where
     /// merk-level cost is O(log n) in the number of distinct keys, the
     /// same as the proof variant.
     ///
-    /// The merk's `tree_type` must be `ProvableSumTree`; any other tree
-    /// type is rejected with `Error::InvalidProofError` before any
-    /// walking happens. On an empty merk this returns `sum = 0`.
+    /// The merk's `tree_type` must be `ProvableSumTree` or
+    /// `ProvableCountProvableSumTree`; any other tree type is rejected
+    /// with `Error::InvalidProofError` before any walking happens. On
+    /// an empty merk this returns `sum = 0`.
     ///
     /// The accumulator carries `i128` end-to-end and narrows to `i64` at
     /// the very last step (parallel to the prover and verifier). An

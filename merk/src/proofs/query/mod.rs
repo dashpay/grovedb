@@ -82,18 +82,26 @@ where
 
     /// Creates a `Node::KVValueHashFeatureType` from the key/value pair of the
     /// root node
-    /// Note: For ProvableCountTree, ProvableCountSumTree, and ProvableSumTree,
-    /// uses aggregate value to match hash calculation
+    /// Note: For ProvableCountTree, ProvableCountSumTree, ProvableSumTree,
+    /// and ProvableCountProvableSumTree, uses aggregate value to match
+    /// hash calculation.
     pub(crate) fn to_kv_value_hash_feature_type_node(&self) -> Node {
-        // For ProvableCountTree, ProvableCountSumTree, and ProvableSumTree
-        // we need to use the aggregate value (sum of self + children) because
-        // the hash calculation uses aggregate_data(), not feature_type()
+        // For all provable* host trees we need to use the aggregate value
+        // (sum of self + children) because the hash calculation uses
+        // aggregate_data(), not feature_type(). For the dual-axis
+        // ProvableCountProvableSumTree we surface the aggregated
+        // (count, sum) pair via ProvableCountedAndProvableSummedMerkNode
+        // so the verifier reconstructs the same TreeFeatureType bytes the
+        // prover committed into the node hash.
         let feature_type = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => {
                 TreeFeatureType::ProvableCountedMerkNode(count)
             }
             Ok(AggregateData::ProvableCountAndSum(count, sum)) => {
                 TreeFeatureType::ProvableCountedSummedMerkNode(count, sum)
+            }
+            Ok(AggregateData::ProvableCountAndProvableSum(count, sum)) => {
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum)
             }
             Ok(AggregateData::ProvableSum(sum)) => TreeFeatureType::ProvableSummedMerkNode(sum),
             _ => self.tree().feature_type(),

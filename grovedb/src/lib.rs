@@ -1287,6 +1287,8 @@ impl GroveDb {
 /// - `ProvableCountTree(_, n, _)` vs. `AggregateData::ProvableCount(m)`.
 /// - `ProvableCountSumTree(_, c, s, _)` vs.
 ///   `AggregateData::ProvableCountAndSum(cm, sm)`.
+/// - `ProvableCountProvableSumTree(_, c, s, _)` vs.
+///   `AggregateData::ProvableCountAndProvableSum(cm, sm)`.
 ///
 /// A plain `Element::Tree(..)` has no aggregate field; the inner Merk's
 /// `aggregate_data` is `NoAggregateData` by construction, and any other
@@ -1398,6 +1400,25 @@ fn aggregate_consistency_labels(
                 ))
             }
         }
+        (
+            Element::ProvableCountProvableSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::ProvableCountAndProvableSum(actual_count, actual_sum),
+        ) => {
+            if recorded_count == actual_count && recorded_sum == actual_sum {
+                None
+            } else {
+                Some((
+                    format!(
+                        "ProvableCountProvableSumTree recorded count {} sum {}",
+                        recorded_count, recorded_sum
+                    ),
+                    format!(
+                        "inner aggregate ProvableCountAndProvableSum count {} sum {}",
+                        actual_count, actual_sum
+                    ),
+                ))
+            }
+        }
 
         // --- Empty-merk edge case: an empty Merk returns NoAggregateData
         // for any tree type. This is the correct initial state for a
@@ -1429,6 +1450,10 @@ fn aggregate_consistency_labels(
         }
         (
             Element::ProvableCountSumTree(_, recorded_count, recorded_sum, _),
+            AggregateData::NoAggregateData,
+        ) if *recorded_count == 0 && *recorded_sum == 0 => None,
+        (
+            Element::ProvableCountProvableSumTree(_, recorded_count, recorded_sum, _),
             AggregateData::NoAggregateData,
         ) if *recorded_count == 0 && *recorded_sum == 0 => None,
 

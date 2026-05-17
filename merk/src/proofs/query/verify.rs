@@ -215,6 +215,12 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHashSum(..)) => {}
                                 Some(Node::KVCount(..)) => {}
                                 Some(Node::KVSum(..)) => {}
+                                // ProvableCountProvableSumTree (dual-axis)
+                                // key-bearing nodes are also acceptable
+                                // bound-proving boundaries.
+                                Some(Node::KVCountSum(..)) => {}
+                                Some(Node::KVDigestCountSum(..)) => {}
+                                Some(Node::KVRefValueHashCountSum(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
@@ -251,6 +257,12 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHashSum(..)) => {}
                                 Some(Node::KVCount(..)) => {}
                                 Some(Node::KVSum(..)) => {}
+                                // ProvableCountProvableSumTree (dual-axis)
+                                // key-bearing nodes are also acceptable
+                                // upper-bound-proving boundaries.
+                                Some(Node::KVCountSum(..)) => {}
+                                Some(Node::KVDigestCountSum(..)) => {}
+                                Some(Node::KVRefValueHashCountSum(..)) => {}
 
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
@@ -617,6 +629,11 @@ impl QueryProofVerify for Query {
                     Some(Node::KVSum(..)) => {}
                     Some(Node::KVDigestSum(..)) => {}
                     Some(Node::KVRefValueHashSum(..)) => {}
+                    // ProvableCountProvableSumTree (dual-axis) key-bearing
+                    // nodes are also acceptable absence-proof boundaries.
+                    Some(Node::KVCountSum(..)) => {}
+                    Some(Node::KVDigestCountSum(..)) => {}
+                    Some(Node::KVRefValueHashCountSum(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items
@@ -774,10 +791,11 @@ impl fmt::Display for ProofVerificationResult {
 }
 
 /// Checks whether a key exists as a boundary element in the given merk proof
-/// bytes. A boundary element is a `KVDigest`, `KVDigestCount`, or
-/// `KVDigestSum` node — it proves the key exists in the tree without
-/// revealing the value. (Same node-type coverage as
-/// [`boundaries_in_proof`]; the two helpers must agree.)
+/// bytes. A boundary element is a `KVDigest`, `KVDigestCount`,
+/// `KVDigestSum`, or `KVDigestCountSum` (dual-axis PCPS) node — it proves
+/// the key exists in the tree without revealing the value. (Same
+/// node-type coverage as [`boundaries_in_proof`]; the two helpers must
+/// agree.)
 ///
 /// This is useful for exclusive range queries (e.g. `RangeAfter(10)`) where
 /// the boundary key (10) is included in the proof as a digest node to anchor
@@ -793,6 +811,8 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
             | Op::PushInverted(Node::KVDigestCount(k, _, _))
             | Op::Push(Node::KVDigestSum(k, _, _))
             | Op::PushInverted(Node::KVDigestSum(k, _, _))
+            | Op::Push(Node::KVDigestCountSum(k, _, _, _))
+            | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _))
                 if k.as_slice() == key =>
             {
                 return Ok(true);
@@ -938,11 +958,12 @@ mod provable_sum_tree_bound_regression_tests {
 }
 
 /// Returns all boundary keys found in the given merk proof bytes.
-/// Boundary keys appear as `KVDigest`, `KVDigestCount`, or `KVDigestSum`
-/// nodes — they prove a key exists in the tree without revealing the
-/// value. (The Sum variant is the `ProvableSumTree` analogue of the
-/// Count variant; both behave identically for boundary-detection
-/// purposes.)
+/// Boundary keys appear as `KVDigest`, `KVDigestCount`, `KVDigestSum`,
+/// or `KVDigestCountSum` (dual-axis PCPS) nodes — they prove a key
+/// exists in the tree without revealing the value. (The Sum/CountSum
+/// variants are the `ProvableSumTree` / `ProvableCountProvableSumTree`
+/// analogues of the Count variant; all behave identically for
+/// boundary-detection purposes.)
 pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     let decoder = Decoder::new(proof_bytes);
     let mut keys = Vec::new();
@@ -954,7 +975,9 @@ pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
             | Op::Push(Node::KVDigestCount(k, _, _))
             | Op::PushInverted(Node::KVDigestCount(k, _, _))
             | Op::Push(Node::KVDigestSum(k, _, _))
-            | Op::PushInverted(Node::KVDigestSum(k, _, _)) => {
+            | Op::PushInverted(Node::KVDigestSum(k, _, _))
+            | Op::Push(Node::KVDigestCountSum(k, _, _, _))
+            | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _)) => {
                 keys.push(k);
             }
             _ => {}

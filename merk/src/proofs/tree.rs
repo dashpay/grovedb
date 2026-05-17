@@ -811,7 +811,10 @@ where
                 | Node::KVDigestCount(key, ..)
                 | Node::KVSum(key, ..)
                 | Node::KVDigestSum(key, ..)
-                | Node::KVRefValueHashSum(key, ..) = &node
+                | Node::KVRefValueHashSum(key, ..)
+                | Node::KVCountSum(key, ..)
+                | Node::KVDigestCountSum(key, ..)
+                | Node::KVRefValueHashCountSum(key, ..) = &node
                 {
                     // keys should always increase
                     if let Some(last_key) = &maybe_last_key
@@ -852,7 +855,10 @@ where
                 | Node::KVDigestCount(key, ..)
                 | Node::KVSum(key, ..)
                 | Node::KVDigestSum(key, ..)
-                | Node::KVRefValueHashSum(key, ..) = &node
+                | Node::KVRefValueHashSum(key, ..)
+                | Node::KVCountSum(key, ..)
+                | Node::KVDigestCountSum(key, ..)
+                | Node::KVRefValueHashCountSum(key, ..) = &node
                 {
                     // keys should always decrease
                     if let Some(last_key) = &maybe_last_key

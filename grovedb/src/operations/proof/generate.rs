@@ -1239,6 +1239,12 @@ impl GroveDb {
             .query
             .query
             .has_aggregate_count_on_range_anywhere();
+        // Same reasoning for aggregate-sum on the new dual-axis
+        // ProvableCountProvableSumTree (and the single-axis
+        // ProvableSumTree): an empty merk at the sum-bearing host
+        // still has to emit a lower-layer ASOR proof (verifier reads
+        // it as sum = 0).
+        let is_aggregate_sum_query = path_query.query.query.has_aggregate_sum_on_range_anywhere();
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
@@ -1596,6 +1602,43 @@ impl GroveDb {
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_query
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )
+                                );
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+                            // Same descent path for sum-bearing empty
+                            // hosts (ProvableSumTree and
+                            // ProvableCountProvableSumTree) when the
+                            // outer query has an
+                            // `AggregateSumOnRange` carrier — recurses
+                            // into prove_subqueries_v1, hits the ASOR
+                            // short-circuit on the empty merk, and
+                            // emits an empty sum proof (verifier reads
+                            // it as sum = 0).
+                            Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableCountProvableSumTree(None, ..))
+                                if !done_with_results
+                                    && is_aggregate_sum_query
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
