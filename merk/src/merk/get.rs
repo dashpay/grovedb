@@ -398,6 +398,53 @@ where
             }
         })
     }
+
+    /// Execute an `AggregateSumOnRange` query without producing a proof,
+    /// returning just the in-range signed sum.
+    ///
+    /// This is the no-proof counterpart of
+    /// [`Self::prove_aggregate_sum_on_range`]. It walks the same
+    /// classification path the proof emitter does — using each internal
+    /// node's stored aggregate sum to short-circuit Contained / Disjoint
+    /// subtrees — but skips the proof-op emission and serialization. The
+    /// merk-level cost is O(log n) in the number of distinct keys, the
+    /// same as the proof variant.
+    ///
+    /// The merk's `tree_type` must be `ProvableSumTree`; any other tree
+    /// type is rejected with `Error::InvalidProofError` before any
+    /// walking happens. On an empty merk this returns `sum = 0`.
+    ///
+    /// The accumulator carries `i128` end-to-end and narrows to `i64` at
+    /// the very last step (parallel to the prover and verifier). An
+    /// out-of-i64 result is treated as corruption — a real
+    /// `ProvableSumTree` maintains every aggregate as `i64` at every
+    /// level, so an out-of-range i128 result implies inconsistent tree
+    /// state.
+    ///
+    /// The returned sum is **not** independently verifiable — callers
+    /// trust the merk's reads. Use `prove_aggregate_sum_on_range` +
+    /// `verify_aggregate_sum_on_range_proof` for a verifiable sum.
+    pub fn sum_aggregate_on_range(
+        &self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i64, Error> {
+        let tree_type = self.tree_type;
+        if !matches!(tree_type, crate::TreeType::ProvableSumTree) {
+            return Err(Error::InvalidProofError(format!(
+                "AggregateSumOnRange is only valid against ProvableSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok(0i64).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.sum_aggregate_on_range(inner_range, grove_version)
+            }
+        })
+    }
 }
 
 #[cfg(test)]

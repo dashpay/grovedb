@@ -166,12 +166,14 @@ where
         match proof_node_type {
             ProofNodeType::Kv => self.to_kv_node(),
             ProofNodeType::KvCount => self.to_kv_count_node(),
+            ProofNodeType::KvSum => self.to_kv_sum_node(),
             ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
             ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
             // References: at merk level, generate same node type as non-ref counterpart
             // GroveDB will post-process if needed
             ProofNodeType::KvRefValueHash => self.to_kv_value_hash_node(),
             ProofNodeType::KvRefValueHashCount => self.to_kv_value_hash_feature_type_node(),
+            ProofNodeType::KvRefValueHashSum => self.to_kv_value_hash_feature_type_node(),
         }
     }
 

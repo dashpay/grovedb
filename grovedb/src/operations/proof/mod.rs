@@ -2,6 +2,8 @@
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_count;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+mod aggregate_sum;
 #[cfg(feature = "minimal")]
 mod generate;
 /// Utility functions for proof display and conversion.
@@ -17,6 +19,34 @@ use std::{collections::BTreeMap, fmt};
 /// of 128 is well beyond any practical GroveDB tree hierarchy while still
 /// fitting comfortably within typical stack sizes.
 pub const MAX_PROOF_DEPTH: usize = 128;
+
+/// Decode a serialized [`GroveDBProof`] envelope using the same bincode
+/// configuration the prover writes out.
+///
+/// Decoding is canonical: trailing bytes beyond the encoded envelope are
+/// rejected. Without this check the same `(RootHash, payload)` could be
+/// reconstructed from many different proof byte-strings (a proof and the
+/// same proof with arbitrary suffix bytes), which is harmless for the
+/// chain-bound correctness guarantee but breaks any equality-by-bytes
+/// assumption a caller might rely on (caching, deduplication, hashing
+/// the proof itself).
+///
+/// Shared by the aggregate-count and aggregate-sum verifier entry
+/// points so the canonical-decode contract has exactly one definition.
+pub(super) fn decode_grovedb_proof_canonical(proof: &[u8]) -> Result<GroveDBProof, Error> {
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_limit::<{ 256 * 1024 * 1024 }>();
+    let (decoded, consumed) = bincode::decode_from_slice(proof, config)
+        .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?;
+    if consumed != proof.len() {
+        return Err(Error::CorruptedData(format!(
+            "proof has {} trailing bytes after the encoded envelope",
+            proof.len() - consumed
+        )));
+    }
+    Ok(decoded)
+}
 
 use bincode::{
     de::{BorrowDecoder, Decoder as BincodeDecoder},
@@ -746,6 +776,36 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex::encode(left_child_hash),
             hex::encode(right_child_hash),
             count
+        ),
+        // ProvableSumTree proof variants.
+        Node::KVSum(key, value, sum) => format!(
+            "KVSum({}, {}, {})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            sum
+        ),
+        Node::KVHashSum(kv_hash, sum) => {
+            format!("KVHashSum(HASH[{}], {})", hex::encode(kv_hash), sum)
+        }
+        Node::KVRefValueHashSum(key, value, value_hash, sum) => format!(
+            "KVRefValueHashSum({}, {}, HASH[{}], {})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(value_hash),
+            sum
+        ),
+        Node::KVDigestSum(key, value_hash, sum) => format!(
+            "KVDigestSum({}, HASH[{}], {})",
+            hex_to_ascii(key),
+            hex::encode(value_hash),
+            sum
+        ),
+        Node::HashWithSum(kv_hash, left_child_hash, right_child_hash, sum) => format!(
+            "HashWithSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], sum={})",
+            hex::encode(kv_hash),
+            hex::encode(left_child_hash),
+            hex::encode(right_child_hash),
+            sum
         ),
     };
     Ok(s)

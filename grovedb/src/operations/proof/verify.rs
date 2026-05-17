@@ -61,12 +61,7 @@ impl GroveDb {
             ));
         }
 
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -110,12 +105,7 @@ impl GroveDb {
             ));
         }
 
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, tree_feature_type, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -143,12 +133,7 @@ impl GroveDb {
                 .proof
                 .verify_query_raw
         );
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, _, result) = Self::verify_proof_raw_internal(
             &grovedb_proof,
@@ -501,6 +486,7 @@ impl GroveDb {
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
+                            | Element::ProvableSumTree(Some(_), ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -634,6 +620,7 @@ impl GroveDb {
                             | Element::CountSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
+                            | Element::ProvableSumTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -1241,6 +1228,12 @@ impl GroveDb {
                          not on BulkAppendTree",
                     ));
                 }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on BulkAppendTree",
+                    ));
+                }
             }
         }
 
@@ -1362,6 +1355,12 @@ impl GroveDb {
                 QueryItem::AggregateCountOnRange(_) => {
                     return Err(Error::InvalidInput(
                         "AggregateCountOnRange is only supported on provable count trees, \
+                         not on this tree type",
+                    ));
+                }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
                          not on this tree type",
                     ));
                 }
@@ -1487,7 +1486,8 @@ impl GroveDb {
                             | Element::CountTree(Some(_), ..)
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
-                            | Element::ProvableCountSumTree(Some(_), ..) => {
+                            | Element::ProvableCountSumTree(Some(_), ..)
+                            | Element::ProvableSumTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -1610,6 +1610,7 @@ impl GroveDb {
                             | Element::CountSumTree(None, ..)
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
+                            | Element::ProvableSumTree(None, ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -1969,12 +1970,7 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, GroveTrunkQueryResult), Error> {
-        let config = bincode::config::standard()
-            .with_big_endian()
-            .with_limit::<{ 256 * 1024 * 1024 }>();
-        let grovedb_proof: GroveDBProof = bincode::decode_from_slice(proof, config)
-            .map_err(|e| Error::CorruptedData(format!("unable to decode proof: {}", e)))?
-            .0;
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         match grovedb_proof {
             GroveDBProof::V0(proof_v0) => {
@@ -2596,9 +2592,18 @@ impl GroveDb {
                     ));
                 }
             }
-            Node::KVRefValueHash(..) | Node::KVRefValueHashCount(..) => {
-                // KVRefValueHash carries an opaque node_value_hash that cannot
-                // be recomputed from the value bytes alone. These node types
+            Node::KVRefValueHash(..)
+            | Node::KVRefValueHashCount(..)
+            | Node::KVRefValueHashSum(..) => {
+                // KVRefValueHash{,Count,Sum} carries an opaque
+                // node_value_hash that cannot be recomputed from the value
+                // bytes alone — the hash is `combine_hash(node_value_hash,
+                // value_hash(referenced_value))`, and the verifier never
+                // gets to see the referenced_value at this layer. Without
+                // this rejection, a forged value could ride along in a
+                // KVRefValueHashSum trunk/branch node while the merk-level
+                // hash chain still appears valid, because the embedded
+                // opaque hash is treated as authoritative. These node types
                 // should never appear in trunk/branch chunk proofs.
                 return Err(Error::InvalidProof(
                     PathQuery::new_unsized(Vec::new(), Query::default()),
@@ -2681,14 +2686,19 @@ impl GroveDb {
             | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
             | Node::KVCount(key, value, ..)
             | Node::KVRefValueHash(key, value, ..)
-            | Node::KVRefValueHashCount(key, value, ..) => Some((key.clone(), value.clone())),
+            | Node::KVRefValueHashCount(key, value, ..)
+            | Node::KVSum(key, value, ..)
+            | Node::KVRefValueHashSum(key, value, ..) => Some((key.clone(), value.clone())),
             // These nodes don't have values, only key+hash or just hash
             Node::KVDigest(..)
             | Node::KVDigestCount(..)
+            | Node::KVDigestSum(..)
             | Node::Hash(_)
             | Node::KVHash(_)
             | Node::KVHashCount(..)
-            | Node::HashWithCount(..) => None,
+            | Node::HashWithCount(..)
+            | Node::KVHashSum(..)
+            | Node::HashWithSum(..) => None,
         }
     }
 

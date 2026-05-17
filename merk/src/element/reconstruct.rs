@@ -58,6 +58,11 @@ impl ElementReconstructExtensions for Element {
                 aggregate_data.as_sum_i64(),
                 f.clone(),
             )),
+            Element::ProvableSumTree(.., f) => Some(Element::ProvableSumTree(
+                maybe_root_key,
+                aggregate_data.as_sum_i64(),
+                f.clone(),
+            )),
             Element::CommitmentTree(tc, cp, f) => {
                 Some(Element::CommitmentTree(*tc, *cp, f.clone()))
             }

@@ -1,5 +1,13 @@
 # Aggregate Sum Queries
 
+> **Heads up — two different features.** This page covers the
+> sum-budget iterator: walk a `SumTree` returning `(key, sum_value)` pairs
+> until a running total is reached. If you instead want a **cryptographically
+> verifiable total** for a key range against a `ProvableSumTree`, see
+> [Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md).
+> The two features are independent — the iterator does not produce a
+> proof of the running total, only the elements that contributed to it.
+
 ## Overview
 
 Aggregate Sum Queries are a specialized query type designed for **SumTrees** in GroveDB.

@@ -490,6 +490,13 @@ mod test {
                 // HashWithCount is hash-equivalent to Hash for the verifier;
                 // count it under `hash` for the test counter.
                 Node::HashWithCount(..) => counts.hash += 1,
+                // ProvableSumTree proof variants count under the same
+                // buckets as their structural Count counterparts.
+                Node::KVSum(..) => counts.kv += 1,
+                Node::KVHashSum(..) => counts.kv_hash += 1,
+                Node::KVDigestSum(..) => counts.kv_digest += 1,
+                Node::KVRefValueHashSum(..) => counts.kv_ref_value_hash += 1,
+                Node::HashWithSum(..) => counts.hash += 1,
             };
         });
 

@@ -123,6 +123,13 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                         .into(),
                 ));
             }
+            QueryItem::AggregateSumOnRange(_) => {
+                return Err(DenseMerkleError::InvalidProof(
+                    "AggregateSumOnRange is only supported on provable sum trees, \
+                     not on dense fixed-size merkle trees"
+                        .into(),
+                ));
+            }
         }
     }
 

@@ -247,6 +247,12 @@ impl Query {
                          AggregateCountOnRange item — use the leaf shape instead",
                     ));
                 }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidOperation(
+                        "carrier AggregateCountOnRange query may not own an \
+                         AggregateSumOnRange item — the two aggregate variants are orthogonal",
+                    ));
+                }
             }
         }
         let subquery = match self.default_subquery_branch.subquery.as_deref() {

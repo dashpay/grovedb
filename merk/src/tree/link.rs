@@ -314,7 +314,8 @@ impl Link {
                 AggregateData::NoAggregateData => key.len() + 36, // 1 + HASH_LENGTH + 2 + 1,
                 AggregateData::Count(_)
                 | AggregateData::Sum(_)
-                | AggregateData::ProvableCount(_) => {
+                | AggregateData::ProvableCount(_)
+                | AggregateData::ProvableSum(_) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -358,7 +359,8 @@ impl Link {
                 AggregateData::NoAggregateData => tree.key().len() + 36, // 1 + 32 + 2 + 1,
                 AggregateData::Count(_)
                 | AggregateData::Sum(_)
-                | AggregateData::ProvableCount(_) => {
+                | AggregateData::ProvableCount(_)
+                | AggregateData::ProvableSum(_) => {
                     tree.key().len() + 44 // 1 + 32 + 2 + 1 + 8
                 }
                 AggregateData::BigSum(_)
@@ -442,6 +444,15 @@ impl Encode for Link {
                 out.write_varint(*count_value)?;
                 out.write_varint(*sum_value)?;
             }
+            // Tag byte 7 parallels the `TreeFeatureType::ProvableSummedMerkNode`
+            // tag in `tree_feature_type.rs`. Sum encoded as varint i64 — same
+            // layout as `AggregateData::Sum`. The hash divergence happens
+            // upstream in `hash_for_link` / `commit`; the on-link encoding
+            // just preserves the variant for later dispatch.
+            AggregateData::ProvableSum(sum_value) => {
+                out.write_all(&[7])?;
+                out.write_varint(*sum_value)?;
+            }
         }
 
         Ok(())
@@ -507,6 +518,10 @@ impl Encode for Link {
                     let encoded_count_value = count.encode_var_vec();
                     key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
+                AggregateData::ProvableSum(sum_value) => {
+                    let encoded_sum_value = sum_value.encode_var_vec();
+                    key.len() + encoded_sum_value.len() + 36
+                }
             },
             Link::Modified { .. } => {
                 return Err(ed::Error::IOError(std::io::Error::new(
@@ -549,6 +564,10 @@ impl Encode for Link {
                     let encoded_sum_value = sum.encode_var_vec();
                     let encoded_count_value = count.encode_var_vec();
                     tree.key().len() + encoded_sum_value.len() + encoded_count_value.len() + 36
+                }
+                AggregateData::ProvableSum(sum_value) => {
+                    let encoded_sum_value = sum_value.encode_var_vec();
+                    tree.key().len() + encoded_sum_value.len() + 36
                 }
             },
         })
@@ -630,6 +649,11 @@ impl Decode for Link {
                     let encoded_count: u64 = input.read_varint()?;
                     let encoded_sum: i64 = input.read_varint()?;
                     AggregateData::ProvableCountAndSum(encoded_count, encoded_sum)
+                }
+                // ProvableSum decode — matches encode tag 7.
+                7 => {
+                    let encoded_sum: i64 = input.read_varint()?;
+                    AggregateData::ProvableSum(encoded_sum)
                 }
                 byte => return Err(ed::Error::UnexpectedByte(byte)),
             };
@@ -898,5 +922,48 @@ mod test {
         ];
         let link = Link::decode(bytes.as_slice()).expect("expected to decode a link");
         assert_eq!(link.aggregate_data(), AggregateData::NoAggregateData);
+    }
+
+    /// Wire-format regression: `AggregateData::ProvableSum` is encoded with
+    /// tag byte 7 followed by a varint-encoded i64. Pin down both the tag
+    /// byte and the round-trip so any drift in the link encoding surface is
+    /// caught immediately. Uses a negative value to also exercise the i64
+    /// varint encoding (ProvableSum is signed).
+    #[test]
+    fn round_trip_aggregate_data_provable_sum_negative() {
+        let original = Link::Reference {
+            hash: [55; 32],
+            aggregate_data: AggregateData::ProvableSum(-42),
+            child_heights: (1, 2),
+            key: vec![9, 9, 9],
+        };
+        let mut bytes = vec![];
+        original
+            .encode_into(&mut bytes)
+            .expect("encode ProvableSum link");
+        // Tag byte 7 lives at the end of the encoded record, just before
+        // the varint sum. We don't pin the exact varint bytes (they
+        // depend on the integer encoding), but we do pin tag 7's
+        // presence.
+        assert!(
+            bytes.contains(&7u8),
+            "ProvableSum encoding must include tag byte 7, got {:?}",
+            bytes
+        );
+        let decoded = Link::decode(bytes.as_slice()).expect("decode ProvableSum link");
+        assert_eq!(decoded.aggregate_data(), AggregateData::ProvableSum(-42));
+        if let Link::Reference {
+            hash,
+            child_heights,
+            key,
+            ..
+        } = decoded
+        {
+            assert_eq!(hash, [55; 32]);
+            assert_eq!(child_heights, (1, 2));
+            assert_eq!(key, vec![9, 9, 9]);
+        } else {
+            panic!("expected Link::Reference after decode");
+        }
     }
 }

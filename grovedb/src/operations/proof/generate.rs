@@ -123,6 +123,14 @@ impl GroveDb {
         if is_acor_query && let Err(e) = path_query.validate_aggregate_count_on_range() {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
+        // Mirror of the count gate for sum. Same defense-in-depth: catch
+        // malformed `AggregateSumOnRange` shapes up front so the prover
+        // never silently returns a regular proof for a path that doesn't
+        // exist.
+        let is_asor_query = path_query.query.query.has_aggregate_sum_on_range_anywhere();
+        if is_asor_query && let Err(e) = path_query.validate_aggregate_sum_on_range() {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
 
         let prove_version = grove_version
             .grovedb_versions
@@ -139,6 +147,20 @@ impl GroveDb {
         if is_acor_query && prove_version == 0 {
             return Err(Error::NotSupported(
                 "AggregateCountOnRange proofs require V1 proof envelopes; upgrade the grove \
+                 version producing the proof"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+
+        // Mirror of the count V0 gate for sum. `AggregateSumOnRange`
+        // postdates V0 envelopes for the same reason as count, so a V0
+        // aggregate-sum proof can never be honestly produced; refuse
+        // the combination here so callers see a clear `NotSupported`
+        // instead of a downstream verifier rejection.
+        if is_asor_query && prove_version == 0 {
+            return Err(Error::NotSupported(
+                "AggregateSumOnRange proofs require V1 proof envelopes; upgrade the grove \
                  version producing the proof"
                     .to_string(),
             ))
@@ -331,6 +353,33 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // Aggregate-sum short-circuit (mirror of count). Same contract: any
+        // `AggregateSumOnRange` at this level requires the whole `PathQuery`
+        // to be well-formed; the validate call surfaces the precise error
+        // otherwise.
+        if query.items.iter().any(QueryItem::is_aggregate_sum_on_range) {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_sum_on_range().cloned()
+            );
+            let (sum_ops, _sum) = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_aggregate_sum_on_range(&inner_range, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "prove_aggregate_sum_on_range failed: {}",
+                        e
+                    )))
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(sum_ops.iter(), &mut serialized);
+            return Ok(MerkOnlyLayerProof {
+                merk_proof: serialized,
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
             self.generate_merk_proof(
@@ -368,14 +417,18 @@ impl GroveDb {
             done_with_results |= overall_limit == &Some(0);
             // Check if node should preserve its special type before destructuring
             // We need this flag to avoid converting it to Node::KV later
-            // - KVValueHashFeatureType: used by ProvableCountTree for trees/references
+            // - KVValueHashFeatureType: used by ProvableCountTree / ProvableSumTree for
+            //   trees/references
             // - KVCount: used by ProvableCountTree for Items (tamper-resistant with count)
+            // - KVSum: used by ProvableSumTree for Items (tamper-resistant with sum)
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
                     | Op::PushInverted(Node::KVValueHashFeatureType(..))
                     | Op::Push(Node::KVCount(..))
                     | Op::PushInverted(Node::KVCount(..))
+                    | Op::Push(Node::KVSum(..))
+                    | Op::PushInverted(Node::KVSum(..))
             );
             // Extract count if present for ProvableCountTree references
             let count_for_ref = match op {
@@ -386,11 +439,25 @@ impl GroveDb {
                 },
                 _ => None,
             };
+            // Extract sum if present for ProvableSumTree references. Mirrors
+            // count_for_ref — the merk layer emits `KVValueHashFeatureType`
+            // with a `ProvableSummedMerkNode(sum)` feature for references;
+            // the GroveDB layer rewrites that to `KVRefValueHashSum` with
+            // the dereferenced value.
+            let sum_for_ref = match op {
+                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
+                    TreeFeatureType::ProvableSummedMerkNode(sum) => Some(*sum),
+                    _ => None,
+                },
+                _ => None,
+            };
             match op {
                 Op::Push(node) | Op::PushInverted(node) => match node {
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
+                    | Node::KVSum(key, value, _)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
@@ -439,9 +506,23 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                // Use KVRefValueHashCount if in ProvableCountTree,
-                                // otherwise use KVRefValueHash
-                                *node = if let Some(count) = count_for_ref {
+                                // Dispatch priority:
+                                //   ProvableSumTree references -> KVRefValueHashSum
+                                //   ProvableCountTree references -> KVRefValueHashCount
+                                //   regular references          -> KVRefValueHash
+                                // The two ref-aggregate flags are mutually
+                                // exclusive (a ref child sees one parent
+                                // tree type), but Sum takes priority if both
+                                // are erroneously set — Sum-in-hash is the
+                                // stricter invariant.
+                                *node = if let Some(sum) = sum_for_ref {
+                                    Node::KVRefValueHashSum(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        sum,
+                                    )
+                                } else if let Some(count) = count_for_ref {
                                     Node::KVRefValueHashCount(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
@@ -472,6 +553,7 @@ impl GroveDb {
                                 // Only convert to Node::KV if not already a special node type
                                 // - KVValueHashFeatureType: preserves feature_type for trees/refs
                                 // - KVCount: preserves count for Items in ProvableCountTree
+                                // - KVSum: preserves sum for Items in ProvableSumTree
                                 if !should_preserve_node_type {
                                     *node = Node::KV(key.to_owned(), value.to_owned());
                                 }
@@ -487,6 +569,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
@@ -556,6 +639,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::CountSumTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
+                            | Ok(Element::ProvableSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -595,6 +679,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
+                            | Ok(Element::ProvableSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -1116,6 +1201,31 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // Aggregate-sum short-circuit (v1 path). Mirror of the count v1
+        // branch.
+        if query.items.iter().any(QueryItem::is_aggregate_sum_on_range) {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query.validate_aggregate_sum_on_range().cloned()
+            );
+            let (sum_ops, _sum) = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_aggregate_sum_on_range(&inner_range, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "prove_aggregate_sum_on_range failed: {}",
+                        e
+                    )))
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(sum_ops.iter(), &mut serialized);
+            return Ok(LayerProof {
+                merk_proof: ProofBytes::Merk(serialized),
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
         // Whether the surrounding query is an aggregate-count carrier:
         // empty trees that match a `subquery_path` step still need a
         // lower-layer descent so the aggregate-count short-circuit can
@@ -1144,17 +1254,29 @@ impl GroveDb {
 
         for op in merk_proof.proof.iter_mut() {
             done_with_results |= overall_limit == &Some(0);
+            // Mirror generate.rs's first ref-rewriting loop — preserve
+            // ProvableSumTree special nodes too.
             let should_preserve_node_type = matches!(
                 op,
                 Op::Push(Node::KVValueHashFeatureType(..))
                     | Op::PushInverted(Node::KVValueHashFeatureType(..))
                     | Op::Push(Node::KVCount(..))
                     | Op::PushInverted(Node::KVCount(..))
+                    | Op::Push(Node::KVSum(..))
+                    | Op::PushInverted(Node::KVSum(..))
             );
             let count_for_ref = match op {
                 Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
                 | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
                     TreeFeatureType::ProvableCountedMerkNode(count) => Some(*count),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let sum_for_ref = match op {
+                Op::Push(Node::KVValueHashFeatureType(_, _, _, ft))
+                | Op::PushInverted(Node::KVValueHashFeatureType(_, _, _, ft)) => match ft {
+                    TreeFeatureType::ProvableSummedMerkNode(sum) => Some(*sum),
                     _ => None,
                 },
                 _ => None,
@@ -1165,6 +1287,7 @@ impl GroveDb {
                     Node::KV(key, value)
                     | Node::KVValueHash(key, value, ..)
                     | Node::KVCount(key, value, _)
+                    | Node::KVSum(key, value, _)
                     | Node::KVValueHashFeatureType(key, value, ..)
                         if !done_with_results =>
                     {
@@ -1209,7 +1332,14 @@ impl GroveDb {
                                     .wrap_with_cost(cost);
                                 }
 
-                                *node = if let Some(count) = count_for_ref {
+                                *node = if let Some(sum) = sum_for_ref {
+                                    Node::KVRefValueHashSum(
+                                        key.to_owned(),
+                                        serialized_referenced_elem.expect("confirmed ok above"),
+                                        value_hash(value).unwrap_add_cost(&mut cost),
+                                        sum,
+                                    )
+                                } else if let Some(count) = count_for_ref {
                                     Node::KVRefValueHashCount(
                                         key.to_owned(),
                                         serialized_referenced_elem.expect("confirmed ok above"),
@@ -1357,6 +1487,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -1403,6 +1534,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::CountSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
+                            | Ok(Element::ProvableSumTree(Some(_), ..))
                                 if !done_with_results =>
                             {
                                 // Non-empty tree without subquery: inject child
@@ -1490,6 +1622,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(None, ..))
                             | Ok(Element::CountSumTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
+                            | Ok(Element::ProvableSumTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
@@ -1512,6 +1645,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(..))
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
+                            | Ok(Element::ProvableSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -2025,6 +2159,12 @@ impl GroveDb {
                          not on dense fixed-size merkle trees",
                     ));
                 }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on dense fixed-size merkle trees",
+                    ));
+                }
             }
         }
 
@@ -2149,6 +2289,12 @@ impl GroveDb {
                          not on MMR trees",
                     ));
                 }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
+                         not on MMR trees",
+                    ));
+                }
             }
         }
 
@@ -2220,6 +2366,12 @@ impl GroveDb {
                 QueryItem::AggregateCountOnRange(_) => {
                     return Err(Error::InvalidInput(
                         "AggregateCountOnRange is only supported on provable count trees, \
+                         not on BulkAppendTree",
+                    ));
+                }
+                QueryItem::AggregateSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateSumOnRange is only supported on provable sum trees, \
                          not on BulkAppendTree",
                     ));
                 }
@@ -2450,6 +2602,59 @@ mod tests {
         match err {
             Error::InvalidInput(msg) => assert!(
                 msg.contains("BulkAppendTree") || msg.contains("provable count"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // AggregateSumOnRange rejection on non-provable-sum tree types.
+    //
+    // Same rationale as the count side: `AggregateSumOnRange` is only valid
+    // against `ProvableSumTree` (binds sum into the node hash via
+    // `node_hash_with_sum`). Dense / MMR / BulkAppend trees must reject.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dense_tree_rejects_aggregate_sum_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u16(0)..=be_u16(5));
+        let items = vec![QueryItem::AggregateSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_positions(&items, 100)
+            .expect_err("dense tree must reject AggregateSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("dense fixed-size") || msg.contains("provable sum"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mmr_tree_rejects_aggregate_sum_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_leaf_indices(&items, 7)
+            .expect_err("MMR must reject AggregateSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("MMR") || msg.contains("provable sum"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bulk_append_tree_rejects_aggregate_sum_on_range() {
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_range(&items, 100)
+            .expect_err("BulkAppendTree must reject AggregateSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("BulkAppendTree") || msg.contains("provable sum"),
                 "unexpected message: {msg}"
             ),
             other => panic!("expected InvalidInput, got {:?}", other),

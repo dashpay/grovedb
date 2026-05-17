@@ -91,6 +91,26 @@ pub enum QueryItem {
     /// no pagination, no other range items). The inner `QueryItem` may not be
     /// `Key`, `RangeFull`, or another `AggregateCountOnRange`.
     AggregateCountOnRange(Box<QueryItem>),
+
+    /// A sum-only meta-query that wraps another `QueryItem` describing the
+    /// range to sum.
+    ///
+    /// When this variant appears in a `Query`, the query is interpreted as
+    /// "return the **total signed sum** of children with keys in the inner
+    /// range" instead of returning the elements themselves. The proof is
+    /// shaped accordingly: boundary nodes are emitted as `KVDigestSum`,
+    /// fully-inside subtree roots as `HashWithSum`, and fully-outside subtree
+    /// roots also as `HashWithSum` so the parent's `own_sum` derivation is
+    /// hash-bound (same self-verifying compression pattern as count).
+    ///
+    /// This variant is only valid against `ProvableSumTree` (and its
+    /// `NotSummed` wrapper variant), and it must be the **only** item in the
+    /// surrounding `Query` (no subqueries, no pagination, no other range
+    /// items). The inner `QueryItem` may not be `Key`, `RangeFull`, another
+    /// `AggregateCountOnRange`, or another `AggregateSumOnRange`. Sum values
+    /// are signed `i64`; the verifier uses an `i128` accumulator and narrows
+    /// to `i64` at the end to detect overflow on adversarial inputs.
+    AggregateSumOnRange(Box<QueryItem>),
 }
 
 #[cfg(feature = "serde")]
@@ -99,47 +119,62 @@ impl Serialize for QueryItem {
     where
         S: Serializer,
     {
+        // Variant tags are emitted in snake_case so that textual formats
+        // (JSON, YAML, TOML) round-trip through the matching Deserialize
+        // impl, which uses `#[serde(field_identifier, rename_all =
+        // "snake_case")]` on its `Field` enum. Binary formats that
+        // identify variants by index (bincode, postcard) ignore the
+        // string tag, so this change is transparent to them.
         match self {
-            QueryItem::Key(key) => serializer.serialize_newtype_variant("QueryItem", 0, "Key", key),
+            QueryItem::Key(key) => serializer.serialize_newtype_variant("QueryItem", 0, "key", key),
             QueryItem::Range(range) => {
-                serializer.serialize_newtype_variant("QueryItem", 1, "Range", &range)
+                serializer.serialize_newtype_variant("QueryItem", 1, "range", &range)
             }
             QueryItem::RangeInclusive(range) => {
-                serializer.serialize_newtype_variant("QueryItem", 2, "RangeInclusive", range)
+                serializer.serialize_newtype_variant("QueryItem", 2, "range_inclusive", range)
             }
             QueryItem::RangeFull(_) => {
-                serializer.serialize_unit_variant("QueryItem", 3, "RangeFull")
+                serializer.serialize_unit_variant("QueryItem", 3, "range_full")
             }
             QueryItem::RangeFrom(range_from) => {
-                serializer.serialize_newtype_variant("QueryItem", 4, "RangeFrom", range_from)
+                serializer.serialize_newtype_variant("QueryItem", 4, "range_from", range_from)
             }
             QueryItem::RangeTo(range_to) => {
-                serializer.serialize_newtype_variant("QueryItem", 5, "RangeTo", range_to)
+                serializer.serialize_newtype_variant("QueryItem", 5, "range_to", range_to)
             }
             QueryItem::RangeToInclusive(range_to_inclusive) => serializer
                 .serialize_newtype_variant(
                     "QueryItem",
                     6,
-                    "RangeToInclusive",
+                    "range_to_inclusive",
                     &range_to_inclusive.end,
                 ),
             QueryItem::RangeAfter(range_after) => {
-                serializer.serialize_newtype_variant("QueryItem", 7, "RangeAfter", range_after)
+                serializer.serialize_newtype_variant("QueryItem", 7, "range_after", range_after)
             }
-            QueryItem::RangeAfterTo(range_after_to) => {
-                serializer.serialize_newtype_variant("QueryItem", 8, "RangeAfterTo", range_after_to)
-            }
+            QueryItem::RangeAfterTo(range_after_to) => serializer.serialize_newtype_variant(
+                "QueryItem",
+                8,
+                "range_after_to",
+                range_after_to,
+            ),
             QueryItem::RangeAfterToInclusive(range_after_to_inclusive) => serializer
                 .serialize_newtype_variant(
                     "QueryItem",
                     9,
-                    "RangeAfterToInclusive",
+                    "range_after_to_inclusive",
                     range_after_to_inclusive,
                 ),
             QueryItem::AggregateCountOnRange(inner) => serializer.serialize_newtype_variant(
                 "QueryItem",
                 10,
-                "AggregateCountOnRange",
+                "aggregate_count_on_range",
+                inner,
+            ),
+            QueryItem::AggregateSumOnRange(inner) => serializer.serialize_newtype_variant(
+                "QueryItem",
+                11,
+                "aggregate_sum_on_range",
                 inner,
             ),
         }
@@ -166,6 +201,7 @@ impl<'de> Deserialize<'de> for QueryItem {
             RangeAfterTo,
             RangeAfterToInclusive,
             AggregateCountOnRange,
+            AggregateSumOnRange,
         }
 
         struct QueryItemVisitor;
@@ -235,6 +271,18 @@ impl<'de> Deserialize<'de> for QueryItem {
                         let NonAggregateInner(inner) = variant_access.newtype_variant()?;
                         Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
                     }
+                    Field::AggregateSumOnRange => {
+                        // Same defense-in-depth as AggregateCountOnRange: the
+                        // inner is deserialized through `NonAggregateInner`
+                        // whose field set excludes both aggregate-variant
+                        // tags, so any nested aggregate payload is rejected
+                        // immediately by serde without recursing through
+                        // `QueryItem::deserialize`. Keeps `AggregateSumOnRange`
+                        // and `AggregateCountOnRange` orthogonal — one cannot
+                        // wrap the other.
+                        let NonAggregateInner(inner) = variant_access.newtype_variant()?;
+                        Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
+                    }
                 }
             }
         }
@@ -251,6 +299,7 @@ impl<'de> Deserialize<'de> for QueryItem {
             "RangeAfterTo",
             "RangeAfterToInclusive",
             "AggregateCountOnRange",
+            "AggregateSumOnRange",
         ];
 
         deserializer.deserialize_enum("QueryItem", VARIANTS, QueryItemVisitor)
@@ -258,14 +307,18 @@ impl<'de> Deserialize<'de> for QueryItem {
 }
 
 /// Newtype wrapper used internally by the serde `Deserialize` impl when
-/// deserializing the *inner* item of an `AggregateCountOnRange`. The wrapper's
-/// `Deserialize` impl mirrors `QueryItem::deserialize` but rejects the
-/// `AggregateCountOnRange` field tag immediately — without recursing — so
-/// nested aggregate payloads cannot exhaust the stack via repeated variant-10
-/// recursion through `QueryItem::deserialize`.
+/// deserializing the *inner* item of an `AggregateCountOnRange` or
+/// `AggregateSumOnRange`. The wrapper's `Deserialize` impl mirrors
+/// `QueryItem::deserialize` but rejects both aggregate field tags immediately
+/// — without recursing — so nested aggregate payloads cannot exhaust the
+/// stack via repeated variant-10/11 recursion through
+/// `QueryItem::deserialize`. Reused for both aggregate wrappers so
+/// `AggregateCountOnRange` and `AggregateSumOnRange` stay orthogonal:
+/// neither can wrap the other (or itself).
 ///
-/// Defense-in-depth: nested `AggregateCountOnRange` is also rejected by
-/// `Query::validate_aggregate_count_on_range`, but enforcing it at decode time
+/// Defense-in-depth: nested aggregate variants are also rejected by
+/// `Query::validate_aggregate_count_on_range` /
+/// `Query::validate_aggregate_sum_on_range`, but enforcing it at decode time
 /// matches the bincode side and prevents the DoS class on its own.
 #[cfg(feature = "serde")]
 struct NonAggregateInner(QueryItem);
@@ -276,9 +329,9 @@ impl<'de> Deserialize<'de> for NonAggregateInner {
     where
         D: Deserializer<'de>,
     {
-        // Field set excludes "AggregateCountOnRange"; encountering that tag
-        // produces a serde "unknown variant" error before any inner
-        // recursion can happen.
+        // Field set excludes both `AggregateCountOnRange` and
+        // `AggregateSumOnRange`; encountering either tag produces a serde
+        // "unknown variant" error before any inner recursion can happen.
         #[derive(Deserialize)]
         #[serde(field_identifier, rename_all = "snake_case")]
         enum Field {
@@ -405,6 +458,10 @@ impl Encode for QueryItem {
                 encoder.writer().write(&[10])?;
                 inner.as_ref().encode(encoder)
             }
+            QueryItem::AggregateSumOnRange(inner) => {
+                encoder.writer().write(&[11])?;
+                inner.as_ref().encode(encoder)
+            }
         }
     }
 }
@@ -490,17 +547,38 @@ impl QueryItem {
                 // Defense-in-depth: nested AggregateCountOnRange is invalid
                 // by validation rules, so we also reject it at decode time.
                 // The depth guard above remains the primary stack-overflow
-                // mitigation for malicious deeper nesting.
-                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                // mitigation for malicious deeper nesting. Also reject
+                // `AggregateSumOnRange` to keep the two aggregate variants
+                // orthogonal.
+                if matches!(
+                    inner,
+                    QueryItem::AggregateCountOnRange(_) | QueryItem::AggregateSumOnRange(_)
+                ) {
                     return Err(DecodeError::Other(
-                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                        "AggregateCountOnRange must not wrap another aggregate variant",
                     ));
                 }
                 Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
             }
+            11 => {
+                let inner = QueryItem::decode_with_depth(decoder, depth + 1)?;
+                // Same defense-in-depth as variant 10. `AggregateSumOnRange`
+                // may not wrap another aggregate variant (whether sum or
+                // count) — keeps the two orthogonal and the depth guard
+                // primary mitigation against stack-exhaustion.
+                if matches!(
+                    inner,
+                    QueryItem::AggregateSumOnRange(_) | QueryItem::AggregateCountOnRange(_)
+                ) {
+                    return Err(DecodeError::Other(
+                        "AggregateSumOnRange must not wrap another aggregate variant",
+                    ));
+                }
+                Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 11 },
                 found: variant_id as u32,
             }),
         }
@@ -575,16 +653,31 @@ impl QueryItem {
             }
             10 => {
                 let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
-                if matches!(inner, QueryItem::AggregateCountOnRange(_)) {
+                if matches!(
+                    inner,
+                    QueryItem::AggregateCountOnRange(_) | QueryItem::AggregateSumOnRange(_)
+                ) {
                     return Err(DecodeError::Other(
-                        "AggregateCountOnRange must not wrap another AggregateCountOnRange",
+                        "AggregateCountOnRange must not wrap another aggregate variant",
                     ));
                 }
                 Ok(QueryItem::AggregateCountOnRange(Box::new(inner)))
             }
+            11 => {
+                let inner = QueryItem::borrow_decode_with_depth(decoder, depth + 1)?;
+                if matches!(
+                    inner,
+                    QueryItem::AggregateSumOnRange(_) | QueryItem::AggregateCountOnRange(_)
+                ) {
+                    return Err(DecodeError::Other(
+                        "AggregateSumOnRange must not wrap another aggregate variant",
+                    ));
+                }
+                Ok(QueryItem::AggregateSumOnRange(Box::new(inner)))
+            }
             _ => Err(DecodeError::UnexpectedVariant {
                 type_name: "QueryItem",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 10 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 11 },
                 found: variant_id as u32,
             }),
         }
@@ -633,6 +726,9 @@ impl fmt::Display for QueryItem {
             QueryItem::AggregateCountOnRange(inner) => {
                 write!(f, "AggregateCountOnRange({})", inner)
             }
+            QueryItem::AggregateSumOnRange(inner) => {
+                write!(f, "AggregateSumOnRange({})", inner)
+            }
         }
     }
 }
@@ -644,6 +740,7 @@ impl QueryItem {
             QueryItem::Key(key) => key.len() as u32,
             QueryItem::RangeFull(_) => 0u32,
             QueryItem::AggregateCountOnRange(inner) => inner.processing_footprint(),
+            QueryItem::AggregateSumOnRange(inner) => inner.processing_footprint(),
             _ => {
                 self.lower_bound().0.map_or(0u32, |x| x.len() as u32)
                     + self.upper_bound().0.map_or(0u32, |x| x.len() as u32)
@@ -666,6 +763,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(range) => (Some(range.start.as_ref()), true),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.start().as_ref()), true),
             QueryItem::AggregateCountOnRange(inner) => inner.lower_bound(),
+            QueryItem::AggregateSumOnRange(inner) => inner.lower_bound(),
         }
     }
 
@@ -683,6 +781,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
             QueryItem::AggregateCountOnRange(inner) => inner.lower_unbounded(),
+            QueryItem::AggregateSumOnRange(inner) => inner.lower_unbounded(),
         }
     }
 
@@ -701,6 +800,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(range) => (Some(range.end.as_ref()), false),
             QueryItem::RangeAfterToInclusive(range) => (Some(range.end().as_ref()), true),
             QueryItem::AggregateCountOnRange(inner) => inner.upper_bound(),
+            QueryItem::AggregateSumOnRange(inner) => inner.upper_bound(),
         }
     }
 
@@ -718,6 +818,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(_) => false,
             QueryItem::RangeAfterToInclusive(_) => false,
             QueryItem::AggregateCountOnRange(inner) => inner.upper_unbounded(),
+            QueryItem::AggregateSumOnRange(inner) => inner.upper_unbounded(),
         }
     }
 
@@ -747,6 +848,7 @@ impl QueryItem {
             QueryItem::RangeAfterTo(_) => 8,
             QueryItem::RangeAfterToInclusive(_) => 9,
             QueryItem::AggregateCountOnRange(_) => 10,
+            QueryItem::AggregateSumOnRange(_) => 11,
         }
     }
 
@@ -756,8 +858,8 @@ impl QueryItem {
     }
 
     /// Returns `true` if this query item is any kind of range (not a single
-    /// key). `AggregateCountOnRange` counts as a range — it describes a range
-    /// to count over.
+    /// key). `AggregateCountOnRange` and `AggregateSumOnRange` count as
+    /// ranges — they describe a range to aggregate over.
     pub const fn is_range(&self) -> bool {
         matches!(
             self,
@@ -771,6 +873,7 @@ impl QueryItem {
                 | QueryItem::RangeAfterTo(_)
                 | QueryItem::RangeAfterToInclusive(_)
                 | QueryItem::AggregateCountOnRange(_)
+                | QueryItem::AggregateSumOnRange(_)
         )
     }
 
@@ -781,10 +884,12 @@ impl QueryItem {
 
     /// Returns `true` if this query item is a range with at least one unbounded
     /// end (e.g., `RangeFull`, `RangeFrom`, `RangeTo`, etc.). For
-    /// `AggregateCountOnRange`, delegates to the inner item.
+    /// `AggregateCountOnRange` and `AggregateSumOnRange`, delegates to the
+    /// inner item.
     pub fn is_unbounded_range(&self) -> bool {
         match self {
             QueryItem::AggregateCountOnRange(inner) => inner.is_unbounded_range(),
+            QueryItem::AggregateSumOnRange(inner) => inner.is_unbounded_range(),
             _ => !matches!(
                 self,
                 QueryItem::Key(_) | QueryItem::Range(_) | QueryItem::RangeInclusive(_)
@@ -797,11 +902,25 @@ impl QueryItem {
         matches!(self, QueryItem::AggregateCountOnRange(_))
     }
 
+    /// Returns `true` if this query item is the sum-only meta-variant.
+    pub const fn is_aggregate_sum_on_range(&self) -> bool {
+        matches!(self, QueryItem::AggregateSumOnRange(_))
+    }
+
     /// If this is `AggregateCountOnRange`, returns a reference to the inner
     /// `QueryItem` describing the range to count. Otherwise returns `None`.
     pub fn aggregate_count_inner(&self) -> Option<&QueryItem> {
         match self {
             QueryItem::AggregateCountOnRange(inner) => Some(inner.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// If this is `AggregateSumOnRange`, returns a reference to the inner
+    /// `QueryItem` describing the range to sum. Otherwise returns `None`.
+    pub fn aggregate_sum_inner(&self) -> Option<&QueryItem> {
+        match self {
+            QueryItem::AggregateSumOnRange(inner) => Some(inner.as_ref()),
             _ => None,
         }
     }
@@ -1008,6 +1127,7 @@ impl QueryItem {
                 }
             }
             QueryItem::AggregateCountOnRange(inner) => inner.seek_for_iter(iter, left_to_right),
+            QueryItem::AggregateSumOnRange(inner) => inner.seek_for_iter(iter, left_to_right),
         }
     }
 
@@ -1101,6 +1221,9 @@ impl QueryItem {
                 }
             }
             QueryItem::AggregateCountOnRange(inner) => {
+                return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
+            }
+            QueryItem::AggregateSumOnRange(inner) => {
                 return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
             }
         };
@@ -1310,13 +1433,11 @@ mod test {
     // rejected immediately by serde without recursion through
     // `QueryItem::deserialize`.
     //
-    // We use `serde_test`'s token-level driver here rather than a textual
-    // format because the existing `Serialize` impl emits variant tags in
-    // PascalCase (`"AggregateCountOnRange"`) while the existing `Field` enum
-    // uses `rename_all = "snake_case"` — a pre-existing mismatch unrelated
-    // to this PR that breaks JSON round-trip but is invisible to formats
-    // that don't carry variant names textually. Using token streams sidesteps
-    // that issue and lets us validate the rejection contract directly.
+    // We use `serde_test`'s token-level driver here for symmetry with the
+    // rejection contract — the inner field set's snake_case tag (e.g.
+    // `aggregate_count_on_range`) matches both the Serialize impl (which
+    // emits snake_case variant tags) and the Deserialize impl
+    // (`#[serde(field_identifier, rename_all = "snake_case")]`).
 
     #[cfg(feature = "serde")]
     #[test]
@@ -1362,6 +1483,440 @@ mod test {
         )));
         assert_de_tokens(
             &expected,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
+        );
+    }
+
+    // ---------- AggregateSumOnRange: mirrors of the AggregateCountOnRange tests ----------
+    //
+    // These exist to drive coverage of the variant-11 dispatch in encode,
+    // decode_with_depth, borrow_decode_with_depth, Display, and the helper
+    // accessors. Each test targets a specific arm previously not exercised.
+
+    #[test]
+    fn decode_rejects_nested_aggregate_sum_on_range() {
+        // AggregateSumOnRange(AggregateSumOnRange(Range)): the inner nested
+        // aggregate must be rejected by the variant-11 dispatch's matches!
+        // guard (or by the depth guard).
+        let nested = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&nested, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("nested AggregateSumOnRange must be rejected at decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("nesting depth"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_aggregate_sum_wrapping_aggregate_count() {
+        // Orthogonality check: AggregateSumOnRange cannot wrap
+        // AggregateCountOnRange (and vice versa) — this is the explicit
+        // matches! guard in variant 11.
+        let mixed = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateCountOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result
+            .expect_err("AggregateSumOnRange wrapping AggregateCountOnRange must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("aggregate"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_aggregate_count_wrapping_aggregate_sum() {
+        // The other direction: AggregateCountOnRange cannot wrap
+        // AggregateSumOnRange — variant 10's matches! guard.
+        let mixed = QueryItem::AggregateCountOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode succeeds");
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&bytes, bincode_config());
+        let err = result
+            .expect_err("AggregateCountOnRange wrapping AggregateSumOnRange must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateCountOnRange") || msg.contains("aggregate"),
+            "expected nested-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_accepts_valid_one_level_aggregate_sum_on_range() {
+        let q = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let bytes = bincode::encode_to_vec(&q, bincode_config()).unwrap();
+        let (decoded, _): (QueryItem, _) = bincode::decode_from_slice(&bytes, bincode_config())
+            .expect("single-level wrap must decode");
+        assert_eq!(q, decoded);
+    }
+
+    #[test]
+    fn decode_caps_depth_for_malicious_sum_payload() {
+        // Mirrors the count payload depth test but with the variant-11
+        // (AggregateSumOnRange) tag. Hits the depth guard inside
+        // decode_with_depth on the sum branch.
+        let depth_to_try = MAX_QUERY_ITEM_DECODE_DEPTH + 2;
+        let mut payload: Vec<u8> = Vec::new();
+        for _ in 0..depth_to_try {
+            payload.push(11u8); // AggregateSumOnRange variant tag
+        }
+        // Innermost: Range. Variant tag 1, then start/end Vec<u8> bytes.
+        payload.push(1u8);
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let inner_bytes = bincode::encode_to_vec(&inner, bincode_config()).unwrap();
+        payload.extend_from_slice(&inner_bytes[1..]);
+
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("payload exceeding max depth must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("nesting depth") || msg.contains("AggregateSumOnRange"),
+            "expected depth-rejection message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decode_unknown_variant_rejected() {
+        // Variant byte 12 is unknown (max = 11). Verifies the trailing
+        // UnexpectedVariant arm in decode_with_depth.
+        let payload = vec![12u8];
+        let result: Result<(QueryItem, _), _> =
+            bincode::decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("unknown variant must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("UnexpectedVariant") || msg.contains("QueryItem"),
+            "expected unknown-variant error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_round_trips_aggregate_sum_on_range() {
+        // BorrowDecode path: exercises borrow_decode_with_depth's variant-11
+        // branch.
+        let q = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let bytes = bincode::encode_to_vec(&q, bincode_config()).unwrap();
+        let (decoded, _): (QueryItem, _) =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config()).expect("borrow decode");
+        assert_eq!(q, decoded);
+    }
+
+    #[test]
+    fn borrow_decode_rejects_nested_aggregate_sum_on_range() {
+        let nested = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&nested, bincode_config()).expect("encode");
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("must reject nested aggregate sum via borrow decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("nesting depth"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_rejects_count_wrapping_sum() {
+        let mixed = QueryItem::AggregateCountOnRange(Box::new(QueryItem::AggregateSumOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode");
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("must reject count wrapping sum via borrow decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateCountOnRange") || msg.contains("aggregate"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_rejects_sum_wrapping_count() {
+        let mixed = QueryItem::AggregateSumOnRange(Box::new(QueryItem::AggregateCountOnRange(
+            Box::new(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+        )));
+        let bytes = bincode::encode_to_vec(&mixed, bincode_config()).expect("encode");
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&bytes, bincode_config());
+        let err = result.expect_err("must reject sum wrapping count via borrow decode");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange") || msg.contains("aggregate"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn borrow_decode_unknown_variant_rejected() {
+        let payload = vec![12u8];
+        let result: Result<(QueryItem, _), _> =
+            bincode::borrow_decode_from_slice(&payload, bincode_config());
+        let err = result.expect_err("unknown variant must be rejected");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("UnexpectedVariant") || msg.contains("QueryItem"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn display_aggregate_sum_on_range_formats() {
+        // Drives the Display arm at line ~717.
+        let q = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"aa".to_vec()..b"zz".to_vec(),
+        )));
+        let s = format!("{}", q);
+        assert!(s.starts_with("AggregateSumOnRange("), "got: {s}");
+        assert!(s.contains("Range("), "got: {s}");
+    }
+
+    #[test]
+    fn display_aggregate_count_on_range_formats() {
+        // Drives the Display arm at line ~714 (also currently uncovered).
+        let q = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"aa".to_vec()..b"zz".to_vec(),
+        )));
+        let s = format!("{}", q);
+        assert!(s.starts_with("AggregateCountOnRange("), "got: {s}");
+    }
+
+    #[test]
+    fn aggregate_sum_helpers_and_bounds() {
+        // Hits processing_footprint, lower_bound, lower_unbounded,
+        // upper_bound, upper_unbounded, enum_value, is_range, is_single,
+        // is_unbounded_range, is_aggregate_*, aggregate_*_inner for the
+        // sum variant.
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let q = QueryItem::AggregateSumOnRange(Box::new(inner.clone()));
+
+        assert_eq!(q.processing_footprint(), inner.processing_footprint());
+        assert_eq!(q.lower_bound(), inner.lower_bound());
+        assert_eq!(q.upper_bound(), inner.upper_bound());
+        assert_eq!(q.lower_unbounded(), inner.lower_unbounded());
+        assert_eq!(q.upper_unbounded(), inner.upper_unbounded());
+        assert_eq!(q.enum_value(), 11);
+        assert!(q.is_range());
+        assert!(!q.is_single());
+        assert!(!q.is_key());
+        assert!(!q.is_aggregate_count_on_range());
+        assert!(q.is_aggregate_sum_on_range());
+        assert!(q.aggregate_count_inner().is_none());
+        assert_eq!(q.aggregate_sum_inner(), Some(&inner));
+        // unbounded delegation: inner is bounded -> false
+        assert!(!q.is_unbounded_range());
+
+        // Now wrap an unbounded inner and verify delegation flips.
+        let q_unbound =
+            QueryItem::AggregateSumOnRange(Box::new(QueryItem::RangeFrom(b"a".to_vec()..)));
+        assert!(q_unbound.is_unbounded_range());
+    }
+
+    #[test]
+    fn aggregate_count_helpers_and_bounds() {
+        // Mirror the helpers for the count variant — covers count arms
+        // for the same accessors (some of which were missed by the
+        // existing tests).
+        let inner = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+        let q = QueryItem::AggregateCountOnRange(Box::new(inner.clone()));
+
+        assert_eq!(q.processing_footprint(), inner.processing_footprint());
+        assert_eq!(q.lower_bound(), inner.lower_bound());
+        assert_eq!(q.upper_bound(), inner.upper_bound());
+        assert_eq!(q.lower_unbounded(), inner.lower_unbounded());
+        assert_eq!(q.upper_unbounded(), inner.upper_unbounded());
+        assert_eq!(q.enum_value(), 10);
+        assert!(q.is_range());
+        assert!(q.is_aggregate_count_on_range());
+        assert!(!q.is_aggregate_sum_on_range());
+        assert_eq!(q.aggregate_count_inner(), Some(&inner));
+        assert!(q.aggregate_sum_inner().is_none());
+        assert!(!q.is_unbounded_range());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_rejects_nested_aggregate_sum_on_range() {
+        // Mirrors the serde nested-rejection test for the sum variant
+        // (covers the serde dispatcher's variant-11 path).
+        use serde_test::{assert_de_tokens_error, Token};
+        assert_de_tokens_error::<QueryItem>(
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+            ],
+            "unknown field `aggregate_sum_on_range`, expected one of \
+             `key`, `range`, `range_inclusive`, `range_full`, `range_from`, \
+             `range_to`, `range_to_inclusive`, `range_after`, `range_after_to`, \
+             `range_after_to_inclusive`",
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_accepts_valid_one_level_aggregate_sum_on_range() {
+        // Covers the serde Field::AggregateSumOnRange dispatch arm and
+        // the NonAggregateInner inner deserialization.
+        use serde_test::{assert_de_tokens, Token};
+        let expected = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_de_tokens(
+            &expected,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_decode_rejects_aggregate_sum_wrapping_count() {
+        // The NonAggregateInner field set excludes both variants — verify
+        // that explicitly for the sum-wrapping-count combination.
+        use serde_test::{assert_de_tokens_error, Token};
+        assert_de_tokens_error::<QueryItem>(
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_count_on_range",
+                },
+            ],
+            "unknown field `aggregate_count_on_range`, expected one of \
+             `key`, `range`, `range_inclusive`, `range_full`, `range_from`, \
+             `range_to`, `range_to_inclusive`, `range_after`, `range_after_to`, \
+             `range_after_to_inclusive`",
+        );
+    }
+
+    /// Regression: the Serialize impl emits variant tags in snake_case
+    /// so the round-trip with the snake_case `Field` enum on the
+    /// Deserialize side works for textual formats (JSON, YAML).
+    ///
+    /// Before this was fixed, the Serialize impl emitted PascalCase
+    /// (`"AggregateSumOnRange"`) while the Deserialize side expected
+    /// snake_case (`"aggregate_sum_on_range"`), so JSON round-trip
+    /// failed silently for every QueryItem variant. Bincode round-trip
+    /// was unaffected because it identifies variants by index, not by
+    /// the textual tag.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip_aggregate_sum_on_range_uses_snake_case_tag() {
+        use serde_test::{assert_tokens, Token};
+
+        let qi = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_tokens(
+            &qi,
+            &[
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "aggregate_sum_on_range",
+                },
+                Token::NewtypeVariant {
+                    name: "QueryItem",
+                    variant: "range",
+                },
+                Token::Struct {
+                    name: "Range",
+                    len: 2,
+                },
+                Token::Str("start"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'a'),
+                Token::SeqEnd,
+                Token::Str("end"),
+                Token::Seq { len: Some(1) },
+                Token::U8(b'z'),
+                Token::SeqEnd,
+                Token::StructEnd,
+            ],
+        );
+    }
+
+    /// Mirror of the sum test: count side round-trips through
+    /// snake_case too. Pins the contract so both aggregate variants
+    /// stay in lockstep on the Serialize side.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip_aggregate_count_on_range_uses_snake_case_tag() {
+        use serde_test::{assert_tokens, Token};
+
+        let qi = QueryItem::AggregateCountOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        assert_tokens(
+            &qi,
             &[
                 Token::NewtypeVariant {
                     name: "QueryItem",

@@ -25,6 +25,9 @@ pub enum Element {
     MmrTree(u64, Option<ElementFlags>),                                    // [12]
     BulkAppendTree(u64, u8, Option<ElementFlags>),                         // [13]
     DenseAppendOnlyFixedSizeTree(u16, u8, Option<ElementFlags>),           // [14]
+    NonCounted(Box<Element>),                                              // [15] wrapper byte
+    NotSummed(Box<Element>),                                               // [16] wrapper byte
+    ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),      // [17]
 }
 ```
 
@@ -155,10 +158,30 @@ Additional aggregate tree types:
 | `BigSumTree` | `BigSummedMerkNode(i128)` | 128-bit sum for large values |
 | `ProvableCountTree` | `ProvableCountedMerkNode(u64)` | Count baked into hash |
 | `ProvableCountSumTree` | `ProvableCountedSummedMerkNode(u64, i64)` | Count in hash + sum |
+| `ProvableSumTree` | `ProvableSummedMerkNode(i64)` | Sum baked into hash |
 
 **ProvableCountTree** is special: its count is included in the `node_hash`
 computation (via `node_hash_with_count`), so a proof can verify the count without
 revealing any values.
+
+**ProvableSumTree** is the parallel for sums: each node's aggregate sum is
+included in the `node_hash` via `node_hash_with_sum(kv_hash, left, right, sum)`,
+so a proof can return the verified total of any key range without revealing
+the underlying `SumItem` values. Use this when the sum is part of the
+protocol invariant — stake weights, fee priorities, vote tallies — and a
+peer needs to verify totals from the root hash alone. Use plain `SumTree`
+when the sum is bookkeeping metadata that doesn't need cryptographic
+binding. The per-node hashing cost is a small fixed addition over plain
+`SumTree`. See [Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md)
+for the verifiable range-sum query that this element enables.
+
+Like its count counterpart, `ProvableSumTree` accepts the `NotSummed`
+wrapper so a sum-bearing child can opt out of contributing to its parent's
+running sum. The `NotSummed` ElementType twin lives at slot 177 in the
+`0xB0..=0xBF` family range, assigned explicitly rather than via the
+`prefix | base` formula used elsewhere (the formula would collide because
+ProvableSumTree's base discriminant `17` and `0xb0 | 17 = 0xB1` would mask
+back to `Reference` under the legacy `& 0x0F` inverse).
 
 ## Element Serialization
 
@@ -198,6 +221,7 @@ pub enum TreeFeatureType {
     CountedSummedMerkNode(u64, i64),           // Count + sum
     ProvableCountedMerkNode(u64),              // Count in hash
     ProvableCountedSummedMerkNode(u64, i64),   // Count in hash + sum
+    ProvableSummedMerkNode(i64),               // Sum in hash
 }
 ```
 

@@ -265,6 +265,10 @@ fn element_display_without_flags_covers_none_branches() {
             ),
             "ReferenceWithSumItem(SiblingReference(6b), max_hop: None, sum: 7)",
         ),
+        (
+            Element::ProvableSumTree(None, 19, None),
+            "ProvableSumTree(None, 19)",
+        ),
     ];
 
     for (element, expected_display) in values {

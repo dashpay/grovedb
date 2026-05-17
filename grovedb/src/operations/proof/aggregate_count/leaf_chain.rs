@@ -64,12 +64,14 @@ pub(super) fn verify_v1_leaf_chain(
         grove_version,
     )?;
 
+    let is_terminal = depth + 1 == path_keys.len();
     enforce_lower_chain(
         path_query,
         &next_key,
         &proven_value_bytes,
         &lower_hash,
         &parent_proof_hash,
+        is_terminal,
         grove_version,
     )?;
 

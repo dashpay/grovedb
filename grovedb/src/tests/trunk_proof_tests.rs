@@ -1911,6 +1911,80 @@ mod tests {
         assert!(result.is_err(), "should reject KVRefValueHash node");
     }
 
+    /// Defense-in-depth sibling of the KVRefValueHash rejection test for
+    /// the KVRefValueHashSum variant. KVRefValueHashSum carries an opaque
+    /// `node_value_hash` (combine_hash of node_value_hash and
+    /// referenced_value_hash) that the trunk verifier cannot recompute, so
+    /// a forged value bundled into such a node must be rejected by the
+    /// trunk extractor regardless of whether the merk hash chain catches
+    /// it first. Mirrors `test_trunk_proof_v1_rejects_kv_ref_value_hash_node`.
+    #[test]
+    fn test_trunk_proof_v1_rejects_kv_ref_value_hash_sum_node() {
+        let grove_version = GroveVersion::latest();
+        let (proof_v1, query, _) = make_single_level_v1_proof();
+
+        let target_layer = proof_v1
+            .root_layer
+            .lower_layers
+            .get(b"cst".as_slice())
+            .expect("should have cst layer");
+        let merk_bytes = match &target_layer.merk_proof {
+            ProofBytes::Merk(bytes) => bytes.clone(),
+            _ => panic!("expected Merk"),
+        };
+
+        let ops: Vec<Op> = Decoder::new(&merk_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode ops");
+
+        // Replace a KV node with KVRefValueHashSum bundling a forged value
+        // and a placeholder opaque hash + sum.
+        let mut tampered_ops: Vec<Op> = Vec::new();
+        let mut found_kv = false;
+        for op in &ops {
+            match op {
+                Op::Push(Node::KV(key, _value)) if !found_kv => {
+                    let forged_element = Element::new_sum_item(9999);
+                    let forged_value = forged_element.serialize(grove_version).expect("serialize");
+                    let fake_hash = [0xAB; 32];
+                    tampered_ops.push(Op::Push(Node::KVRefValueHashSum(
+                        key.clone(),
+                        forged_value,
+                        fake_hash,
+                        42,
+                    )));
+                    found_kv = true;
+                }
+                other => tampered_ops.push(other.clone()),
+            }
+        }
+        assert!(found_kv, "should have found a KV node to replace");
+
+        let mut tampered_merk = Vec::new();
+        encode_into(tampered_ops.iter(), &mut tampered_merk);
+
+        let mut tampered_v1 = proof_v1;
+        tampered_v1
+            .root_layer
+            .lower_layers
+            .get_mut(b"cst".as_slice())
+            .unwrap()
+            .merk_proof = ProofBytes::Merk(tampered_merk);
+
+        let config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let tampered_proof =
+            bincode::encode_to_vec(&GroveDBProof::V1(tampered_v1), config).expect("encode");
+
+        let result = GroveDb::verify_trunk_chunk_proof(&tampered_proof, &query, grove_version);
+        // Either the merk hash chain catches the tag swap first or the
+        // trunk extractor's explicit rejection of KVRefValueHashSum nodes
+        // (mirroring KVRefValueHash and KVRefValueHashCount) catches it.
+        // Both are acceptable rejection paths.
+        assert!(result.is_err(), "should reject KVRefValueHashSum node");
+    }
+
     /// Injecting a KVValueHashFeatureTypeWithChildHash node with a forged
     /// value should be caught by the combine_hash check.
     #[test]

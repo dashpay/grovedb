@@ -1682,6 +1682,7 @@ where
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
+            | Element::ProvableSumTree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
@@ -1837,6 +1838,7 @@ where
                         | Element::CountSumTree(..)
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
+                        | Element::ProvableSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
@@ -1886,6 +1888,7 @@ where
                     | Element::CountSumTree(..)
                     | Element::ProvableCountTree(..)
                     | Element::ProvableCountSumTree(..)
+                    | Element::ProvableSumTree(..)
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
@@ -2229,6 +2232,7 @@ where
                         | Element::CountSumTree(..)
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
+                        | Element::ProvableSumTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -2688,6 +2692,11 @@ where
                         AggregateData::ProvableCountAndSum(count_value, sum_value) => {
                             Element::ProvableCountSumTree(root_key, count_value, sum_value, flags)
                         }
+                        AggregateData::ProvableSum(sum_value) => {
+                            Element::new_provable_sum_tree_with_flags_and_sum_value(
+                                root_key, sum_value, flags,
+                            )
+                        }
                     };
                     // Re-wrap if the original element was wrapped, so the
                     // on-disk bytes preserve the wrapper and the parent's
@@ -2888,6 +2897,7 @@ where
                                     | Element::CountSumTree(..)
                                     | Element::ProvableCountTree(..)
                                     | Element::ProvableCountSumTree(..)
+                                    | Element::ProvableSumTree(..)
                                     | Element::CommitmentTree(..)
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
@@ -3202,6 +3212,21 @@ impl GroveDb {
                                                                 not_counted_or_summed,
                                                             }
                                                     } else if let Element::ProvableCountSumTree(
+                                                        ..,
+                                                        flags,
+                                                    ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                non_counted,
+                                                                not_summed,
+                                                                not_counted_or_summed,
+                                                            }
+                                                    } else if let Element::ProvableSumTree(
                                                         ..,
                                                         flags,
                                                     ) = element
