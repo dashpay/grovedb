@@ -10,6 +10,8 @@ mod aggregate_common;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_count;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+pub mod aggregate_count_and_sum;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_sum;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod count_offset;
@@ -20,6 +22,8 @@ mod verify;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use aggregate_count::verify_aggregate_count_on_range_proof;
+#[cfg(any(feature = "minimal", feature = "verify"))]
+pub use aggregate_count_and_sum::verify_aggregate_count_and_sum_on_range_proof;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use aggregate_sum::verify_aggregate_sum_on_range_proof;
 #[cfg(any(feature = "minimal", feature = "verify"))]

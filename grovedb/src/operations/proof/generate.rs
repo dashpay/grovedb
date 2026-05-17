@@ -131,6 +131,17 @@ impl GroveDb {
         if is_asor_query && let Err(e) = path_query.validate_aggregate_sum_on_range() {
             return Err(e).wrap_with_cost(OperationCost::default());
         }
+        // Combined-aggregate gate (mirror of the ACOR / ASOR gates).
+        // Catch malformed `AggregateCountAndSumOnRange` shapes up front
+        // so the prover never silently returns a regular proof for an
+        // invalid combined-aggregate request.
+        let is_acasor_query = path_query
+            .query
+            .query
+            .has_aggregate_count_and_sum_on_range_anywhere();
+        if is_acasor_query && let Err(e) = path_query.validate_aggregate_count_and_sum_on_range() {
+            return Err(e).wrap_with_cost(OperationCost::default());
+        }
 
         let prove_version = grove_version
             .grovedb_versions
@@ -162,6 +173,19 @@ impl GroveDb {
             return Err(Error::NotSupported(
                 "AggregateSumOnRange proofs require V1 proof envelopes; upgrade the grove \
                  version producing the proof"
+                    .to_string(),
+            ))
+            .wrap_with_cost(OperationCost::default());
+        }
+
+        // Combined-aggregate proofs are a PR #670 / grove v3+ feature; V0
+        // envelopes predate them and cannot legitimately carry one. Same
+        // contract as the ACOR / ASOR V0 gates above. V0 proofs are
+        // **LOCKED** — we add the new feature to V1 only.
+        if is_acasor_query && prove_version == 0 {
+            return Err(Error::NotSupported(
+                "AggregateCountAndSumOnRange proofs require V1 proof envelopes; upgrade the \
+                 grove version producing the proof"
                     .to_string(),
             ))
             .wrap_with_cost(OperationCost::default());
@@ -1406,6 +1430,39 @@ impl GroveDb {
             .wrap_with_cost(cost);
         }
 
+        // Combined-aggregate short-circuit (v1 path). PCPS-only —
+        // emits the dual-axis op stream that carries both count and
+        // sum from a single proof. Mirror of the ACOR / ASOR v1
+        // branches above.
+        if query
+            .items
+            .iter()
+            .any(QueryItem::is_aggregate_count_and_sum_on_range)
+        {
+            let inner_range = cost_return_on_error_no_add!(
+                cost,
+                path_query
+                    .validate_aggregate_count_and_sum_on_range()
+                    .cloned()
+            );
+            let (ops, _count, _sum) = cost_return_on_error!(
+                &mut cost,
+                subtree
+                    .prove_aggregate_count_and_sum_on_range(&inner_range, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "prove_aggregate_count_and_sum_on_range failed: {}",
+                        e
+                    )))
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(ops.iter(), &mut serialized);
+            return Ok(LayerProof {
+                merk_proof: ProofBytes::Merk(serialized),
+                lower_layers: BTreeMap::new(),
+            })
+            .wrap_with_cost(cost);
+        }
+
         // Count-offset paginated short-circuit (v1 path). Mirror of the
         // aggregate-count/sum branches. Only fires at the leaf level
         // (path is the full path_query.path) and only when the caller
@@ -1493,6 +1550,15 @@ impl GroveDb {
         // still has to emit a lower-layer ASOR proof (verifier reads
         // it as sum = 0).
         let is_aggregate_sum_query = path_query.query.query.has_aggregate_sum_on_range_anywhere();
+        // Combined-aggregate (PCPS-only) carrier detection mirrors the
+        // ACOR / ASOR flags above. Empty PCPS hosts under an
+        // AggregateCountAndSumOnRange carrier need a lower-layer
+        // descent so the combined short-circuit can emit an empty
+        // proof (verifier reads it as count = 0, sum = 0).
+        let is_aggregate_count_and_sum_query = path_query
+            .query
+            .query
+            .has_aggregate_count_and_sum_on_range_anywhere();
 
         let mut merk_proof = cost_return_on_error!(
             &mut cost,
@@ -1921,6 +1987,38 @@ impl GroveDb {
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_sum_query
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path,
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )
+                                );
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+                            // Combined-aggregate carrier descent for an
+                            // empty PCPS host: recurse so the
+                            // combined-aggregate short-circuit at the
+                            // leaf emits an empty proof (count = 0,
+                            // sum = 0).
+                            Ok(Element::ProvableCountProvableSumTree(None, ..))
+                                if !done_with_results
+                                    && is_aggregate_count_and_sum_query
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 let mut lower_path = path.clone();
@@ -2498,6 +2596,12 @@ impl GroveDb {
                          not on dense fixed-size merkle trees",
                     ));
                 }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on dense fixed-size merkle trees",
+                    ));
+                }
             }
         }
 
@@ -2628,6 +2732,12 @@ impl GroveDb {
                          not on MMR trees",
                     ));
                 }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on MMR trees",
+                    ));
+                }
             }
         }
 
@@ -2706,6 +2816,12 @@ impl GroveDb {
                     return Err(Error::InvalidInput(
                         "AggregateSumOnRange is only supported on provable sum trees, \
                          not on BulkAppendTree",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on BulkAppendTree",
                     ));
                 }
             }

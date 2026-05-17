@@ -877,4 +877,166 @@ mod tests {
             keys
         );
     }
+
+    /// The new `AggregateCountAndSumOnRange` (combined) variant
+    /// returns BOTH the count AND the signed sum from a SINGLE proof
+    /// against a PCPS host, in contrast to
+    /// `pcps_supports_both_count_and_sum_proofs_against_same_root`
+    /// which runs two separate proofs to get the same numbers. Both
+    /// counts AND sums must match `pcps_supports_both_*`'s values.
+    #[test]
+    fn pcps_combined_count_and_sum_proof_returns_both_axes_from_one_proof() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcps");
+
+        // Same fixture as the separate-proofs test: keys "0".."4"
+        // with values 10, 20, 30, 40, 50. count = 5, sum = 150.
+        for i in 0u8..5 {
+            db.insert(
+                &[b"pcps".as_slice()],
+                &[b'0' + i],
+                Element::new_sum_item((i as i64 + 1) * 10),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum item");
+        }
+
+        let root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash");
+
+        // ONE combined-aggregate query produces BOTH count and sum.
+        let inner_range = QueryItem::Range(b"0".to_vec()..b":".to_vec());
+        let combined_query = PathQuery::new_unsized(
+            vec![b"pcps".to_vec()],
+            Query::new_aggregate_count_and_sum_on_range(inner_range),
+        );
+        let combined_proof = db
+            .prove_query(&combined_query, None, grove_version)
+            .unwrap()
+            .expect("prove combined");
+        let (proven_root, proven_count, proven_sum) =
+            GroveDb::verify_aggregate_count_and_sum_query(
+                &combined_proof,
+                &combined_query,
+                grove_version,
+            )
+            .expect("verify combined");
+
+        assert_eq!(
+            proven_root, root_hash,
+            "combined-aggregate proof must verify against the GroveDB root"
+        );
+        assert_eq!(
+            proven_count, 5,
+            "combined count must match the 5-key fixture"
+        );
+        assert_eq!(
+            proven_sum, 150,
+            "combined sum must match the 5-key fixture (10+20+30+40+50)"
+        );
+    }
+
+    /// Combined-aggregate queries are PCPS-only: the merk-level prover
+    /// rejects every other count-bearing tree type with
+    /// `InvalidProofError`. This pins the rejection at the GroveDB
+    /// envelope (the rejection path bubbles up as `MerkError(...)`
+    /// wrapping `InvalidProofError`).
+    #[test]
+    fn combined_aggregate_query_rejected_on_provable_count_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Host is ProvableCountSumTree (NOT PCPS) — single-axis,
+        // commits only count into the node hash.
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcst",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcst");
+        db.insert(
+            &[b"pcst".as_slice()],
+            b"a",
+            Element::new_sum_item(1),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+
+        let inner_range = QueryItem::Range(b"0".to_vec()..b":".to_vec());
+        let pq = PathQuery::new_unsized(
+            vec![b"pcst".to_vec()],
+            Query::new_aggregate_count_and_sum_on_range(inner_range),
+        );
+        let res = db.prove_query(&pq, None, grove_version).unwrap();
+        let err = res.expect_err(
+            "combined-aggregate proof on a non-PCPS host must fail at the merk-level prover",
+        );
+        // The merk-level rejection bubbles up wrapped in
+        // CorruptedData (from the `.map_err` wrapping in the v1
+        // dispatcher). Accept either CorruptedData containing the
+        // PCPS phrase or any error whose Debug repr contains it.
+        let s = format!("{:?}", err);
+        assert!(
+            s.contains("ProvableCountProvableSumTree"),
+            "expected PCPS-only error, got: {}",
+            s
+        );
+    }
+
+    /// V0 envelopes predate the combined-aggregate feature: prove on
+    /// `GROVE_V2` (which selects `prove_query_non_serialized: 0`)
+    /// returns `NotSupported` with the V1-envelope message.
+    #[test]
+    fn combined_aggregate_query_rejected_on_v0_envelope() {
+        use grovedb_version::version::v2::GROVE_V2;
+        let grove_version: &GroveVersion = &GROVE_V2;
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcps");
+
+        let inner_range = QueryItem::Range(b"0".to_vec()..b":".to_vec());
+        let pq = PathQuery::new_unsized(
+            vec![b"pcps".to_vec()],
+            Query::new_aggregate_count_and_sum_on_range(inner_range),
+        );
+        let res = db.prove_query(&pq, None, grove_version).unwrap();
+        let err = res.expect_err("V0 envelope must refuse combined-aggregate proofs");
+        assert!(
+            matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("V1 proof envelopes")),
+            "expected NotSupported with V1-envelope message; got {:?}",
+            err
+        );
+    }
 }

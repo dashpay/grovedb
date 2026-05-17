@@ -1457,6 +1457,12 @@ impl GroveDb {
                          not on BulkAppendTree",
                     ));
                 }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on BulkAppendTree",
+                    ));
+                }
             }
         }
 
@@ -1585,6 +1591,12 @@ impl GroveDb {
                     return Err(Error::InvalidInput(
                         "AggregateSumOnRange is only supported on provable sum trees, \
                          not on this tree type",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on this tree type",
                     ));
                 }
             }

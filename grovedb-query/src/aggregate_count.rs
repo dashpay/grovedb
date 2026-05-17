@@ -178,6 +178,18 @@ impl Query {
                     "AggregateCountOnRange may not wrap another AggregateCountOnRange",
                 ));
             }
+            QueryItem::AggregateSumOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap AggregateSumOnRange — the \
+                     aggregate variants are orthogonal",
+                ));
+            }
+            QueryItem::AggregateCountAndSumOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap AggregateCountAndSumOnRange — the \
+                     aggregate variants are orthogonal",
+                ));
+            }
             _ => {}
         }
         if self.default_subquery_branch.subquery.is_some()
@@ -251,6 +263,13 @@ impl Query {
                     return Err(Error::InvalidOperation(
                         "carrier AggregateCountOnRange query may not own an \
                          AggregateSumOnRange item — the two aggregate variants are orthogonal",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidOperation(
+                        "carrier AggregateCountOnRange query may not own an \
+                         AggregateCountAndSumOnRange item — the aggregate variants are \
+                         orthogonal",
                     ));
                 }
             }

@@ -3,6 +3,8 @@
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_count;
 #[cfg(any(feature = "minimal", feature = "verify"))]
+mod aggregate_count_and_sum;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_sum;
 #[cfg(feature = "minimal")]
 mod generate;

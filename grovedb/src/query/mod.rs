@@ -249,6 +249,11 @@ impl SizedQuery {
                 "count-offset paginated queries cannot wrap AggregateSumOnRange",
             ));
         }
+        if self.query.has_aggregate_count_and_sum_on_range_anywhere() {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries cannot wrap AggregateCountAndSumOnRange",
+            ));
+        }
         // Reject subqueries. We support a single-range scan only.
         if self.query.default_subquery_branch.subquery.is_some()
             || self.query.default_subquery_branch.subquery_path.is_some()
@@ -298,11 +303,11 @@ impl SizedQuery {
                  single-key match has at most one in-range item, so offset > 0 is \
                  guaranteed to return zero items. Use a range variant instead",
             )),
-            QueryItem::AggregateCountOnRange(_) | QueryItem::AggregateSumOnRange(_) => {
-                Err(Error::InvalidQuery(
-                    "count-offset paginated queries cannot wrap an aggregate QueryItem",
-                ))
-            }
+            QueryItem::AggregateCountOnRange(_)
+            | QueryItem::AggregateSumOnRange(_)
+            | QueryItem::AggregateCountAndSumOnRange(_) => Err(Error::InvalidQuery(
+                "count-offset paginated queries cannot wrap an aggregate QueryItem",
+            )),
         }
     }
 
@@ -324,6 +329,29 @@ impl SizedQuery {
         self.query
             .validate_aggregate_sum_on_range()
             .map_err(sum_query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
+
+    /// Mirror of [`Self::validate_aggregate_sum_on_range`] for the combined
+    /// `AggregateCountAndSumOnRange` variant. Forwards to
+    /// [`Query::validate_aggregate_count_and_sum_on_range`] and
+    /// additionally rejects any non-`None` `limit` or `offset` — the
+    /// combined variant returns a single `(count, sum)` pair from a
+    /// single proof; pagination would silently change both answers.
+    pub fn validate_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.limit.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountAndSumOnRange queries may not set SizedQuery::limit",
+            ));
+        }
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountAndSumOnRange queries may not set SizedQuery::offset",
+            ));
+        }
+        self.query
+            .validate_aggregate_count_and_sum_on_range()
+            .map_err(count_and_sum_query_validation_error_to_static_str)
             .map_err(Error::InvalidQuery)
     }
 }
@@ -349,6 +377,17 @@ pub(crate) fn sum_query_validation_error_to_static_str(
     match e {
         grovedb_query::error::Error::InvalidOperation(msg) => msg,
         _ => "AggregateSumOnRange query validation failed",
+    }
+}
+
+/// Combined-variant mirror of [`query_validation_error_to_static_str`].
+/// Same projection contract; only the catch-all label differs.
+pub(crate) fn count_and_sum_query_validation_error_to_static_str(
+    e: grovedb_query::error::Error,
+) -> &'static str {
+    match e {
+        grovedb_query::error::Error::InvalidOperation(msg) => msg,
+        _ => "AggregateCountAndSumOnRange query validation failed",
     }
 }
 
@@ -394,6 +433,17 @@ impl PathQuery {
     /// in `range` against the `ProvableSumTree` rooted at `path`.
     pub fn new_aggregate_sum_on_range(path: Vec<Vec<u8>>, range: QueryItem) -> Self {
         Self::new_unsized(path, Query::new_aggregate_sum_on_range(range))
+    }
+
+    /// Mirror of [`Self::new_aggregate_count_on_range`] /
+    /// [`Self::new_aggregate_sum_on_range`] for the combined
+    /// `AggregateCountAndSumOnRange` variant. Builds a `PathQuery` whose
+    /// underlying query asks for BOTH the count AND the signed sum of
+    /// children with keys in `range` against the
+    /// `ProvableCountProvableSumTree` (PCPS) rooted at `path` — both
+    /// values come from a single proof.
+    pub fn new_aggregate_count_and_sum_on_range(path: Vec<Vec<u8>>, range: QueryItem) -> Self {
+        Self::new_unsized(path, Query::new_aggregate_count_and_sum_on_range(range))
     }
 
     /// Validates that this `PathQuery` is a well-formed
@@ -443,6 +493,28 @@ impl PathQuery {
             ));
         }
         self.query.validate_aggregate_sum_on_range()
+    }
+
+    /// Validates that this `PathQuery` is a well-formed
+    /// `AggregateCountAndSumOnRange` query. On success, returns a
+    /// reference to the inner range item.
+    ///
+    /// Rejects empty paths up-front for the same reason as
+    /// [`Self::validate_aggregate_count_on_range`] /
+    /// [`Self::validate_aggregate_sum_on_range`] — the GroveDB root merk
+    /// is always a `NormalTree`, never a `ProvableCountProvableSumTree`,
+    /// so a combined aggregate at the root layer has no valid target.
+    /// Forwards to [`SizedQuery::validate_aggregate_count_and_sum_on_range`].
+    pub fn validate_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountAndSumOnRange queries may not target the root \
+                 merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableCountProvableSumTree, so a combined count+sum \
+                 aggregate at the root layer has no valid target",
+            ));
+        }
+        self.query.validate_aggregate_count_and_sum_on_range()
     }
 
     /// Strict variant of [`Self::validate_aggregate_count_on_range`] that
@@ -496,6 +568,15 @@ impl PathQuery {
     /// Mirror of [`Self::has_aggregate_count_on_range`] for the sum variant.
     pub fn has_aggregate_sum_on_range(&self) -> bool {
         self.query.query.aggregate_sum_on_range().is_some()
+    }
+
+    /// Mirror of [`Self::has_aggregate_count_on_range`] for the combined
+    /// `AggregateCountAndSumOnRange` variant.
+    pub fn has_aggregate_count_and_sum_on_range(&self) -> bool {
+        self.query
+            .query
+            .aggregate_count_and_sum_on_range()
+            .is_some()
     }
 
     /// The max depth of the query, this is the maximum layers we could get back
