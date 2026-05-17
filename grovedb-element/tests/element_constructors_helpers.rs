@@ -613,6 +613,122 @@ fn provable_sum_tree_constructors_and_helpers() {
     assert!(!Element::empty_provable_count_tree().is_provable_sum_tree());
 }
 
+/// Coverage for every `ProvableCountProvableSumTree` constructor and
+/// helper. Mirrors `provable_sum_tree_constructors_and_helpers` for the
+/// dual-axis variant: predicates, value accessors (borrowed + owned),
+/// wrong-element error paths, and boundary value (negative sum +
+/// non-trivial count) round-trips.
+#[test]
+fn provable_count_provable_sum_tree_constructors_and_helpers() {
+    // --- Constructors ---
+    assert_eq!(
+        Element::empty_provable_count_provable_sum_tree(),
+        Element::ProvableCountProvableSumTree(None, 0, 0, None)
+    );
+    assert_eq!(
+        Element::empty_provable_count_provable_sum_tree_with_flags(sample_flags()),
+        Element::ProvableCountProvableSumTree(None, 0, 0, sample_flags())
+    );
+    assert_eq!(
+        Element::new_provable_count_provable_sum_tree(Some(vec![21])),
+        Element::ProvableCountProvableSumTree(Some(vec![21]), 0, 0, None)
+    );
+    assert_eq!(
+        Element::new_provable_count_provable_sum_tree_with_flags(Some(vec![21]), sample_flags()),
+        Element::ProvableCountProvableSumTree(Some(vec![21]), 0, 0, sample_flags())
+    );
+    // Boundary: maximal count + minimal sum simultaneously — exercises the
+    // dual-axis arithmetic without any overflow concern at this layer.
+    let with_count_and_sum =
+        Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+            Some(vec![21]),
+            u64::MAX,
+            i64::MIN,
+            sample_flags(),
+        );
+    assert_eq!(
+        with_count_and_sum,
+        Element::ProvableCountProvableSumTree(Some(vec![21]), u64::MAX, i64::MIN, sample_flags())
+    );
+
+    // --- Type predicates / classification ---
+    assert!(with_count_and_sum.is_provable_count_provable_sum_tree());
+    assert!(with_count_and_sum.is_any_tree());
+    // The variant is NOT a basic/sum/big-sum tree — those predicates must
+    // return false to avoid mis-classification in code that needs to know
+    // which specific tree flavor it has.
+    assert!(!with_count_and_sum.is_sum_tree());
+    assert!(!with_count_and_sum.is_big_sum_tree());
+    assert!(!with_count_and_sum.is_basic_tree());
+    assert!(!with_count_and_sum.is_provable_sum_tree());
+    assert!(!with_count_and_sum.is_commitment_tree());
+    assert!(!with_count_and_sum.is_mmr_tree());
+    assert!(!with_count_and_sum.is_bulk_append_tree());
+    assert!(!with_count_and_sum.is_dense_tree());
+    assert!(!with_count_and_sum.uses_non_merk_data_storage());
+    assert_eq!(with_count_and_sum.non_merk_entry_count(), None);
+
+    // --- Value accessors (borrowed) ---
+    assert_eq!(
+        with_count_and_sum
+            .as_provable_count_provable_sum_tree_value()
+            .unwrap(),
+        (u64::MAX, i64::MIN)
+    );
+    assert_eq!(with_count_and_sum.sum_value_or_default(), i64::MIN);
+    assert_eq!(with_count_and_sum.count_value_or_default(), u64::MAX);
+    assert_eq!(
+        with_count_and_sum.big_sum_value_or_default(),
+        i64::MIN as i128
+    );
+    assert_eq!(
+        with_count_and_sum.count_sum_value_or_default(),
+        (u64::MAX, i64::MIN)
+    );
+
+    // --- Wrong-element error paths ---
+    let item = Element::new_item(vec![1, 2, 3]);
+    assert!(matches!(
+        item.as_provable_count_provable_sum_tree_value(),
+        Err(ElementError::WrongElementType(
+            "expected a provable count provable sum tree"
+        ))
+    ));
+    assert!(matches!(
+        item.clone().into_provable_count_provable_sum_tree_value(),
+        Err(ElementError::WrongElementType(
+            "expected a provable count provable sum tree"
+        ))
+    ));
+
+    // --- Value accessor (owned) ---
+    assert_eq!(
+        with_count_and_sum
+            .clone()
+            .into_provable_count_provable_sum_tree_value()
+            .unwrap(),
+        (u64::MAX, i64::MIN)
+    );
+
+    // is_provable_count_provable_sum_tree returns false for every
+    // non-PCPS variant we test.
+    assert!(!Element::empty_tree().is_provable_count_provable_sum_tree());
+    assert!(!Element::empty_sum_tree().is_provable_count_provable_sum_tree());
+    assert!(!Element::empty_provable_sum_tree().is_provable_count_provable_sum_tree());
+    assert!(!Element::empty_provable_count_tree().is_provable_count_provable_sum_tree());
+    assert!(!Element::empty_provable_count_sum_tree().is_provable_count_provable_sum_tree());
+
+    // Negative-sum + positive-count combinations work the same.
+    let neg = Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+        None, 5, -42, None,
+    );
+    assert_eq!(
+        neg.count_sum_value_or_default(),
+        (5, -42),
+        "non-trivial (count, sum) must round-trip via count_sum_value_or_default"
+    );
+}
+
 #[test]
 fn constructors_create_expected_reference_with_sum_item_variants() {
     let ref_path = ReferencePathType::AbsolutePathReference(vec![b"a".to_vec(), b"b".to_vec()]);
