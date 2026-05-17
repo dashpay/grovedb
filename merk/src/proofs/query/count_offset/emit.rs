@@ -230,15 +230,15 @@ where
                 grove_version,
             )
         );
-        let mut child_walker = match walked {
-            Some(w) => w,
-            None => {
-                return Err(Error::CorruptedState(
-                    "tree.link(first_dir) was Some but walk returned None",
-                ))
-                .wrap_with_cost(cost)
-            }
-        };
+        // `walker.walk(dir)` returns `None` only when the link was
+        // missing — but we just checked `link(first_dir).is_some()`
+        // immediately above (and `walker.tree()` is not aliased
+        // between the check and the call), so this branch is
+        // structurally unreachable. Keeping it as `unreachable!()`
+        // turns a silent corruption into a fail-loud panic if the
+        // invariant is ever broken by a refactor.
+        let mut child_walker =
+            walked.unwrap_or_else(|| unreachable!("walk(first_dir) None despite link.is_some()"));
         cost_return_on_error!(
             &mut cost,
             emit_count_offset_proof(
