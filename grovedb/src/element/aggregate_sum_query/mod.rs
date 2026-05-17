@@ -410,11 +410,19 @@ impl ElementAggregateSumQueryExtensions for Element {
                 .convert_if_reference_to_absolute_reference(args.path, args.key);
             let element = cost_return_on_error_into_no_add!(cost, element);
 
-            let Element::Reference(ref_path, _, _) = element else {
-                return Err(Error::InternalError(
-                    "expected a reference after conversion".to_string(),
-                ))
-                .wrap_with_cost(cost);
+            // Aggregate-sum follows the reference chain to a SumItem.
+            // `ReferenceWithSumItem` is also a reference and resolves the
+            // same way; its carried sum is a parent-aggregation property
+            // and does not affect the chain destination.
+            let ref_path = match element {
+                Element::Reference(ref_path, _, _)
+                | Element::ReferenceWithSumItem(ref_path, _, _, _) => ref_path,
+                _ => {
+                    return Err(Error::InternalError(
+                        "expected a reference after conversion".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
             };
 
             let mut current_qualified_path = match ref_path {
@@ -463,7 +471,9 @@ impl ElementAggregateSumQueryExtensions for Element {
                 );
 
                 match resolved {
-                    Element::Reference(next_ref_path, _, _) => {
+                    // Both reference variants continue the chain.
+                    Element::Reference(next_ref_path, _, _)
+                    | Element::ReferenceWithSumItem(next_ref_path, _, _, _) => {
                         if hops_left == 0 {
                             return Err(Error::ReferenceLimit).wrap_with_cost(cost);
                         }

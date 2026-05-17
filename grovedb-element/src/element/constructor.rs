@@ -122,6 +122,45 @@ impl Element {
         Element::Reference(reference_path, max_reference_hop, flags)
     }
 
+    /// Set element to a reference-with-sum-item without flags or max hops.
+    ///
+    /// `sum_value` is the explicit weight that propagates to a sum-bearing
+    /// parent — independent of whatever the reference resolves to.
+    pub fn new_reference_with_sum_item(
+        reference_path: ReferencePathType,
+        sum_value: SumValue,
+    ) -> Self {
+        Element::ReferenceWithSumItem(reference_path, None, sum_value, None)
+    }
+
+    /// Set element to a reference-with-sum-item with flags.
+    pub fn new_reference_with_sum_item_with_flags(
+        reference_path: ReferencePathType,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ReferenceWithSumItem(reference_path, None, sum_value, flags)
+    }
+
+    /// Set element to a reference-with-sum-item with max hops, no flags.
+    pub fn new_reference_with_sum_item_with_hops(
+        reference_path: ReferencePathType,
+        max_reference_hop: MaxReferenceHop,
+        sum_value: SumValue,
+    ) -> Self {
+        Element::ReferenceWithSumItem(reference_path, max_reference_hop, sum_value, None)
+    }
+
+    /// Set element to a reference-with-sum-item with max hops and flags.
+    pub fn new_reference_with_sum_item_with_max_hops_and_flags(
+        reference_path: ReferencePathType,
+        max_reference_hop: MaxReferenceHop,
+        sum_value: SumValue,
+        flags: Option<ElementFlags>,
+    ) -> Self {
+        Element::ReferenceWithSumItem(reference_path, max_reference_hop, sum_value, flags)
+    }
+
     /// Set element to a tree without flags
     pub fn new_tree(maybe_root_key: Option<Vec<u8>>) -> Self {
         Element::Tree(maybe_root_key, None)

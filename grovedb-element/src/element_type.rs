@@ -33,8 +33,15 @@ pub const NOT_SUMMED_WRAPPER_DISCRIMINANT: u8 = 16;
 /// Twin-discriminant prefix for `NotSummedXxx` types: every twin is encoded
 /// as `NOT_SUMMED_TWIN_PREFIX | base`. The prefix has the high bit set
 /// (so all wrappers cluster in `0x80..` range) plus bits 4 and 5, which
-/// distinguishes it from `NON_COUNTED_FLAG`'s `0x80` upper-nibble. Detection
-/// is therefore an upper-nibble compare: `disc & 0xf0 == 0xb0`.
+/// distinguishes it from `NON_COUNTED_FLAG`'s lower range. Detection is a
+/// range check: `0x80..=0xaf` is NonCounted, `0xb0..=0xbf` is NotSummed.
+///
+/// This places a soft cap on base discriminants: NonCounted bases can use
+/// `0..=0x2F` (the low 6 bits of the twin), with bases `0..=0x0F` keeping
+/// upper-nibble 0x80 and bases `0x10..=0x1F` falling under 0x90, `0x20..=0x2F`
+/// under 0xA0. NotSummed bases must stay in `0..=0x0F` because the prefix
+/// only leaves the low nibble. Today only four NotSummed bases are allowed
+/// (4, 5, 7, 10) so this is not a constraint.
 pub const NOT_SUMMED_TWIN_PREFIX: u8 = 0xb0;
 
 /// Mask to recover the base type discriminant from a `NotSummedXxx`
@@ -198,8 +205,15 @@ pub enum ElementType {
     BulkAppendTree = 13,
     /// Dense fixed-sized Merkle tree - discriminant 14
     DenseAppendOnlyFixedSizeTree = 14,
-    // 15 is reserved as the on-disk wrapper byte and has no direct
-    // ElementType variant.
+    // 15 is reserved as the on-disk wrapper byte (NonCounted) and has no
+    // direct ElementType variant.
+    // 16 is reserved as the on-disk wrapper byte (NotSummed) and has no
+    // direct ElementType variant.
+    /// Reference that also carries an explicit `SumValue` - discriminant 18.
+    /// Resolves like `Reference` on `get()` and propagates `sum_value` into
+    /// sum-bearing parents like `SumItem` / `ItemWithSumItem`. See
+    /// `Element::ReferenceWithSumItem` for full semantics.
+    ReferenceWithSumItem = 18,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -230,6 +244,8 @@ pub enum ElementType {
     NonCountedBulkAppendTree = 141,
     /// Non-counted wrapper around `DenseAppendOnlyFixedSizeTree` - discriminant 142
     NonCountedDenseAppendOnlyFixedSizeTree = 142,
+    /// Non-counted wrapper around `ReferenceWithSumItem` - discriminant 146 (`0x80 | 18`)
+    NonCountedReferenceWithSumItem = 146,
     /// Not-summed wrapper around `SumTree` - discriminant 180 (`0xb0 | 4`)
     NotSummedSumTree = 180,
     /// Not-summed wrapper around `BigSumTree` - discriminant 181 (`0xb0 | 5`)
@@ -274,21 +290,22 @@ impl ElementType {
                     "NonCounted wrapper has no inner element discriminant byte".to_string(),
                 )
             })?;
-            // The inner discriminant must be a base type — i.e. strictly less
-            // than NON_COUNTED_WRAPPER_DISCRIMINANT (15). Bytes 15+ are not
-            // valid on-disk inner discriminants:
-            //   - 15 itself is the wrapper byte (nested wrappers forbidden),
-            //   - 16 is the NotSummed wrapper byte (cross-nesting forbidden),
-            //   - 17..=127 are unallocated,
-            //   - 128..=142 are the synthetic NonCountedXxx twins which
-            //     never appear on disk; without this check, the bitwise OR
-            //     below would collapse `0x80 | inner_byte` into `inner_byte`
-            //     and a payload like `[15, 128, ...]` would silently parse
-            //     as `NonCountedItem`.
-            if inner_byte >= NON_COUNTED_WRAPPER_DISCRIMINANT {
+            // The inner discriminant must be a legal base type. Today those
+            // are `0..=14` plus `18` (ReferenceWithSumItem). Bytes 15, 16,
+            // and 17 are the wrapper bytes themselves (nested wrappers
+            // forbidden); 19..=127 are unallocated; 128..=142 + 146 are the
+            // synthetic NonCountedXxx twins which never appear on disk.
+            // Without this check, the bitwise OR below would collapse
+            // `0x80 | inner_byte` into `inner_byte` and a payload like
+            // `[15, 128, ...]` would silently parse as `NonCountedItem`.
+            //
+            // Use an explicit allowlist so the next base-variant addition is
+            // a one-line edit here and the check stays robust to new
+            // variants landing without updating the guard.
+            if !matches!(inner_byte, 0..=14 | 18) {
                 return Err(ElementError::CorruptedData(format!(
-                    "NonCounted inner discriminant must be a base type 0..={}, got {}",
-                    NON_COUNTED_WRAPPER_DISCRIMINANT - 1,
+                    "NonCounted inner discriminant must be a base type \
+                     (0..=14 or 18), got {}",
                     inner_byte
                 )));
             }
@@ -336,11 +353,14 @@ impl ElementType {
         }
     }
 
-    /// Returns true if this is a `NonCountedXxx` discriminant. Tested by
-    /// upper-nibble compare since `NotSummedXxx` also has bit 7 set.
+    /// Returns true if this is a `NonCountedXxx` discriminant. Range check:
+    /// `NonCountedXxx` lives in `0x80..=0xaf`, `NotSummedXxx` in
+    /// `0xb0..=0xbf`. Both ranges have bit 7 set but only NonCounted's upper
+    /// nibble stays below `0xb`.
     #[inline]
     pub const fn is_non_counted(self) -> bool {
-        (self as u8) & 0xf0 == NON_COUNTED_FLAG
+        let disc = self as u8;
+        disc >= NON_COUNTED_FLAG && disc < NOT_SUMMED_TWIN_PREFIX
     }
 
     /// Returns true if this is a `NotSummedXxx` discriminant.
@@ -514,10 +534,15 @@ impl ElementType {
     }
 
     /// Returns true if this element type is a reference. Looks through the
-    /// `NonCounted` wrapper.
+    /// `NonCounted` wrapper. Both `Reference` and `ReferenceWithSumItem` are
+    /// references — they share the combined-value-hash proof shape and are
+    /// resolved by the same `follow_reference` chain.
     #[inline]
     pub fn is_reference(&self) -> bool {
-        matches!(self.base(), ElementType::Reference)
+        matches!(
+            self.base(),
+            ElementType::Reference | ElementType::ReferenceWithSumItem
+        )
     }
 
     /// Returns true if this element type is any kind of item (not a tree or
@@ -548,6 +573,7 @@ impl ElementType {
             ElementType::MmrTree => "mmr tree",
             ElementType::BulkAppendTree => "bulk_append_tree",
             ElementType::DenseAppendOnlyFixedSizeTree => "dense_tree",
+            ElementType::ReferenceWithSumItem => "reference with sum item",
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -563,6 +589,7 @@ impl ElementType {
             ElementType::NonCountedMmrTree => "non_counted mmr tree",
             ElementType::NonCountedBulkAppendTree => "non_counted bulk_append_tree",
             ElementType::NonCountedDenseAppendOnlyFixedSizeTree => "non_counted dense_tree",
+            ElementType::NonCountedReferenceWithSumItem => "non_counted reference with sum item",
             ElementType::NotSummedSumTree => "not_summed sum tree",
             ElementType::NotSummedBigSumTree => "not_summed big sum tree",
             ElementType::NotSummedCountSumTree => "not_summed count sum tree",
@@ -604,6 +631,9 @@ impl TryFrom<u8> for ElementType {
             14 => Ok(ElementType::DenseAppendOnlyFixedSizeTree),
             // 15 is the raw NonCounted wrapper byte; from_serialized_value
             // resolves it by reading the inner discriminant.
+            // 16 is the raw NotSummed wrapper byte; same treatment.
+            // 17 is the raw NotCountedOrSummed wrapper byte; same treatment.
+            18 => Ok(ElementType::ReferenceWithSumItem),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -619,6 +649,7 @@ impl TryFrom<u8> for ElementType {
             140 => Ok(ElementType::NonCountedMmrTree),
             141 => Ok(ElementType::NonCountedBulkAppendTree),
             142 => Ok(ElementType::NonCountedDenseAppendOnlyFixedSizeTree),
+            146 => Ok(ElementType::NonCountedReferenceWithSumItem),
             180 => Ok(ElementType::NotSummedSumTree),
             181 => Ok(ElementType::NotSummedBigSumTree),
             183 => Ok(ElementType::NotSummedCountSumTree),
@@ -683,9 +714,21 @@ mod tests {
         // 15 is the raw NonCounted wrapper byte and is rejected by TryFrom;
         // it has no direct ElementType variant (use from_serialized_value).
         assert!(ElementType::try_from(15).is_err());
+        // 16 is the raw NotSummed wrapper byte; same treatment.
         assert!(ElementType::try_from(16).is_err());
+        // 17 is the raw NotCountedOrSummed wrapper byte; same treatment.
+        assert!(ElementType::try_from(17).is_err());
 
-        // NonCounted twins (0x80 | base): 128..142
+        // Base discriminant 18 is ReferenceWithSumItem.
+        assert_eq!(
+            ElementType::try_from(18).unwrap(),
+            ElementType::ReferenceWithSumItem
+        );
+        // 19..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(19).is_err());
+        assert!(ElementType::try_from(100).is_err());
+
+        // NonCounted twins (0x80 | base): 128..142 plus 146 (twin of base 18).
         assert_eq!(
             ElementType::try_from(128).unwrap(),
             ElementType::NonCountedItem
@@ -698,10 +741,20 @@ mod tests {
             ElementType::try_from(142).unwrap(),
             ElementType::NonCountedDenseAppendOnlyFixedSizeTree
         );
+        assert_eq!(
+            ElementType::try_from(146).unwrap(),
+            ElementType::NonCountedReferenceWithSumItem
+        );
         // Bytes between the base and NonCounted-twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
-        // Bytes between NonCounted-twin and NotSummed-twin ranges are invalid.
+        // 143 (= 0x80|15), 144 (= 0x80|16), 145 (= 0x80|17): wrapper bytes
+        // have no base, so these would synthesize a wrapper-on-wrapper twin.
         assert!(ElementType::try_from(143).is_err());
+        assert!(ElementType::try_from(144).is_err());
+        assert!(ElementType::try_from(145).is_err());
+        // 147..=179 (between NonCounted-twin and NotSummed-twin ranges) are
+        // also invalid.
+        assert!(ElementType::try_from(147).is_err());
         assert!(ElementType::try_from(179).is_err());
 
         // NotSummed twins (0xb0 | base): only the four sum-tree bases
@@ -910,6 +963,7 @@ mod tests {
 
         // Trees and references have combined hash
         assert!(ElementType::Reference.has_combined_value_hash());
+        assert!(ElementType::ReferenceWithSumItem.has_combined_value_hash());
         assert!(ElementType::Tree.has_combined_value_hash());
         assert!(ElementType::SumTree.has_combined_value_hash());
         assert!(ElementType::BigSumTree.has_combined_value_hash());
@@ -922,6 +976,7 @@ mod tests {
         assert!(ElementType::NonCountedSumItem.has_simple_value_hash());
         assert!(ElementType::NonCountedTree.has_combined_value_hash());
         assert!(ElementType::NonCountedReference.has_combined_value_hash());
+        assert!(ElementType::NonCountedReferenceWithSumItem.has_combined_value_hash());
     }
 
     #[test]
@@ -943,6 +998,15 @@ mod tests {
         // post-processes)
         assert_eq!(
             ElementType::Reference.proof_node_type(None),
+            ProofNodeType::KvRefValueHash
+        );
+        // ReferenceWithSumItem shares the reference proof shape.
+        assert_eq!(
+            ElementType::ReferenceWithSumItem.proof_node_type(None),
+            ProofNodeType::KvRefValueHash
+        );
+        assert_eq!(
+            ElementType::ReferenceWithSumItem.proof_node_type(Some(ElementType::SumTree)),
             ProofNodeType::KvRefValueHash
         );
 
@@ -997,6 +1061,12 @@ mod tests {
         // GroveDB post-processes these with dereferenced values
         assert_eq!(
             ElementType::Reference.proof_node_type(pct),
+            ProofNodeType::KvRefValueHashCount
+        );
+        // ReferenceWithSumItem shares the reference proof shape inside
+        // ProvableCountTree parents.
+        assert_eq!(
+            ElementType::ReferenceWithSumItem.proof_node_type(pct),
             ProofNodeType::KvRefValueHashCount
         );
 
@@ -1123,10 +1193,19 @@ mod tests {
         // would silently parse as `NonCountedItem`.
         assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
-        // Wrapper with an unallocated mid-range inner byte (16..=127) is
-        // also rejected, even though it has no high bit set.
+        // Wrapper with an unallocated mid-range inner byte (16, 17, 19..=127)
+        // is also rejected, even though it has no high bit set.
         assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 17]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 19]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
+
+        // Inner byte 18 (ReferenceWithSumItem) IS a legal base; resolves to
+        // the synthetic NonCountedReferenceWithSumItem twin.
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 18]).unwrap(),
+            ElementType::NonCountedReferenceWithSumItem
+        );
     }
 
     #[test]
@@ -1146,6 +1225,10 @@ mod tests {
         assert!(ElementType::MmrTree.is_tree());
         assert!(ElementType::BulkAppendTree.is_tree());
         assert!(ElementType::DenseAppendOnlyFixedSizeTree.is_tree());
+        // ReferenceWithSumItem is a reference, not a tree and not an item.
+        assert!(!ElementType::ReferenceWithSumItem.is_tree());
+        assert!(ElementType::ReferenceWithSumItem.is_reference());
+        assert!(!ElementType::ReferenceWithSumItem.is_item());
 
         // The wrapper is transparent: NonCountedTree is a tree, NonCountedItem is not.
         assert!(!ElementType::NonCountedItem.is_tree());
@@ -1159,6 +1242,8 @@ mod tests {
         assert!(ElementType::NonCountedItem.is_item());
         assert!(ElementType::NonCountedSumItem.is_item());
         assert!(ElementType::NonCountedReference.is_reference());
+        assert!(ElementType::NonCountedReferenceWithSumItem.is_reference());
+        assert!(!ElementType::NonCountedReferenceWithSumItem.is_item());
     }
 
     /// Verifies that serialized Element discriminants match ElementType
@@ -1259,13 +1344,27 @@ mod tests {
                 ElementType::DenseAppendOnlyFixedSizeTree,
                 "DenseAppendOnlyFixedSizeTree",
             ),
+            // discriminant 18 (15, 16, 17 are wrapper bytes — no base variants)
+            (
+                Element::ReferenceWithSumItem(
+                    ReferencePathType::AbsolutePathReference(vec![vec![1]]),
+                    None,
+                    42,
+                    None,
+                ),
+                ElementType::ReferenceWithSumItem,
+                "ReferenceWithSumItem",
+            ),
         ];
 
-        // Verify we're testing all 15 base discriminants (0-14)
+        // Verify we're testing all 16 base discriminants: 0..=14 and 18.
+        // (15 = NonCounted wrapper byte, 16 = NotSummed wrapper byte,
+        // 17 = NotCountedOrSummed wrapper byte — none has a base
+        // ElementType variant.)
         assert_eq!(
             test_cases.len(),
-            15,
-            "Expected 15 base Element variants in test, got {}",
+            16,
+            "Expected 16 base Element variants in test, got {}",
             test_cases.len()
         );
 
@@ -1317,7 +1416,7 @@ mod tests {
     fn test_non_counted_wrapper_discriminant_pinned() {
         use grovedb_version::version::GroveVersion;
 
-        use crate::element::Element;
+        use crate::{element::Element, reference_path::ReferencePathType};
 
         let grove_version = GroveVersion::latest();
 
@@ -1347,6 +1446,17 @@ mod tests {
                 ElementType::NonCountedProvableCountTree,
                 8,
                 "NonCounted(ProvableCountTree)",
+            ),
+            (
+                Element::NonCounted(Box::new(Element::ReferenceWithSumItem(
+                    ReferencePathType::AbsolutePathReference(vec![vec![1]]),
+                    None,
+                    42,
+                    None,
+                ))),
+                ElementType::NonCountedReferenceWithSumItem,
+                18,
+                "NonCounted(ReferenceWithSumItem)",
             ),
         ];
 
@@ -1494,8 +1604,8 @@ mod tests {
         // NotSummed twins (180..186), NotCountedOrSummed twins (196..202),
         // and unallocated ranges.
         for bad in [
-            0u8, 1, 2, 3, 6, 8, 9, 11, 12, 13, 14, 15, 16, 17, 100, 128, 142, 180, 186, 196, 202,
-            255,
+            0u8, 1, 2, 3, 6, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 100, 128, 142, 146, 180, 186,
+            196, 202, 255,
         ] {
             assert!(
                 ElementType::from_serialized_value(&[16, bad]).is_err(),
@@ -1533,8 +1643,8 @@ mod tests {
 
         // All other inner bytes are rejected.
         for bad in [
-            0u8, 1, 2, 3, 6, 8, 9, 11, 12, 13, 14, 15, 16, 17, 100, 128, 142, 180, 186, 196, 202,
-            255,
+            0u8, 1, 2, 3, 6, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 100, 128, 142, 146, 180, 186,
+            196, 202, 255,
         ] {
             assert!(
                 ElementType::from_serialized_value(&[17, bad]).is_err(),

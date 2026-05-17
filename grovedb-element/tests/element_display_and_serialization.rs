@@ -98,6 +98,17 @@ fn element_display_and_type_helpers_cover_all_variants() {
             "dense_tree",
             "DenseAppendOnlyFixedSizeTree(count: 17, height: 18, flags: [19])",
         ),
+        (
+            Element::ReferenceWithSumItem(
+                grovedb_element::reference_path::ReferencePathType::SiblingReference(b"k".to_vec()),
+                Some(4),
+                42,
+                Some(vec![21]),
+            ),
+            ElementType::ReferenceWithSumItem,
+            "reference with sum item",
+            "ReferenceWithSumItem(SiblingReference(6b), max_hop: 4, sum: 42, flags: [21])",
+        ),
     ];
 
     for (element, expected_type, expected_type_str, expected_display) in values {
@@ -151,6 +162,15 @@ fn serialize_deserialize_round_trip_all_element_types_and_errors() {
         Element::new_mmr_tree(13, Some(vec![10])),
         Element::new_bulk_append_tree(14, 6, Some(vec![9])),
         Element::new_dense_tree(15, 7, Some(vec![8])),
+        Element::new_reference_with_sum_item_with_max_hops_and_flags(
+            grovedb_element::reference_path::ReferencePathType::AbsolutePathReference(vec![
+                b"a".to_vec(),
+                b"b".to_vec(),
+            ]),
+            Some(4),
+            -42,
+            Some(vec![7]),
+        ),
     ];
 
     for element in elements {
@@ -235,6 +255,15 @@ fn element_display_without_flags_covers_none_branches() {
         (
             Element::DenseAppendOnlyFixedSizeTree(17, 18, None),
             "DenseAppendOnlyFixedSizeTree(count: 17, height: 18)",
+        ),
+        (
+            Element::ReferenceWithSumItem(
+                ReferencePathType::SiblingReference(b"k".to_vec()),
+                None,
+                7,
+                None,
+            ),
+            "ReferenceWithSumItem(SiblingReference(6b), max_hop: None, sum: 7)",
         ),
     ];
 
