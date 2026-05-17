@@ -1074,6 +1074,104 @@ impl GroveDb {
         Ok(results).wrap_with_cost(cost)
     }
 
+    /// Same as [`Self::count_indexed_top_k`] but skips the first
+    /// `offset` entries in the directional scan before collecting up to
+    /// `k` results. Used to implement paginated top-K views over the
+    /// cidx secondary (e.g. "show me page 3 of the leaderboard").
+    ///
+    /// `offset = 0` is equivalent to plain `count_indexed_top_k` (no
+    /// skip). The skip is performed at the secondary's storage iterator
+    /// level — this is not a verifiable / proof-bounded skip; for the
+    /// provable variant use [`Self::prove_count_indexed_top_k_paginated`]
+    /// which relies on the merk-level count-offset proof to commit the
+    /// skipped count via `HashWithCount`.
+    pub fn count_indexed_top_k_paginated<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_root_key = cost_return_on_error!(
+            &mut cost,
+            self.read_count_indexed_secondary_root_key(path.clone(), tx_ref, None, grove_version)
+        );
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_count_indexed_secondary_at_path(
+                path,
+                secondary_root_key,
+                tx_ref,
+                None,
+                grove_version,
+            )
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        // Skip `offset` entries. The iterator burns the same merk-storage
+        // seek count whether we skip or surface, so this is honestly
+        // O(offset) at the merk level — for paginated UIs this is the
+        // expected trade against a full scan + post-slice.
+        let mut skipped: u64 = 0;
+        while skipped < offset {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    // Defensive decode: a malformed secondary key here
+                    // (< 8 bytes) is a storage corruption indicator that
+                    // we want to surface even during the skip phase, not
+                    // mask by silently dropping into the limit window.
+                    if decode_secondary_key(&secondary_key).is_none() {
+                        return Err(Error::CorruptedData(format!(
+                            "secondary key in count-indexed-tree is shorter than 8 bytes: {:?}",
+                            secondary_key
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                    skipped += 1;
+                }
+                None => return Ok(Vec::new()).wrap_with_cost(cost),
+            }
+        }
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _value_bytes)) => {
+                    if let Some(decoded) = decode_secondary_key(&secondary_key) {
+                        results.push(decoded);
+                    } else {
+                        return Err(Error::CorruptedData(format!(
+                            "secondary key in count-indexed-tree is shorter than 8 bytes: {:?}",
+                            secondary_key
+                        )))
+                        .wrap_with_cost(cost);
+                    }
+                }
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
     /// Iterate the secondary index over a count range `[lo_count,
     /// hi_count_inclusive]` and return matching `(count, original_key)`
     /// entries up to `limit`. Direction is controlled by `descending`.

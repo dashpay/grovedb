@@ -623,6 +623,281 @@ mod tests {
     }
 
     #[test]
+    fn count_indexed_top_k_paginated_skips_offset_then_returns_k() {
+        // Mirror of `count_indexed_top_k_returns_highest_count_first`
+        // exercising the paginated variant. Setup five entries with
+        // distinct counts, then page through them in descending order.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+
+        for (k, c) in [
+            (b"alice".as_ref(), 5u64),
+            (b"bob", 12),
+            (b"carol", 1),
+            (b"dave", 7),
+            (b"eve", 20),
+        ] {
+            let count_tree = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                count_tree,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sub count-tree");
+        }
+
+        // Descending full scan: eve(20), bob(12), dave(7), alice(5), carol(1).
+        // Page 1 (offset=0, k=2): eve, bob.
+        let page1 = db
+            .count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 1");
+        assert_eq!(
+            page1,
+            vec![(20u64, b"eve".to_vec()), (12u64, b"bob".to_vec())]
+        );
+
+        // Page 2 (offset=2, k=2): dave, alice.
+        let page2 = db
+            .count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                2,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 2");
+        assert_eq!(
+            page2,
+            vec![(7u64, b"dave".to_vec()), (5u64, b"alice".to_vec())]
+        );
+
+        // Page 3 (offset=4, k=2): just carol; second slot unfilled.
+        let page3 = db
+            .count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                4,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 3");
+        assert_eq!(page3, vec![(1u64, b"carol".to_vec())]);
+
+        // Offset past the end → empty.
+        let beyond = db
+            .count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("offset past end");
+        assert!(beyond.is_empty());
+
+        // offset=0 must equal plain top_k.
+        let top_k = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("top-k");
+        let paginated_offset_0 = db
+            .count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                3,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("paginated offset 0");
+        assert_eq!(top_k, paginated_offset_0);
+    }
+
+    #[test]
+    fn prove_and_verify_count_indexed_top_k_paginated_round_trip() {
+        // End-to-end round trip: prove a paginated top-k, then verify
+        // and assert the returned page matches the in-memory variant.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+
+        for (k, c) in [
+            (b"alice".as_ref(), 5u64),
+            (b"bob", 12),
+            (b"carol", 1),
+            (b"dave", 7),
+            (b"eve", 20),
+            (b"frank", 30),
+        ] {
+            let count_tree = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                count_tree,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        // Descending full: frank(30), eve(20), bob(12), dave(7),
+        // alice(5), carol(1).
+        // Prove (k=2, offset=2) descending: skip frank+eve, return
+        // bob+dave.
+        let proof = db
+            .prove_count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                2,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove paginated");
+
+        let result = GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            2,
+            2,
+            true,
+        )
+        .expect("verify paginated");
+
+        assert_eq!(
+            result.entries,
+            vec![(12u64, b"bob".to_vec()), (7u64, b"dave".to_vec())]
+        );
+        assert_eq!(
+            result.skipped, 2,
+            "verifier-derived skipped count must equal requested offset"
+        );
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().expect("root");
+        assert_eq!(result.root_hash, expected_root);
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_paginated_rejects_request_mismatch() {
+        // The verifier authenticates echoed (k, offset, descending)
+        // against the caller's expected values. A mismatch on any axis
+        // is rejected before the merk-level proof is decoded.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+
+        for (k, c) in [(b"a".as_ref(), 1u64), (b"b", 2), (b"c", 3)] {
+            let count_tree = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                count_tree,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        let proof = db
+            .prove_count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                1,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+
+        // k mismatch.
+        assert!(GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            3,
+            1,
+            true
+        )
+        .is_err());
+        // offset mismatch.
+        assert!(GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            2,
+            0,
+            true
+        )
+        .is_err());
+        // descending mismatch.
+        assert!(GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            2,
+            1,
+            false
+        )
+        .is_err());
+        // Honest request → succeeds.
+        assert!(GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            2,
+            1,
+            true
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn count_indexed_count_range_filters_by_count() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);

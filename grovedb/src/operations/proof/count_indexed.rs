@@ -97,6 +97,70 @@ pub struct CountIndexedQueryResult {
     pub entries: Vec<(u64, Vec<u8>)>,
 }
 
+/// Wire-format envelope for an offset-paginated `CountIndexedTree`
+/// top-k proof.
+///
+/// Structurally parallel to [`CountIndexedRangeProof`] — same layer
+/// proofs + primary-root attestation + ancestor-cidx attestations —
+/// but the `secondary_proof` is the **count-offset paginated proof**
+/// shape produced by
+/// `Merk::prove_count_offset_on_range(QueryItem::RangeFull, offset, ...)`
+/// against the cidx secondary (a `ProvableCountTree`). The skipped
+/// region collapses to `HashWithCount` ops so the proof is O(log n
+/// + k) regardless of offset, rather than O(offset + k) for a
+/// naively-paged range proof.
+#[derive(Encode, Decode, Debug)]
+pub struct CountIndexedPaginatedProof {
+    /// Single-key Merk proof per path layer, top-down. Same shape and
+    /// semantics as [`CountIndexedRangeProof::layer_proofs`].
+    pub layer_proofs: Vec<Vec<u8>>,
+    /// 32-byte attestation of the cidx primary's root hash. Same
+    /// semantics as [`CountIndexedRangeProof::primary_root_hash`].
+    pub primary_root_hash: [u8; 32],
+    /// Per-intermediate-layer cidx secondary attestation. Same
+    /// semantics as
+    /// [`CountIndexedRangeProof::ancestor_cidx_secondary_root_hashes`].
+    pub ancestor_cidx_secondary_root_hashes: Vec<Option<[u8; 32]>>,
+    /// Encoded count-offset paginated proof bytes for the cidx
+    /// secondary. Verified with `verify_count_offset_on_range_proof`
+    /// against `QueryItem::RangeFull` + the echoed offset/limit/dir.
+    pub secondary_proof: Vec<u8>,
+    /// Echoed query parameters. The verifier authenticates these
+    /// against the caller's expected values; any mismatch is rejected
+    /// before the merk-level proof is even decoded.
+    pub requested_k: u16,
+    /// Echoed offset. Verifier rejects on mismatch.
+    pub requested_offset: u64,
+    /// Echoed iteration direction (`true` = descending, highest counts
+    /// first). Verifier rejects on mismatch.
+    pub descending: bool,
+}
+
+/// Verified result of an offset-paginated `CountIndexedTree` top-k
+/// query.
+///
+/// `entries` are the `(count_value, original_key)` pairs the prover
+/// returned **after** skipping `skipped` items (the verifier
+/// independently re-derives `skipped` from the proof shape — it is
+/// not a prover-trusted field). The caller MUST cross-check
+/// `skipped == expected_offset` if exact-page semantics matter
+/// (e.g., for short-circuiting "no more pages"): a fresh insert may
+/// have made the proof produce fewer in-range entries than the
+/// caller expected.
+#[derive(Debug)]
+pub struct CountIndexedPaginatedResult {
+    /// GroveDB root hash this proof reconstructs.
+    pub root_hash: CryptoHash,
+    /// `(count_value, original_key)` pairs from the secondary, in the
+    /// order they were proven (after the `skipped` offset region).
+    pub entries: Vec<(u64, Vec<u8>)>,
+    /// Number of secondary entries the proof committed as skipped
+    /// (via `HashWithCount` ops). Independently re-derived by the
+    /// verifier from the merk proof shape — NOT trusted from the
+    /// prover's echoed `requested_offset`.
+    pub skipped: u64,
+}
+
 impl GroveDb {
     /// Generate a proof for the top-`k` entries of a `CountIndexedTree`,
     /// ordered by `count_value`. Thin wrapper around
@@ -118,6 +182,64 @@ impl GroveDb {
         full_range.insert_all();
         full_range.left_to_right = !descending;
         self.prove_count_indexed_query(path, full_range, Some(k), transaction, grove_version)
+    }
+
+    /// Generate an offset-paginated proof for the top-`k` entries of a
+    /// `CountIndexedTree`, ordered by `count_value`, starting **after**
+    /// `offset` entries in the directional walk.
+    ///
+    /// Functionally equivalent to skipping the first `offset` results
+    /// from [`Self::prove_count_indexed_top_k`], but the skipped region
+    /// is committed via the merk-level count-offset proof flow
+    /// (`prove_count_offset_on_range` against the secondary, which IS
+    /// a `ProvableCountTree`). The skipped region collapses to
+    /// `HashWithCount` ops so the proof is O(log n + k) regardless of
+    /// `offset`.
+    ///
+    /// Use [`Self::verify_count_indexed_top_k_paginated`] to verify
+    /// the resulting bytes. The verifier authenticates the echoed
+    /// `k` / `offset` / `descending` against caller expectations
+    /// before walking the proof, so an honest paginated request
+    /// cannot be answered with a different page's proof.
+    pub fn prove_count_indexed_top_k_paginated<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let envelope = cost_return_on_error!(
+            &mut cost,
+            self.build_count_indexed_paginated_proof(
+                path,
+                k,
+                offset,
+                descending,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+
+        let bytes = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(&envelope, bincode::config::standard())
+                .map_err(|e| Error::CorruptedData(format!("encoding cidx paginated proof: {e}")))
+        );
+
+        Ok(bytes).wrap_with_cost(cost)
     }
 
     /// Generate a proof for an arbitrary query over a `CountIndexedTree`'s
@@ -358,6 +480,198 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    /// Build an offset-paginated cidx top-k proof envelope. Shares the
+    /// layer-walking + primary-attestation shape of
+    /// [`Self::build_count_indexed_proof`] but produces the secondary
+    /// half via `Merk::prove_count_offset_on_range` against
+    /// `QueryItem::RangeFull` — the secondary is a `ProvableCountTree`,
+    /// so the count-offset proof flow is valid against it directly.
+    fn build_count_indexed_paginated_proof<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<CountIndexedPaginatedProof, Error> {
+        use grovedb_merk::proofs::{encode_into, query::QueryItem as MerkQueryItemForRange};
+
+        let mut cost = OperationCost::default();
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot prove count-indexed paginated query at root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // 1. Single-key Merk proof at each layer (top-down) plus per-cidx-
+        //    ancestor secondary-root attestation. Identical shape to the
+        //    non-paginated `build_count_indexed_proof` — see that
+        //    function's comments for the per-step rationale.
+        let mut layer_proofs: Vec<Vec<u8>> = Vec::with_capacity(path_keys.len());
+        let last_idx = path_keys.len() - 1;
+        let mut ancestor_cidx_secondary_root_hashes: Vec<Option<[u8; 32]>> =
+            Vec::with_capacity(last_idx);
+        for depth in 0..path_keys.len() {
+            let parent_slices: Vec<&[u8]> =
+                path_keys[..depth].iter().map(|p| p.as_slice()).collect();
+            let parent_path: SubtreePath<&[u8]> = parent_slices.as_slice().into();
+            let parent_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(
+                    parent_path.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let key = path_keys[depth].clone();
+            if depth < last_idx {
+                let intermediate = cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&parent_merk, key.as_slice(), true, grove_version).map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cidx paginated proof: fetch intermediate-layer element at depth \
+                             {depth}: {e}"
+                        ))
+                    })
+                );
+                let attestation = match intermediate.underlying() {
+                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                        let ancestor_cidx_path_owned: SubtreePathBuilder<Vec<u8>> =
+                            SubtreePathBuilder::owned_from_iter(
+                                path_keys[..=depth].iter().cloned(),
+                            );
+                        let ancestor_cidx_path = SubtreePath::from(&ancestor_cidx_path_owned);
+                        let ancestor_secondary_root_key = match intermediate.underlying() {
+                            Element::CountIndexedTree(_, s, ..)
+                            | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                            _ => unreachable!(),
+                        };
+                        let ancestor_secondary = cost_return_on_error!(
+                            &mut cost,
+                            self.open_count_indexed_secondary_at_path(
+                                ancestor_cidx_path,
+                                ancestor_secondary_root_key,
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (sec_hash, _, _) = cost_return_on_error!(
+                            &mut cost,
+                            ancestor_secondary
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(|e| Error::CorruptedData(format!(
+                                    "cidx paginated proof: ancestor secondary root hash at \
+                                     depth {depth}: {e}"
+                                )))
+                        );
+                        Some(sec_hash)
+                    }
+                    _ => None,
+                };
+                ancestor_cidx_secondary_root_hashes.push(attestation);
+            }
+            let mut q = MerkQuery::new();
+            q.insert_item(MerkQueryItem::Key(key));
+            let result = cost_return_on_error!(
+                &mut cost,
+                parent_merk
+                    .prove(q, None, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "cidx paginated proof: prove single-key at layer depth {depth}: {e}"
+                    )))
+            );
+            layer_proofs.push(result.proof);
+        }
+
+        // 2. Open primary at path; capture its root hash for attestation.
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        if !primary_merk.tree_type.is_count_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "prove_count_indexed_top_k_paginated requires the path's last segment to be a \
+                 CountIndexedTree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let (primary_root_hash, _, _) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(|e| Error::CorruptedData(format!(
+                    "cidx paginated proof: primary root hash: {e}"
+                )))
+        );
+
+        // 3. Open secondary; produce a count-offset paginated proof
+        //    against the full secondary range with limit = k.
+        let secondary_root_key = cost_return_on_error!(
+            &mut cost,
+            self.read_count_indexed_secondary_root_key_for_proof(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_count_indexed_secondary_at_path(
+                path,
+                secondary_root_key,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+
+        // The full-range query item the verifier will reuse. `descending
+        // = true` maps to `left_to_right = false` for the merk-level
+        // walk.
+        let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+        let prove_result = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .prove_count_offset_on_range(
+                    &inner_range,
+                    offset,
+                    Some(k as u64),
+                    !descending,
+                    grove_version,
+                )
+                .map_err(|e| Error::CorruptedData(format!(
+                    "cidx paginated proof: secondary count-offset proof: {e}"
+                )))
+        );
+        let mut serialized = Vec::with_capacity(128);
+        encode_into(prove_result.ops.iter(), &mut serialized);
+
+        Ok(CountIndexedPaginatedProof {
+            layer_proofs,
+            primary_root_hash,
+            ancestor_cidx_secondary_root_hashes,
+            secondary_proof: serialized,
+            requested_k: k,
+            requested_offset: offset,
+            descending,
+        })
+        .wrap_with_cost(cost)
+    }
+
     fn read_count_indexed_secondary_root_key_for_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
@@ -490,6 +804,205 @@ impl GroveDb {
             )));
         }
         Self::verify_count_indexed_inner(envelope, secondary_query, path)
+    }
+
+    /// Verify a proof produced by
+    /// [`Self::prove_count_indexed_top_k_paginated`].
+    ///
+    /// `expected_k`, `expected_offset`, `expected_descending` MUST
+    /// match the request that produced the proof. The verifier
+    /// authenticates the echoed fields in the envelope against these
+    /// before doing any merk-level work, so a malicious prover cannot
+    /// answer a `(k=10, offset=20)` request with a valid
+    /// `(k=5, offset=0)` proof.
+    ///
+    /// On success, `CountIndexedPaginatedResult.skipped` reports the
+    /// number of secondary entries the proof committed as skipped
+    /// (independently re-derived by the verifier from the merk proof
+    /// shape — NOT trusted from the prover's echoed `requested_offset`).
+    /// The caller MUST cross-check `skipped == expected_offset` if
+    /// exact-page semantics matter — see the doc comment on
+    /// `CountIndexedPaginatedResult.skipped`.
+    pub fn verify_count_indexed_top_k_paginated(
+        proof_bytes: &[u8],
+        path: &[&[u8]],
+        expected_k: u16,
+        expected_offset: u64,
+        expected_descending: bool,
+    ) -> Result<CountIndexedPaginatedResult, Error> {
+        // Same DoS bound as the other cidx verifiers; cf. comment on
+        // `verify_count_indexed_top_k`.
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (envelope, _): (CountIndexedPaginatedProof, _) =
+            bincode::decode_from_slice(proof_bytes, config)
+                .map_err(|e| Error::CorruptedData(format!("decoding cidx paginated proof: {e}")))?;
+
+        // Authenticate the caller's intent against the envelope BEFORE
+        // any merk-level work. A mismatch here means the envelope
+        // describes a different page than the caller asked for; the
+        // proof might still verify cryptographically but it's not
+        // answering the right question.
+        if envelope.descending != expected_descending {
+            return Err(Error::CorruptedData(format!(
+                "cidx paginated proof direction mismatch: expected descending={}, envelope \
+                 carries descending={}",
+                expected_descending, envelope.descending
+            )));
+        }
+        if envelope.requested_k != expected_k {
+            return Err(Error::CorruptedData(format!(
+                "cidx paginated proof k mismatch: expected {}, envelope carries {}",
+                expected_k, envelope.requested_k
+            )));
+        }
+        if envelope.requested_offset != expected_offset {
+            return Err(Error::CorruptedData(format!(
+                "cidx paginated proof offset mismatch: expected {}, envelope carries {}",
+                expected_offset, envelope.requested_offset
+            )));
+        }
+
+        Self::verify_count_indexed_paginated_inner(envelope, path)
+    }
+
+    /// Shared verifier core for the paginated cidx proof. Same shape
+    /// as [`Self::verify_count_indexed_inner`] — walks layer proofs
+    /// bottom-up to authenticate the cidx element's H1-A composition —
+    /// but the secondary proof is decoded via
+    /// `verify_count_offset_on_range_proof` instead of the regular
+    /// merk `execute_proof`.
+    fn verify_count_indexed_paginated_inner(
+        envelope: CountIndexedPaginatedProof,
+        path: &[&[u8]],
+    ) -> Result<CountIndexedPaginatedResult, Error> {
+        use grovedb_merk::proofs::query::{
+            verify_count_offset_on_range_proof, QueryItem as MerkQueryItemForRange,
+        };
+
+        if envelope.layer_proofs.len() != path.len() {
+            return Err(Error::CorruptedData(format!(
+                "cidx paginated proof has {} layers but path has {} segments",
+                envelope.layer_proofs.len(),
+                path.len()
+            )));
+        }
+        if envelope.layer_proofs.is_empty() {
+            return Err(Error::CorruptedData(
+                "cidx paginated proof has zero layers; expected at least one (the path to the \
+                 cidx element)"
+                    .to_string(),
+            ));
+        }
+
+        // 1a. Verify the secondary count-offset paginated proof.
+        let inner_range = MerkQueryItemForRange::RangeFull(std::ops::RangeFull);
+        let count_offset_result = verify_count_offset_on_range_proof(
+            &envelope.secondary_proof,
+            &inner_range,
+            envelope.requested_offset,
+            Some(envelope.requested_k as u64),
+            !envelope.descending,
+        )
+        .unwrap()
+        .map_err(|e| {
+            Error::CorruptedData(format!(
+                "cidx paginated proof: secondary count-offset proof failed to verify: {e}"
+            ))
+        })?;
+
+        let secondary_root_hash = count_offset_result.root_hash;
+        let mut entries: Vec<(u64, Vec<u8>)> =
+            Vec::with_capacity(count_offset_result.returned_items.len());
+        for proved in &count_offset_result.returned_items {
+            // Secondary keys are (count_be ‖ original_key); the merk
+            // prover preserves the on-disk key bytes verbatim.
+            if proved.key.len() < 8 {
+                return Err(Error::CorruptedData(format!(
+                    "cidx paginated proof: secondary key shorter than 8 bytes: {:?}",
+                    proved.key
+                )));
+            }
+            let mut count_bytes = [0u8; 8];
+            count_bytes.copy_from_slice(&proved.key[..8]);
+            let count = u64::from_be_bytes(count_bytes);
+            entries.push((count, proved.key[8..].to_vec()));
+        }
+
+        // 1b. Verify the deepest layer (cidx element) using H1-A.
+        let last_idx = envelope.layer_proofs.len() - 1;
+        let cidx_key = path[last_idx];
+        let (cidx_value_bytes, mut current_layer_root, cidx_value_hash_recorded) =
+            execute_single_key_proof(
+                &envelope.layer_proofs[last_idx],
+                cidx_key,
+                "cidx paginated layer",
+            )?;
+        let actual_value_hash = value_hash(&cidx_value_bytes).value().to_owned();
+        let combined = combine_hash_three(
+            &actual_value_hash,
+            &envelope.primary_root_hash,
+            &secondary_root_hash,
+        )
+        .value()
+        .to_owned();
+        if combined != cidx_value_hash_recorded {
+            return Err(Error::CorruptedData(format!(
+                "cidx paginated proof: layer chain mismatch — parent recorded value_hash {} \
+                 but combine_hash_three(H(cidx_bytes), primary_root, secondary_root) is {}",
+                hex::encode(cidx_value_hash_recorded),
+                hex::encode(combined)
+            )));
+        }
+
+        // 1c. Walk shallower layers — identical shape to the
+        // non-paginated verifier.
+        if envelope.ancestor_cidx_secondary_root_hashes.len() != last_idx {
+            return Err(Error::CorruptedData(format!(
+                "cidx paginated proof: ancestor_cidx_secondary_root_hashes has length {} but \
+                 expected {}",
+                envelope.ancestor_cidx_secondary_root_hashes.len(),
+                last_idx
+            )));
+        }
+        for depth in (0..last_idx).rev() {
+            let key = path[depth];
+            let (value_bytes, layer_root, recorded_value_hash) = execute_single_key_proof(
+                &envelope.layer_proofs[depth],
+                key,
+                "cidx paginated intermediate layer",
+            )?;
+            let val_h = value_hash(&value_bytes).value().to_owned();
+            let combined = match envelope.ancestor_cidx_secondary_root_hashes[depth] {
+                Some(ancestor_secondary_root) => {
+                    combine_hash_three(&val_h, &current_layer_root, &ancestor_secondary_root)
+                        .value()
+                        .to_owned()
+                }
+                None => combine_hash(&val_h, &current_layer_root).value().to_owned(),
+            };
+            if combined != recorded_value_hash {
+                let chain_kind = if envelope.ancestor_cidx_secondary_root_hashes[depth].is_some() {
+                    "combine_hash_three"
+                } else {
+                    "combine_hash"
+                };
+                return Err(Error::CorruptedData(format!(
+                    "cidx paginated proof: intermediate layer at depth {} chain mismatch: \
+                     parent recorded value_hash {} but {}(H(value), child_root, ...) is {}",
+                    depth,
+                    hex::encode(recorded_value_hash),
+                    chain_kind,
+                    hex::encode(combined)
+                )));
+            }
+            current_layer_root = layer_root;
+        }
+
+        Ok(CountIndexedPaginatedResult {
+            root_hash: current_layer_root,
+            entries,
+            skipped: count_offset_result.skipped,
+        })
     }
 
     fn verify_count_indexed_inner(
