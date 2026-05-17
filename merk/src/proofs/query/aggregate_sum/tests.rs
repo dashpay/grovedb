@@ -654,11 +654,39 @@ fn provable_sum_from_aggregate_accepts_provable_sum() {
     );
 }
 
+/// `provable_sum_from_aggregate` also accepts the dual-axis variant —
+/// it extracts the sum from a `ProvableCountAndProvableSum(_, sum)`.
 #[test]
-fn is_provable_sum_bearing_only_for_provable_sum_tree() {
-    // Every TreeType variant must return false except ProvableSumTree.
-    // This pins the matches!(...) gate against accidental loosening.
+fn provable_sum_from_aggregate_accepts_dual_axis_variant() {
+    assert_eq!(
+        provable_sum_from_aggregate(AggregateData::ProvableCountAndProvableSum(7, -42)).unwrap(),
+        -42
+    );
+    assert_eq!(
+        provable_sum_from_aggregate(AggregateData::ProvableCountAndProvableSum(
+            u64::MAX,
+            i64::MAX
+        ))
+        .unwrap(),
+        i64::MAX
+    );
+    assert_eq!(
+        provable_sum_from_aggregate(AggregateData::ProvableCountAndProvableSum(0, i64::MIN))
+            .unwrap(),
+        i64::MIN
+    );
+}
+
+#[test]
+fn is_provable_sum_bearing_for_provable_sum_tree_and_pcps() {
+    // Both ProvableSumTree (sum-only) and ProvableCountProvableSumTree
+    // (dual-axis) bind the sum into their node hash and therefore
+    // accept AggregateSumOnRange proofs.
     assert!(is_provable_sum_bearing(TreeType::ProvableSumTree));
+    assert!(is_provable_sum_bearing(
+        TreeType::ProvableCountProvableSumTree
+    ));
+    // Every other variant is rejected.
     for t in [
         TreeType::NormalTree,
         TreeType::SumTree,
@@ -673,6 +701,106 @@ fn is_provable_sum_bearing_only_for_provable_sum_tree() {
         TreeType::DenseAppendOnlyFixedSizeTree(0),
     ] {
         assert!(!is_provable_sum_bearing(t), "false expected for {:?}", t);
+    }
+}
+
+// ---------- ProvableCountProvableSumTree (dual-axis) tests ----------
+
+/// Build a fresh `ProvableCountProvableSumTree` populated with single-byte
+/// keys "a".."o" (15 keys), each carrying count=1 and sum=(i+1). Returns
+/// the merk and root hash.
+fn make_15_key_provable_count_provable_sum_tree(
+    grove_version: &GroveVersion,
+) -> (TempMerk, [u8; 32]) {
+    use crate::tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode;
+    let mut merk =
+        TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+    let keys: Vec<Vec<u8>> = (b'a'..=b'o').map(|c| vec![c]).collect();
+    let entries: Vec<(Vec<u8>, Op)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let s = (i as i64) + 1;
+            (
+                k.clone(),
+                Op::Put(
+                    vec![i as u8],
+                    ProvableCountedAndProvableSummedMerkNode(1, s),
+                ),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+        .unwrap()
+        .expect("apply ProvableCountProvableSumTree entries");
+    merk.commit(grove_version);
+    let root_hash = merk.root_hash().unwrap();
+    (merk, root_hash)
+}
+
+/// Aggregate-sum proof against `ProvableCountProvableSumTree` round-trips.
+/// Same shape as `single_key_provable_sum_tree_round_trip` for the
+/// sum-only host, but the emitter dispatches dual-axis variants
+/// (`HashWithCountAndSum`, `KVDigestCountSum`) and the verifier
+/// reconstructs `node_hash_with_count_and_sum`.
+#[test]
+fn integration_sum_proof_against_pcps_round_trips() {
+    let v = GroveVersion::latest();
+    let (merk, expected_root) = make_15_key_provable_count_provable_sum_tree(v);
+    // c..=l → sums 3+4+5+6+7+8+9+10+11+12 = 75
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (ops, prover_sum) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove sum on PCPS should succeed");
+    assert_eq!(prover_sum, 75, "c..=l sum should be 75");
+    let bytes = encode_proof(&ops);
+    let (root, verifier_sum) = verify_aggregate_sum_on_range_proof(&bytes, &inner_range)
+        .unwrap()
+        .expect("verify sum proof on PCPS should succeed");
+    assert_eq!(root, expected_root);
+    assert_eq!(verifier_sum, 75);
+}
+
+/// Disjoint-leaf rejection on the dual-axis sum side. Mirrors
+/// `shape_walk_rejects_disjoint_hashwithsum_with_children` for the
+/// sum-only host.
+#[test]
+fn shape_walk_rejects_disjoint_hashwithcountandsum_with_children_pcps() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeAfter(b"o".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithCountAndSum(..))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], 1, 0,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(done, "test setup: need at least one HashWithCountAndSum op");
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result
+        .expect_err("spliced child under Disjoint HashWithCountAndSum (sum side) must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Disjoint position must be a leaf")
+                || msg.contains("at a Disjoint position"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
     }
 }
 

@@ -1484,6 +1484,78 @@ mod tests {
         );
     }
 
+    /// Inside a `ProvableCountProvableSumTree` parent, items map to
+    /// `KvCountSum` (the new dual-axis variant) and references map to
+    /// `KvRefValueHashCountSum`. Subtrees still use
+    /// `KvValueHashFeatureType` — the embedded `TreeFeatureType`
+    /// (`ProvableCountedAndProvableSummedMerkNode`) carries both
+    /// aggregates. Wrappers normalize through `base()` so a
+    /// `NonCounted` / `NotSummed` / `NotCountedOrSummed` wrap of the
+    /// new variant produces the same dispatch.
+    #[test]
+    fn test_proof_node_type_provable_count_provable_sum_tree() {
+        use super::ProofNodeType;
+
+        let pcps = Some(ElementType::ProvableCountProvableSumTree);
+
+        assert_eq!(
+            ElementType::Item.proof_node_type(pcps),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::SumItem.proof_node_type(pcps),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::ItemWithSumItem.proof_node_type(pcps),
+            ProofNodeType::KvCountSum
+        );
+
+        assert_eq!(
+            ElementType::Reference.proof_node_type(pcps),
+            ProofNodeType::KvRefValueHashCountSum
+        );
+        assert_eq!(
+            ElementType::ReferenceWithSumItem.proof_node_type(pcps),
+            ProofNodeType::KvRefValueHashCountSum
+        );
+
+        // Subtrees still go through KvValueHashFeatureType. The embedded
+        // feature_type carries both axes via the
+        // ProvableCountedAndProvableSummedMerkNode variant.
+        assert_eq!(
+            ElementType::Tree.proof_node_type(pcps),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::SumTree.proof_node_type(pcps),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::ProvableCountProvableSumTree.proof_node_type(pcps),
+            ProofNodeType::KvValueHashFeatureType
+        );
+
+        // Wrappers around PCPS parents normalize transparently to the
+        // same dual-axis dispatch.
+        assert_eq!(
+            ElementType::Item
+                .proof_node_type(Some(ElementType::NonCountedProvableCountProvableSumTree)),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::Item
+                .proof_node_type(Some(ElementType::NotSummedProvableCountProvableSumTree)),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::Item.proof_node_type(Some(
+                ElementType::NotCountedOrSummedProvableCountProvableSumTree
+            )),
+            ProofNodeType::KvCountSum
+        );
+    }
+
     #[test]
     fn test_proof_node_type_through_non_counted_wrapper() {
         use super::ProofNodeType;

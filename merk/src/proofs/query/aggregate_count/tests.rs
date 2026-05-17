@@ -631,6 +631,160 @@ fn no_proof_provable_count_sum_tree() {
     assert_eq!(count, 10, "c..=l should be 10 keys");
 }
 
+/// Build a fresh `ProvableCountProvableSumTree` populated with single-byte
+/// keys "a".."o" (15 keys), each carrying count=1 and sum=(i+1). Sums
+/// 1+..+15 = 120.
+fn make_15_key_provable_count_provable_sum_tree(
+    grove_version: &GroveVersion,
+) -> (TempMerk, [u8; 32]) {
+    let mut merk =
+        TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+    let keys: Vec<Vec<u8>> = (b'a'..=b'o').map(|c| vec![c]).collect();
+    let entries: Vec<(Vec<u8>, Op)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let sum = (i as i64) + 1;
+            (
+                k.clone(),
+                Op::Put(
+                    vec![i as u8],
+                    crate::tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, sum),
+                ),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+        .unwrap()
+        .expect("apply ProvableCountProvableSumTree entries");
+    merk.commit(grove_version);
+    let root_hash = merk.root_hash().unwrap();
+    (merk, root_hash)
+}
+
+/// Aggregate-count proof against `ProvableCountProvableSumTree`
+/// round-trips. Same shape as `integration_open_range_from`, but the
+/// emitter dispatches dual-axis variants (`HashWithCountAndSum`,
+/// `KVDigestCountSum`) and the verifier reconstructs
+/// `node_hash_with_count_and_sum`.
+#[test]
+fn integration_count_proof_against_pcps_round_trips() {
+    let v = GroveVersion::latest();
+    let (merk, expected_root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (ops, prover_count) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove count on PCPS should succeed");
+    assert_eq!(prover_count, 10, "c..=l is 10 keys");
+    let bytes = encode_proof(&ops);
+    let (root, verifier_count) = verify_aggregate_count_on_range_proof(&bytes, &inner_range)
+        .unwrap()
+        .expect("verify count proof on PCPS should succeed");
+    assert_eq!(root, expected_root);
+    assert_eq!(verifier_count, 10);
+}
+
+/// Disjoint-leaf rejection on the dual-axis side: forging
+/// `HashWithCountAndSum` children under a leaf-classification node must
+/// be rejected by the shape walk. Mirrors
+/// `shape_walk_rejects_disjoint_hashwithcount_with_children` for the
+/// count-only side.
+#[test]
+fn shape_walk_rejects_disjoint_hashwithcountandsum_with_children_pcps() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    // Range above all keys → Disjoint at root.
+    let inner_range = QueryItem::RangeAfter(b"o".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Splice in a child under the first HashWithCountAndSum to force the
+    // "leaf at Disjoint position must be a leaf" rejection.
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithCountAndSum(..))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], 1, 0,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(done, "test setup: need at least one HashWithCountAndSum op");
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err(
+        "spliced child under Disjoint HashWithCountAndSum must be rejected by shape walk",
+    );
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Disjoint position must be a leaf")
+                || msg.contains("at a Disjoint position"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Forged-count rejection: replacing the dual-axis HashWithCountAndSum
+/// count with a wrong value forces the verifier's hash reconstruction
+/// to diverge — and the caller's root-hash check would catch it.
+/// We verify the proof returns a successful in-range count (the shape
+/// walk itself doesn't check the count value, only structure), then
+/// assert the returned root hash is NOT the honest root.
+#[test]
+fn integration_pcps_count_forgery_changes_root_hash() {
+    let v = GroveVersion::latest();
+    let (merk, honest_root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeFrom(b"o".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Tamper the first HashWithCountAndSum count field.
+    let mut tampered = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        if !done && let ProofOp::Push(Node::HashWithCountAndSum(kv, l, r, count, sum)) = op {
+            // Forge: bump count by 1 to claim an extra key.
+            tampered.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                *kv,
+                *l,
+                *r,
+                count + 1,
+                *sum,
+            )));
+            done = true;
+        } else {
+            tampered.push_back(op.clone());
+        }
+    }
+    assert!(done, "test setup: need at least one HashWithCountAndSum op");
+    ops = tampered;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    if let Ok((forged_root, _)) = result {
+        // If shape walk accepted the tampered proof (it might, since the
+        // count field isn't shape-validated), the reconstructed root MUST
+        // diverge from the honest one — that's the cryptographic binding.
+        assert_ne!(
+            forged_root, honest_root,
+            "forging the count on a HashWithCountAndSum must change the reconstructed root hash"
+        );
+    }
+    // If the shape walk rejected outright, that's also fine — the proof
+    // is invalid either way.
+}
+
 // ---------- attack tests for the shape-walk verifier ----------
 //
 // These three tests exercise attacks the old allowlist-only verifier let
