@@ -25,7 +25,9 @@ mod tests {
     use grovedb_merk::proofs::{query::QueryItem, Query};
     use grovedb_version::version::GroveVersion;
 
-    use crate::{tests::make_test_grovedb, Element, GroveDb, PathQuery};
+    use crate::{
+        reference_path::ReferencePathType, tests::make_test_grovedb, Element, GroveDb, PathQuery,
+    };
 
     /// 1. Round-trip a `ProvableCountProvableSumTree`: insert it, populate
     /// with mixed `SumItem` children, verify the parent tracks BOTH count
@@ -478,5 +480,118 @@ mod tests {
             .expect("pcps");
         assert_eq!(count, 0, "NotCountedOrSummed must suppress count");
         assert_eq!(sum, 0, "NotCountedOrSummed must suppress sum");
+    }
+
+    /// 6. References under a `ProvableCountProvableSumTree` parent must
+    /// survive the GroveDB proof post-processor's reference rewrite as
+    /// `KVRefValueHashCountSum` — carrying BOTH the count and sum
+    /// aggregates that the merk-layer node hash committed via
+    /// `node_hash_with_count_and_sum`. The previous post-processor only
+    /// looked for `ProvableCountedMerkNode` and `ProvableSummedMerkNode`
+    /// features, so a PCPS reference's
+    /// `ProvableCountedAndProvableSummedMerkNode` feature would fall
+    /// through to plain `KVRefValueHash` and drop both axes from the
+    /// proof. This test pins that the proof round-trips end-to-end:
+    /// generated against a PCPS-host Reference, the verifier
+    /// reconstructs the root hash exactly.
+    #[test]
+    fn pcps_reference_proof_round_trips_against_same_root() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        // Container PCPS at root.
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcps");
+
+        // Target sum-item in a separate ProvableSumTree branch so the
+        // Reference resolution exercises a real dereference (not the
+        // identity case).
+        db.insert(
+            &[] as &[&[u8]],
+            b"sums",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sums");
+        db.insert(
+            &[b"sums".as_slice()],
+            b"target",
+            Element::new_sum_item(42),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert target");
+
+        // Insert a Reference at b"r" under PCPS pointing at b"sums/target".
+        // Inside a PCPS parent the proof emit will use
+        // `KVRefValueHashCountSum` for this Reference; the post-processor
+        // must recognise the
+        // `ProvableCountedAndProvableSummedMerkNode(count, sum)` feature
+        // and emit the dual-axis ref Node carrying BOTH aggregates.
+        db.insert(
+            &[b"pcps".as_slice()],
+            b"r",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"sums".to_vec(),
+                b"target".to_vec(),
+            ])),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert reference");
+
+        let root_hash = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root_hash");
+
+        // Prove the reference. The proof must verify against the same
+        // root hash — if the PCPS ref was downgraded to plain
+        // `KVRefValueHash`, the reconstructed node_hash_with_count_and_sum
+        // wouldn't match and the verifier would surface a root-hash
+        // mismatch.
+        let mut query = Query::new();
+        query.insert_key(b"r".to_vec());
+        let path_query = PathQuery::new_unsized(vec![b"pcps".to_vec()], query);
+        let proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove pcps reference");
+        let (proven_root, proved) =
+            GroveDb::verify_query(&proof, &path_query, grove_version).expect("verify");
+        assert_eq!(
+            proven_root, root_hash,
+            "PCPS reference proof must verify against the GroveDB root — root mismatch here \
+             means the dual-axis ref was downgraded and dropped its hash-bound aggregates"
+        );
+        // The verified result follows the reference and surfaces the
+        // SumItem at the target — so we should see exactly one entry
+        // with value=42. Result tuple shape is
+        // `(path, key, Option<Element>)`.
+        assert_eq!(proved.len(), 1, "expected one result, got {:?}", proved);
+        let (_path, _key, resolved) = &proved[0];
+        match resolved {
+            Some(Element::SumItem(v, _)) => assert_eq!(*v, 42),
+            Some(other) => panic!(
+                "expected SumItem at the resolved reference, got {:?}",
+                other
+            ),
+            None => panic!("expected resolved value, got absence"),
+        }
     }
 }
