@@ -443,7 +443,8 @@ impl GroveDb {
                         .map_err(Error::MerkError)
                 );
             }
-            Element::Reference(reference_path_type, ..) => {
+            Element::Reference(reference_path_type, ..)
+            | Element::ReferenceWithSumItem(reference_path_type, ..) => {
                 // Resolve the reference, fetch the target's value_hash,
                 // and insert via Element::insert_reference so the merk
                 // node carries combine_hash(value_hash(serialized),

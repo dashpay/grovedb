@@ -270,7 +270,12 @@ impl GroveDb {
         // calls operate on the outer wrapper, which is what we want — the
         // serialized wrapper bytes go to storage.
         match element.underlying() {
-            Element::Reference(reference_path, ..) => {
+            // `ReferenceWithSumItem` shares the reference resolution + proof
+            // shape with `Reference`. The merk feature_type derived from the
+            // element's `sum_value_or_default()` already routes the sum into
+            // any sum-bearing parent; the call site is otherwise identical.
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
                 let path = path.to_vec(); // TODO: need for support for references in path library
                 let reference_path = cost_return_on_error_into!(
                     &mut cost,

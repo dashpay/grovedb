@@ -188,6 +188,7 @@ impl GroveDb {
         flags: &Option<ElementFlags>,
         tree_type: TreeType,
         in_parent_tree_type: TreeType,
+        wrapper_overhead: u32,
         propagate_if_input: Option<&EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -207,7 +208,11 @@ impl GroveDb {
             flags_len + flags_len.required_space() as u32
         });
         let tree_cost_size = tree_type.cost_size();
-        let value_len = tree_cost_size + flags_len;
+        // `wrapper_overhead` accounts for the wrapper discriminant byte
+        // that `Element::NonCounted` / `Element::NotSummed` /
+        // `Element::NotCountedOrSummed` add to the serialized payload.
+        // Callers pass 1 when the on-disk shape will be wrapped, else 0.
+        let value_len = tree_cost_size + flags_len + wrapper_overhead;
         add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_parent_tree_type);
         if let Some(input) = propagate_if_input {
             add_average_case_merk_propagate(&mut cost, input, grove_version)

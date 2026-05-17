@@ -660,6 +660,64 @@ fn query_item_to_grovedb(item: QueryItem) -> crate::QueryItem {
     }
 }
 
+/// Convert a [`crate::ReferencePathType`] plus optional element flags
+/// into the corresponding `grovedbg_types::Reference` wire variant.
+/// Shared by both the plain `Element::Reference` and the
+/// `Element::ReferenceWithSumItem` arms of [`element_to_grovedbg`].
+fn reference_path_to_grovedbg(
+    reference_path: ReferencePathType,
+    element_flags: Option<Vec<u8>>,
+) -> grovedbg_types::Reference {
+    match reference_path {
+        ReferencePathType::AbsolutePathReference(path) => {
+            grovedbg_types::Reference::AbsolutePathReference {
+                path,
+                element_flags,
+            }
+        }
+        ReferencePathType::UpstreamRootHeightReference(n_keep, path_append) => {
+            grovedbg_types::Reference::UpstreamRootHeightReference {
+                n_keep: n_keep.into(),
+                path_append,
+                element_flags,
+            }
+        }
+        ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
+            n_keep,
+            path_append,
+        ) => grovedbg_types::Reference::UpstreamRootHeightWithParentPathAdditionReference {
+            n_keep: n_keep.into(),
+            path_append,
+            element_flags,
+        },
+        ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append) => {
+            grovedbg_types::Reference::UpstreamFromElementHeightReference {
+                n_remove: n_remove.into(),
+                path_append,
+                element_flags,
+            }
+        }
+        ReferencePathType::CousinReference(swap_parent) => {
+            grovedbg_types::Reference::CousinReference {
+                swap_parent,
+                element_flags,
+            }
+        }
+        ReferencePathType::RemovedCousinReference(swap_parent) => {
+            grovedbg_types::Reference::RemovedCousinReference {
+                swap_parent,
+                element_flags,
+            }
+        }
+        ReferencePathType::SiblingReference(sibling_key) => {
+            grovedbg_types::Reference::SiblingReference {
+                sibling_key,
+                element_flags,
+            }
+        }
+    }
+}
+
 fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
     match element {
         crate::Element::Item(value, element_flags) => grovedbg_types::Element::Item {
@@ -670,76 +728,21 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             root_key,
             element_flags,
         },
-        crate::Element::Reference(
-            ReferencePathType::AbsolutePathReference(path),
-            _,
-            element_flags,
-        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::AbsolutePathReference {
-            path,
-            element_flags,
-        }),
-        crate::Element::Reference(
-            ReferencePathType::UpstreamRootHeightReference(n_keep, path_append),
-            _,
-            element_flags,
-        ) => grovedbg_types::Element::Reference(
-            grovedbg_types::Reference::UpstreamRootHeightReference {
-                n_keep: n_keep.into(),
-                path_append,
+        crate::Element::Reference(reference_path, _, element_flags) => {
+            grovedbg_types::Element::Reference(reference_path_to_grovedbg(
+                reference_path,
                 element_flags,
-            },
-        ),
-        crate::Element::Reference(
-            ReferencePathType::UpstreamRootHeightWithParentPathAdditionReference(
-                n_keep,
-                path_append,
-            ),
-            _,
-            element_flags,
-        ) => grovedbg_types::Element::Reference(
-            grovedbg_types::Reference::UpstreamRootHeightWithParentPathAdditionReference {
-                n_keep: n_keep.into(),
-                path_append,
-                element_flags,
-            },
-        ),
-        crate::Element::Reference(
-            ReferencePathType::UpstreamFromElementHeightReference(n_remove, path_append),
-            _,
-            element_flags,
-        ) => grovedbg_types::Element::Reference(
-            grovedbg_types::Reference::UpstreamFromElementHeightReference {
-                n_remove: n_remove.into(),
-                path_append,
-                element_flags,
-            },
-        ),
-        crate::Element::Reference(
-            ReferencePathType::CousinReference(swap_parent),
-            _,
-            element_flags,
-        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::CousinReference {
-            swap_parent,
-            element_flags,
-        }),
-        crate::Element::Reference(
-            ReferencePathType::RemovedCousinReference(swap_parent),
-            _,
-            element_flags,
-        ) => {
-            grovedbg_types::Element::Reference(grovedbg_types::Reference::RemovedCousinReference {
-                swap_parent,
-                element_flags,
-            })
+            ))
         }
-        crate::Element::Reference(
-            ReferencePathType::SiblingReference(sibling_key),
-            _,
+        crate::Element::ReferenceWithSumItem(
+            reference_path,
+            _max_hop,
+            sum_item_value,
             element_flags,
-        ) => grovedbg_types::Element::Reference(grovedbg_types::Reference::SiblingReference {
-            sibling_key,
-            element_flags,
-        }),
+        ) => grovedbg_types::Element::ReferenceWithSumItem {
+            reference: reference_path_to_grovedbg(reference_path, element_flags),
+            sum_item_value,
+        },
         crate::Element::SumItem(value, element_flags) => grovedbg_types::Element::SumItem {
             value,
             element_flags,
@@ -901,6 +904,71 @@ mod tests {
                 assert_eq!(element_flags, flags);
             }
             _ => panic!("unexpected debugger conversion"),
+        }
+    }
+
+    /// `ReferenceWithSumItem` is converted to the dedicated
+    /// `grovedbg_types::Element::ReferenceWithSumItem` wire variant
+    /// — the path is forwarded via the shared
+    /// `reference_path_to_grovedbg` helper and the explicit
+    /// `sum_item_value` (independent of the resolved target) is
+    /// preserved on the wire.
+    #[test]
+    fn element_to_grovedbg_converts_reference_with_sum_item_absolute_path() {
+        let flags = Some(vec![9, 9, 9]);
+        let path = ReferencePathType::AbsolutePathReference(vec![
+            b"some_leaf".to_vec(),
+            b"target".to_vec(),
+        ]);
+        let element = crate::Element::ReferenceWithSumItem(path, Some(3), 42, flags.clone());
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ReferenceWithSumItem {
+                reference,
+                sum_item_value,
+            } => {
+                assert_eq!(sum_item_value, 42);
+                match reference {
+                    grovedbg_types::Reference::AbsolutePathReference {
+                        path,
+                        element_flags,
+                    } => {
+                        assert_eq!(path, vec![b"some_leaf".to_vec(), b"target".to_vec()]);
+                        assert_eq!(element_flags, flags);
+                    }
+                    other => panic!("unexpected wire reference: {other:?}"),
+                }
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
+        }
+    }
+
+    /// A non-absolute reference-with-sum-item (here `SiblingReference`)
+    /// also flows through `reference_path_to_grovedbg` unchanged.
+    /// Exercises one of the six non-absolute path variants to confirm
+    /// the helper covers the full discriminant set.
+    #[test]
+    fn element_to_grovedbg_converts_reference_with_sum_item_sibling() {
+        let element = crate::Element::ReferenceWithSumItem(
+            ReferencePathType::SiblingReference(b"sib".to_vec()),
+            None,
+            -7,
+            None,
+        );
+        match element_to_grovedbg(element) {
+            grovedbg_types::Element::ReferenceWithSumItem {
+                reference,
+                sum_item_value,
+            } => {
+                assert_eq!(sum_item_value, -7);
+                assert!(matches!(
+                    reference,
+                    grovedbg_types::Reference::SiblingReference {
+                        sibling_key,
+                        element_flags: None,
+                    } if sibling_key == b"sib".to_vec()
+                ));
+            }
+            other => panic!("unexpected debugger conversion: {other:?}"),
         }
     }
 }

@@ -28,7 +28,8 @@ use crate::Element;
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
+        RefreshReferenceMode, TreeCache,
     },
     Error, GroveDb,
 };
@@ -64,12 +65,17 @@ impl GroveOp {
             GroveOp::InsertTreeWithRootHash {
                 flags,
                 aggregate_data,
+                non_counted,
+                not_summed,
+                not_counted_or_summed,
                 ..
             } => GroveDb::worst_case_merk_insert_tree(
                 key,
                 flags,
                 aggregate_data.parent_tree_type(),
                 in_parent_tree_type,
+                // See the comment in the corresponding average-case arm.
+                super::wrapper_overhead_for(*non_counted, *not_summed, *not_counted_or_summed),
                 propagate_if_input(),
                 grove_version,
             ),
@@ -107,19 +113,52 @@ impl GroveOp {
             GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
+                mode,
                 flags,
+                non_counted,
                 ..
-            } => GroveDb::worst_case_merk_replace_element(
-                key,
-                &Element::Reference(
-                    reference_path_type.clone(),
-                    *max_reference_hop,
-                    flags.clone(),
-                ),
-                in_parent_tree_type,
-                propagate_if_input(),
-                grove_version,
-            ),
+            } => {
+                // Build the element shape the apply path will write —
+                // see the corresponding comment in the average-case
+                // estimator.
+                let inner = match mode {
+                    RefreshReferenceMode::PlainReferenceTrusted
+                    | RefreshReferenceMode::PlainReferenceUntrusted => Element::Reference(
+                        reference_path_type.clone(),
+                        *max_reference_hop,
+                        flags.clone(),
+                    ),
+                    RefreshReferenceMode::SumItemReferenceTrusted(sum)
+                    | RefreshReferenceMode::SumItemReferenceUntrustedValueUpdate(sum) => {
+                        Element::ReferenceWithSumItem(
+                            reference_path_type.clone(),
+                            *max_reference_hop,
+                            *sum,
+                            flags.clone(),
+                        )
+                    }
+                    RefreshReferenceMode::SumItemReferenceUntrustedNoValueUpdate => {
+                        Element::ReferenceWithSumItem(
+                            reference_path_type.clone(),
+                            *max_reference_hop,
+                            0,
+                            flags.clone(),
+                        )
+                    }
+                };
+                let element = if *non_counted {
+                    Element::NonCounted(Box::new(inner))
+                } else {
+                    inner
+                };
+                GroveDb::worst_case_merk_replace_element(
+                    key,
+                    &element,
+                    in_parent_tree_type,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
             GroveOp::Replace { element } => GroveDb::worst_case_merk_replace_element(
                 key,
                 element,
@@ -301,11 +340,19 @@ impl GroveOp {
                 propagate,
                 grove_version,
             ),
-            GroveOp::InsertNonMerkTree { flags, meta, .. } => GroveDb::worst_case_merk_insert_tree(
+            GroveOp::InsertNonMerkTree {
+                flags,
+                meta,
+                non_counted,
+                ..
+            } => GroveDb::worst_case_merk_insert_tree(
                 key,
                 flags,
                 meta.to_tree_type(),
                 in_parent_tree_type,
+                // Non-Merk trees are never sum-bearing, so only the
+                // NonCounted wrapper applies.
+                if *non_counted { 1 } else { 0 },
                 propagate_if_input(),
                 grove_version,
             ),
@@ -840,6 +887,7 @@ mod tests {
             ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
             Some(5),
             None,
+            /* non_counted = */ false,
             true,
         )];
         let mut paths = HashMap::new();
@@ -862,6 +910,114 @@ mod tests {
         .expect("expected worst case costs for refresh reference");
         assert!(cost.seek_count > 0);
         assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_refresh_reference_with_sum_item_worst_case_cost() {
+        let grove_version = GroveVersion::latest();
+        let ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            42,    // sum_value
+            None,  // flags
+            false, // non_counted
+            true,  // trust_refresh_reference
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for refresh reference with sum item");
+        assert!(cost.seek_count > 0);
+        assert!(cost.hash_node_calls > 0);
+    }
+
+    #[test]
+    fn test_refresh_reference_with_sum_item_non_counted_worst_case_cost() {
+        // Symmetric to the average-case test: verify the non_counted=true
+        // variant's worst-case estimate is at least as large as the
+        // bare variant. Before the fix the estimator dropped the
+        // NonCounted wrapper byte from the cost model.
+        let grove_version = GroveVersion::latest();
+        let nc_ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            42,
+            None,
+            /* non_counted = */ true,
+            /* trust_refresh_reference = */ true,
+        )];
+        let bare_ops = vec![QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![vec![7]],
+            b"ref_key".to_vec(),
+            ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]),
+            Some(5),
+            42,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ true,
+        )];
+        let mut paths = HashMap::new();
+        paths.insert(KeyInfoPath(vec![]), MaxElementsNumber(1));
+        paths.insert(
+            KeyInfoPath::from_known_owned_path(vec![vec![7]]),
+            MaxElementsNumber(100),
+        );
+        let nc_cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths.clone()),
+            nc_ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for non-counted refresh");
+        let bare_cost = GroveDb::estimated_case_operations_for_batch(
+            WorstCaseCostsType(paths),
+            bare_ops,
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected worst case costs for bare refresh");
+
+        // Strict `>`: NonCounted-wrapped element must be at least one
+        // wrapper-discriminant byte larger than the bare variant. The
+        // bug we're pinning is an undercount that produces an
+        // *identical* estimate, so equality must fail this check.
+        assert!(
+            nc_cost.storage_cost.added_bytes + nc_cost.storage_cost.replaced_bytes
+                > bare_cost.storage_cost.added_bytes + bare_cost.storage_cost.replaced_bytes,
+            "non_counted=true cost must be strictly greater than bare cost; nc={:?}, bare={:?}",
+            nc_cost,
+            bare_cost,
+        );
+        assert!(nc_cost.seek_count > 0);
+        assert!(nc_cost.hash_node_calls > 0);
     }
 
     #[test]
@@ -1175,6 +1331,101 @@ mod tests {
             .expect("expected worst case cost for insert non-merk tree with flags");
         assert!(cost.seek_count > 0);
         assert!(cost.hash_node_calls > 0);
+    }
+
+    /// Covers the wrapper-byte accounting in
+    /// `GroveOp::InsertTreeWithRootHash::worst_case_cost`. The three
+    /// wrapper bits (`non_counted` / `not_summed` /
+    /// `not_counted_or_summed`) each prepend one bincode discriminant
+    /// byte to the rebuilt tree element; the cost estimator must
+    /// include it in `value_len`. Mirror of the average-case test.
+    #[test]
+    fn test_insert_tree_with_root_hash_wrapper_bits_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        use grovedb_merk::tree::AggregateData;
+        let key = KeyInfo::KnownKey(b"merk_key".to_vec());
+        let cost_for = |non_counted: bool, not_summed: bool, not_counted_or_summed: bool| {
+            let op = GroveOp::InsertTreeWithRootHash {
+                hash: [0xAAu8; 32],
+                root_key: None,
+                flags: None,
+                aggregate_data: AggregateData::NoAggregateData,
+                non_counted,
+                not_summed,
+                not_counted_or_summed,
+            };
+            op.worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for InsertTreeWithRootHash")
+        };
+        let bare = cost_for(false, false, false);
+        let nc = cost_for(true, false, false);
+        let ns = cost_for(false, true, false);
+        let ncs = cost_for(false, false, true);
+        assert!(
+            nc.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "non_counted should add wrapper byte; nc={:?}, bare={:?}",
+            nc,
+            bare,
+        );
+        assert!(
+            ns.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "not_summed should add wrapper byte; ns={:?}, bare={:?}",
+            ns,
+            bare,
+        );
+        assert!(
+            ncs.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "not_counted_or_summed should add wrapper byte; ncs={:?}, bare={:?}",
+            ncs,
+            bare,
+        );
+    }
+
+    /// Covers the wrapper-byte accounting in
+    /// `GroveOp::InsertNonMerkTree::worst_case_cost`. Non-Merk trees
+    /// only carry `non_counted`.
+    #[test]
+    fn test_insert_non_merk_tree_non_counted_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        use grovedb_merk::tree::AggregateData;
+        let key = KeyInfo::KnownKey(b"new_dense".to_vec());
+        let cost_for = |non_counted: bool| {
+            let op = GroveOp::InsertNonMerkTree {
+                hash: [5u8; 32],
+                root_key: None,
+                flags: None,
+                aggregate_data: AggregateData::NoAggregateData,
+                meta: NonMerkTreeMeta::DenseTree {
+                    count: 0,
+                    height: 8,
+                },
+                non_counted,
+            };
+            op.worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for InsertNonMerkTree")
+        };
+        let bare = cost_for(false);
+        let nc = cost_for(true);
+        assert!(
+            nc.storage_cost.added_bytes > bare.storage_cost.added_bytes,
+            "InsertNonMerkTree non_counted should add wrapper byte; nc={:?}, bare={:?}",
+            nc,
+            bare,
+        );
     }
 
     #[test]

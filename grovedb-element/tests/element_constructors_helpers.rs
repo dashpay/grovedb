@@ -536,3 +536,190 @@ fn convert_if_reference_to_absolute_reference_converts_and_preserves_other_types
         ElementError::InvalidInput("reference stored path cannot satisfy reference constraints")
     ));
 }
+
+#[test]
+fn constructors_create_expected_reference_with_sum_item_variants() {
+    let ref_path = ReferencePathType::AbsolutePathReference(vec![b"a".to_vec(), b"b".to_vec()]);
+
+    assert_eq!(
+        Element::new_reference_with_sum_item(ref_path.clone(), 42),
+        Element::ReferenceWithSumItem(ref_path.clone(), None, 42, None)
+    );
+    assert_eq!(
+        Element::new_reference_with_sum_item_with_flags(ref_path.clone(), 42, sample_flags()),
+        Element::ReferenceWithSumItem(ref_path.clone(), None, 42, sample_flags())
+    );
+    assert_eq!(
+        Element::new_reference_with_sum_item_with_hops(ref_path.clone(), Some(7), 42),
+        Element::ReferenceWithSumItem(ref_path.clone(), Some(7), 42, None)
+    );
+    assert_eq!(
+        Element::new_reference_with_sum_item_with_max_hops_and_flags(
+            ref_path.clone(),
+            Some(7),
+            42,
+            sample_flags()
+        ),
+        Element::ReferenceWithSumItem(ref_path, Some(7), 42, sample_flags())
+    );
+}
+
+#[test]
+fn reference_with_sum_item_helpers_pass_through_sum_and_reference_predicates() {
+    let ref_path = ReferencePathType::SiblingReference(b"k".to_vec());
+    let element = Element::new_reference_with_sum_item(ref_path.clone(), 42);
+
+    // It is a reference, NOT an item — even though it carries a sum value.
+    assert!(element.is_reference());
+    assert!(element.is_reference_with_sum_item());
+    assert!(!element.is_any_item());
+    assert!(!element.is_basic_item());
+    assert!(!element.has_basic_item());
+    assert!(!element.is_sum_item());
+    assert!(!element.is_item_with_sum_item());
+    assert!(!element.is_any_tree());
+
+    // Sum propagation: contributes its explicit value, independent of target.
+    assert_eq!(element.sum_value_or_default(), 42);
+    assert_eq!(element.big_sum_value_or_default(), 42);
+    // Counts as a single element.
+    assert_eq!(element.count_value_or_default(), 1);
+    assert_eq!(element.count_sum_value_or_default(), (1, 42));
+
+    // Negative sum is preserved.
+    let neg = Element::new_reference_with_sum_item(ref_path.clone(), -100);
+    assert_eq!(neg.sum_value_or_default(), -100);
+    assert_eq!(neg.count_sum_value_or_default(), (1, -100));
+
+    // `as_sum_item_value` extracts the sum even though this is not an item.
+    assert_eq!(element.as_sum_item_value().unwrap(), 42);
+    assert_eq!(element.clone().into_sum_item_value().unwrap(), 42);
+
+    // Path round-trips through the reference accessor.
+    assert_eq!(
+        element.clone().into_reference_path_type().unwrap(),
+        ref_path
+    );
+}
+
+#[test]
+fn non_counted_reference_with_sum_item_zeros_count_keeps_sum() {
+    let inner = Element::new_reference_with_sum_item(
+        ReferencePathType::AbsolutePathReference(vec![b"a".to_vec()]),
+        50,
+    );
+    let nc = Element::new_non_counted(inner.clone()).expect("wrap ok");
+    assert!(nc.is_non_counted());
+    // Count is suppressed; sum still propagates.
+    assert_eq!(nc.count_value_or_default(), 0);
+    assert_eq!(nc.sum_value_or_default(), 50);
+    assert_eq!(nc.count_sum_value_or_default(), (0, 50));
+    // The reference predicate looks through the wrapper.
+    assert!(nc.is_reference());
+    assert!(nc.is_reference_with_sum_item());
+    // Underlying returns the inner.
+    assert_eq!(nc.underlying(), &inner);
+}
+
+#[test]
+fn not_summed_rejects_reference_with_sum_item() {
+    // NotSummed accepts only sum-tree variants; a reference-with-sum-item is
+    // not a tree.
+    let element = Element::new_reference_with_sum_item(
+        ReferencePathType::SiblingReference(b"k".to_vec()),
+        10,
+    );
+    assert!(Element::new_not_summed(element).is_err());
+}
+
+#[test]
+fn convert_if_reference_to_absolute_reference_preserves_sum_value() {
+    let path = [b"root".as_ref(), b"branch".as_ref()];
+    let key = Some(b"leaf".as_ref());
+
+    // Cousin reference with explicit sum gets converted to absolute, sum is
+    // preserved.
+    let cousin = Element::new_reference_with_sum_item_with_max_hops_and_flags(
+        ReferencePathType::CousinReference(b"other".to_vec()),
+        Some(3),
+        77,
+        Some(vec![7]),
+    );
+    let converted = cousin
+        .convert_if_reference_to_absolute_reference(&path, key)
+        .unwrap();
+    assert_eq!(
+        converted,
+        Element::ReferenceWithSumItem(
+            ReferencePathType::AbsolutePathReference(vec![
+                b"root".to_vec(),
+                b"other".to_vec(),
+                b"leaf".to_vec(),
+            ]),
+            Some(3),
+            77,
+            Some(vec![7]),
+        )
+    );
+
+    // Already-absolute variant is returned unchanged.
+    let absolute = Element::new_reference_with_sum_item(
+        ReferencePathType::AbsolutePathReference(vec![b"a".to_vec(), b"b".to_vec()]),
+        15,
+    );
+    assert_eq!(
+        absolute
+            .clone()
+            .convert_if_reference_to_absolute_reference(&path, key)
+            .unwrap(),
+        absolute
+    );
+}
+
+#[test]
+fn flag_accessors_handle_reference_with_sum_item() {
+    let mut element = Element::new_reference_with_sum_item_with_flags(
+        ReferencePathType::AbsolutePathReference(vec![b"k".to_vec()]),
+        99,
+        Some(vec![1, 2]),
+    );
+
+    assert_eq!(element.get_flags(), &Some(vec![1, 2]));
+
+    {
+        let flags_mut = element.get_flags_mut();
+        *flags_mut = Some(vec![9, 9]);
+    }
+    assert_eq!(element.get_flags(), &Some(vec![9, 9]));
+
+    element.set_flags(None);
+    assert_eq!(element.get_flags(), &None);
+
+    let owned = element.clone().get_flags_owned();
+    assert_eq!(owned, None);
+}
+
+#[test]
+fn reference_with_sum_item_round_trips_through_bincode() {
+    let grove_version = GroveVersion::latest();
+    let original = Element::new_reference_with_sum_item_with_max_hops_and_flags(
+        ReferencePathType::AbsolutePathReference(vec![b"a".to_vec(), b"bb".to_vec()]),
+        Some(5),
+        -42,
+        Some(vec![1, 2, 3]),
+    );
+    let bytes = original.serialize(grove_version).expect("serialize ok");
+    // Discriminant byte is pinned to 18.
+    assert_eq!(bytes[0], 18, "first byte must be discriminant 18");
+    let back = Element::deserialize(&bytes, grove_version).expect("deserialize ok");
+    assert_eq!(back, original);
+
+    // Round trip through the NonCounted wrapper.
+    let wrapped = Element::new_non_counted(original).expect("wrap ok");
+    let wrapped_bytes = wrapped.serialize(grove_version).expect("serialize ok");
+    // First byte is the wrapper byte (15), second is the inner discriminant (18).
+    assert_eq!(wrapped_bytes[0], 15);
+    assert_eq!(wrapped_bytes[1], 18);
+    let back = Element::deserialize(&wrapped_bytes, grove_version).expect("deserialize ok");
+    assert_eq!(back, wrapped);
+}

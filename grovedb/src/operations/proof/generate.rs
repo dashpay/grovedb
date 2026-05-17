@@ -400,7 +400,16 @@ impl GroveDb {
                         let elem =
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
                         match elem {
-                            Ok(Element::Reference(reference_path, ..)) => {
+                            // `ReferenceWithSumItem` shares the proof shape
+                            // with `Reference`: combined value hash, GroveDB
+                            // post-processes to KVRefValueHash{,Count} with
+                            // the dereferenced value. The carried sum is
+                            // hashed inside the (unchanged) serialized `value`
+                            // bytes; the proof verifier sees it as part of
+                            // the reference's KV-value-hash and the
+                            // parent's feature_type (via merk's normal flow).
+                            Ok(Element::Reference(reference_path, ..))
+                            | Ok(Element::ReferenceWithSumItem(reference_path, ..)) => {
                                 let absolute_path = cost_return_on_error_into!(
                                     &mut cost,
                                     path_from_reference_path_type(
@@ -1187,7 +1196,12 @@ impl GroveDb {
                         let elem =
                             Element::deserialize(value, grove_version).map(|e| e.into_underlying());
                         match elem {
-                            Ok(Element::Reference(reference_path, ..)) => {
+                            // `ReferenceWithSumItem` shares this proof path
+                            // with `Reference` — both produce a
+                            // KVRefValueHash{,Count} node with the
+                            // dereferenced target's serialized bytes.
+                            Ok(Element::Reference(reference_path, ..))
+                            | Ok(Element::ReferenceWithSumItem(reference_path, ..)) => {
                                 let absolute_path = cost_return_on_error_into!(
                                     &mut cost,
                                     path_from_reference_path_type(
