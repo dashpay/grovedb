@@ -551,6 +551,171 @@ mod tests {
         );
     }
 
+    // ──────── lower_layers / non-empty-tree return rejections ────────
+
+    /// Soundness regression test for the
+    /// `layer_proof.lower_layers.is_empty()` check (CodeRabbit
+    /// review on grovedb#669). An honest count-offset prover always
+    /// emits empty `lower_layers` (the validator rejects subqueries),
+    /// so we forge a proof envelope with a stray child layer attached
+    /// and confirm the verifier rejects.
+    ///
+    /// The forging is done by decoding a legitimate proof envelope,
+    /// injecting a `lower_layers` entry, re-encoding, and feeding the
+    /// result to `verify_query_raw`.
+    #[test]
+    fn rejects_count_offset_proof_with_forged_lower_layers() {
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let (db, _) = make_provable_count_tree_with_n_items(15, v);
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(3), Some(5)),
+        );
+
+        // Generate an honest proof, then surgically corrupt the
+        // leaf-layer's lower_layers map.
+        let honest_proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove");
+
+        // Decode the envelope so we can mutate it.
+        let bincode_config = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (decoded, _) =
+            bincode::decode_from_slice::<GroveDBProof, _>(honest_proof.as_slice(), bincode_config)
+                .expect("decode envelope");
+        let GroveDBProof::V1(GroveDBProofV1 { mut root_layer }) = decoded else {
+            panic!("expected V1 proof");
+        };
+
+        // Locate the leaf (count_tree) layer at "counts" and attach a
+        // bogus child entry that an honest prover would never emit.
+        let leaf = root_layer
+            .lower_layers
+            .get_mut(b"counts".as_slice())
+            .expect("leaf layer present");
+        leaf.lower_layers.insert(
+            b"forged_child".to_vec(),
+            LayerProof {
+                merk_proof: ProofBytes::Merk(vec![]),
+                lower_layers: Default::default(),
+            },
+        );
+
+        let tampered = bincode::encode_to_vec(
+            GroveDBProof::V1(GroveDBProofV1 { root_layer }),
+            bincode_config,
+        )
+        .expect("encode tampered");
+
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, _))),
+            "verifier must reject forged lower_layers in count-offset leaf; got {:?}",
+            result
+        );
+    }
+
+    /// Soundness regression test for the non-empty-tree return
+    /// rejection (CodeRabbit review on grovedb#669). The current
+    /// count-offset prover doesn't emit
+    /// `KVValueHashFeatureTypeWithChildHash`, so a non-empty tree
+    /// returned via this path would silently bypass the V1 strict-mode
+    /// child-hash invariant. The verifier explicitly rejects such
+    /// returns with `Error::NotSupported`.
+    #[test]
+    fn rejects_count_offset_with_non_empty_tree_return() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        // Tree fixture: "a" = Item, "b" = non-empty Tree, "c" = Item.
+        // With offset=1, limit=1 (ascending), the verifier walks
+        // past "a" (offset) and the next returned item is the
+        // non-empty tree "b" — exactly the case we want to reject.
+        db.insert(
+            &[b"counts"],
+            b"a",
+            Element::new_item(b"v_a".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert a");
+        db.insert(&[b"counts"], b"b", Element::empty_tree(), None, None, v)
+            .unwrap()
+            .expect("insert inner tree b");
+        // Populate the inner tree so it becomes non-empty.
+        db.insert(
+            [b"counts".as_slice(), b"b".as_slice()].as_slice(),
+            b"inner",
+            Element::new_item(b"x".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("populate inner tree");
+        db.insert(
+            &[b"counts"],
+            b"c",
+            Element::new_item(b"v_c".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert c");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            // offset=1 skips "a", limit=1 returns the next item ("b",
+            // the non-empty tree).
+            SizedQuery::new(q, Some(1), Some(1)),
+        );
+        let proof = db.prove_query(&path_query, None, v);
+        // The prover may either error (it doesn't currently — the
+        // emitter happily produces a tree-element node) or succeed;
+        // the verifier MUST reject the tree-element return with
+        // `Error::NotSupported`.
+        match proof.unwrap() {
+            Ok(bytes) => {
+                let result = GroveDb::verify_query_raw(&bytes, &path_query, v);
+                assert!(
+                    matches!(result, Err(crate::Error::NotSupported(_))),
+                    "verifier must reject non-empty tree return in count-offset; got {:?}",
+                    result
+                );
+            }
+            Err(e) => {
+                // Acceptable alternative: prover refuses up-front.
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains("tree") || msg.contains("count-offset"),
+                    "prover rejection should mention the underlying limitation; got {}",
+                    msg
+                );
+            }
+        }
+    }
+
     // ──────── check_count_offset_target_tree_type error normalization ────────
     //
     // Targets the `Err(_e)` branch of the helper in `generate.rs` —

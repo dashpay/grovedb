@@ -60,11 +60,14 @@ use crate::{
         tree::{execute_with_options, Tree as ProofTree},
         Decoder, Node,
     },
+    tree::value_hash as compute_value_hash,
     CryptoHash, Error,
 };
 
-/// One row of the verified result set: the matched key and the value
-/// bytes the prover committed.
+/// One row of the verified result set: the matched key, the value
+/// bytes the prover committed, the committed value-hash, and whether
+/// the merk verifier independently confirmed a child-hash binding for
+/// the entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountOffsetReturnedItem {
     /// The matched key.
@@ -74,6 +77,29 @@ pub struct CountOffsetReturnedItem {
     /// count-tree proof flow) operates on this byte stream — reference
     /// dereferencing happens at the GroveDB layer, not here.
     pub value: Vec<u8>,
+    /// The value-hash the proof's merk node committed for this entry.
+    /// For `KVCount` nodes this is `H(value)` (the Item-flavored value
+    /// hash). For `KVValueHashFeatureType` / `KVValueHash` it is the
+    /// value-hash carried explicitly in the proof — which for
+    /// tree-flavored entries is `combine_hash(H(value), child_root)`
+    /// (or `combine_hash(H(value), NULL_HASH)` for empty trees).
+    ///
+    /// Callers building `ProvedPathKeyOptionalValue` must surface this
+    /// value (not recompute via `value_hash(value)`) so downstream
+    /// chain checks against the parent's recorded value-hash work
+    /// correctly for non-Item entries.
+    pub value_hash: CryptoHash,
+    /// Whether the proof emitted a `KVValueHashFeatureTypeWithChildHash`
+    /// node for this entry — i.e. the merk verifier independently
+    /// confirmed `combine_hash(H(value), child_hash) == value_hash`.
+    ///
+    /// The current count-offset prover **never** emits
+    /// `KVValueHashFeatureTypeWithChildHash`, so this is always
+    /// `false`. The field exists so the GroveDB layer can route
+    /// correctly into V1 strict-mode checks (which require
+    /// `child_hash_verified = true` for non-empty trees); callers must
+    /// not silently treat a `false` here as `true`.
+    pub child_hash_verified: bool,
 }
 
 /// The verifier's reconstructed view of an offset-paginated count-tree
@@ -486,7 +512,11 @@ fn classify_self<'a>(
         Node::KVCount(key, value, _) => {
             // Value-bearing for Item-flavored entries. Must be in_range
             // && own=1; the prover wouldn't emit a value at any other
-            // position.
+            // position. The committed value-hash for Item-flavored
+            // entries is just `H(value)` — `KVCount` doesn't carry an
+            // explicit value-hash because the merk hash chain
+            // recomputes it from the value bytes via
+            // `kv_digest_to_kv_hash`.
             if !in_range {
                 return Err(Error::InvalidProofError(
                     "count-offset proof: KVCount at an out-of-range position".to_string(),
@@ -498,14 +528,22 @@ fn classify_self<'a>(
                     own_count
                 )));
             }
+            let vh = compute_value_hash(value.as_slice()).unwrap();
             Ok(BoundaryKind::ValueReturned {
                 key: key.as_slice(),
                 value: value.as_slice(),
+                value_hash: vh,
             })
         }
-        Node::KVValueHashFeatureType(key, value, _, _) => {
+        Node::KVValueHashFeatureType(key, value, vh, _) => {
             // Value-bearing for Tree/Reference children of a count
-            // tree. Same eligibility rules as KVCount.
+            // tree. Same eligibility rules as KVCount. The proof
+            // carries the committed value-hash directly — for
+            // tree-flavored entries this is `combine_hash(H(value),
+            // child_root)` (or `combine_hash(H(value), NULL_HASH)` for
+            // empty trees), so surfacing it unchanged lets the GroveDB
+            // layer pass it through into the V1 strict-mode chain
+            // checks faithfully.
             if !in_range {
                 return Err(Error::InvalidProofError(
                     "count-offset proof: KVValueHashFeatureType at an out-of-range position"
@@ -521,6 +559,7 @@ fn classify_self<'a>(
             Ok(BoundaryKind::ValueReturned {
                 key: key.as_slice(),
                 value: value.as_slice(),
+                value_hash: *vh,
             })
         }
         Node::KVValueHash(key, value, _) => {
@@ -570,7 +609,17 @@ enum BoundaryKind<'a> {
     /// In-range counted entry (own_count = 1) the prover returned.
     /// Consumes one slot of `limit_remaining` and appends to the
     /// returned-items vec.
-    ValueReturned { key: &'a [u8], value: &'a [u8] },
+    ValueReturned {
+        key: &'a [u8],
+        value: &'a [u8],
+        /// Committed value-hash for this entry, surfaced unchanged
+        /// from the merk proof so the GroveDB layer can build a
+        /// faithful `ProvedKeyOptionalValue`. For `KVCount` this is
+        /// `H(value)`; for `KVValueHashFeatureType` it's the
+        /// proof-carried value_hash (tree-flavored entries store
+        /// `combine_hash(H(value), child_root)`).
+        value_hash: CryptoHash,
+    },
 }
 
 /// Apply the per-disposition state mutation when the verifier reaches
@@ -607,7 +656,11 @@ fn apply_self_state(disposition: &BoundaryKind<'_>, state: &mut VerifyState) -> 
                 Ok(())
             }
         }
-        BoundaryKind::ValueReturned { key, value } => {
+        BoundaryKind::ValueReturned {
+            key,
+            value,
+            value_hash,
+        } => {
             if state.offset_remaining > 0 {
                 return Err(Error::InvalidProofError(
                     "count-offset proof: value node emitted with offset slots still remaining \
@@ -628,6 +681,17 @@ fn apply_self_state(disposition: &BoundaryKind<'_>, state: &mut VerifyState) -> 
             state.returned.push(CountOffsetReturnedItem {
                 key: key.to_vec(),
                 value: value.to_vec(),
+                value_hash: *value_hash,
+                // The current count-offset prover never emits
+                // `KVValueHashFeatureTypeWithChildHash` (it has no need
+                // to — Items in count trees don't have child merks to
+                // verify, and tree/reference children rely on the
+                // count-tree merk's hash chain). Setting this `false`
+                // makes the GroveDB layer's downstream V1 strict-mode
+                // checks reject non-empty tree returns, which is the
+                // right behavior given that we don't carry a child
+                // hash to validate.
+                child_hash_verified: false,
             });
             Ok(())
         }
