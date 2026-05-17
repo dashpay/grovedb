@@ -2111,9 +2111,12 @@ where
                     // Without these checks, batch users could persist
                     // wrapped elements into the wrong tree types and silently
                     // violate the wrapper invariant.
-                    if element.is_non_counted() && !in_tree_type.is_count_bearing() {
+                    if element.is_non_counted() && !in_tree_type.accepts_non_counted_children() {
                         return Err(Error::InvalidBatchOperation(
-                            "non-counted elements may only be inserted into count-bearing trees",
+                            "non-counted elements may only be inserted into non-provable \
+                             count-bearing trees (CountTree or CountSumTree); Provable* count \
+                             trees commit the count cryptographically and cannot host \
+                             NonCounted children",
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -2124,12 +2127,12 @@ where
                         .wrap_with_cost(cost);
                     }
                     if element.is_not_counted_or_summed()
-                        && !in_tree_type.is_count_and_sum_bearing()
+                        && !in_tree_type.accepts_not_counted_or_summed_children()
                     {
                         return Err(Error::InvalidBatchOperation(
-                            "not-counted-or-summed elements may only be inserted into trees \
-                             that bear BOTH count and sum (CountSumTree or \
-                             ProvableCountSumTree)",
+                            "not-counted-or-summed elements may only be inserted into \
+                             CountSumTree; ProvableCountSumTree commits the count \
+                             cryptographically and cannot host NotCountedOrSummed children",
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -2496,15 +2499,18 @@ where
                     };
 
                     // Mirror the per-merk wrapper invariant enforced
-                    // for direct inserts: a NonCounted-wrapped
-                    // element may only live in a count-bearing
-                    // parent. Without this guard a trusted refresh
-                    // with `non_counted=true` could persist a
-                    // NonCounted wrapper into a non-count-bearing
-                    // tree.
-                    if element.is_non_counted() && !in_tree_type.is_count_bearing() {
+                    // for direct inserts: a NonCounted-wrapped element
+                    // may only live in a non-provable count-bearing
+                    // parent (`CountTree` or `CountSumTree`). Without
+                    // this guard a trusted refresh with
+                    // `non_counted=true` could persist a NonCounted
+                    // wrapper into a parent that doesn't accept it —
+                    // including any `Provable*` count tree where the
+                    // count is cryptographically committed.
+                    if element.is_non_counted() && !in_tree_type.accepts_non_counted_children() {
                         return Err(Error::InvalidBatchOperation(
-                            "RefreshReference with non_counted=true requires a count-bearing parent",
+                            "RefreshReference with non_counted=true requires a non-provable \
+                             count-bearing parent (CountTree or CountSumTree)",
                         ))
                         .wrap_with_cost(cost);
                     }

@@ -163,9 +163,11 @@ impl ElementInsertToStorageExtensions for Element {
 
         let serialized = cost_return_on_error_into_default!(self.serialize(grove_version));
 
-        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+        if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
-                "non-counted elements may only be inserted into count-bearing trees",
+                "non-counted elements may only be inserted into non-provable count-bearing \
+                 trees (CountTree or CountSumTree); Provable* count trees commit the count \
+                 cryptographically and cannot host NonCounted children",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -177,10 +179,13 @@ impl ElementInsertToStorageExtensions for Element {
             .wrap_with_cost(Default::default());
         }
 
-        if self.is_not_counted_or_summed() && !merk.tree_type.is_count_and_sum_bearing() {
+        if self.is_not_counted_or_summed()
+            && !merk.tree_type.accepts_not_counted_or_summed_children()
+        {
             return Err(Error::InvalidInputError(
-                "not-counted-or-summed elements may only be inserted into trees that bear \
-                 BOTH count and sum (CountSumTree or ProvableCountSumTree)",
+                "not-counted-or-summed elements may only be inserted into CountSumTree; \
+                 ProvableCountSumTree commits the count cryptographically and cannot host \
+                 NotCountedOrSummed children",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -449,9 +454,11 @@ impl ElementInsertToStorageExtensions for Element {
             grove_version.grovedb_versions.element.insert_reference
         );
 
-        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+        if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
-                "non-counted elements may only be inserted into count-bearing trees",
+                "non-counted elements may only be inserted into non-provable count-bearing \
+                 trees (CountTree or CountSumTree); Provable* count trees commit the count \
+                 cryptographically and cannot host NonCounted children",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -463,10 +470,13 @@ impl ElementInsertToStorageExtensions for Element {
             .wrap_with_cost(Default::default());
         }
 
-        if self.is_not_counted_or_summed() && !merk.tree_type.is_count_and_sum_bearing() {
+        if self.is_not_counted_or_summed()
+            && !merk.tree_type.accepts_not_counted_or_summed_children()
+        {
             return Err(Error::InvalidInputError(
-                "not-counted-or-summed elements may only be inserted into trees that bear \
-                 BOTH count and sum (CountSumTree or ProvableCountSumTree)",
+                "not-counted-or-summed elements may only be inserted into CountSumTree; \
+                 ProvableCountSumTree commits the count cryptographically and cannot host \
+                 NotCountedOrSummed children",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -556,9 +566,11 @@ impl ElementInsertToStorageExtensions for Element {
             grove_version.grovedb_versions.element.insert_subtree
         );
 
-        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+        if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
-                "non-counted elements may only be inserted into count-bearing trees",
+                "non-counted elements may only be inserted into non-provable count-bearing \
+                 trees (CountTree or CountSumTree); Provable* count trees commit the count \
+                 cryptographically and cannot host NonCounted children",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -570,10 +582,13 @@ impl ElementInsertToStorageExtensions for Element {
             .wrap_with_cost(Default::default());
         }
 
-        if self.is_not_counted_or_summed() && !merk.tree_type.is_count_and_sum_bearing() {
+        if self.is_not_counted_or_summed()
+            && !merk.tree_type.accepts_not_counted_or_summed_children()
+        {
             return Err(Error::InvalidInputError(
-                "not-counted-or-summed elements may only be inserted into trees that bear \
-                 BOTH count and sum (CountSumTree or ProvableCountSumTree)",
+                "not-counted-or-summed elements may only be inserted into CountSumTree; \
+                 ProvableCountSumTree commits the count cryptographically and cannot host \
+                 NotCountedOrSummed children",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -848,21 +863,42 @@ mod tests {
     }
 
     #[test]
-    fn non_counted_accepted_in_provable_count_sum_tree_keeps_sum() {
+    fn non_counted_rejected_in_provable_count_sum_tree() {
+        // ProvableCountSumTree commits its aggregate count into every node
+        // hash, so a NonCounted child would commit a cryptographic count
+        // that diverges from the actual element count. The merk-layer
+        // insert guard rejects the wrapper. Symmetric coverage for
+        // ProvableCountTree lives in
+        // `non_counted_rejected_in_provable_count_tree`.
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountSumTree);
+        let nc = Element::new_non_counted(Element::new_sum_item(10)).expect("wrap ok");
+        let result = nc.insert(&mut merk, b"k", None, grove_version).unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
 
-        // A NonCounted(SumItem(10)) inside a ProvableCountSumTree contributes
-        // count = 0 and sum = 10.
-        Element::new_non_counted(Element::new_sum_item(10))
-            .expect("wrap ok")
-            .insert(&mut merk, b"k", None, grove_version)
-            .unwrap()
-            .expect("insert nc sum item");
+    #[test]
+    fn non_counted_rejected_in_provable_count_tree() {
+        // Same rejection as above, against a `ProvableCountTree` parent.
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountTree);
+        let nc = Element::new_non_counted(Element::new_item(b"x".to_vec())).expect("wrap ok");
+        let result = nc.insert(&mut merk, b"k", None, grove_version).unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
+    }
 
-        let agg = merk.aggregate_data().expect("aggregate ok");
-        assert_eq!(agg.as_count_u64(), 0);
-        assert_eq!(agg.as_sum_i64(), 10);
+    #[test]
+    fn non_counted_subtree_rejected_in_provable_count_tree() {
+        // Same rejection via the subtree entry point (used for tree
+        // children). This is the entry point a NonCounted-wrapped tree
+        // would actually hit when inserted under a ProvableCountTree.
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountTree);
+        let nc_tree = Element::new_non_counted(Element::empty_count_tree()).expect("wrap ok");
+        let result = nc_tree
+            .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
     }
 
     #[test]
@@ -1048,28 +1084,25 @@ mod tests {
     }
 
     #[test]
-    fn not_counted_or_summed_in_provable_count_sum_tree_excludes_both_axes() {
-        // Symmetric to the CountSumTree case below but with a
-        // ProvableCountSumTree parent — exercises the second
-        // is_count_and_sum_bearing variant.
+    fn not_counted_or_summed_rejected_in_provable_count_sum_tree() {
+        // `ProvableCountSumTree` commits its count into every node hash,
+        // so a NotCountedOrSummed child would commit a cryptographic
+        // count that diverges from the actual element count. The only
+        // accepted parent for this wrapper is the non-provable
+        // `CountSumTree` (see
+        // `not_counted_or_summed_in_count_sum_tree_excludes_both_axes`).
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountSumTree);
-
-        // Bare ProvableCountSumTree(_, 3, 100) contributes (3, 100).
-        // Wrapped, contributes (0, 0).
         let w = Element::new_not_counted_or_summed(
             Element::new_provable_count_sum_tree_with_flags_and_sum_and_count_value(
                 None, 3, 100, None,
             ),
         )
         .expect("wrap ok");
-        w.insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
-            .unwrap()
-            .expect("insert wrapped");
-
-        let agg = merk.aggregate_data().expect("aggregate ok");
-        assert_eq!(agg.as_count_u64(), 0);
-        assert_eq!(agg.as_sum_i64(), 0);
+        let result = w
+            .insert_subtree(&mut merk, b"k", [0u8; 32], None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInputError(_))));
     }
 
     #[test]
