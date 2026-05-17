@@ -1639,8 +1639,7 @@ mod test {
         let key = b"k".to_vec();
         let value_hash = [0x77; HASH_LENGTH];
         let honest: ProofTree = Node::KVDigestCountSum(key.clone(), value_hash, 5, 42).into();
-        let forged_count: ProofTree =
-            Node::KVDigestCountSum(key.clone(), value_hash, 6, 42).into();
+        let forged_count: ProofTree = Node::KVDigestCountSum(key.clone(), value_hash, 6, 42).into();
         let forged_sum: ProofTree = Node::KVDigestCountSum(key, value_hash, 5, 43).into();
         assert_ne!(honest.hash().unwrap(), forged_count.hash().unwrap());
         assert_ne!(honest.hash().unwrap(), forged_sum.hash().unwrap());
@@ -1668,11 +1667,9 @@ mod test {
         let value = b"v".to_vec();
         let node_value_hash = [0x33; HASH_LENGTH];
         let honest: ProofTree =
-            Node::KVRefValueHashCountSum(key.clone(), value.clone(), node_value_hash, 7, -3)
-                .into();
+            Node::KVRefValueHashCountSum(key.clone(), value.clone(), node_value_hash, 7, -3).into();
         let forged_count: ProofTree =
-            Node::KVRefValueHashCountSum(key.clone(), value.clone(), node_value_hash, 8, -3)
-                .into();
+            Node::KVRefValueHashCountSum(key.clone(), value.clone(), node_value_hash, 8, -3).into();
         let forged_sum: ProofTree =
             Node::KVRefValueHashCountSum(key, value, node_value_hash, 7, -4).into();
         assert_ne!(honest.hash().unwrap(), forged_count.hash().unwrap());
@@ -1749,14 +1746,9 @@ mod test {
         let kv_hash: ProofTree = Node::KVHashCountSum([0; HASH_LENGTH], 0, 0).into();
         assert_eq!(kv_hash.key(), None);
 
-        let hash_w: ProofTree = Node::HashWithCountAndSum(
-            [0; HASH_LENGTH],
-            [0; HASH_LENGTH],
-            [0; HASH_LENGTH],
-            0,
-            0,
-        )
-        .into();
+        let hash_w: ProofTree =
+            Node::HashWithCountAndSum([0; HASH_LENGTH], [0; HASH_LENGTH], [0; HASH_LENGTH], 0, 0)
+                .into();
         assert_eq!(hash_w.key(), None);
     }
 }

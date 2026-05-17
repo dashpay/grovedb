@@ -566,11 +566,7 @@ mod tests {
         let node = Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 3, -7);
         let display = node.to_string();
         assert!(display.starts_with("KVCountSum("), "got: {}", display);
-        assert!(
-            display.contains("count=3"),
-            "expected count=3: {}",
-            display
-        );
+        assert!(display.contains("count=3"), "expected count=3: {}", display);
         assert!(display.contains("sum=-7"), "expected sum=-7: {}", display);
     }
 
@@ -580,11 +576,7 @@ mod tests {
         let display = node.to_string();
         assert!(display.starts_with("KVHashCountSum("), "got: {}", display);
         assert!(display.contains("count=5"), "expected count: {}", display);
-        assert!(
-            display.contains("sum=100"),
-            "expected sum=100: {}",
-            display
-        );
+        assert!(display.contains("sum=100"), "expected sum=100: {}", display);
     }
 
     #[test]
@@ -618,11 +610,7 @@ mod tests {
     fn display_kv_digest_count_sum() {
         let node = Node::KVDigestCountSum(b"k".to_vec(), [0xEF; HASH_LENGTH], 7, i64::MAX);
         let display = node.to_string();
-        assert!(
-            display.starts_with("KVDigestCountSum("),
-            "got: {}",
-            display
-        );
+        assert!(display.starts_with("KVDigestCountSum("), "got: {}", display);
         assert!(display.contains("count=7"), "expected count=7: {}", display);
         assert!(
             display.contains(&i64::MAX.to_string()),

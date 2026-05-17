@@ -287,7 +287,9 @@ mod tests {
         // ProvableCountAndProvableSum variant — distinct from
         // ProvableCountAndSum (which uses the count-only hash dispatch).
         assert_eq!(
-            AggregateData::from(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(7, -42)),
+            AggregateData::from(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                7, -42
+            )),
             AggregateData::ProvableCountAndProvableSum(7, -42)
         );
         assert_eq!(
@@ -305,7 +307,10 @@ mod tests {
     #[test]
     fn aggregate_data_provable_count_and_provable_sum_helpers() {
         let agg = AggregateData::ProvableCountAndProvableSum(7, -42);
-        assert_eq!(agg.parent_tree_type(), TreeType::ProvableCountProvableSumTree);
+        assert_eq!(
+            agg.parent_tree_type(),
+            TreeType::ProvableCountProvableSumTree
+        );
         assert_eq!(agg.as_sum_i64(), -42);
         assert_eq!(agg.as_count_u64(), 7);
         assert_eq!(agg.as_summed_i128(), -42);
