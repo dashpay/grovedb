@@ -1078,8 +1078,7 @@ fn regular_query_verifier_rejects_kv_hash_count_sum_node() {
     // verifier also rejects. Either rejection path counts: the goal is
     // that the regular query verifier doesn't accept the dual-axis
     // path-hash variant as a substitute for a normal kv-hash node.
-    let err = result
-        .expect_err("regular query verifier must reject KVHashCountSum-bearing proofs");
+    let err = result.expect_err("regular query verifier must reject KVHashCountSum-bearing proofs");
     let msg = format!("{}", err);
     assert!(
         msg.contains("unexpected")
