@@ -186,6 +186,205 @@ mod tests {
         );
     }
 
+    // ───────── SizedQuery::validate_count_offset_paginated unit tests ─────────
+    //
+    // Each branch in the validator gets its own test so a regression
+    // (e.g. accidentally accepting a multi-item query) shows up as a
+    // single failure with a clear message.
+
+    use grovedb_merk::proofs::query::QueryItem;
+
+    #[test]
+    fn validate_rejects_no_offset() {
+        // Calling the count-offset validator on a query that wasn't
+        // even meant to be paginated is a programming error — surface
+        // it as `InvalidQuery` instead of silently returning Ok.
+        let mut q = Query::new();
+        q.insert_all();
+        let sized = SizedQuery::new(q, Some(5), None);
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("no offset must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("non-zero value"),
+            "error should mention non-zero offset; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_rejects_offset_zero() {
+        let mut q = Query::new();
+        q.insert_all();
+        let sized = SizedQuery::new(q, Some(5), Some(0));
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("offset = 0 must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("non-zero value"),
+            "error should mention non-zero offset; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_rejects_aggregate_count_wrapper() {
+        // AggregateCountOnRange has its own pagination semantics; we
+        // reject it from this lane so the two flows don't shadow each
+        // other.
+        let mut q = Query::new();
+        q.insert_item(QueryItem::AggregateCountOnRange(Box::new(
+            QueryItem::RangeFull(std::ops::RangeFull),
+        )));
+        let sized = SizedQuery::new(q, Some(5), Some(2));
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("aggregate count wrapper must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateCountOnRange"),
+            "error should mention AggregateCountOnRange; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_rejects_aggregate_sum_wrapper() {
+        let mut q = Query::new();
+        q.insert_item(QueryItem::AggregateSumOnRange(Box::new(
+            QueryItem::RangeFull(std::ops::RangeFull),
+        )));
+        let sized = SizedQuery::new(q, Some(5), Some(2));
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("aggregate sum wrapper must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("AggregateSumOnRange"),
+            "error should mention AggregateSumOnRange; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_rejects_default_subquery() {
+        let mut q = Query::new();
+        q.insert_all();
+        q.default_subquery_branch.subquery = Some(Box::new(Query::new()));
+        let sized = SizedQuery::new(q, Some(5), Some(2));
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("default subquery must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("default subquery branch"),
+            "error should mention default subquery branch; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_rejects_default_subquery_path() {
+        let mut q = Query::new();
+        q.insert_all();
+        q.default_subquery_branch.subquery_path = Some(vec![b"x".to_vec()]);
+        let sized = SizedQuery::new(q, Some(5), Some(2));
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("default subquery_path must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("default subquery branch"),
+            "error should mention default subquery branch; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_rejects_multi_item_query() {
+        let mut q = Query::new();
+        q.insert_key(b"a".to_vec());
+        q.insert_key(b"b".to_vec());
+        let sized = SizedQuery::new(q, Some(5), Some(2));
+        let err = sized
+            .validate_count_offset_paginated()
+            .expect_err("multi-item query must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("exactly one range QueryItem"),
+            "error should mention single-item requirement; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn validate_accepts_single_range_variants() {
+        // Sanity: every ordinary range / key variant passes.
+        let variants: Vec<QueryItem> = vec![
+            QueryItem::Key(b"a".to_vec()),
+            QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            QueryItem::RangeInclusive(b"a".to_vec()..=b"z".to_vec()),
+            QueryItem::RangeFrom(b"a".to_vec()..),
+            QueryItem::RangeFull(std::ops::RangeFull),
+            QueryItem::RangeTo(..b"z".to_vec()),
+            QueryItem::RangeToInclusive(..=b"z".to_vec()),
+            QueryItem::RangeAfter(b"a".to_vec()..),
+            QueryItem::RangeAfterTo(b"a".to_vec()..b"z".to_vec()),
+            QueryItem::RangeAfterToInclusive(b"a".to_vec()..=b"z".to_vec()),
+        ];
+        for item in variants {
+            let mut q = Query::new();
+            q.insert_item(item.clone());
+            let sized = SizedQuery::new(q, Some(5), Some(2));
+            let result = sized.validate_count_offset_paginated();
+            assert!(
+                result.is_ok(),
+                "variant {:?} should be accepted, got error {:?}",
+                item,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn path_query_validate_rejects_empty_path() {
+        // PathQuery::validate_count_offset_paginated rejects empty
+        // paths up-front: a count-offset query against the root
+        // makes no sense because the root is always a NormalTree.
+        let mut q = Query::new();
+        q.insert_all();
+        let pq = PathQuery::new(vec![], SizedQuery::new(q, Some(5), Some(2)));
+        let err = pq
+            .validate_count_offset_paginated()
+            .expect_err("empty path must reject");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("root merk"),
+            "error should mention root merk; got {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn path_query_has_non_zero_offset() {
+        let mut q = Query::new();
+        q.insert_all();
+        // offset = None → false
+        let pq_none = PathQuery::new(vec![b"x".to_vec()], SizedQuery::new(q.clone(), None, None));
+        assert!(!pq_none.has_non_zero_offset());
+        // offset = Some(0) → false
+        let pq_zero = PathQuery::new(
+            vec![b"x".to_vec()],
+            SizedQuery::new(q.clone(), None, Some(0)),
+        );
+        assert!(!pq_zero.has_non_zero_offset());
+        // offset = Some(N) for N > 0 → true
+        let pq_pos = PathQuery::new(vec![b"x".to_vec()], SizedQuery::new(q, None, Some(7)));
+        assert!(pq_pos.has_non_zero_offset());
+    }
+
     #[test]
     fn end_to_end_offset_rejects_with_subquery() {
         // Sanity: an offset query that fails the syntactic
