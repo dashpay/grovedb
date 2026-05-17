@@ -3109,4 +3109,81 @@ mod tests {
             other => panic!("expected InvalidInput, got {:?}", other),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // AggregateCountAndSumOnRange rejection on non-PCPS tree types.
+    //
+    // `AggregateCountAndSumOnRange` is only meaningful against
+    // `ProvableCountProvableSumTree` — its nodes commit BOTH a count AND
+    // a sum via `node_hash_with_count_and_sum`. Dense fixed-size merkle
+    // trees, MMR trees, and BulkAppendTree have no such dual-axis
+    // commitment, so the index-resolution helpers must reject the
+    // variant outright rather than silently fall through.
+    //
+    // Mirrors `dense_tree_rejects_aggregate_count_on_range` /
+    // `dense_tree_rejects_aggregate_sum_on_range` (and the MMR /
+    // BulkAppendTree siblings). Each test pins exactly one of the three
+    // helper functions' `AggregateCountAndSumOnRange` arms.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dense_tree_rejects_aggregate_count_and_sum_on_range() {
+        // Pins the `QueryItem::AggregateCountAndSumOnRange(_)` arm in
+        // `query_items_to_positions` (the dense fixed-size merkle tree
+        // index resolver). Same rationale as the ACOR / ASOR siblings:
+        // dense trees have no per-node aggregate commitment, so the
+        // combined-aggregate variant must be rejected up front.
+        let inner = QueryItem::RangeInclusive(be_u16(0)..=be_u16(5));
+        let items = vec![QueryItem::AggregateCountAndSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_positions(&items, 100)
+            .expect_err("dense tree must reject AggregateCountAndSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("dense fixed-size") || msg.contains("ProvableCountProvableSumTree"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mmr_tree_rejects_aggregate_count_and_sum_on_range() {
+        // Pins the `QueryItem::AggregateCountAndSumOnRange(_)` arm in
+        // `query_items_to_leaf_indices` (the MMR tree leaf-index
+        // resolver). MMR leaves carry only an opaque hash; there is no
+        // per-leaf count or sum bound in the tree shape, so any
+        // aggregate variant must be rejected at index resolution time.
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateCountAndSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_leaf_indices(&items, 7)
+            .expect_err("MMR must reject AggregateCountAndSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("MMR") || msg.contains("ProvableCountProvableSumTree"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bulk_append_tree_rejects_aggregate_count_and_sum_on_range() {
+        // Pins the `QueryItem::AggregateCountAndSumOnRange(_)` arm in
+        // `query_items_to_range` (the BulkAppendTree position-range
+        // resolver). BulkAppendTree elements are append-only
+        // positional items with no per-position aggregate commitment;
+        // the combined-aggregate variant has no meaningful semantics
+        // against them.
+        let inner = QueryItem::RangeInclusive(be_u64(0)..=be_u64(5));
+        let items = vec![QueryItem::AggregateCountAndSumOnRange(Box::new(inner))];
+        let err = GroveDb::query_items_to_range(&items, 100)
+            .expect_err("BulkAppendTree must reject AggregateCountAndSumOnRange");
+        match err {
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("BulkAppendTree") || msg.contains("ProvableCountProvableSumTree"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
 }

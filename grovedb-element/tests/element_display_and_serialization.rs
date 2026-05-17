@@ -171,6 +171,25 @@ fn serialize_deserialize_round_trip_all_element_types_and_errors() {
             -42,
             Some(vec![7]),
         ),
+        // ProvableSumTree (discriminant 19) — exercises the
+        // `19 => Ok(ElementType::ProvableSumTree)` arm in
+        // `TryFrom<u8>` via the round-trip through
+        // `from_serialized_value`.
+        Element::new_provable_sum_tree_with_flags_and_sum_value(
+            Some(vec![19]),
+            -77,
+            Some(vec![19]),
+        ),
+        // ProvableCountProvableSumTree (discriminant 20) — exercises
+        // the `20 => Ok(ElementType::ProvableCountProvableSumTree)`
+        // arm and pins the wider on-disk allowlist in
+        // `from_serialized_value`'s NonCounted branch.
+        Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+            Some(vec![20]),
+            42,
+            -13,
+            Some(vec![20]),
+        ),
     ];
 
     for element in elements {
@@ -202,6 +221,85 @@ fn serialize_deserialize_round_trip_all_element_types_and_errors() {
         deserialize_err,
         ElementError::CorruptedData(msg) if msg.contains("unable to deserialize element")
     ));
+
+    // Wrapper-discriminant + PCPS-inner-discriminant round-trips.
+    // Each pins a specific `from_serialized_value` arm for the
+    // `ProvableCountProvableSumTree` inner:
+    //   * NonCounted(PCPS)              -> base-allowlist accepts inner=20
+    //   * NotSummed(PCPS)               -> arm `20 => NotSummedProvableCountProvableSumTree`
+    //   * NotCountedOrSummed(PCPS)      -> arm `20 => NotCountedOrSummedProvableCountProvableSumTree`
+    // Same dual-axis coverage as the loop above but for the three
+    // wrapper layers.
+    let pcps_inner =
+        Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+            None, 9, -3, None,
+        );
+    let non_counted_pcps = Element::new_non_counted(pcps_inner.clone()).expect("wrap pcps");
+    let nc_bytes = non_counted_pcps
+        .serialize(grove_version)
+        .expect("serialize");
+    assert_eq!(
+        ElementType::from_serialized_value(&nc_bytes).expect("parse NonCounted(PCPS)"),
+        ElementType::NonCountedProvableCountProvableSumTree
+    );
+
+    let not_summed_pcps = Element::new_not_summed(pcps_inner.clone()).expect("wrap pcps");
+    let ns_bytes = not_summed_pcps.serialize(grove_version).expect("serialize");
+    assert_eq!(
+        ElementType::from_serialized_value(&ns_bytes).expect("parse NotSummed(PCPS)"),
+        ElementType::NotSummedProvableCountProvableSumTree
+    );
+
+    let ncs_pcps = Element::new_not_counted_or_summed(pcps_inner.clone()).expect("wrap pcps");
+    let ncs_bytes = ncs_pcps.serialize(grove_version).expect("serialize");
+    assert_eq!(
+        ElementType::from_serialized_value(&ncs_bytes).expect("parse NotCountedOrSummed(PCPS)"),
+        ElementType::NotCountedOrSummedProvableCountProvableSumTree
+    );
+
+    // Same wrapped-PCPS types round-trip through `TryFrom<u8>` —
+    // exercises arms 849 / 853 / 865 in element_type.rs.
+    assert_eq!(
+        ElementType::try_from(148).expect("discriminant 148 -> NonCountedPCPS"),
+        ElementType::NonCountedProvableCountProvableSumTree
+    );
+    assert_eq!(
+        ElementType::try_from(178).expect("discriminant 178 -> NotSummedPCPS"),
+        ElementType::NotSummedProvableCountProvableSumTree
+    );
+    assert_eq!(
+        ElementType::try_from(194).expect("discriminant 194 -> NotCountedOrSummedPCPS"),
+        ElementType::NotCountedOrSummedProvableCountProvableSumTree
+    );
+
+    // Error-path arms: pass a wrapper byte with an INVALID inner
+    // discriminant. NotSummed and NotCountedOrSummed both reject
+    // anything outside the sum-bearing-tree allowlist; the error
+    // message must mention the allowlist.
+    let bad_not_summed = ElementType::from_serialized_value(&[16, 0]).unwrap_err();
+    assert!(
+        matches!(&bad_not_summed, ElementError::CorruptedData(msg) if msg.contains("sum-bearing tree base type")),
+        "expected NotSummed error mentioning sum-bearing tree base type; got {bad_not_summed:?}"
+    );
+    let bad_ncs = ElementType::from_serialized_value(&[17, 0]).unwrap_err();
+    assert!(
+        matches!(&bad_ncs, ElementError::CorruptedData(msg) if msg.contains("sum-bearing tree base")),
+        "expected NotCountedOrSummed error mentioning sum-bearing tree base; got {bad_ncs:?}"
+    );
+
+    // type_str arms for the three wrapped-PCPS twins.
+    assert_eq!(
+        non_counted_pcps.type_str(),
+        "non_counted provable count provable sum tree"
+    );
+    assert_eq!(
+        not_summed_pcps.type_str(),
+        "not_summed provable count provable sum tree"
+    );
+    assert_eq!(
+        ncs_pcps.type_str(),
+        "not_counted_or_summed provable count provable sum tree"
+    );
 }
 
 /// Covers the `None` flags branch in Display for all 15 variants,

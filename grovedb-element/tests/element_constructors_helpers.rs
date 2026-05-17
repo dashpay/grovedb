@@ -655,7 +655,7 @@ fn provable_count_provable_sum_tree_constructors_and_helpers() {
     assert!(with_count_and_sum.is_provable_count_provable_sum_tree());
     assert!(with_count_and_sum.is_any_tree());
     // The variant is NOT a basic/sum/big-sum tree — those predicates must
-    // return false to avoid mis-classification in code that needs to know
+    // return false to avoid misclassification in code that needs to know
     // which specific tree flavor it has.
     assert!(!with_count_and_sum.is_sum_tree());
     assert!(!with_count_and_sum.is_big_sum_tree());
@@ -889,6 +889,57 @@ fn flag_accessors_handle_reference_with_sum_item() {
 
     let owned = element.clone().get_flags_owned();
     assert_eq!(owned, None);
+}
+
+/// Drive the `ProvableCountProvableSumTree` arms in `get_flags`,
+/// `get_flags_owned`, `get_flags_mut`, and `set_flags` (lines 543,
+/// 571, 599 in `grovedb-element/src/element/helpers.rs`). The
+/// flag-accessor match arms use OR-patterns over every Element
+/// variant; the PCPS arm in each only lights up when called against
+/// a PCPS element. Mirror of
+/// `flag_accessors_handle_reference_with_sum_item` for the
+/// dual-axis variant.
+#[test]
+fn flag_accessors_handle_provable_count_provable_sum_tree() {
+    let mut element =
+        Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+            Some(vec![21]),
+            7,
+            -42,
+            Some(vec![1, 2]),
+        );
+
+    // Borrowed accessor — covers the PCPS arm in `get_flags`.
+    assert_eq!(element.get_flags(), &Some(vec![1, 2]));
+
+    // Mutable accessor — covers the PCPS arm in `get_flags_mut`
+    // (line 571 in helpers.rs).
+    {
+        let flags_mut = element.get_flags_mut();
+        *flags_mut = Some(vec![9, 9]);
+    }
+    assert_eq!(element.get_flags(), &Some(vec![9, 9]));
+
+    // Setter — covers the PCPS arm in `set_flags` (line 599).
+    element.set_flags(None);
+    assert_eq!(element.get_flags(), &None);
+
+    // Owned accessor — covers the PCPS arm in `get_flags_owned`
+    // (line 543).
+    let owned = element.clone().get_flags_owned();
+    assert_eq!(owned, None);
+
+    // Round-trip with non-empty flags so the owned accessor returns
+    // a `Some(_)` and the test pins both the present-flags and
+    // absent-flags paths.
+    let with_flags =
+        Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+            None,
+            3,
+            17,
+            Some(vec![4, 5]),
+        );
+    assert_eq!(with_flags.get_flags_owned(), Some(vec![4, 5]));
 }
 
 #[test]

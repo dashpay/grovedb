@@ -2673,4 +2673,234 @@ mod tests {
             ),
         }
     }
+
+    /// Drive the Display arms for the dual-axis (PCPS) node variants in
+    /// `node_to_string` (grovedb/src/operations/proof/mod.rs around
+    /// lines 812-850). A combined-aggregate proof against a PCPS host
+    /// emits `KVDigestCountSum` (Boundary) and / or
+    /// `HashWithCountAndSum` (Disjoint / Contained) via the
+    /// `aggregate_count_and_sum/emit.rs` walker. Formatting the
+    /// decoded proof with `{}` walks every `Op → Node`, hitting the
+    /// per-variant arm.
+    ///
+    /// Mirror of `sum_proof_display_includes_sum_node_variants` from
+    /// `aggregate_sum_query_tests.rs` (sum-only side).
+    #[test]
+    fn combined_aggregate_proof_display_includes_pcps_node_variants() {
+        use crate::tests::{make_test_grovedb, TEST_LEAF};
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert pcps");
+        // Populate with a mix of sum items so the prover emits both
+        // boundary (KVDigestCountSum) and disjoint/contained
+        // (HashWithCountAndSum) ops across a typical RangeInclusive
+        // query.
+        for c in b'a'..=b'l' {
+            let val = ((c - b'a') as i64) * 2 - 5;
+            db.insert(
+                [TEST_LEAF, b"pcps"].as_ref(),
+                &[c],
+                Element::new_sum_item(val),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert sum item");
+        }
+
+        let pq = PathQuery::new_aggregate_count_and_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"pcps".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"i".to_vec()),
+        );
+        let proof_bytes = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove combined-aggregate query");
+
+        // Decode and format the proof. Display walks every layer and
+        // every Op → Node, exercising the dual-axis Display arms in
+        // `node_to_string`.
+        let decoded: crate::operations::proof::GroveDBProof = bincode::decode_from_slice(
+            &proof_bytes,
+            bincode::config::standard()
+                .with_big_endian()
+                .with_limit::<{ 256 * 1024 * 1024 }>(),
+        )
+        .expect("decode envelope")
+        .0;
+        let printed = format!("{}", decoded);
+        // The combined-aggregate emit path produces at least one of
+        // KVDigestCountSum / HashWithCountAndSum — we don't pin which
+        // variant (the mix depends on tree shape and the query range)
+        // but at least one CountSum-flavored node must appear.
+        assert!(
+            printed.contains("CountSum") || printed.contains("CountAndSum"),
+            "expected formatted proof to mention PCPS dual-axis nodes; got: {printed}"
+        );
+    }
+
+    /// Drive the `KVRefValueHashCountSum` Display arm specifically.
+    /// A Reference inside a PCPS host produces a
+    /// `KVRefValueHashCountSum` op via the v1 ref-rewrite loop in
+    /// `prove_subqueries_v1` (around line 1685). Formatting the proof
+    /// walks that node and hits the per-variant arm in
+    /// `node_to_string` (around lines 825-832 in
+    /// `grovedb/src/operations/proof/mod.rs`).
+    #[test]
+    fn pcps_reference_proof_display_includes_kv_ref_value_hash_count_sum() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+
+        // Container PCPS at root.
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert pcps");
+
+        // Target sum-item in a separate ProvableSumTree branch.
+        db.insert(
+            &[] as &[&[u8]],
+            b"sums",
+            Element::empty_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert sums");
+        db.insert(
+            &[b"sums".as_slice()],
+            b"target",
+            Element::new_sum_item(42),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert target");
+
+        // Reference at b"r" under PCPS pointing at b"sums/target".
+        db.insert(
+            &[b"pcps".as_slice()],
+            b"r",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"sums".to_vec(),
+                b"target".to_vec(),
+            ])),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert reference");
+
+        let mut query = grovedb_merk::proofs::Query::new();
+        query.insert_key(b"r".to_vec());
+        let pq = PathQuery::new_unsized(vec![b"pcps".to_vec()], query);
+        let proof_bytes = db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove pcps reference");
+
+        // Decode and format. The ref-rewrite loop emits a
+        // KVRefValueHashCountSum for the Reference inside the PCPS
+        // host, and Display hits the per-variant arm.
+        let decoded: crate::operations::proof::GroveDBProof = bincode::decode_from_slice(
+            &proof_bytes,
+            bincode::config::standard()
+                .with_big_endian()
+                .with_limit::<{ 256 * 1024 * 1024 }>(),
+        )
+        .expect("decode envelope")
+        .0;
+        let printed = format!("{}", decoded);
+        assert!(
+            printed.contains("KVRefValueHashCountSum"),
+            "expected KVRefValueHashCountSum in formatted PCPS-ref proof; got: {printed}"
+        );
+    }
+
+    /// Drive the `KVCountSum` Display arm specifically. A plain
+    /// `Merk::prove`-style range query against a PCPS host (no
+    /// aggregate carrier) emits `KVCountSum` (per-item dual-axis Item
+    /// node) and `KVHashCountSum` (path nodes). Mirror of
+    /// `regular_prove_on_provable_sum_tree_formats_kv_sum_nodes`.
+    #[test]
+    fn regular_prove_on_pcps_formats_kv_count_sum_nodes() {
+        use grovedb_merk::proofs::Query as MerkQuery;
+
+        use crate::tests::{make_test_grovedb, TEST_LEAF};
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert pcps");
+        for c in b'a'..=b'l' {
+            let val = ((c - b'a') as i64) * 2 - 5;
+            db.insert(
+                [TEST_LEAF, b"pcps"].as_ref(),
+                &[c],
+                Element::new_sum_item(val),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert sum item");
+        }
+        let mut q = MerkQuery::new();
+        q.insert_range_inclusive(b"c".to_vec()..=b"i".to_vec());
+        let pq = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"pcps".to_vec()],
+            crate::SizedQuery::new(q, None, None),
+        );
+        let proof_bytes = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove regular query");
+
+        let decoded: crate::operations::proof::GroveDBProof = bincode::decode_from_slice(
+            &proof_bytes,
+            bincode::config::standard()
+                .with_big_endian()
+                .with_limit::<{ 256 * 1024 * 1024 }>(),
+        )
+        .expect("decode envelope")
+        .0;
+        let printed = format!("{}", decoded);
+        // A regular range query against a PCPS leaf emits dual-axis
+        // node variants (KVCountSum for items, KVHashCountSum for
+        // path-only nodes). At least one must appear in the output.
+        assert!(
+            printed.contains("KVCountSum") || printed.contains("KVHashCountSum"),
+            "expected KV-count-sum-flavored node in printed proof: {printed}"
+        );
+    }
 }
