@@ -510,4 +510,74 @@ mod tests {
             result
         );
     }
+
+    // ──────── V0 proof envelope coverage ────────
+    //
+    // The default `GroveVersion::latest()` (v3) routes through the v1
+    // proof envelope. The v0 prover and verifier are still production
+    // code (live grove versions v1 and v2 still produce them on read),
+    // so we run a copy of the ascending round-trip against `GROVE_V2`
+    // to exercise the v0 short-circuits in
+    // `prove_subqueries` and `verify_layer_proof` — otherwise they
+    // would be reachable in production but never exercised by tests.
+
+    use grovedb_version::version::v2::GROVE_V2;
+
+    #[test]
+    fn end_to_end_offset_ascending_against_v0_envelope() {
+        let v = &GROVE_V2;
+        let (db, _) = make_provable_count_tree_with_n_items(15, v);
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let proved = round_trip_offset(&db, vec![b"counts".to_vec()], q, Some(3), Some(5), v);
+        assert_eq!(
+            proved_keys(&proved),
+            vec![b"f".to_vec(), b"g".to_vec(), b"h".to_vec()],
+            "v0 envelope: ascending offset 5 + limit 3 should return f,g,h"
+        );
+    }
+
+    #[test]
+    fn end_to_end_offset_descending_against_v0_envelope() {
+        let v = &GROVE_V2;
+        let (db, _) = make_provable_count_tree_with_n_items(15, v);
+        let mut q = Query::new_with_direction(false);
+        q.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let proved = round_trip_offset(&db, vec![b"counts".to_vec()], q, Some(3), Some(5), v);
+        assert_eq!(
+            proved_keys(&proved),
+            vec![b"j".to_vec(), b"i".to_vec(), b"h".to_vec()],
+            "v0 envelope: descending offset 5 + limit 3 should return j,i,h"
+        );
+    }
+
+    // ──────── check_count_offset_target_tree_type error normalization ────────
+    //
+    // Targets the `Err(_e)` branch of the helper in `generate.rs` —
+    // when the target path does not resolve to an openable merk at
+    // all, we still want a clean `InvalidQuery` instead of leaking
+    // a storage-layer error to the caller.
+
+    #[test]
+    fn end_to_end_offset_rejects_against_nonexistent_path() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        // Don't insert anything at "missing" — opening it will fail.
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"missing".to_vec()],
+            SizedQuery::new(q, Some(3), Some(1)),
+        );
+        let result = db.prove_query(&path_query, None, v).unwrap();
+        // The `open_transactional_merk_at_path` failure inside
+        // `check_count_offset_target_tree_type` is normalized to
+        // `InvalidQuery` — not surfaced as a raw storage error.
+        assert!(
+            matches!(result, Err(crate::Error::InvalidQuery(_))),
+            "prover must reject offset against a nonexistent path with \
+             InvalidQuery; got {:?}",
+            result
+        );
+    }
 }
