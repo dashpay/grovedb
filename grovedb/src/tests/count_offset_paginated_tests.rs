@@ -523,6 +523,170 @@ mod tests {
 
     use grovedb_version::version::v2::GROVE_V2;
 
+    /// V0-envelope counterpart to
+    /// `rejects_count_offset_proof_with_forged_lower_layers`. Exercises
+    /// the lower_layers check in `verify_layer_proof` (the V0 sibling
+    /// of `verify_layer_proof_v1`).
+    #[test]
+    fn rejects_count_offset_v0_proof_with_forged_lower_layers() {
+        use crate::operations::proof::{GroveDBProof, GroveDBProofV0, MerkOnlyLayerProof};
+
+        let v = &GROVE_V2;
+        let (db, _) = make_provable_count_tree_with_n_items(15, v);
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(3), Some(5)),
+        );
+
+        let honest_proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove");
+
+        let cfg = bincode::config::standard()
+            .with_big_endian()
+            .with_no_limit();
+        let (decoded, _) =
+            bincode::decode_from_slice::<GroveDBProof, _>(honest_proof.as_slice(), cfg)
+                .expect("decode envelope");
+        let GroveDBProof::V0(GroveDBProofV0 {
+            mut root_layer,
+            prove_options,
+        }) = decoded
+        else {
+            panic!("expected V0 proof from GROVE_V2");
+        };
+
+        let leaf = root_layer
+            .lower_layers
+            .get_mut(b"counts".as_slice())
+            .expect("leaf present");
+        leaf.lower_layers.insert(
+            b"forged_child".to_vec(),
+            MerkOnlyLayerProof {
+                merk_proof: vec![],
+                lower_layers: Default::default(),
+            },
+        );
+
+        let tampered = bincode::encode_to_vec(
+            GroveDBProof::V0(GroveDBProofV0 {
+                root_layer,
+                prove_options,
+            }),
+            cfg,
+        )
+        .expect("encode tampered");
+
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, _))),
+            "v0 verifier must reject forged lower_layers in count-offset leaf; got {:?}",
+            result
+        );
+    }
+
+    /// V0-envelope counterpart to
+    /// `rejects_count_offset_with_non_empty_tree_return`. Same shape;
+    /// just runs against `GROVE_V2`.
+    #[test]
+    fn rejects_count_offset_v0_with_non_empty_tree_return() {
+        let v = &GROVE_V2;
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        db.insert(
+            &[b"counts"],
+            b"a",
+            Element::new_item(b"v_a".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert a");
+        db.insert(&[b"counts"], b"b", Element::empty_tree(), None, None, v)
+            .unwrap()
+            .expect("insert inner tree b");
+        db.insert(
+            [b"counts".as_slice(), b"b".as_slice()].as_slice(),
+            b"inner",
+            Element::new_item(b"x".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("populate inner tree");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(1), Some(1)),
+        );
+        let proof = db.prove_query(&path_query, None, v);
+        match proof.unwrap() {
+            Ok(bytes) => {
+                let result = GroveDb::verify_query_raw(&bytes, &path_query, v);
+                assert!(
+                    matches!(result, Err(crate::Error::NotSupported(_))),
+                    "v0 verifier must reject non-empty tree return; got {:?}",
+                    result
+                );
+            }
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains("tree") || msg.contains("count-offset"),
+                    "prover rejection should mention the limitation; got {}",
+                    msg
+                );
+            }
+        }
+    }
+
+    /// V0-envelope counterpart for the path-not-found tree-type
+    /// rejection — exercises the V0 prover-entry's
+    /// `check_count_offset_target_tree_type` path.
+    #[test]
+    fn rejects_count_offset_v0_against_non_count_tree() {
+        let v = &GROVE_V2;
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"plain",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert tree");
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"plain".to_vec()],
+            SizedQuery::new(q, Some(3), Some(1)),
+        );
+        let result = db.prove_query(&path_query, None, v).unwrap();
+        assert!(
+            matches!(result, Err(crate::Error::InvalidQuery(_))),
+            "v0 prover must reject offset against a NormalTree; got {:?}",
+            result
+        );
+    }
+
     #[test]
     fn end_to_end_offset_ascending_against_v0_envelope() {
         let v = &GROVE_V2;
