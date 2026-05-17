@@ -54,7 +54,7 @@ impl GroveDb {
             ))?;
         }
 
-        if query.query.offset.is_some() && query.query.offset != Some(0) {
+        if query.has_non_zero_offset() {
             // Mirror of the prover-side relaxation: a non-zero offset
             // is only honored when the query validates as offset-
             // paginated against a ProvableCountTree / ProvableCountSumTree

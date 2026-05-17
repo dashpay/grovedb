@@ -189,13 +189,6 @@ where
         })
     }
 
-    /// Generate a sum-only proof for an `AggregateSumOnRange` query.
-    /// Mirror of [`Self::prove_aggregate_count_on_range`] for the
-    /// `ProvableSumTree` flavor.
-    ///
-    /// The merk's `tree_type` must be `ProvableSumTree`; any other tree type
-    /// is rejected with `Error::InvalidProofError` before any walking
-    /// happens. Empty merk: returns `(empty proof, sum = 0)`.
     /// Generate an offset-paginated proof for a single-range query
     /// against a `ProvableCountTree` or `ProvableCountSumTree`.
     ///

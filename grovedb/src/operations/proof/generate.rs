@@ -194,6 +194,21 @@ impl GroveDb {
     /// hits the empty-tree arm and *doesn't* recurse into the leaf
     /// merk, so the leaf-level tree-type check never fires. Doing it
     /// here gives callers a clear up-front error in that case.
+    ///
+    /// Error contract: any failure to resolve `path_query.path` to an
+    /// eligible merk surfaces as `Error::InvalidQuery`. We don't
+    /// forward the raw `open_transactional_merk_at_path` error because
+    /// it can leak storage-layer specifics (missing-path,
+    /// path-not-a-tree, corrupted-link, etc.) — from the caller's
+    /// point of view all of those have the same actionable meaning
+    /// here: "you can't run a count-offset query against this path",
+    /// and the single `InvalidQuery` covers all of them uniformly.
+    /// Storage-layer or hardware-IO errors still flow through but get
+    /// classified the same way; that's acceptable because the
+    /// alternative — surfacing them as `MerkError` / `CorruptedData`
+    /// from a purely syntactic gate — gives callers an unstable
+    /// error contract that depends on whether the merk happens to
+    /// exist.
     fn check_count_offset_target_tree_type(
         &self,
         path_query: &PathQuery,
@@ -203,15 +218,25 @@ impl GroveDb {
         let mut cost = OperationCost::default();
         let tx = self.start_transaction();
         let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
-        let target = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
+        let open_result = self
+            .open_transactional_merk_at_path(
                 path_slices.as_slice().into(),
                 &tx,
                 None,
                 grove_version,
             )
-        );
+            .unwrap_add_cost(&mut cost);
+        let target = match open_result {
+            Ok(t) => t,
+            Err(_e) => {
+                return Err(Error::InvalidQuery(
+                    "count-offset paginated queries are only valid against \
+                     ProvableCountTree / ProvableCountSumTree merks; the target path \
+                     could not be resolved to an eligible merk",
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
         if !matches!(
             target.tree_type,
             MerkTreeType::ProvableCountTree | MerkTreeType::ProvableCountSumTree
@@ -465,7 +490,17 @@ impl GroveDb {
                         query.left_to_right,
                         grove_version,
                     )
-                    .map_err(Error::MerkError)
+                    // Wrap with operational context so a downstream
+                    // proof failure (corrupted merk, invariant
+                    // violation in the prover, etc.) is identifiable
+                    // as a count-offset-specific failure rather than
+                    // an opaque `MerkError`. Mirrors the
+                    // `prove_aggregate_sum_on_range` wrapping a few
+                    // hundred lines up.
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "prove_count_offset_on_range failed: {}",
+                        e
+                    )))
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(prove_result.ops.iter(), &mut serialized);
@@ -1390,7 +1425,17 @@ impl GroveDb {
                         query.left_to_right,
                         grove_version,
                     )
-                    .map_err(Error::MerkError)
+                    // Wrap with operational context so a downstream
+                    // proof failure (corrupted merk, invariant
+                    // violation in the prover, etc.) is identifiable
+                    // as a count-offset-specific failure rather than
+                    // an opaque `MerkError`. Mirrors the
+                    // `prove_aggregate_sum_on_range` wrapping a few
+                    // hundred lines up.
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "prove_count_offset_on_range failed: {}",
+                        e
+                    )))
             );
             let mut serialized = Vec::with_capacity(128);
             encode_into(prove_result.ops.iter(), &mut serialized);

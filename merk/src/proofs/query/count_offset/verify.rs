@@ -45,7 +45,9 @@
 //! `CountOffsetProofResult`; the caller can choose to treat it as an
 //! error if their semantics require offset to be exactly satisfied.
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 
 use crate::{
     proofs::{
@@ -155,10 +157,13 @@ pub fn verify_count_offset_on_range_proof(
         returned: Vec::new(),
         left_to_right,
     };
-    match verify_count_offset_shape(&tree, inner_range, None, None, &mut state) {
-        Ok(_struct_count) => {}
-        Err(e) => return Err(e).wrap_with_cost(cost),
-    }
+    // `verify_count_offset_shape` returns a plain `Result<u64, Error>`
+    // (no internal cost accumulation), so we use the no-add variant of
+    // the project-standard cost-return macro.
+    cost_return_on_error_no_add!(
+        cost,
+        verify_count_offset_shape(&tree, inner_range, None, None, &mut state)
+    );
 
     let root_hash = tree.hash().unwrap_add_cost(&mut cost);
     Ok(CountOffsetProofResult {

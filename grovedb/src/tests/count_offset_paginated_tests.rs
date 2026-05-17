@@ -404,9 +404,14 @@ mod tests {
             SizedQuery::new(q, Some(3), Some(1)),
         );
         let result = db.prove_query(&path_query, None, v).unwrap();
+        // The rejection MUST be `InvalidQuery` specifically — `is_err()`
+        // alone would mask a regression where some unrelated error
+        // (e.g. storage I/O) accidentally satisfies the test.
         assert!(
-            result.is_err(),
-            "prover must reject offset on a query with a default subquery branch"
+            matches!(result, Err(crate::Error::InvalidQuery(_))),
+            "prover must reject offset on a query with a default subquery branch \
+             with InvalidQuery; got {:?}",
+            result
         );
     }
 
@@ -495,9 +500,14 @@ mod tests {
             SizedQuery::new(q, Some(3), Some(1)),
         );
         let result = db.prove_query(&path_query, None, v).unwrap();
+        // Same rationale as the subquery rejection test: pin the
+        // exact error variant to detect regressions in the
+        // tree-type gate's error normalization.
         assert!(
-            result.is_err(),
-            "prover must reject offset against a NormalTree at leaf-open time"
+            matches!(result, Err(crate::Error::InvalidQuery(_))),
+            "prover must reject offset against a NormalTree at leaf-open time \
+             with InvalidQuery; got {:?}",
+            result
         );
     }
 }
