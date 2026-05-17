@@ -72,6 +72,8 @@ impl GroveDb {
 
         // Look through `NonCounted` so a wrapped reference still resolves.
         // The wrapper is transparent at the get/query layer.
+        // `ReferenceWithSumItem` follows the same chain as `Reference` — the
+        // carried sum is a parent-aggregation property, not a per-hop value.
         match cost_return_on_error!(
             &mut cost,
             self.get_raw_caching_optional(
@@ -84,7 +86,8 @@ impl GroveDb {
         )
         .into_underlying()
         {
-            Element::Reference(reference_path, ..) => {
+            Element::Reference(reference_path, ..)
+            | Element::ReferenceWithSumItem(reference_path, ..) => {
                 let path_owned = cost_return_on_error_into!(
                     &mut cost,
                     path_from_reference_path_type(reference_path, &path.to_vec(), Some(key))
@@ -162,8 +165,11 @@ impl GroveDb {
             visited.insert(current_path.clone());
             // Look through `NonCounted` so a chain that hops via a wrapped
             // reference is followed instead of being returned as a value.
+            // `ReferenceWithSumItem` is also followed — the carried sum is
+            // irrelevant to chain destination.
             match current_element.into_underlying() {
-                Element::Reference(reference_path, ..) => {
+                Element::Reference(reference_path, ..)
+                | Element::ReferenceWithSumItem(reference_path, ..) => {
                     current_path = cost_return_on_error_into!(
                         &mut cost,
                         path_from_reference_qualified_path_type(reference_path, &current_path)

@@ -1121,8 +1121,12 @@ impl GroveDb {
                         );
                     }
                 }
-                Element::Reference(ref reference_path, ..) => {
-                    // Skip this whole check if we don't `verify_references`
+                Element::Reference(ref reference_path, ..)
+                | Element::ReferenceWithSumItem(ref reference_path, ..) => {
+                    // Skip this whole check if we don't `verify_references`.
+                    // `ReferenceWithSumItem` shares this verification path —
+                    // the sum is hashed as part of the serialized value
+                    // bytes, so the combined-hash check below is identical.
                     if !verify_references {
                         continue;
                     }

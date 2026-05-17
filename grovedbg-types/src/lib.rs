@@ -188,6 +188,16 @@ pub enum Element {
         element_flags: Option<Vec<u8>>,
     },
     Reference(Reference),
+    /// A reference that also carries an explicit `i64` sum-item value
+    /// contributed to a sum-bearing parent (independent of the
+    /// resolved target's value). The `reference` field encodes the
+    /// same path-discriminant shape and `element_flags` as a plain
+    /// [`Element::Reference`]; `sum_item_value` is the additional
+    /// carried weight.
+    ReferenceWithSumItem {
+        reference: Reference,
+        sum_item_value: i64,
+    },
 }
 
 #[serde_as]
@@ -327,4 +337,45 @@ pub enum TreeFeatureType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProveOptions {
     pub decrease_limit_on_empty_sub_query_result: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// JSON wire round-trip pin for `Element::ReferenceWithSumItem`.
+    /// The variant carries a nested `Reference` (with the full
+    /// path-discriminant + element_flags shape) and an independent
+    /// `sum_item_value`. A future renumbering or rename of either
+    /// piece trips this test.
+    #[test]
+    fn reference_with_sum_item_json_round_trip_absolute() {
+        let element = Element::ReferenceWithSumItem {
+            reference: Reference::AbsolutePathReference {
+                path: vec![b"leaf".to_vec(), b"target".to_vec()],
+                element_flags: Some(vec![1, 2, 3]),
+            },
+            sum_item_value: 1_000_000_000,
+        };
+        let json = serde_json::to_string(&element).expect("serialize");
+        let back: Element = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, element);
+    }
+
+    /// Negative-sum and `None`-flags round-trip cleanly too.
+    /// Exercises a non-absolute reference path discriminant to lock
+    /// in the wire shape across the full set.
+    #[test]
+    fn reference_with_sum_item_json_round_trip_sibling_no_flags() {
+        let element = Element::ReferenceWithSumItem {
+            reference: Reference::SiblingReference {
+                sibling_key: b"sib".to_vec(),
+                element_flags: None,
+            },
+            sum_item_value: -42,
+        };
+        let json = serde_json::to_string(&element).expect("serialize");
+        let back: Element = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, element);
+    }
 }

@@ -158,11 +158,6 @@ pub enum Element {
     /// - A `NotSummed` may not wrap another `NotSummed`, a `NonCounted`,
     ///   a `NotCountedOrSummed`, or any non-tree element.
     NotSummed(Box<Element>),
-    /// Same as Element::SumTree but includes the per-node sum in the
-    /// cryptographic state. This mirrors `ProvableCountTree` but for sums,
-    /// allowing aggregate-sum range queries to be cryptographically verified
-    /// by including the sum in each node hash.
-    ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
     /// Not-counted-or-summed wrapper: contains a sum-bearing tree variant
     /// (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
     /// `ProvableSumTree`) and behaves identically to it for storage,
@@ -186,6 +181,49 @@ pub enum Element {
     /// - A `NotCountedOrSummed` may not wrap any other wrapper or any
     ///   non-tree element.
     NotCountedOrSummed(Box<Element>),
+    /// A reference that simultaneously carries an explicit `SumValue`.
+    ///
+    /// Resolves like `Element::Reference` on `get()` / `follow_reference()`
+    /// (hop-limited, cycle-detected, combined value hash) AND contributes
+    /// `sum_value` to any sum-bearing parent tree like `Element::SumItem` /
+    /// `Element::ItemWithSumItem`. The `sum_value` is **independent of the
+    /// resolved target's value** — it is the caller-supplied weight or amount
+    /// associated with the link itself.
+    ///
+    /// Use case: ranked / sortable index entries where the key encodes the
+    /// rank, the reference points to a canonical record elsewhere, and the
+    /// sum is the entry's monetary weight that aggregates into the parent's
+    /// total.
+    ///
+    /// May be inserted into any parent tree type. In non-sum parents (Tree,
+    /// CountTree, ProvableCountTree) the `sum_value` is silently ignored,
+    /// the same rule `Element::ItemWithSumItem` follows.
+    ///
+    /// Wrapper compatibility:
+    /// - **May** be wrapped in `NonCounted` to opt out of count propagation.
+    /// - **May NOT** be wrapped in `NotSummed` or `NotCountedOrSummed` —
+    ///   those whitelists accept only the four sum-tree variants, not
+    ///   item-like or reference-like base variants.
+    ReferenceWithSumItem(
+        ReferencePathType,
+        MaxReferenceHop,
+        SumValue,
+        Option<ElementFlags>,
+    ),
+    /// Same as Element::SumTree but includes the per-node sum in the
+    /// cryptographic state. This mirrors `ProvableCountTree` but for sums,
+    /// allowing aggregate-sum range queries to be cryptographically verified
+    /// by including the sum in each node hash.
+    ///
+    /// Discriminant 19 — appended after the wrapper bytes and the
+    /// `ReferenceWithSumItem` base variant so that the on-disk encoding of
+    /// every variant that landed on `develop` before this PR (including
+    /// `NotCountedOrSummed = 17` and `ReferenceWithSumItem = 18`) is
+    /// preserved exactly. `NotSummedProvableSumTree` and
+    /// `NotCountedOrSummedProvableSumTree` keep their hand-assigned twin
+    /// slots (0xB1 and 0xC1) because base 19 still doesn't fit the
+    /// `prefix | base` formula either.
+    ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -391,6 +429,18 @@ impl fmt::Display for Element {
             Element::NotCountedOrSummed(inner) => {
                 write!(f, "NotCountedOrSummed({})", inner)
             }
+            Element::ReferenceWithSumItem(path, max_hop, sum_value, flags) => {
+                write!(
+                    f,
+                    "ReferenceWithSumItem({}, max_hop: {}, sum: {}{})",
+                    path,
+                    max_hop.map_or("None".to_string(), |h| h.to_string()),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
         }
     }
 }
@@ -420,6 +470,7 @@ impl Element {
             Element::BulkAppendTree(..) => ElementType::BulkAppendTree,
             Element::DenseAppendOnlyFixedSizeTree(..) => ElementType::DenseAppendOnlyFixedSizeTree,
             Element::ProvableSumTree(..) => ElementType::ProvableSumTree,
+            Element::ReferenceWithSumItem(..) => ElementType::ReferenceWithSumItem,
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -439,6 +490,7 @@ impl Element {
                     ElementType::NonCountedDenseAppendOnlyFixedSizeTree
                 }
                 ElementType::ProvableSumTree => ElementType::NonCountedProvableSumTree,
+                ElementType::ReferenceWithSumItem => ElementType::NonCountedReferenceWithSumItem,
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
                 already_non_counted => already_non_counted,
@@ -596,6 +648,12 @@ mod serde_impl {
         NotSummed(Box<ElementShadow>),
         ProvableSumTree(Option<Vec<u8>>, SumValue, Option<ElementFlags>),
         NotCountedOrSummed(Box<ElementShadow>),
+        ReferenceWithSumItem(
+            ReferencePathType,
+            MaxReferenceHop,
+            SumValue,
+            Option<ElementFlags>,
+        ),
     }
 
     impl From<ElementShadow> for Element {
@@ -629,6 +687,9 @@ mod serde_impl {
                 ElementShadow::ProvableSumTree(k, s, f) => Element::ProvableSumTree(k, s, f),
                 ElementShadow::NotCountedOrSummed(inner) => {
                     Element::NotCountedOrSummed(Box::new(Element::from(*inner)))
+                }
+                ElementShadow::ReferenceWithSumItem(p, h, s, f) => {
+                    Element::ReferenceWithSumItem(p, h, s, f)
                 }
             }
         }

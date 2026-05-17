@@ -1944,6 +1944,7 @@ fn batch_average_case_refresh_reference_cost() {
         ]),
         Some(10),
         Some(b"flags".to_vec()),
+        /* non_counted = */ false,
         true,
     )];
 
@@ -2247,6 +2248,7 @@ fn batch_worst_case_refresh_reference_cost() {
         ]),
         Some(10),
         Some(b"flags".to_vec()),
+        /* non_counted = */ false,
         true,
     )];
 

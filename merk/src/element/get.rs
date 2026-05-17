@@ -420,7 +420,9 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
             .unwrap_or(0);
         let element_for_cost = element.as_ref().map(|e| e.underlying());
         match element_for_cost {
-            Some(Element::Item(..)) | Some(Element::Reference(..)) => {
+            Some(Element::Item(..))
+            | Some(Element::Reference(..))
+            | Some(Element::ReferenceWithSumItem(..)) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(
@@ -532,7 +534,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
         let wrapper_overhead = if element.is_wrapped() { 1u32 } else { 0 };
         let element_for_cost = element.underlying();
         match element_for_cost {
-            Element::Item(..) | Element::Reference(..) => {
+            Element::Item(..) | Element::Reference(..) | Element::ReferenceWithSumItem(..) => {
                 // while the loaded item might be a sum item, it is given for free
                 // as it would be very hard to know in advance
                 cost.storage_loaded_bytes = KV::value_byte_cost_size_for_key_and_value_lengths(

@@ -44,6 +44,7 @@ mod provable_count_tree_test;
 mod provable_sum_tree_tests;
 mod query_result_type_tests;
 mod reference_path_tests;
+mod reference_with_sum_item_tests;
 mod replication_session_tests;
 mod replication_utils_tests;
 mod succinctness_gap_test;
