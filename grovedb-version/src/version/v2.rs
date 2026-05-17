@@ -9,7 +9,9 @@ use crate::version::{
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
-    merk_versions::{MerkAverageCaseCostsVersions, MerkBatchVersions, MerkVersions},
+    merk_versions::{
+        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
+    },
     GroveVersion,
 };
 
@@ -212,6 +214,13 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 1, // changed
             sum_tree_estimated_size: 1,         // changed
+        },
+        // See the comment in v1.rs — `prove_count_offset_on_range` is
+        // not reachable from v2's prove path (V0 envelope rejects
+        // offsets), but the version field is kept consistent so a
+        // direct caller doesn't trip the version gate.
+        proof: MerkProofVersions {
+            prove_count_offset_on_range: 0,
         },
     },
 };

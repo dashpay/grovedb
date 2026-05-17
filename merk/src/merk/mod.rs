@@ -46,6 +46,10 @@ pub mod get;
 pub mod open;
 /// Generating Merkle proofs for queries against a Merk tree.
 pub mod prove;
+/// Offset-paginated proofs against `ProvableCountTree` / `ProvableCountSumTree`.
+/// Split out of [`prove`] so the version-gating contract is visible at
+/// the file level.
+pub mod prove_count_offset;
 pub mod restore;
 /// Source implementation for fetching tree nodes from storage.
 pub mod source;
