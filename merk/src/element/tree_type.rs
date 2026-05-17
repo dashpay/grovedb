@@ -205,6 +205,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
             Element::ProvableSumTree(..) => MaybeTree::Tree(TreeType::ProvableSumTree),
+            Element::ProvableCountProvableSumTree(..) => {
+                MaybeTree::Tree(TreeType::ProvableCountProvableSumTree)
+            }
             Element::CommitmentTree(_, chunk_power, _) => {
                 MaybeTree::Tree(TreeType::CommitmentTree(*chunk_power))
             }
@@ -261,6 +264,18 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::ProvableSumTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
                 self.sum_value_or_default(),
             )),
+            // ProvableCountProvableSumTree aggregates BOTH a u64 count
+            // AND an i64 sum, carried via
+            // `ProvableCountedAndProvableSummedMerkNode`. Both aggregates
+            // are baked into every node's hash via
+            // `node_hash_with_count_and_sum`, enabling both
+            // `AggregateCountOnRange` and `AggregateSumOnRange` proofs.
+            TreeType::ProvableCountProvableSumTree => {
+                let v = self.count_sum_value_or_default();
+                Ok(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                    v.0, v.1,
+                ))
+            }
         }
     }
 }

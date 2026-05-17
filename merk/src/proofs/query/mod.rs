@@ -167,6 +167,7 @@ where
         let count = match self.tree().aggregate_data() {
             Ok(AggregateData::ProvableCount(count)) => count,
             Ok(AggregateData::ProvableCountAndSum(count, _)) => count,
+            Ok(AggregateData::ProvableCountAndProvableSum(count, _)) => count,
             _ => 0, // Fallback, should not happen for ProvableCount trees
         };
         Node::KVCount(
@@ -174,6 +175,50 @@ where
             self.tree().value_as_slice().to_vec(),
             count,
         )
+    }
+
+    /// Creates a `Node::KVCountSum` from the key/value pair and (count, sum)
+    /// of the root node. Used for Items in `ProvableCountProvableSumTree` —
+    /// tamper-resistant (verifier computes hash from value) while including
+    /// both the count and the sum so the verifier can recompute
+    /// `node_hash_with_count_and_sum`.
+    pub(crate) fn to_kv_count_sum_node(&self) -> Node {
+        let (count, sum) = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCountAndProvableSum(c, s)) => (c, s),
+            _ => (0, 0),
+        };
+        Node::KVCountSum(
+            self.tree().key().to_vec(),
+            self.tree().value_as_slice().to_vec(),
+            count,
+            sum,
+        )
+    }
+
+    /// Boundary (absence-proof) analogue of `to_kv_count_sum_node`.
+    pub(crate) fn to_kvdigest_count_sum_node(&self) -> Node {
+        let (count, sum) = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCountAndProvableSum(c, s)) => (c, s),
+            _ => (0, 0),
+        };
+        Node::KVDigestCountSum(
+            self.tree().key().to_vec(),
+            *self.tree().value_hash(),
+            count,
+            sum,
+        )
+    }
+
+    /// Non-queried-path analogue of `to_kv_count_sum_node` — emits a
+    /// `Node::KVHashCountSum` carrying the per-node kv hash and both
+    /// aggregates so the verifier can recompute the hash for nodes that
+    /// don't contribute their value to the proof.
+    pub(crate) fn to_kvhash_count_sum_node(&self) -> Node {
+        let (count, sum) = match self.tree().aggregate_data() {
+            Ok(AggregateData::ProvableCountAndProvableSum(c, s)) => (c, s),
+            _ => (0, 0),
+        };
+        Node::KVHashCountSum(*self.tree().kv_hash(), count, sum)
     }
 
     /// Creates a `Node::KVDigestSum` from the key/value_hash pair and sum
@@ -353,26 +398,41 @@ where
 
         let (has_left, has_right) = (!proof.is_empty(), !right_proof.is_empty());
 
-        let is_provable_count_tree = matches!(
+        let is_provable_count_only_tree = matches!(
             self.tree().feature_type(),
             TreeFeatureType::ProvableCountedMerkNode(_)
                 | TreeFeatureType::ProvableCountedSummedMerkNode(..)
         );
         // Sibling family for ProvableSumTree, whose nodes carry the i64 sum
         // in their feature_type.
-        let is_provable_sum_tree = matches!(
+        let is_provable_sum_only_tree = matches!(
             self.tree().feature_type(),
             TreeFeatureType::ProvableSummedMerkNode(_)
         );
+        // ProvableCountProvableSumTree carries BOTH a count and a sum in
+        // its feature_type; both axes are baked into the node hash.
+        let is_provable_count_and_provable_sum_tree = matches!(
+            self.tree().feature_type(),
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(..)
+        );
+        // Combined predicate used by the boundary / non-queried-path
+        // selectors below to gate the aggregate emission.
+        let is_provable_count_tree =
+            is_provable_count_only_tree || is_provable_count_and_provable_sum_tree;
+        let is_provable_sum_tree =
+            is_provable_sum_only_tree || is_provable_count_and_provable_sum_tree;
         let is_provable_aggregate_tree = is_provable_count_tree || is_provable_sum_tree;
 
         // Convert the tree kind to an `ElementType` so `proof_node_type()`
-        // can dispatch — the Count family folds to `ProvableCountTree`
-        // (count-in-hash) and the Sum family folds to `ProvableSumTree`
-        // (sum-in-hash). The two families are distinct.
-        let parent_tree_type = if is_provable_count_tree {
+        // can dispatch — three mutually-exclusive families:
+        //   - count-only      → `ProvableCountTree`
+        //   - sum-only        → `ProvableSumTree`
+        //   - count-and-sum   → `ProvableCountProvableSumTree`
+        let parent_tree_type = if is_provable_count_and_provable_sum_tree {
+            Some(ElementType::ProvableCountProvableSumTree)
+        } else if is_provable_count_only_tree {
             Some(ElementType::ProvableCountTree)
-        } else if is_provable_sum_tree {
+        } else if is_provable_sum_only_tree {
             Some(ElementType::ProvableSumTree)
         } else {
             None // Regular tree or unknown - treated the same
@@ -406,6 +466,7 @@ where
                 ProofNodeType::Kv => self.to_kv_node(),
                 ProofNodeType::KvCount => self.to_kv_count_node(),
                 ProofNodeType::KvSum => self.to_kv_sum_node(),
+                ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
                 ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
                 ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
                 // References: at merk level, generate same node type as non-ref counterpart
@@ -419,6 +480,11 @@ where
                 // feature_type carries the sum, then GroveDB post-processes
                 // to KVRefValueHashSum with the dereferenced value.
                 ProofNodeType::KvRefValueHashSum => self.to_kv_value_hash_feature_type_node(),
+                // ProvableCountProvableSumTree references: emit
+                // KVValueHashFeatureType carrying the dual feature_type,
+                // then GroveDB post-processes to KVRefValueHashCountSum
+                // with the dereferenced value.
+                ProofNodeType::KvRefValueHashCountSum => self.to_kv_value_hash_feature_type_node(),
             };
 
             if proof_params.left_to_right {
@@ -428,10 +494,15 @@ where
             }
         } else if on_boundary_not_found || left_absence.1 || right_absence.0 {
             // On boundary (proving absence): use KVDigest / KVDigestCount /
-            // KVDigestSum depending on the parent's aggregate kind.
-            let node = if is_provable_count_tree {
+            // KVDigestSum / KVDigestCountSum depending on the parent's
+            // aggregate kind. The combined ProvableCountProvableSumTree
+            // family is checked first because it is a member of BOTH the
+            // count and sum families.
+            let node = if is_provable_count_and_provable_sum_tree {
+                self.to_kvdigest_count_sum_node()
+            } else if is_provable_count_only_tree {
                 self.to_kvdigest_count_node()
-            } else if is_provable_sum_tree {
+            } else if is_provable_sum_only_tree {
                 self.to_kvdigest_sum_node()
             } else {
                 self.to_kvdigest_node()
@@ -442,12 +513,16 @@ where
                 Op::PushInverted(node)
             }
         } else if is_provable_aggregate_tree {
-            // Non-queried path nodes carry the aggregate (count or sum) so
-            // the verifier can recompute the node hash.
-            let node = if is_provable_count_tree {
+            // Non-queried path nodes carry the aggregate(s) so the
+            // verifier can recompute the node hash. Check the combined
+            // family first for the same reason as the boundary path
+            // above.
+            let node = if is_provable_count_and_provable_sum_tree {
+                self.to_kvhash_count_sum_node()
+            } else if is_provable_count_only_tree {
                 self.to_kvhash_count_node()
             } else {
-                // is_provable_sum_tree
+                // is_provable_sum_only_tree
                 self.to_kvhash_sum_node()
             };
             if proof_params.left_to_right {

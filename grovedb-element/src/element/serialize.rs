@@ -47,7 +47,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "NotSummed inner must be a sum-tree variant".to_string(),
@@ -61,7 +62,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "NotCountedOrSummed inner must be a sum-bearing tree variant".to_string(),
@@ -147,7 +149,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "deserialized NotSummed with non-sum-tree inner".to_string(),
@@ -161,7 +164,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "deserialized NotCountedOrSummed with non-sum-bearing-tree inner"

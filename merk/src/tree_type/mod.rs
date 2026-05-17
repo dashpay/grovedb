@@ -54,6 +54,14 @@ pub enum TreeType {
     /// `KVRefValueHashSum`, `HashWithSum`, and the `AggregateSumOnRange`
     /// query).
     ProvableSumTree,
+    /// A tree that maintains BOTH a provable count AND a provable sum.
+    /// Both aggregates are baked into every node's hash via
+    /// `node_hash_with_count_and_sum`, so a single tree supports both
+    /// `AggregateCountOnRange` AND `AggregateSumOnRange` proofs against
+    /// the same root hash. Uses dedicated proof-node families
+    /// (`KVCountSum`, `KVHashCountSum`, `KVDigestCountSum`,
+    /// `KVRefValueHashCountSum`, `HashWithCountAndSum`).
+    ProvableCountProvableSumTree,
 }
 
 impl TreeType {
@@ -74,6 +82,7 @@ impl TreeType {
             TreeType::BulkAppendTree(_) => 9,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => 10,
             TreeType::ProvableSumTree => 11,
+            TreeType::ProvableCountProvableSumTree => 12,
         }
     }
 }
@@ -95,7 +104,8 @@ impl TryFrom<u8> for TreeType {
             9 => Ok(TreeType::BulkAppendTree(0)),
             10 => Ok(TreeType::DenseAppendOnlyFixedSizeTree(0)),
             11 => Ok(TreeType::ProvableSumTree),
-            n => Err(Error::UnknownTreeType(format!("got {}, max is 11", n))),
+            12 => Ok(TreeType::ProvableCountProvableSumTree),
+            n => Err(Error::UnknownTreeType(format!("got {}, max is 12", n))),
         }
     }
 }
@@ -115,6 +125,7 @@ impl fmt::Display for TreeType {
             TreeType::BulkAppendTree(_) => "BulkAppendTree",
             TreeType::DenseAppendOnlyFixedSizeTree(_) => "Dense Tree",
             TreeType::ProvableSumTree => "Provable Sum Tree",
+            TreeType::ProvableCountProvableSumTree => "Provable Count Provable Sum Tree",
         };
         write!(f, "{}", s)
     }
@@ -147,6 +158,7 @@ impl TreeType {
                 | TreeType::CountSumTree
                 | TreeType::ProvableCountTree
                 | TreeType::ProvableCountSumTree
+                | TreeType::ProvableCountProvableSumTree
         )
     }
 
@@ -162,6 +174,7 @@ impl TreeType {
                 | TreeType::CountSumTree
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableSumTree
+                | TreeType::ProvableCountProvableSumTree
         )
     }
 
@@ -174,7 +187,9 @@ impl TreeType {
     pub const fn is_count_and_sum_bearing(&self) -> bool {
         matches!(
             self,
-            TreeType::CountSumTree | TreeType::ProvableCountSumTree
+            TreeType::CountSumTree
+                | TreeType::ProvableCountSumTree
+                | TreeType::ProvableCountProvableSumTree
         )
     }
 
@@ -193,6 +208,7 @@ impl TreeType {
             TreeType::BulkAppendTree(_) => false,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => false,
             TreeType::ProvableSumTree => true,
+            TreeType::ProvableCountProvableSumTree => true,
         }
     }
 
@@ -212,6 +228,7 @@ impl TreeType {
             TreeType::BulkAppendTree(_) => NodeType::NormalNode,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => NodeType::NormalNode,
             TreeType::ProvableSumTree => NodeType::ProvableSumNode,
+            TreeType::ProvableCountProvableSumTree => NodeType::ProvableCountProvableSumNode,
         }
     }
 
@@ -230,6 +247,9 @@ impl TreeType {
             TreeType::BulkAppendTree(_) => TreeFeatureType::BasicMerkNode,
             TreeType::DenseAppendOnlyFixedSizeTree(_) => TreeFeatureType::BasicMerkNode,
             TreeType::ProvableSumTree => TreeFeatureType::ProvableSummedMerkNode(0),
+            TreeType::ProvableCountProvableSumTree => {
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0)
+            }
         }
     }
 
@@ -255,6 +275,9 @@ impl TreeType {
                 Some(ElementType::DenseAppendOnlyFixedSizeTree)
             }
             TreeType::ProvableSumTree => Some(ElementType::ProvableSumTree),
+            TreeType::ProvableCountProvableSumTree => {
+                Some(ElementType::ProvableCountProvableSumTree)
+            }
         }
     }
 }

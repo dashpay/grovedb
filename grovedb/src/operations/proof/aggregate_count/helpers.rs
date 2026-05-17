@@ -249,14 +249,17 @@ pub(super) fn enforce_lower_chain(
     if is_terminal {
         if !matches!(
             element,
-            Element::ProvableCountTree(..) | Element::ProvableCountSumTree(..)
+            Element::ProvableCountTree(..)
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableCountProvableSumTree(..)
         ) {
             return Err(Error::InvalidProof(
                 path_query.clone(),
                 format!(
                     "aggregate-count proof's terminal path element at key {} must be a \
-                     ProvableCountTree or ProvableCountSumTree (got {}); a count aggregate \
-                     is only meaningful against a tree that binds its count into the node hash",
+                     ProvableCountTree, ProvableCountSumTree, or ProvableCountProvableSumTree \
+                     (got {}); a count aggregate is only meaningful against a tree that binds \
+                     its count into the node hash",
                     hex::encode(target_key),
                     element.type_str()
                 ),

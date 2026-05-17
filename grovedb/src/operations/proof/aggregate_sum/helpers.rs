@@ -162,13 +162,16 @@ pub(super) fn enforce_lower_chain(
         })?
         .into_underlying();
     if is_terminal {
-        if !matches!(element, Element::ProvableSumTree(..)) {
+        if !matches!(
+            element,
+            Element::ProvableSumTree(..) | Element::ProvableCountProvableSumTree(..)
+        ) {
             return Err(Error::InvalidProof(
                 path_query.clone(),
                 format!(
                     "aggregate-sum proof's terminal path element at key {} must be a \
-                     ProvableSumTree (got {}); a sum aggregate is only meaningful against \
-                     a tree that binds its sum into the node hash",
+                     ProvableSumTree or ProvableCountProvableSumTree (got {}); a sum aggregate \
+                     is only meaningful against a tree that binds its sum into the node hash",
                     hex::encode(target_key),
                     element.type_str()
                 ),

@@ -273,7 +273,8 @@ where {
             | Element::CountSumTree(..)
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
-            | Element::ProvableSumTree(..) => Ok(element),
+            | Element::ProvableSumTree(..)
+            | Element::ProvableCountProvableSumTree(..) => Ok(element),
             Element::Tree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
@@ -417,6 +418,7 @@ where {
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableCountProvableSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
@@ -545,6 +547,15 @@ where {
                                         Element::ProvableSumTree(_, sum_value, _) => {
                                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                                         }
+                                        Element::ProvableCountProvableSumTree(
+                                            _,
+                                            count_value,
+                                            sum_value,
+                                            _,
+                                        ) => Ok(QueryItemOrSumReturnType::CountSumValue(
+                                            count_value,
+                                            sum_value,
+                                        )),
                                         _ => Err(Error::InvalidQuery(
                                             "the reference must result in an item",
                                         )),
@@ -583,6 +594,9 @@ where {
                         Element::ProvableSumTree(_, sum_value, _) => {
                             Ok(QueryItemOrSumReturnType::SumValue(sum_value))
                         }
+                        Element::ProvableCountProvableSumTree(_, count_value, sum_value, _) => Ok(
+                            QueryItemOrSumReturnType::CountSumValue(count_value, sum_value),
+                        ),
                         Element::Tree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
@@ -1120,6 +1134,7 @@ where {
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableCountProvableSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)

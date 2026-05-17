@@ -14,7 +14,7 @@ use super::{Node, Op};
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::tree::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count,
-    node_hash_with_sum, value_hash, NULL_HASH,
+    node_hash_with_count_and_sum, node_hash_with_sum, value_hash, NULL_HASH,
 };
 #[cfg(any(feature = "minimal", feature = "verify"))]
 use crate::{
@@ -62,6 +62,10 @@ impl Child {
             }
             Node::KVCount(key, _, count) => (key.as_slice(), AggregateData::ProvableCount(*count)),
             Node::KVSum(key, _, sum) => (key.as_slice(), AggregateData::ProvableSum(*sum)),
+            Node::KVCountSum(key, _, count, sum) => (
+                key.as_slice(),
+                AggregateData::ProvableCountAndProvableSum(*count, *sum),
+            ),
             // for the connection between the trunk and leaf chunks, we don't
             // have the child key so we must first write in an empty one. once
             // the leaf gets verified, we can write in this key to its parent
@@ -186,6 +190,15 @@ impl Tree {
                             &self.child_hash(false),
                             *sum,
                         ),
+                        TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+                            node_hash_with_count_and_sum(
+                                &kv_hash,
+                                &self.child_hash(true),
+                                &self.child_hash(false),
+                                *count,
+                                *sum,
+                            )
+                        }
                         _ => compute_hash(self, kv_hash),
                     }
                 })
@@ -289,6 +302,64 @@ impl Tree {
                         &kv_hash,
                         &self.child_hash(true),
                         &self.child_hash(false),
+                        *sum,
+                    )
+                })
+            }
+            // ProvableCountProvableSumTree proof-node hash dispatch — all
+            // five variants pipe through `node_hash_with_count_and_sum`,
+            // the same hash function used by `Tree::hash_for_link` and the
+            // commit path for `TreeType::ProvableCountProvableSumTree`.
+            Node::HashWithCountAndSum(kv_hash, left_child_hash, right_child_hash, count, sum) => {
+                node_hash_with_count_and_sum(
+                    kv_hash,
+                    left_child_hash,
+                    right_child_hash,
+                    *count,
+                    *sum,
+                )
+            }
+            Node::KVCountSum(key, value, count, sum) => kv_hash(key.as_slice(), value.as_slice())
+                .flat_map(|kv_hash| {
+                    node_hash_with_count_and_sum(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                        *sum,
+                    )
+                }),
+            Node::KVHashCountSum(kv_hash, count, sum) => node_hash_with_count_and_sum(
+                kv_hash,
+                &self.child_hash(true),
+                &self.child_hash(false),
+                *count,
+                *sum,
+            ),
+            Node::KVDigestCountSum(key, value_hash, count, sum) => {
+                kv_digest_to_kv_hash(key, value_hash).flat_map(|kv_hash| {
+                    node_hash_with_count_and_sum(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
+                        *sum,
+                    )
+                })
+            }
+            Node::KVRefValueHashCountSum(key, referenced_value, node_value_hash, count, sum) => {
+                let mut cost = OperationCost::default();
+                let referenced_value_hash =
+                    value_hash(referenced_value.as_slice()).unwrap_add_cost(&mut cost);
+                let combined_value_hash = combine_hash(node_value_hash, &referenced_value_hash)
+                    .unwrap_add_cost(&mut cost);
+
+                kv_digest_to_kv_hash(key.as_slice(), &combined_value_hash).flat_map(|kv_hash| {
+                    node_hash_with_count_and_sum(
+                        &kv_hash,
+                        &self.child_hash(true),
+                        &self.child_hash(false),
+                        *count,
                         *sum,
                     )
                 })
@@ -467,14 +538,19 @@ impl Tree {
             | Node::KVRefValueHashCount(key, ..)
             | Node::KVSum(key, ..)
             | Node::KVDigestSum(key, ..)
-            | Node::KVRefValueHashSum(key, ..) => Some(key.as_slice()),
+            | Node::KVRefValueHashSum(key, ..)
+            | Node::KVCountSum(key, ..)
+            | Node::KVDigestCountSum(key, ..)
+            | Node::KVRefValueHashCountSum(key, ..) => Some(key.as_slice()),
             // These nodes don't have keys, only hashes
             Node::Hash(_)
             | Node::KVHash(_)
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
-            | Node::HashWithSum(..) => None,
+            | Node::HashWithSum(..)
+            | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndSum(..) => None,
         }
     }
 
@@ -490,6 +566,14 @@ impl Tree {
             // ProvableSumTree proof nodes map to ProvableSum.
             Node::KVSum(_, _, sum) => Ok(AggregateData::ProvableSum(*sum)),
             Node::HashWithSum(.., sum) => Ok(AggregateData::ProvableSum(*sum)),
+            // ProvableCountProvableSumTree proof nodes map to
+            // ProvableCountAndProvableSum.
+            Node::KVCountSum(_, _, count, sum) => {
+                Ok(AggregateData::ProvableCountAndProvableSum(*count, *sum))
+            }
+            Node::HashWithCountAndSum(.., count, sum) => {
+                Ok(AggregateData::ProvableCountAndProvableSum(*count, *sum))
+            }
             Node::KV(..) | Node::KVValueHash(..) => Ok(AggregateData::NoAggregateData),
             _ => Err(Error::InvalidProofError(
                 "Cannot extract aggregate data from this node type".to_string(),

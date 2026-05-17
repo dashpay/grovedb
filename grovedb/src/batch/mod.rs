@@ -1683,6 +1683,7 @@ where
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
+            | Element::ProvableCountProvableSumTree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
@@ -1839,6 +1840,7 @@ where
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableCountProvableSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
@@ -1889,6 +1891,7 @@ where
                     | Element::ProvableCountTree(..)
                     | Element::ProvableCountSumTree(..)
                     | Element::ProvableSumTree(..)
+                    | Element::ProvableCountProvableSumTree(..)
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
@@ -2233,6 +2236,7 @@ where
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableCountProvableSumTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -2695,6 +2699,14 @@ where
                         AggregateData::ProvableSum(sum_value) => {
                             Element::new_provable_sum_tree_with_flags_and_sum_value(
                                 root_key, sum_value, flags,
+                            )
+                        }
+                        AggregateData::ProvableCountAndProvableSum(count_value, sum_value) => {
+                            Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
                             )
                         }
                     };

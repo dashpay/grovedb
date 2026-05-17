@@ -487,6 +487,7 @@ impl GroveDb {
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableCountProvableSumTree(Some(_), ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -621,6 +622,7 @@ impl GroveDb {
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -1487,7 +1489,8 @@ impl GroveDb {
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
-                            | Element::ProvableSumTree(Some(_), ..) => {
+                            | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableCountProvableSumTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -1611,6 +1614,7 @@ impl GroveDb {
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -2688,17 +2692,22 @@ impl GroveDb {
             | Node::KVRefValueHash(key, value, ..)
             | Node::KVRefValueHashCount(key, value, ..)
             | Node::KVSum(key, value, ..)
-            | Node::KVRefValueHashSum(key, value, ..) => Some((key.clone(), value.clone())),
+            | Node::KVRefValueHashSum(key, value, ..)
+            | Node::KVCountSum(key, value, ..)
+            | Node::KVRefValueHashCountSum(key, value, ..) => Some((key.clone(), value.clone())),
             // These nodes don't have values, only key+hash or just hash
             Node::KVDigest(..)
             | Node::KVDigestCount(..)
             | Node::KVDigestSum(..)
+            | Node::KVDigestCountSum(..)
             | Node::Hash(_)
             | Node::KVHash(_)
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
-            | Node::HashWithSum(..) => None,
+            | Node::HashWithSum(..)
+            | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndSum(..) => None,
         }
     }
 
@@ -2711,7 +2720,8 @@ impl GroveDb {
             Element::CountTree(_, count, _)
             | Element::CountSumTree(_, count, ..)
             | Element::ProvableCountTree(_, count, _)
-            | Element::ProvableCountSumTree(_, count, ..) => Some(*count),
+            | Element::ProvableCountSumTree(_, count, ..)
+            | Element::ProvableCountProvableSumTree(_, count, ..) => Some(*count),
             _ => None,
         }
     }

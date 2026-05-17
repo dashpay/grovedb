@@ -163,11 +163,13 @@ where
         let tree_type = self.tree_type;
         if !matches!(
             tree_type,
-            crate::TreeType::ProvableCountTree | crate::TreeType::ProvableCountSumTree
+            crate::TreeType::ProvableCountTree
+                | crate::TreeType::ProvableCountSumTree
+                | crate::TreeType::ProvableCountProvableSumTree
         ) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateCountOnRange is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
+                "AggregateCountOnRange is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());
@@ -198,9 +200,13 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<(LinkedList<ProofOp>, i64), Error> {
         let tree_type = self.tree_type;
-        if !matches!(tree_type, crate::TreeType::ProvableSumTree) {
+        if !matches!(
+            tree_type,
+            crate::TreeType::ProvableSumTree | crate::TreeType::ProvableCountProvableSumTree
+        ) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateSumOnRange is only valid against ProvableSumTree, got {:?}",
+                "AggregateSumOnRange is only valid against ProvableSumTree or \
+                 ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());

@@ -807,6 +807,45 @@ fn node_to_string(node: &Node) -> Result<String, fmt::Error> {
             hex::encode(right_child_hash),
             sum
         ),
+        Node::KVCountSum(key, value, count, sum) => format!(
+            "KVCountSum({}, {}, count={}, sum={})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            count,
+            sum
+        ),
+        Node::KVHashCountSum(kv_hash, count, sum) => format!(
+            "KVHashCountSum(HASH[{}], count={}, sum={})",
+            hex::encode(kv_hash),
+            count,
+            sum
+        ),
+        Node::KVRefValueHashCountSum(key, value, value_hash, count, sum) => format!(
+            "KVRefValueHashCountSum({}, {}, HASH[{}], count={}, sum={})",
+            hex_to_ascii(key),
+            element_hex_to_ascii(value)?,
+            hex::encode(value_hash),
+            count,
+            sum
+        ),
+        Node::KVDigestCountSum(key, value_hash, count, sum) => format!(
+            "KVDigestCountSum({}, HASH[{}], count={}, sum={})",
+            hex_to_ascii(key),
+            hex::encode(value_hash),
+            count,
+            sum
+        ),
+        Node::HashWithCountAndSum(kv_hash, left_child_hash, right_child_hash, count, sum) => {
+            format!(
+                "HashWithCountAndSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], count={}, \
+                 sum={})",
+                hex::encode(kv_hash),
+                hex::encode(left_child_hash),
+                hex::encode(right_child_hash),
+                count,
+                sum
+            )
+        }
     };
     Ok(s)
 }

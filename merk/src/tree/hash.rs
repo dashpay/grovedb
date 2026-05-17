@@ -198,6 +198,50 @@ pub fn node_hash_with_sum(
     })
 }
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Hashes a node for `ProvableCountProvableSumTree`, baking BOTH the
+/// aggregate count AND the aggregate sum into the node hash.
+///
+/// Combined analogue of [`node_hash_with_count`] and [`node_hash_with_sum`].
+/// The u64 count is appended in big-endian (8 fixed bytes), followed by the
+/// i64 sum in big-endian (another 8 fixed bytes). Fixed-width encoding makes
+/// the hash deterministic regardless of how large the count/sum values are —
+/// varint encoding would expose the prover's choice of size and open a
+/// malleability surface. Negative sums hash via their two's-complement
+/// big-endian form (deterministic across platforms).
+///
+/// Hash layout: `Blake3(kv || left || right || count_be8 || sum_be8)`.
+///
+/// This is the hash function that diverges a `ProvableCountProvableSumTree`
+/// root from an equivalently-populated `ProvableCountSumTree` (which hashes
+/// only the count) and from a `ProvableSumTree` (which hashes only the sum).
+pub fn node_hash_with_count_and_sum(
+    kv: &CryptoHash,
+    left: &CryptoHash,
+    right: &CryptoHash,
+    count: u64,
+    sum: i64,
+) -> CostContext<CryptoHash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(kv);
+    hasher.update(left);
+    hasher.update(right);
+    hasher.update(&count.to_be_bytes());
+    hasher.update(&sum.to_be_bytes());
+
+    // The input is kv (32) + left (32) + right (32) + count (8) + sum (8) =
+    // 112 bytes, still fits in 2 Blake3 blocks like the count/sum-only paths.
+    let hashes = 2;
+
+    let res = hasher.finalize();
+    let mut hash: CryptoHash = Default::default();
+    hash.copy_from_slice(res.as_bytes());
+    hash.wrap_with_cost(OperationCost {
+        hash_node_calls: hashes,
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 #[cfg(feature = "minimal")]
 mod tests {

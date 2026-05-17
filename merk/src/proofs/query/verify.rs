@@ -482,7 +482,11 @@ impl QueryProofVerify for Query {
                     }
                     execute_node(key, Some(value), *node_value_hash, true)?;
                 }
-                Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) | Node::KVHashSum(..) => {
+                Node::Hash(_)
+                | Node::KVHash(_)
+                | Node::KVHashCount(..)
+                | Node::KVHashSum(..)
+                | Node::KVHashCountSum(..) => {
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
                             "Proof is missing data for query range. Encountered unexpected node \
@@ -521,6 +525,18 @@ impl QueryProofVerify for Query {
                             .to_string(),
                     ));
                 }
+                Node::HashWithCountAndSum(..) => {
+                    // Same fail-fast rationale as `HashWithCount` /
+                    // `HashWithSum`. The combined variant is reserved for
+                    // the dedicated aggregate-count and aggregate-sum
+                    // verifiers against `ProvableCountProvableSumTree`;
+                    // it must never reach the regular query verifier.
+                    return Err(Error::InvalidProofError(
+                        "HashWithCountAndSum node is only valid in aggregate-count / \
+                         aggregate-sum proofs; encountered in regular query verification"
+                            .to_string(),
+                    ));
+                }
                 Node::KVSum(key, value, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
@@ -539,6 +555,27 @@ impl QueryProofVerify for Query {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashSum node");
+                    }
+                    execute_node(key, Some(value), *value_hash, false)?;
+                }
+                Node::KVCountSum(key, value, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVCountSum node");
+                    }
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
+                }
+                Node::KVDigestCountSum(key, value_hash, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigestCountSum node");
+                    }
+                    execute_node(key, None, *value_hash, false)?;
+                }
+                Node::KVRefValueHashCountSum(key, value, value_hash, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHashCountSum node");
                     }
                     execute_node(key, Some(value), *value_hash, false)?;
                 }

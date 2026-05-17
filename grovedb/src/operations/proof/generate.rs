@@ -570,6 +570,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
                             | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
@@ -640,6 +641,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
                             | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -680,6 +682,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
                             | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
@@ -1488,6 +1491,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
                             | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -1535,6 +1539,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(Some(_), ..))
                             | Ok(Element::ProvableCountSumTree(Some(_), ..))
                             | Ok(Element::ProvableSumTree(Some(_), ..))
+                            | Ok(Element::ProvableCountProvableSumTree(Some(_), ..))
                                 if !done_with_results =>
                             {
                                 // Non-empty tree without subquery: inject child
@@ -1588,6 +1593,7 @@ impl GroveDb {
                             // (verifier reads it as count = 0).
                             Ok(Element::ProvableCountTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
+                            | Ok(Element::ProvableCountProvableSumTree(None, ..))
                                 if !done_with_results
                                     && is_aggregate_count_query
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
@@ -1623,6 +1629,7 @@ impl GroveDb {
                             | Ok(Element::CountSumTree(None, ..))
                             | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::ProvableSumTree(None, ..))
+                            | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
@@ -1646,6 +1653,7 @@ impl GroveDb {
                             | Ok(Element::ProvableCountTree(..))
                             | Ok(Element::ProvableCountSumTree(..))
                             | Ok(Element::ProvableSumTree(..))
+                            | Ok(Element::ProvableCountProvableSumTree(..))
                             | Ok(Element::CommitmentTree(..))
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))

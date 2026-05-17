@@ -195,6 +195,56 @@ pub enum Node {
     ///
     /// Contains: `(kv_hash, left_child_hash, right_child_hash, sum)`
     HashWithSum(CryptoHash, CryptoHash, CryptoHash, i64),
+
+    /// Key, value, count, and sum. For queried Items in
+    /// `ProvableCountProvableSumTree`.
+    ///
+    /// Combined analogue of `KVCount` and `KVSum`: the verifier recomputes
+    /// `node_hash = node_hash_with_count_and_sum(kv_hash, left, right, count, sum)`
+    /// so a forged count OR forged sum produces a hash divergence at the
+    /// parent boundary.
+    ///
+    /// Contains: `(key, value, count, sum)`
+    KVCountSum(Vec<u8>, Vec<u8>, u64, i64),
+
+    /// KV hash, count, and sum. For non-queried nodes in
+    /// `ProvableCountProvableSumTree`.
+    ///
+    /// Combined analogue of `KVHashCount` and `KVHashSum`.
+    ///
+    /// Contains: `(kv_hash, count, sum)`
+    KVHashCountSum(CryptoHash, u64, i64),
+
+    /// Key, referenced value, reference element hash, count, and sum.
+    /// For queried References in `ProvableCountProvableSumTree`.
+    ///
+    /// Combined analogue of `KVRefValueHashCount` and `KVRefValueHashSum`.
+    ///
+    /// Contains: `(key, referenced_value, reference_element_hash, count, sum)`
+    KVRefValueHashCountSum(Vec<u8>, Vec<u8>, CryptoHash, u64, i64),
+
+    /// Key, value_hash, count, and sum. For proving absence in
+    /// `ProvableCountProvableSumTree`.
+    ///
+    /// Combined analogue of `KVDigestCount` and `KVDigestSum`.
+    ///
+    /// Contains: `(key, value_hash, count, sum)`
+    KVDigestCountSum(Vec<u8>, CryptoHash, u64, i64),
+
+    /// A self-verifying compressed subtree for both `AggregateCountOnRange`
+    /// AND `AggregateSumOnRange` proofs against a
+    /// `ProvableCountProvableSumTree`.
+    ///
+    /// Combined analogue of `HashWithCount` and `HashWithSum` — encodes
+    /// the subtree's *root* node as
+    /// `(kv_hash, left_child_hash, right_child_hash, count, sum)`. The
+    /// verifier reconstructs the subtree's root `node_hash` as
+    /// `node_hash_with_count_and_sum(kv_hash, left, right, count, sum)`
+    /// and uses that hash exactly as `Hash(...)` would. Both the count and
+    /// the sum are cryptographically committed by the parent's hash chain.
+    ///
+    /// Contains: `(kv_hash, left_child_hash, right_child_hash, count, sum)`
+    HashWithCountAndSum(CryptoHash, CryptoHash, CryptoHash, u64, i64),
 }
 
 use std::fmt;
@@ -303,6 +353,45 @@ impl fmt::Display for Node {
                 hex::encode(right_child_hash),
                 sum
             ),
+            Node::KVCountSum(key, value, count, sum) => format!(
+                "KVCountSum({}, {}, count={}, sum={})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                count,
+                sum
+            ),
+            Node::KVHashCountSum(kv_hash, count, sum) => format!(
+                "KVHashCountSum(HASH[{}], count={}, sum={})",
+                hex::encode(kv_hash),
+                count,
+                sum
+            ),
+            Node::KVRefValueHashCountSum(key, value, value_hash, count, sum) => format!(
+                "KVRefValueHashCountSum({}, {}, HASH[{}], count={}, sum={})",
+                hex_to_ascii(key),
+                hex_to_ascii(value),
+                hex::encode(value_hash),
+                count,
+                sum
+            ),
+            Node::KVDigestCountSum(key, value_hash, count, sum) => format!(
+                "KVDigestCountSum({}, HASH[{}], count={}, sum={})",
+                hex_to_ascii(key),
+                hex::encode(value_hash),
+                count,
+                sum
+            ),
+            Node::HashWithCountAndSum(kv_hash, left_child_hash, right_child_hash, count, sum) => {
+                format!(
+                    "HashWithCountAndSum(kv_hash=HASH[{}], left=HASH[{}], right=HASH[{}], \
+                     count={}, sum={})",
+                    hex::encode(kv_hash),
+                    hex::encode(left_child_hash),
+                    hex::encode(right_child_hash),
+                    count,
+                    sum
+                )
+            }
         };
         write!(f, "{}", node_string)
     }

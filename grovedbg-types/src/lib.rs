@@ -169,6 +169,14 @@ pub enum Element {
         #[serde_as(as = "Option<Base64>")]
         element_flags: Option<Vec<u8>>,
     },
+    ProvableCountProvableSumTree {
+        #[serde_as(as = "Option<Base64>")]
+        root_key: Option<Key>,
+        count: u64,
+        sum: i64,
+        #[serde_as(as = "Option<Base64>")]
+        element_flags: Option<Vec<u8>>,
+    },
     Item {
         #[serde_as(as = "Base64")]
         value: Vec<u8>,
@@ -332,6 +340,11 @@ pub enum TreeFeatureType {
     /// identically (the on-the-wire distinction is by node hash, not by
     /// serialization shape).
     ProvableSummedMerkNode(i64),
+    /// Provable count + provable sum node: BOTH count and sum included in
+    /// the node hash via `node_hash_with_count_and_sum`. Mirrors
+    /// `ProvableCountedSummedMerkNode` for serialization; the debugger
+    /// renders them identically.
+    ProvableCountedAndProvableSummedMerkNode(u64, i64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

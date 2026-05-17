@@ -63,25 +63,32 @@ use crate::{
 };
 
 /// Returns true if `tree_type` is one that can host an `AggregateSumOnRange`
-/// proof. Only `ProvableSumTree` is valid — the `Sum` / `BigSum` trees use
-/// different hash dispatches (the inserted-value hash is not bound through
-/// `node_hash_with_sum` for those) and can't produce verifiable sum proofs.
+/// proof. `ProvableSumTree` and `ProvableCountProvableSumTree` are valid —
+/// both pipe sums through `node_hash_with_sum` /
+/// `node_hash_with_count_and_sum` so the sum is bound to the node hash.
+/// Plain `Sum` / `BigSum` / `CountSum` / `ProvableCountSum` trees do not
+/// participate in `AggregateSumOnRange` because their sums are not baked
+/// into the hash chain and cannot be cryptographically proven.
 #[cfg(feature = "minimal")]
 pub(super) fn is_provable_sum_bearing(tree_type: TreeType) -> bool {
-    matches!(tree_type, TreeType::ProvableSumTree)
+    matches!(
+        tree_type,
+        TreeType::ProvableSumTree | TreeType::ProvableCountProvableSumTree
+    )
 }
 
-/// Pull the sum out of a `ProvableSum` aggregate. Returns
-/// `Err(CorruptedData)` for any other variant — the entry point has
-/// already gated `tree_type`, so reaching the error means the tree's
-/// in-memory state disagrees with its declared type. This is a local
-/// invariant failure on the prover side (we are walking *our own*
+/// Pull the sum out of a `ProvableSum` / `ProvableCountAndProvableSum`
+/// aggregate. Returns `Err(CorruptedData)` for any other variant — the
+/// entry point has already gated `tree_type`, so reaching the error means
+/// the tree's in-memory state disagrees with its declared type. This is a
+/// local invariant failure on the prover side (we are walking *our own*
 /// merk), so `CorruptedData` is the appropriate classification per the
 /// repo error-handling convention.
 #[cfg(feature = "minimal")]
 pub(super) fn provable_sum_from_aggregate(data: AggregateData) -> Result<i64, Error> {
     match data {
         AggregateData::ProvableSum(s) => Ok(s),
+        AggregateData::ProvableCountAndProvableSum(_, s) => Ok(s),
         other => Err(Error::CorruptedData(format!(
             "expected ProvableSum aggregate data on a provable sum tree, got {:?}",
             other
