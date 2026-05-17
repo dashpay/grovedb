@@ -401,6 +401,81 @@ mod tests {
     }
 
     #[test]
+    fn validate_aggregate_count_rejects_inner_aggregate_sum() {
+        // AggregateCountOnRange wrapping AggregateSumOnRange — orthogonal
+        // aggregate variants are explicitly rejected. Exercises the
+        // `QueryItem::AggregateSumOnRange(_)` arm in
+        // `validate_leaf_aggregate_count_on_range`.
+        let inner_sum = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let q = make_aggregate_count_query(inner_sum);
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("inner AggregateSumOnRange must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(
+                    msg.contains("AggregateSumOnRange"),
+                    "unexpected message: {msg}"
+                );
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_aggregate_count_rejects_inner_aggregate_count_and_sum() {
+        // AggregateCountOnRange wrapping AggregateCountAndSumOnRange —
+        // exercises the new
+        // `QueryItem::AggregateCountAndSumOnRange(_)` arm in
+        // `validate_leaf_aggregate_count_on_range`.
+        let inner_combined = QueryItem::AggregateCountAndSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let q = make_aggregate_count_query(inner_combined);
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("inner AggregateCountAndSumOnRange must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(
+                    msg.contains("AggregateCountAndSumOnRange"),
+                    "unexpected message: {msg}"
+                );
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_carrier_aggregate_count_direct_rejects_aggregate_count_and_sum_outer_item() {
+        // ACASOR in outer items + leaf subquery — exercise the
+        // carrier-validator's new
+        // `QueryItem::AggregateCountAndSumOnRange(_)` arm. Must be
+        // hit via the direct carrier validator since the dispatcher
+        // would route through the leaf path when an aggregate item
+        // appears in `items`.
+        let mut carrier = Query::new();
+        carrier
+            .items
+            .push(QueryItem::AggregateCountAndSumOnRange(Box::new(
+                QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            )));
+        carrier.set_subquery(make_leaf_aggregate_count_subquery());
+        let err = carrier
+            .validate_carrier_aggregate_count_on_range()
+            .expect_err("AggregateCountAndSumOnRange outer item must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(
+                msg.contains("AggregateCountAndSumOnRange"),
+                "unexpected message: {msg}"
+            ),
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
     fn validate_aggregate_count_rejects_default_subquery_branch() {
         let mut q = make_aggregate_count_query(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
         q.default_subquery_branch = SubqueryBranch {

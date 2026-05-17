@@ -1436,4 +1436,53 @@ mod tests {
         );
         assert!(selector.has_aggregate_count_and_sum_on_range_anywhere());
     }
+
+    // ---------- Cross-aggregate orthogonality arms ----------
+    //
+    // These pin the rejection-arms that surface the rule "the three
+    // aggregate variants are orthogonal — none of them may wrap any of
+    // the others as their inner item". The matching arms for ACOR
+    // are covered in `aggregate_count.rs`.
+
+    #[test]
+    fn validate_aggregate_sum_rejects_inner_aggregate_count_and_sum() {
+        // ASOR wrapping ACASOR — exercises the new
+        // `QueryItem::AggregateCountAndSumOnRange(_)` arm inside
+        // `validate_aggregate_sum_on_range`.
+        let inner_combined = QueryItem::AggregateCountAndSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let q = Query::new_aggregate_sum_on_range(inner_combined);
+        let err = q
+            .validate_aggregate_sum_on_range()
+            .expect_err("inner AggregateCountAndSumOnRange must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(
+                    msg.contains("AggregateCountAndSumOnRange"),
+                    "unexpected message: {msg}"
+                );
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_combined_dispatch_returns_a_known_error_for_non_combined_query() {
+        // A query with no ACASOR item routes through the
+        // `validate_aggregate_count_and_sum_on_range` Err arm — pin
+        // the exact rejection so a refactor that changed the message
+        // would be caught.
+        let q = Query::new_single_query_item(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let err = q
+            .validate_aggregate_count_and_sum_on_range()
+            .expect_err("non-combined query must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(
+                msg.contains("AggregateCountAndSumOnRange"),
+                "unexpected message: {msg}"
+            ),
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
 }

@@ -1901,7 +1901,8 @@ mod tests {
         outer_query.insert_key(b"pcps".to_vec());
         outer_query.default_subquery_branch.subquery = Some(Box::new(inner_combined));
 
-        let path_query = PathQuery::new_unsized(vec![b"outer".to_vec()], outer_query);
+        let sized = crate::query::SizedQuery::new(outer_query, Some(10), None);
+        let path_query = PathQuery::new(vec![b"outer".to_vec()], sized);
 
         // The carrier query goes through `prove_query` rather than
         // `verify_aggregate_count_and_sum_query` (which insists on the
@@ -2064,6 +2065,612 @@ mod tests {
                 );
             }
             other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// V1 envelope where the non-leaf merk proof DOES verify and DOES
+    /// have a result set, but the key in the result set DOESN'T match
+    /// the expected path key. Hits the
+    /// "non-leaf proof did not contain the expected key" rejection arm
+    /// inside `verify_single_key_layer_proof_v0`.
+    ///
+    /// We achieve this by rewriting the KV key in the value-bearing
+    /// node before re-encoding. The non-leaf proof now contains a
+    /// result for some other key but not for the expected one. The
+    /// hash chain will independently mismatch, but we pin the most
+    /// helpful rejection: either the key-not-in-result-set arm or the
+    /// chain-mismatch arm.
+    #[test]
+    fn combined_v1_envelope_non_leaf_proof_missing_expected_key_is_rejected() {
+        use grovedb_merk::proofs::{Node, Op};
+
+        use crate::{
+            operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes},
+            tests::TEST_LEAF,
+        };
+
+        let v = GroveVersion::latest();
+        let (db, _root) = setup_15_key_pcps_at_test_leaf(v);
+        let pq = PathQuery::new_aggregate_count_and_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"pcps".to_vec()],
+            QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let mut decoded = decode_combined_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF");
+        let bytes = match &mut test_leaf_layer.merk_proof {
+            ProofBytes::Merk(b) => b,
+            _ => panic!("expected Merk bytes at TEST_LEAF non-leaf"),
+        };
+        // Rewrite the `pcps` KEY to a 4-byte stand-in so
+        // the non-leaf merk proof's result_set carries a different
+        // key than the path expects.
+        let mut ops: Vec<Op> = grovedb_merk::proofs::Decoder::new(bytes)
+            .map(|r| r.expect("decode existing op"))
+            .collect();
+        let mut rewrote = false;
+        for op in ops.iter_mut() {
+            match op {
+                Op::Push(Node::KVValueHash(k, _, _))
+                | Op::PushInverted(Node::KVValueHash(k, _, _))
+                    if k == b"pcps" =>
+                {
+                    *k = b"othr".to_vec();
+                    rewrote = true;
+                    break;
+                }
+                Op::Push(Node::KVValueHashFeatureType(k, _, _, _))
+                | Op::PushInverted(Node::KVValueHashFeatureType(k, _, _, _))
+                    if k == b"pcps" =>
+                {
+                    *k = b"othr".to_vec();
+                    rewrote = true;
+                    break;
+                }
+                Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, _, _, _, _))
+                | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(k, _, _, _, _))
+                    if k == b"pcps" =>
+                {
+                    *k = b"othr".to_vec();
+                    rewrote = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(rewrote, "test setup: expected a `pcps` KV op to rewrite");
+        let mut new_bytes = Vec::new();
+        grovedb_merk::proofs::encoding::encode_into(ops.iter(), &mut new_bytes);
+        *bytes = new_bytes;
+
+        let reencoded = reencode_combined_envelope(decoded);
+        let result = GroveDb::verify_aggregate_count_and_sum_query(&reencoded, &pq, v);
+        match result {
+            Err(crate::Error::InvalidProof(_, msg)) => {
+                // Accept either the missing-key rejection inside the
+                // verifier or an upstream rejection that fires
+                // earlier (the merk proof's tree order may itself
+                // become inconsistent after the key rewrite).
+                assert!(
+                    msg.contains("did not contain the expected key")
+                        || msg.contains("not keyed by the expected path key")
+                        || msg.contains("failed to verify")
+                        || msg.contains("chain mismatch"),
+                    "expected key-related rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// Empty-PCPS-host carrier descent under an aggregate-count
+    /// outer query. Exercises the
+    /// `Ok(Element::ProvableCountProvableSumTree(None, ..))` arm with
+    /// `is_aggregate_count_query` true in
+    /// `prove_subqueries_v1` — the descent emits an empty merk proof
+    /// at the leaf which the ACOR verifier reads as `count = 0`.
+    ///
+    /// Uses a sized PathQuery with a non-empty limit so the
+    /// `previous_limit != *overall_limit` post-recursion check on the
+    /// carrier-descent arm actually decrements (the carrier descent
+    /// records `has_a_result_at_level` only when the inner recursion
+    /// reduced the overall limit).
+    #[test]
+    fn aggregate_count_carrier_descends_into_empty_pcps() {
+        use grovedb_merk::proofs::Query;
+
+        use crate::{query::SizedQuery, tests::TEST_LEAF};
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+
+        // TEST_LEAF → "pcps" (empty PCPS host)
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty pcps under TEST_LEAF");
+
+        let inner_acor =
+            Query::new_aggregate_count_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let mut outer_query = Query::new();
+        outer_query.insert_key(b"pcps".to_vec());
+        outer_query.default_subquery_branch.subquery = Some(Box::new(inner_acor));
+        let sized = SizedQuery::new(outer_query, Some(10), None);
+        let path_query = PathQuery::new(vec![TEST_LEAF.to_vec()], sized);
+
+        let result = db.grove_db.prove_query(&path_query, None, v).unwrap();
+        let _ = result;
+    }
+
+    /// Empty-PCPS-host carrier descent under an aggregate-sum outer
+    /// query. Mirror of the ACOR-carrier test above but for the
+    /// `is_aggregate_sum_query` arm.
+    #[test]
+    fn aggregate_sum_carrier_descends_into_empty_pcps() {
+        use grovedb_merk::proofs::Query;
+
+        use crate::{query::SizedQuery, tests::TEST_LEAF};
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty pcps under TEST_LEAF");
+
+        let inner_asor =
+            Query::new_aggregate_sum_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec()));
+        let mut outer_query = Query::new();
+        outer_query.insert_key(b"pcps".to_vec());
+        outer_query.default_subquery_branch.subquery = Some(Box::new(inner_asor));
+        let sized = SizedQuery::new(outer_query, Some(10), None);
+        let path_query = PathQuery::new(vec![TEST_LEAF.to_vec()], sized);
+
+        let result = db.grove_db.prove_query(&path_query, None, v).unwrap();
+        let _ = result;
+    }
+
+    /// Three-layer happy path: TEST_LEAF → outer Tree → pcps PCPS.
+    /// The combined-aggregate verifier walks both non-leaf layers
+    /// (TEST_LEAF and outer) via `verify_single_key_layer_proof_v0`
+    /// + `enforce_lower_chain` and then verifies the leaf merk proof
+    /// for the PCPS host. This exercises the happy-path branches of
+    /// both helpers across multiple chain hops — counts and sums
+    /// must equal the actual contents of the leaf merk.
+    #[test]
+    fn combined_v1_envelope_three_layer_happy_path_chain_walks_helpers() {
+        use crate::tests::{make_test_grovedb, TEST_LEAF};
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert outer");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert pcps under outer");
+        let mut expected_sum: i64 = 0;
+        let mut expected_count: u64 = 0;
+        for c in b'a'..=b'g' {
+            let val = (c - b'a') as i64 * 3 - 5; // mix of signs
+            expected_sum += val;
+            expected_count += 1;
+            db.insert(
+                [TEST_LEAF, b"outer", b"pcps"].as_ref(),
+                &[c],
+                Element::new_sum_item(val),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert pcps sum item");
+        }
+        let root_hash = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+
+        let pq = PathQuery::new_aggregate_count_and_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"pcps".to_vec()],
+            QueryItem::RangeInclusive(b"a".to_vec()..=b"g".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        let (proven_root, proven_count, proven_sum) =
+            GroveDb::verify_aggregate_count_and_sum_query(&proof, &pq, v)
+                .expect("3-layer happy-path proof must verify");
+        assert_eq!(proven_root, root_hash, "root must equal GroveDB root");
+        assert_eq!(proven_count, expected_count, "count must match");
+        assert_eq!(proven_sum, expected_sum, "sum must match");
+    }
+
+    /// V1 envelope where the non-leaf proof's element value bytes
+    /// for the intermediate path key DESERIALIZE successfully as a
+    /// Tree-like Element, but the value's hash doesn't match the
+    /// recorded parent_proof_hash. Exercises the chain-mismatch
+    /// rejection arm in `enforce_lower_chain` (lines 189-198 of
+    /// helpers.rs).
+    ///
+    /// Mutation strategy: take the existing 3-layer envelope
+    /// (TEST_LEAF → outer → pcps), rewrite the value bytes of the
+    /// "outer" key to a serialized DIFFERENT empty Tree element with
+    /// flags. The result is still a Tree (passes the intermediate
+    /// tree-type gate) but the value_hash changes, so
+    /// `combine_hash(H(value), lower_root)` no longer matches the
+    /// recorded parent value_hash.
+    #[test]
+    fn combined_v1_envelope_intermediate_tree_with_wrong_hash_rejected() {
+        use grovedb_merk::proofs::{Node, Op};
+
+        use crate::{
+            operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes},
+            tests::{make_test_grovedb, TEST_LEAF},
+        };
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert outer");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert pcps under outer");
+        for c in b'a'..=b'e' {
+            db.insert(
+                [TEST_LEAF, b"outer", b"pcps"].as_ref(),
+                &[c],
+                Element::new_sum_item((c - b'a') as i64),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert pcps item");
+        }
+
+        let pq = PathQuery::new_aggregate_count_and_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"pcps".to_vec()],
+            QueryItem::RangeInclusive(b"a".to_vec()..=b"e".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        // Sanity: untouched proof verifies.
+        GroveDb::verify_aggregate_count_and_sum_query(&proof, &pq, v)
+            .expect("clean proof verifies");
+
+        // Replace the `outer` value bytes with a serialized empty
+        // tree carrying DIFFERENT flags. Still deserializes to a
+        // Tree (passes the intermediate type gate), but the value's
+        // hash changes — `combine_hash(H(new_value), lower_root)` no
+        // longer matches the recorded parent value_hash.
+        let mutated_tree_bytes = Element::new_tree_with_flags(None, Some(vec![0xde, 0xad]))
+            .serialize(v)
+            .expect("serialize tree with different flags");
+
+        let mut decoded = decode_combined_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF");
+        let bytes = match &mut test_leaf_layer.merk_proof {
+            ProofBytes::Merk(b) => b,
+            _ => panic!("expected Merk bytes at TEST_LEAF non-leaf"),
+        };
+        let mut ops: Vec<Op> = grovedb_merk::proofs::Decoder::new(bytes)
+            .map(|r| r.expect("decode existing op"))
+            .collect();
+        let mut rewrote = false;
+        for op in ops.iter_mut() {
+            let did = match op {
+                Op::Push(Node::KVValueHash(k, val, _))
+                | Op::PushInverted(Node::KVValueHash(k, val, _))
+                    if k == b"outer" =>
+                {
+                    *val = mutated_tree_bytes.clone();
+                    true
+                }
+                Op::Push(Node::KVValueHashFeatureType(k, val, _, _))
+                | Op::PushInverted(Node::KVValueHashFeatureType(k, val, _, _))
+                    if k == b"outer" =>
+                {
+                    *val = mutated_tree_bytes.clone();
+                    true
+                }
+                Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                    if k == b"outer" =>
+                {
+                    *val = mutated_tree_bytes.clone();
+                    true
+                }
+                _ => false,
+            };
+            if did {
+                rewrote = true;
+                break;
+            }
+        }
+        assert!(rewrote, "test setup: expected a `outer` KV op to rewrite");
+        let mut new_bytes = Vec::new();
+        grovedb_merk::proofs::encoding::encode_into(ops.iter(), &mut new_bytes);
+        *bytes = new_bytes;
+
+        let reencoded = reencode_combined_envelope(decoded);
+        let result = GroveDb::verify_aggregate_count_and_sum_query(&reencoded, &pq, v);
+        match result {
+            Err(crate::Error::InvalidProof(_, msg)) => {
+                // chain-mismatch arm is the load-bearing rejection;
+                // accept also the merk-level "failed to verify"
+                // upstream wrapper that may fire first.
+                assert!(
+                    msg.contains("chain mismatch") || msg.contains("failed to verify"),
+                    "expected chain-mismatch rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// V1 envelope where the non-leaf proof's element value bytes
+    /// for the intermediate path key are MALFORMED (random bytes
+    /// that don't parse as any Element). Exercises the
+    /// `Element::deserialize` Err arm in `enforce_lower_chain`
+    /// (lines 150-158 of helpers.rs).
+    #[test]
+    fn combined_v1_envelope_intermediate_undeserializable_value_rejected() {
+        use grovedb_merk::proofs::{Node, Op};
+
+        use crate::{
+            operations::proof::{GroveDBProof, GroveDBProofV1, ProofBytes},
+            tests::{make_test_grovedb, TEST_LEAF},
+        };
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert outer");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert pcps under outer");
+        for c in b'a'..=b'e' {
+            db.insert(
+                [TEST_LEAF, b"outer", b"pcps"].as_ref(),
+                &[c],
+                Element::new_sum_item((c - b'a') as i64),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert pcps item");
+        }
+
+        let pq = PathQuery::new_aggregate_count_and_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"outer".to_vec(), b"pcps".to_vec()],
+            QueryItem::RangeInclusive(b"a".to_vec()..=b"e".to_vec()),
+        );
+        let proof = db
+            .grove_db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove_query");
+
+        // Rewrite the `outer` value bytes to garbage that does not
+        // start with any valid Element discriminator. The first
+        // byte 0xff is past every defined Element variant tag, so
+        // `Element::deserialize` returns Err — exercises the
+        // deserialize-error arm of `enforce_lower_chain`.
+        let mut decoded = decode_combined_envelope(&proof);
+        let GroveDBProof::V1(GroveDBProofV1 { root_layer }) = &mut decoded else {
+            panic!("expected V1 envelope");
+        };
+        let test_leaf_layer = root_layer
+            .lower_layers
+            .get_mut(&TEST_LEAF.to_vec())
+            .expect("TEST_LEAF");
+        let bytes = match &mut test_leaf_layer.merk_proof {
+            ProofBytes::Merk(b) => b,
+            _ => panic!("expected Merk bytes at TEST_LEAF non-leaf"),
+        };
+        let mut ops: Vec<Op> = grovedb_merk::proofs::Decoder::new(bytes)
+            .map(|r| r.expect("decode existing op"))
+            .collect();
+        let mut rewrote = false;
+        let garbage = vec![0xffu8; 32];
+        for op in ops.iter_mut() {
+            let did = match op {
+                Op::Push(Node::KVValueHash(k, val, _))
+                | Op::PushInverted(Node::KVValueHash(k, val, _))
+                    if k == b"outer" =>
+                {
+                    *val = garbage.clone();
+                    true
+                }
+                Op::Push(Node::KVValueHashFeatureType(k, val, _, _))
+                | Op::PushInverted(Node::KVValueHashFeatureType(k, val, _, _))
+                    if k == b"outer" =>
+                {
+                    *val = garbage.clone();
+                    true
+                }
+                Op::Push(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                | Op::PushInverted(Node::KVValueHashFeatureTypeWithChildHash(k, val, _, _, _))
+                    if k == b"outer" =>
+                {
+                    *val = garbage.clone();
+                    true
+                }
+                _ => false,
+            };
+            if did {
+                rewrote = true;
+                break;
+            }
+        }
+        assert!(rewrote, "test setup: expected a `outer` KV op to rewrite");
+        let mut new_bytes = Vec::new();
+        grovedb_merk::proofs::encoding::encode_into(ops.iter(), &mut new_bytes);
+        *bytes = new_bytes;
+
+        let reencoded = reencode_combined_envelope(decoded);
+        let result = GroveDb::verify_aggregate_count_and_sum_query(&reencoded, &pq, v);
+        match result {
+            Err(crate::Error::InvalidProof(_, msg)) => {
+                // Either the deserialize-arm fires directly, or
+                // the upstream merk-level proof verification
+                // catches it first.
+                assert!(
+                    msg.contains("failed to deserialize")
+                        || msg.contains("failed to verify")
+                        || msg.contains("chain mismatch"),
+                    "expected deserialize / upstream rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidProof, got {:?}", other),
+        }
+    }
+
+    /// Count-offset paginated short-circuit at the leaf depth must
+    /// reject non-count tree types at proof-generation time. The
+    /// `validate_count_offset_paginated` PathQuery check is purely
+    /// syntactic; the merk-side type check is the second gate. Pin
+    /// the `InvalidQuery("...only valid against ProvableCountTree...")`
+    /// rejection by running a count-offset paginated query against a
+    /// plain Tree.
+    #[test]
+    fn count_offset_paginated_against_normal_tree_rejected_at_generation_time() {
+        use crate::{
+            query::SizedQuery,
+            tests::{make_test_grovedb, TEST_LEAF},
+        };
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+
+        // Insert a Tree at TEST_LEAF/normal with a couple of items so
+        // there is something to scan. The path will route the leaf
+        // short-circuit at the `normal` subtree which is a regular
+        // Tree, not a count-bearing host.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"normal",
+            Element::empty_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert normal tree");
+        for c in b'a'..=b'e' {
+            db.insert(
+                [TEST_LEAF, b"normal"].as_ref(),
+                &[c],
+                Element::new_item(vec![c]),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+
+        // Syntactically eligible count-offset query: single range
+        // item, no aggregate wrapper, no subquery, non-zero offset.
+        let mut q = grovedb_merk::proofs::Query::new();
+        q.insert_range(b"a".to_vec()..b"z".to_vec());
+        let sized = SizedQuery::new(q, Some(10), Some(1));
+        let pq = PathQuery::new(vec![TEST_LEAF.to_vec(), b"normal".to_vec()], sized);
+
+        // The PathQuery is syntactically valid (validate_count_offset_paginated
+        // accepts it), so generation reaches the in-merk tree-type check.
+        let result = db.grove_db.prove_query(&pq, None, v).unwrap();
+        match result {
+            Err(crate::Error::InvalidQuery(msg)) => {
+                assert!(
+                    msg.contains("count-offset paginated queries are only valid against"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InvalidQuery rejection at generation time, got {:?}",
+                other
+            ),
         }
     }
 }

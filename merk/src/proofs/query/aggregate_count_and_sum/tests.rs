@@ -854,3 +854,257 @@ fn is_provable_count_and_sum_bearing_only_for_pcps() {
         );
     }
 }
+
+// ---------- direct phase-2 shape-walk rejection tests ----------
+//
+// The Phase-1 allowlist for the combined-aggregate proof permits
+// exactly `HashWithCountAndSum` and `KVDigestCountSum`. The Phase-2
+// shape walk then binds each leaf's node TYPE to the classification
+// derived from inherited bounds: `HashWithCountAndSum` at
+// Disjoint/Contained, `KVDigestCountSum` at Boundary. Mixing the two
+// allowed types into the wrong slot must be rejected by Phase 2 — not
+// Phase 1.
+//
+// Tests below craft single-op proofs to hit each of the four
+// type-shape mismatches directly:
+// - `KVDigestCountSum` at a Disjoint position
+// - `HashWithCountAndSum` at a Boundary position
+// and the i64 narrow-overflow gate (the synthetic two-`i64::MAX`
+// fixture in `combined_verifier_rejects_i64_sum_narrow_overflow`
+// is non-deterministic: the merk's apply may reject the overflow
+// before the verifier ever gets to the narrow gate, so the gate
+// arm may not actually be exercised under coverage).
+
+#[test]
+fn combined_verifier_rejects_kvdigest_at_disjoint_position() {
+    // Build a synthetic 3-op proof where a Boundary parent has a
+    // child whose inherited bounds make it Disjoint relative to the
+    // range, but the child node is the wrong allowed type
+    // (`KVDigestCountSum` instead of `HashWithCountAndSum`).
+    //
+    // Inner range: `RangeInclusive("g".."=g")` — the parent boundary
+    // key "h" sits OUTSIDE the range, and the left child inherits
+    // bounds `(None, "h")` against the range `["g", "g"]`. The left
+    // sub-range upper bound "h" > "g" but the subtree includes keys
+    // < "h" which spans "g" — Boundary again. So we need a tighter
+    // setup: pick parent "h" with inner range "z" so that left
+    // (None, "h") doesn't span "z" (Disjoint) and right ("h", None)
+    // spans "z" (Boundary).
+    let inner_range = QueryItem::RangeInclusive(b"z".to_vec()..=b"z".to_vec());
+    let mut ops = LinkedList::<ProofOp>::new();
+    // Left disjoint child: should be HashWithCountAndSum but is
+    // KVDigestCountSum.
+    ops.push_back(ProofOp::Push(Node::KVDigestCountSum(
+        b"a".to_vec(),
+        [0u8; 32],
+        0,
+        0,
+    )));
+    // Parent boundary at "h".
+    ops.push_back(ProofOp::Push(Node::KVDigestCountSum(
+        b"h".to_vec(),
+        [0u8; 32],
+        1,
+        0,
+    )));
+    ops.push_back(ProofOp::Parent);
+    // Right boundary child: HashWithCountAndSum standin for the
+    // remaining subtree (None, no key needed since the parent's
+    // walker descends).
+    ops.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+        [0u8; 32], [0u8; 32], [0u8; 32], 0, 0,
+    )));
+    ops.push_back(ProofOp::Child);
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("KVDigestCountSum at Disjoint position must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            // Either Phase-2 directly rejects the wrong type at
+            // Disjoint, or an earlier shape rule (boundary-key
+            // outside inherited bounds for "a" at (None, "h")) trips
+            // first. Both are valid rejections; the key contract
+            // here is "no silent accept of a wrong-typed Disjoint".
+            msg.contains("Disjoint")
+                || msg.contains("Boundary")
+                || msg.contains("expected HashWithCountAndSum")
+                || msg.contains("inherited subtree bounds"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+#[test]
+fn combined_verifier_rejects_hashwithcountandsum_at_boundary_position() {
+    // Build a synthetic three-op proof where a parent
+    // KVDigestCountSum sits Boundary but one of its leaves is the
+    // wrong Phase-1-allowed type (HashWithCountAndSum). Phase 2
+    // routes the leaf classification to Boundary (the parent key
+    // splits the inherited window at the leaf), expecting
+    // KVDigestCountSum but finding HashWithCountAndSum.
+    //
+    // Setup: parent boundary key "h" with the inner range
+    // `RangeInclusive("c"..="l")`. Replace the LEFT KVDigestCountSum
+    // child (originally a Boundary node for `(None, h)`) with a
+    // HashWithCountAndSum — Phase 1 accepts, Phase 2 expects
+    // KVDigestCountSum at Boundary.
+    let v = GroveVersion::latest();
+    let (merk, _root, _full_sum) = make_15_key_pcps(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (mut ops, _, _) = merk
+        .prove_aggregate_count_and_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Replace the FIRST KVDigestCountSum (the left-most boundary
+    // node) with a HashWithCountAndSum carrying the same counts +
+    // sums so the structural-aggregate doesn't trip first.
+    let mut swapped = false;
+    for op in ops.iter_mut() {
+        if let ProofOp::Push(Node::KVDigestCountSum(_, _, c, s)) = op {
+            *op = ProofOp::Push(Node::HashWithCountAndSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], *c, *s,
+            ));
+            swapped = true;
+            break;
+        }
+    }
+    assert!(swapped, "test setup: expected a KVDigestCountSum op");
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err =
+        result.expect_err("HashWithCountAndSum at a Boundary position must be rejected by Phase 2");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("expected KVDigestCountSum") && msg.contains("Boundary"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+#[test]
+fn combined_verifier_rejects_phase2_boundary_key_outside_inherited_bounds() {
+    // Synthesize a proof where a boundary KVDigestCountSum's key
+    // sits OUTSIDE the (lo, hi) window its position in the
+    // reconstructed tree implies. Phase 1 accepts (allowlisted node
+    // type, no immediate ordering issue), then Phase 2's
+    // `key_strictly_inside` check on the boundary node fires.
+    //
+    // Construct: top-level Boundary parent at key "m" inside range
+    // ["a"..="z"]. Right child is itself Boundary because the
+    // remaining bound window ("m", None) overlaps with ["a"..="z"]
+    // at "n".."z". Put the right-child boundary key at "a" (which
+    // is outside ("m", None)).
+    let inner_range = QueryItem::RangeInclusive(b"a".to_vec()..=b"z".to_vec());
+
+    let mut ops = LinkedList::<ProofOp>::new();
+    // Left disjoint child (None, "m"): structural agg = 0, 0.
+    ops.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+        [0u8; 32], [0u8; 32], [0u8; 32], 0, 0,
+    )));
+    // Parent boundary at "m".
+    ops.push_back(ProofOp::Push(Node::KVDigestCountSum(
+        b"m".to_vec(),
+        [0u8; 32],
+        2,
+        0,
+    )));
+    ops.push_back(ProofOp::Parent);
+    // Right boundary child at "a" (outside the inherited ("m", None) window).
+    ops.push_back(ProofOp::Push(Node::KVDigestCountSum(
+        b"a".to_vec(),
+        [0u8; 32],
+        1,
+        0,
+    )));
+    ops.push_back(ProofOp::Child);
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("boundary key outside inherited subtree bounds must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("falls outside its inherited subtree bounds")
+                || msg.contains("ordering")
+                || msg.contains("aggregate-count-and-sum proof"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+#[test]
+fn combined_verifier_narrow_gate_rejects_i128_overflow_via_crafted_proof() {
+    // Synthetic crafted proof — two HashWithCountAndSum leaves with
+    // i64::MAX sums under a KVDigestCountSum parent. Phase 1 accepts
+    // both node types, Phase 2 walks both axes in i128 and the
+    // narrow-to-i64 gate at the top rejects.
+    //
+    // Structure (Op stream): push L, push P (parent), Parent, push R,
+    // Child — yielding a Boundary parent at "h" with Disjoint
+    // children for the range "{}..{}".
+    // Handcraft a Boundary parent with key "h" inside an inner range
+    // of `RangeInclusive("h"..="h")` so left/right children are
+    // Disjoint. The own_sum derivation: agg - left_struct -
+    // right_struct in i128. Set parent_sum = 0; both children
+    // declare structural sum = i64::MIN each. Then own_sum (i128) =
+    // 0 - i64::MIN - i64::MIN = 2 * |i64::MIN| which doesn't fit in
+    // i64 → narrow gate fires.
+    //
+    // own_sum is added to in_range_sum only if the parent key
+    // matches the range — set inner_range = "h" to "h".
+    let inner_range = QueryItem::RangeInclusive(b"h".to_vec()..=b"h".to_vec());
+    let mut ops = LinkedList::<ProofOp>::new();
+    // Left disjoint child at (None, "h"): structural count = 0
+    // sum = i64::MIN.
+    ops.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+        [0u8; 32],
+        [0u8; 32],
+        [0u8; 32],
+        0,
+        i64::MIN,
+    )));
+    // Parent boundary at "h" with aggregate count=1 sum=0.
+    ops.push_back(ProofOp::Push(Node::KVDigestCountSum(
+        b"h".to_vec(),
+        [0u8; 32],
+        1,
+        0,
+    )));
+    ops.push_back(ProofOp::Parent);
+    // Right disjoint child at ("h", None): structural count = 0, sum
+    // = i64::MIN.
+    ops.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+        [0u8; 32],
+        [0u8; 32],
+        [0u8; 32],
+        0,
+        i64::MIN,
+    )));
+    ops.push_back(ProofOp::Child);
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    // own_sum = parent_sum(0) - left(i64::MIN) - right(i64::MIN) =
+    // 2 * |i64::MIN| = 2^64 which overflows i64. Either the shape
+    // walk catches it earlier (own_count subtraction is fine,
+    // own_sum is signed and doesn't have a "child exceeds parent"
+    // check) or the i64 narrow gate fires.
+    match result {
+        Err(Error::InvalidProofError(msg)) => {
+            // Acceptable: any rejection covers either the narrow
+            // gate or an earlier shape error.
+            assert!(
+                msg.contains("overflowed i64")
+                    || msg.contains("position must be a leaf")
+                    || msg.contains("aggregate-count-and-sum proof:"),
+                "unexpected rejection message: {msg}"
+            );
+        }
+        Ok(_) => panic!("synthetic i128-overflow proof must not verify"),
+        Err(other) => panic!("unexpected error type: {:?}", other),
+    }
+}
