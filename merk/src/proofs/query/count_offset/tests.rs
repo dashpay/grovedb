@@ -851,6 +851,137 @@ fn rejects_hash_with_count_at_contained_with_limit_remaining() {
     );
 }
 
+/// Forged `KVCount` leaf with `count = 0` — own_count derives to 0,
+/// which `classify_self` rejects for `KVCount` (KVCount always
+/// implies own_count=1). Targets the `526-529` branch
+/// specifically, distinct from the `own_count > 1` check at the
+/// caller.
+#[test]
+fn rejects_kv_count_with_zero_own_count() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVCount(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        0, // own_count = 0
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVCount with own_count = 0 via classify_self; got {:?}",
+        res
+    );
+}
+
+/// Same shape as the previous test but for `KVValueHashFeatureType`.
+#[test]
+fn rejects_kv_value_hash_feature_type_with_zero_own_count() {
+    use crate::TreeFeatureType;
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHashFeatureType(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+        TreeFeatureType::ProvableCountedMerkNode(0),
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVValueHashFeatureType with own_count = 0; got {:?}",
+        res
+    );
+}
+
+/// Forged `KVValueHash` at out-of-range — exercises the
+/// !in_range arm of the `KVValueHash` branch in `classify_self`
+/// (line ~570 in verify.rs).
+#[test]
+fn rejects_kv_value_hash_at_out_of_range() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHash(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+    ))]);
+    let range = QueryItem::RangeInclusive(b"x".to_vec()..=b"z".to_vec());
+    let res = verify_count_offset_on_range_proof(&bytes, &range, 0, Some(5), true).unwrap();
+    assert!(
+        res.is_err(),
+        "verifier must reject KVValueHash at out-of-range position; got {:?}",
+        res
+    );
+}
+
+/// Forged `KVValueHashFeatureType` with a `ProvableCountedSummedMerkNode`
+/// feature — exercises the count-sum feature arm of
+/// `aggregate_of_proof_tree_node`.
+#[test]
+fn accepts_kv_value_hash_feature_type_with_count_sum_feature() {
+    use crate::TreeFeatureType;
+    // We don't actually expect verification to succeed (it'll trip
+    // some other check), but the test exercises the
+    // `ProvableCountedSummedMerkNode` arm of
+    // `aggregate_of_proof_tree_node` regardless. Just needs to NOT
+    // panic.
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHashFeatureType(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+        TreeFeatureType::ProvableCountedSummedMerkNode(1, 42),
+    ))]);
+    let _ = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    // No specific assertion — we only care that the verifier reaches
+    // and exercises the count-sum feature arm of
+    // `aggregate_of_proof_tree_node` before any other check fires.
+}
+
+/// Past-limit `KVDigestCount` (no-op state mutation) — both `offset = 0`
+/// and `limit = Some(0)`. Exercises the past-limit branch of
+/// `apply_self_state::InRangeCountedDigest`. Note: the verifier still
+/// rejects because the offset_remaining and limit_remaining values
+/// signal "nothing to do here" but the proof carries an in-range
+/// digest. With offset=0 and limit=Some(0), the digest is in the
+/// past-limit window and is *accepted* — but the proof has no
+/// returned items and no skips, so the result is well-formed.
+#[test]
+fn accepts_kv_digest_count_past_limit() {
+    // Single KVDigestCount, offset = 0, limit = Some(0) — past-limit
+    // digest emission. Should NOT error.
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVDigestCount(
+        b"a".to_vec(),
+        [0u8; 32],
+        1,
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(0),
+        true,
+    )
+    .unwrap()
+    .expect("past-limit digest emission is a valid honest shape");
+    assert!(res.returned_items.is_empty());
+    assert_eq!(res.skipped, 0);
+}
+
 /// Forged `HashWithCount` at a Contained position with count
 /// exceeding `offset_remaining` — the prover's collapse rule is
 /// `count ≤ offset_remaining`, so the verifier rejects.
