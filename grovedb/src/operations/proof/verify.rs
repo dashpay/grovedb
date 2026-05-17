@@ -161,32 +161,14 @@ impl GroveDb {
         ),
         Error,
     > {
-        // Offset gate. V0 proofs are a shipped wire format that
-        // never supported `SizedQuery::offset`; widening that here
-        // would be a consensus-breaking change for grove v1/v2.
-        // Reject offsets unconditionally on V0. V1 proofs honor a
-        // non-zero offset iff the query validates as
-        // offset-paginated against a ProvableCountTree /
-        // ProvableCountSumTree; the tree-type check happens at
+        // Offset gate centralized in `apply_count_offset_envelope_gate`:
+        // V0 envelopes reject any non-zero offset (V0 is a shipped
+        // wire format that never supported `SizedQuery::offset`);
+        // V1 envelopes honor a non-zero offset iff the query
+        // validates as offset-paginated. The tree-type check
+        // (ProvableCountTree / ProvableCountSumTree) happens at
         // leaf-dispatch time inside `run_count_offset_layer_dispatch`.
-        //
-        // Centralizing this gate here means every caller of
-        // `verify_proof_internal` (verify_query_with_options,
-        // verify_query_raw, verify_query_get_parent_tree_info_with_options)
-        // gets the same V0-rejects/V1-relaxes contract uniformly,
-        // without each entry point needing to duplicate the dispatch.
-        if query.has_non_zero_offset() {
-            match proof {
-                GroveDBProof::V0(_) => {
-                    return Err(Error::NotSupported(
-                        "offsets in path queries are not supported for proofs".to_string(),
-                    ));
-                }
-                GroveDBProof::V1(_) => {
-                    query.validate_count_offset_paginated()?;
-                }
-            }
-        }
+        Self::apply_count_offset_envelope_gate(proof, query)?;
 
         match proof {
             GroveDBProof::V0(proof_v0) => {
@@ -194,6 +176,34 @@ impl GroveDb {
             }
             GroveDBProof::V1(proof_v1) => {
                 Self::verify_proof_v1_internal(proof_v1, query, options, grove_version)
+            }
+        }
+    }
+
+    /// Shared offset-envelope gate used by both `verify_proof_internal`
+    /// and `verify_proof_raw_internal`. Returns `Ok(())` when the query
+    /// has no non-zero offset (regular flow) or when the envelope is
+    /// V1 and the query validates as offset-paginated. Returns
+    /// `Error::NotSupported` when an offset is paired with a V0
+    /// envelope (V0 never supported offsets and widening it would be a
+    /// consensus-breaking change for shipped grove v1/v2), or whatever
+    /// `validate_count_offset_paginated` returns for malformed V1
+    /// offset queries. Factoring this out keeps the V0-rejects /
+    /// V1-relaxes contract identical across every public entry point.
+    fn apply_count_offset_envelope_gate(
+        proof: &GroveDBProof,
+        query: &PathQuery,
+    ) -> Result<(), Error> {
+        if !query.has_non_zero_offset() {
+            return Ok(());
+        }
+        match proof {
+            GroveDBProof::V0(_) => Err(Error::NotSupported(
+                "offsets in path queries are not supported for proofs".to_string(),
+            )),
+            GroveDBProof::V1(_) => {
+                query.validate_count_offset_paginated()?;
+                Ok(())
             }
         }
     }
@@ -291,23 +301,9 @@ impl GroveDb {
         options: VerifyOptions,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, Option<TreeFeatureType>, ProvedPathKeyValues), Error> {
-        // Mirror of the offset gate in `verify_proof_internal`. See
-        // that function for the full rationale — V0 proofs are a
-        // shipped wire format that never supported
-        // `SizedQuery::offset`; V1 honors it iff
-        // `validate_count_offset_paginated` succeeds.
-        if query.has_non_zero_offset() {
-            match proof {
-                GroveDBProof::V0(_) => {
-                    return Err(Error::NotSupported(
-                        "offsets in path queries are not supported for proofs".to_string(),
-                    ));
-                }
-                GroveDBProof::V1(_) => {
-                    query.validate_count_offset_paginated()?;
-                }
-            }
-        }
+        // Same V0-rejects / V1-relaxes envelope gate as
+        // `verify_proof_internal` — see `apply_count_offset_envelope_gate`.
+        Self::apply_count_offset_envelope_gate(proof, query)?;
 
         match proof {
             GroveDBProof::V0(proof_v0) => {

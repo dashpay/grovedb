@@ -596,6 +596,83 @@ mod tests {
         );
     }
 
+    /// Counterpart to `v0_verifier_rejects_offset_on_query` that goes
+    /// through `verify_query` (with-options entry point), exercising
+    /// `verify_proof_internal`'s offset gate rather than
+    /// `verify_proof_raw_internal`'s. The two entry points share a
+    /// helper (`apply_count_offset_envelope_gate`), but having a test
+    /// behind each public surface ensures a refactor that accidentally
+    /// drops the call on one side gets caught by CI.
+    #[test]
+    fn v0_verify_query_rejects_offset() {
+        let v = &GROVE_V2;
+        let (db, _) = make_provable_count_tree_with_n_items(5, v);
+
+        let mut q_no_offset = Query::new();
+        q_no_offset.insert_range_inclusive(b"a".to_vec()..=b"e".to_vec());
+        let pq_no_offset = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q_no_offset, Some(5), None),
+        );
+        let bytes = db
+            .prove_query(&pq_no_offset, None, v)
+            .unwrap()
+            .expect("v0 prove for no-offset query");
+
+        let mut q_with_offset = Query::new();
+        q_with_offset.insert_range_inclusive(b"a".to_vec()..=b"e".to_vec());
+        let pq_with_offset = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q_with_offset, Some(2), Some(1)),
+        );
+        // `verify_query` → `verify_query_with_options` → `verify_proof_internal`.
+        let result = GroveDb::verify_query(&bytes, &pq_with_offset, v);
+        assert!(
+            matches!(result, Err(crate::Error::NotSupported(_))),
+            "verify_query (deserialized entry point) must reject offsets on V0 envelopes; \
+             got {:?}",
+            result
+        );
+    }
+
+    /// Happy-path V1 round-trip going through `verify_query` (which
+    /// dispatches via `verify_proof_internal` rather than the `_raw`
+    /// variant). This exercises both the offset gate's V1 branch and
+    /// the deserialized result path — keeping at least one happy-path
+    /// case behind `verify_query` ensures the deserialized translation
+    /// in `verify_proof_v1_internal` stays exercised even as
+    /// `verify_query_raw` covers the canonical fast path.
+    #[test]
+    fn end_to_end_offset_via_verify_query() {
+        let v = GroveVersion::latest();
+        let (db, _) = make_provable_count_tree_with_n_items(15, v);
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(3), Some(5)),
+        );
+
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove offset-paginated query");
+        let (root_hash, deserialized) =
+            GroveDb::verify_query(&proof, &path_query, v).expect("verify_query");
+        assert_eq!(
+            root_hash,
+            db.root_hash(None, v).unwrap().expect("root"),
+            "verify_query root hash should match the DB's actual root hash",
+        );
+        let returned_keys: Vec<Vec<u8>> =
+            deserialized.iter().map(|(_, key, _)| key.clone()).collect();
+        assert_eq!(
+            returned_keys,
+            vec![b"f".to_vec(), b"g".to_vec(), b"h".to_vec()],
+            "verify_query happy path: offset 5 + limit 3 over a..=o should return f,g,h",
+        );
+    }
+
     // ──────── lower_layers / non-empty-tree return rejections ────────
 
     /// Soundness regression test for the
