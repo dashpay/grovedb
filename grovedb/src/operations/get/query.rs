@@ -634,11 +634,17 @@ where {
     /// skips proof generation, serialization, and verification entirely.
     ///
     /// `path_query` must satisfy
-    /// [`PathQuery::validate_aggregate_sum_on_range`] — a single
-    /// `AggregateSumOnRange(_)` item, no subqueries, no pagination, a
-    /// non-empty path, and an inner range that isn't `Key`, `RangeFull`,
-    /// or another aggregate variant. Any other shape is rejected up front
-    /// with `Error::InvalidQuery` before any merk reads happen.
+    /// [`PathQuery::validate_leaf_aggregate_sum_on_range`] — strictly the
+    /// **leaf** shape: a single `AggregateSumOnRange(_)` item, no
+    /// subqueries, no pagination, a non-empty path, and an inner range
+    /// that isn't `Key`, `RangeFull`, or another aggregate variant.
+    /// Carrier-shape queries (outer `Keys` + `AggregateSumOnRange`
+    /// subquery) are rejected here because this entry point returns one
+    /// `i64` and has no way to surface per-outer-key sums; use
+    /// [`Self::prove_query`] +
+    /// [`Self::verify_aggregate_sum_query_per_key`](GroveDb::verify_aggregate_sum_query_per_key)
+    /// for those. Any other shape is rejected up front with
+    /// `Error::InvalidQuery` before any merk reads happen.
     ///
     /// The subtree at `path_query.path` must be a `ProvableSumTree` — the
     /// merk-level walk rejects any other tree type. If the subtree is
@@ -669,12 +675,15 @@ where {
 
         let mut cost = OperationCost::default();
 
-        // Up-front shape validation: same gate the prover and verifier use.
-        // Catches malformed ASOR queries (illegal inner range, ASOR-hidden-in-
-        // subquery, pagination, empty path, etc.) before any storage reads.
+        // Up-front shape validation. Strictly the leaf shape — this entry
+        // point returns a single `i64` and has no way to surface
+        // per-outer-key carrier results. Catches malformed leaf
+        // aggregate-sum queries (illegal inner range, pagination, etc.)
+        // AND carrier-shape queries before any storage reads. Mirrors
+        // `query_aggregate_count`'s use of the strict-leaf validator.
         let inner_range = cost_return_on_error_no_add!(
             cost,
-            path_query.validate_aggregate_sum_on_range().cloned()
+            path_query.validate_leaf_aggregate_sum_on_range().cloned()
         );
 
         let tx = TxRef::new(&self.db, transaction);

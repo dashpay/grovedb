@@ -557,68 +557,89 @@ impl PathQuery {
     /// `AggregateCountOnRange` query in either the leaf or carrier shape.
     /// On success, returns a reference to the leaf inner range item.
     ///
-    /// Rejects empty paths up-front. The GroveDB root merk is always a
-    /// `NormalTree` by API construction (and never a `ProvableCountTree`),
-    /// so a root-level aggregate-count query has no valid target —
-    /// `verify_v0_layer` and `verify_v1_layer` would otherwise hit the
-    /// `depth == path_keys.len()` short-circuit at depth 0, going
-    /// straight to the merk-level count verifier without ever invoking
-    /// the terminal-type gate in `enforce_lower_chain`. Although the
-    /// merk-level hash-divergence between `node_hash` and
-    /// `node_hash_with_count` makes a numeric forgery infeasible, an
-    /// up-front rejection gives a clear error and removes the gate
-    /// dependency on cryptographic hash analysis.
+    /// Empty-path handling is **shape-aware**. The GroveDB root merk is
+    /// always a `NormalTree` by API construction (never a
+    /// `ProvableCountTree`), so a **leaf** aggregate-count query at the
+    /// root has no valid target and is rejected up front. A **carrier**
+    /// query, by contrast, may legitimately fan out across the root's
+    /// top-level keys and descend (via `subquery_path` or directly) to
+    /// leaf count merks at lower depths; empty-path carriers are
+    /// permitted and the per-key verifier handles depth-0 execution.
     ///
     /// Forwards to [`SizedQuery::validate_aggregate_count_on_range`].
     pub fn validate_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
-        if self.path.is_empty() {
+        // Reject empty path only for the leaf shape — carrier shape can
+        // legitimately have the root merk as the outer fan-out layer.
+        // We must classify before validating because the leaf-shape
+        // rejection's semantics depend on knowing the shape.
+        if self.path.is_empty() && self.query.query.aggregate_count_on_range().is_some() {
             return Err(Error::InvalidQuery(
-                "AggregateCountOnRange queries may not target the root merk: \
-                 the GroveDB root is always a NormalTree, never a \
-                 ProvableCountTree / ProvableCountSumTree, so a count \
-                 aggregate at the root layer has no valid target",
+                "AggregateCountOnRange leaf queries may not target the root \
+                 merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableCountTree / ProvableCountSumTree, so a leaf count \
+                 aggregate at the root layer has no valid target. Carrier \
+                 queries (outer fan-out + subquery descent) may target the \
+                 root merk; use verify_aggregate_count_query_per_key.",
             ));
         }
         self.query.validate_aggregate_count_on_range()
     }
 
     /// Validates that this `PathQuery` is a well-formed
-    /// `AggregateSumOnRange` query. On success, returns a reference to the
-    /// inner range item.
+    /// `AggregateSumOnRange` query in either the leaf or carrier shape.
+    /// On success, returns a reference to the leaf inner range item.
     ///
-    /// Rejects empty paths up-front for the same reason as
-    /// [`Self::validate_aggregate_count_on_range`] — the GroveDB root
-    /// merk is always a `NormalTree`, never a `ProvableSumTree`. Forwards
-    /// to [`SizedQuery::validate_aggregate_sum_on_range`].
+    /// Empty-path handling is **shape-aware**. The GroveDB root merk is
+    /// always a `NormalTree`, never a `ProvableSumTree`, so a **leaf**
+    /// aggregate-sum query at the root has no valid target and is
+    /// rejected up front. A **carrier** query may legitimately fan out
+    /// across the root's top-level keys and descend (via `subquery_path`
+    /// or directly) to leaf sum merks at lower depths; empty-path
+    /// carriers are permitted and the per-key verifier handles depth-0
+    /// execution. Forwards to [`SizedQuery::validate_aggregate_sum_on_range`].
     pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
-        if self.path.is_empty() {
+        if self.path.is_empty() && self.query.query.aggregate_sum_on_range().is_some() {
             return Err(Error::InvalidQuery(
-                "AggregateSumOnRange queries may not target the root merk: \
-                 the GroveDB root is always a NormalTree, never a \
-                 ProvableSumTree, so a sum aggregate at the root layer has \
-                 no valid target",
+                "AggregateSumOnRange leaf queries may not target the root \
+                 merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableSumTree, so a leaf sum aggregate at the root layer \
+                 has no valid target. Carrier queries (outer fan-out + \
+                 subquery descent) may target the root merk; use \
+                 verify_aggregate_sum_query_per_key.",
             ));
         }
         self.query.validate_aggregate_sum_on_range()
     }
 
     /// Validates that this `PathQuery` is a well-formed
-    /// `AggregateCountAndSumOnRange` query. On success, returns a
-    /// reference to the inner range item.
+    /// `AggregateCountAndSumOnRange` query in either the leaf or carrier
+    /// shape. On success, returns a reference to the leaf inner range
+    /// item.
     ///
-    /// Rejects empty paths up-front for the same reason as
-    /// [`Self::validate_aggregate_count_on_range`] /
-    /// [`Self::validate_aggregate_sum_on_range`] — the GroveDB root merk
-    /// is always a `NormalTree`, never a `ProvableCountProvableSumTree`,
-    /// so a combined aggregate at the root layer has no valid target.
-    /// Forwards to [`SizedQuery::validate_aggregate_count_and_sum_on_range`].
+    /// Empty-path handling is **shape-aware**. The GroveDB root merk is
+    /// always a `NormalTree`, never a `ProvableCountProvableSumTree`, so
+    /// a **leaf** combined aggregate at the root has no valid target and
+    /// is rejected up front. A **carrier** query may legitimately fan
+    /// out across the root's top-level keys and descend (via
+    /// `subquery_path` or directly) to a PCPS leaf merk at a lower
+    /// depth; empty-path carriers are permitted and the per-key verifier
+    /// handles depth-0 execution. Forwards to
+    /// [`SizedQuery::validate_aggregate_count_and_sum_on_range`].
     pub fn validate_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
-        if self.path.is_empty() {
+        if self.path.is_empty()
+            && self
+                .query
+                .query
+                .aggregate_count_and_sum_on_range()
+                .is_some()
+        {
             return Err(Error::InvalidQuery(
-                "AggregateCountAndSumOnRange queries may not target the root \
-                 merk: the GroveDB root is always a NormalTree, never a \
-                 ProvableCountProvableSumTree, so a combined count+sum \
-                 aggregate at the root layer has no valid target",
+                "AggregateCountAndSumOnRange leaf queries may not target the \
+                 root merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableCountProvableSumTree, so a leaf combined count+sum \
+                 aggregate at the root layer has no valid target. Carrier \
+                 queries (outer fan-out + subquery descent) may target the \
+                 root merk; use verify_aggregate_count_and_sum_query_per_key.",
             ));
         }
         self.query.validate_aggregate_count_and_sum_on_range()
@@ -626,8 +647,17 @@ impl PathQuery {
 
     /// Strict variant of [`Self::validate_aggregate_count_on_range`] that
     /// only accepts the **leaf** shape (single `AggregateCountOnRange(_)`
-    /// item, no subqueries).
+    /// item, no subqueries). Always rejects empty paths — the GroveDB
+    /// root is always a `NormalTree`, never a count tree.
     pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountOnRange leaf queries may not target the root \
+                 merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableCountTree / ProvableCountSumTree, so a leaf count \
+                 aggregate at the root layer has no valid target",
+            ));
+        }
         self.query.validate_leaf_aggregate_count_on_range()
     }
 
@@ -636,13 +666,14 @@ impl PathQuery {
     /// item, no subqueries). Used by
     /// [`crate::GroveDb::verify_aggregate_sum_query`] which produces a
     /// single `i64` and needs to reject the carrier shape up front.
+    /// Always rejects empty paths.
     pub fn validate_leaf_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
         if self.path.is_empty() {
             return Err(Error::InvalidQuery(
-                "AggregateSumOnRange queries may not target the root merk: \
-                 the GroveDB root is always a NormalTree, never a \
-                 ProvableSumTree, so a sum aggregate at the root layer has \
-                 no valid target",
+                "AggregateSumOnRange leaf queries may not target the root \
+                 merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableSumTree, so a leaf sum aggregate at the root layer \
+                 has no valid target",
             ));
         }
         self.query.validate_leaf_aggregate_sum_on_range()
@@ -654,13 +685,13 @@ impl PathQuery {
     /// `AggregateCountAndSumOnRange(_)` item, no subqueries). Used by
     /// [`crate::GroveDb::verify_aggregate_count_and_sum_query`] which
     /// produces a single `(u64, i64)` and needs to reject the carrier
-    /// shape up front.
+    /// shape up front. Always rejects empty paths.
     pub fn validate_leaf_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
         if self.path.is_empty() {
             return Err(Error::InvalidQuery(
-                "AggregateCountAndSumOnRange queries may not target the root \
-                 merk: the GroveDB root is always a NormalTree, never a \
-                 ProvableCountProvableSumTree, so a combined count+sum \
+                "AggregateCountAndSumOnRange leaf queries may not target the \
+                 root merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableCountProvableSumTree, so a leaf combined count+sum \
                  aggregate at the root layer has no valid target",
             ));
         }

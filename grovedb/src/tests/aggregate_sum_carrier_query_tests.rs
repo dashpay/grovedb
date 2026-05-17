@@ -394,6 +394,116 @@ mod tests {
         }
     }
 
+    /// Root-carrier regression: a carrier `AggregateSumOnRange` query
+    /// with an empty `PathQuery::path` must validate and round-trip
+    /// correctly. The auto-dispatcher's empty-path rejection was
+    /// previously blanket — it blocked legitimate root-carrier queries
+    /// where each root-level outer match descends via `subquery_path`
+    /// to a leaf sum merk. After the shape-aware fix, only **leaf**
+    /// queries get rejected at empty path; carriers proceed.
+    #[test]
+    fn root_carrier_sum_with_empty_path_succeeds() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        // Build `ProvableSumTree`s under each of the two root leaves
+        // (TEST_LEAF, ANOTHER_TEST_LEAF), each holding 1..=5 sum items.
+        for leaf in [TEST_LEAF, b"test_leaf2"] {
+            db.insert(
+                [leaf].as_ref(),
+                b"st",
+                Element::empty_provable_sum_tree(),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert st");
+            for (i, c) in (b'a'..=b'e').enumerate() {
+                db.insert(
+                    [leaf, b"st"].as_ref(),
+                    &[c],
+                    Element::new_sum_item((i as i64) + 1),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("insert sum item");
+            }
+        }
+        let expected_root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+
+        // Carrier rooted at the GroveDB root (empty path). Outer matches
+        // are TEST_LEAF and ANOTHER_TEST_LEAF; subquery_path descends
+        // through `st` to the leaf sum merk.
+        let mut carrier = Query::new();
+        carrier.insert_key(TEST_LEAF.to_vec());
+        carrier.insert_key(b"test_leaf2".to_vec());
+        carrier.set_subquery_path(vec![b"st".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_sum_on_range(QueryItem::RangeFrom(
+            b"a".to_vec()..,
+        )));
+        let path_query = PathQuery::new(
+            Vec::new(), // empty path → root-carrier
+            SizedQuery::new(carrier, None, None),
+        );
+
+        // Sanity: shape-aware empty-path check accepts carrier shapes.
+        path_query
+            .validate_aggregate_sum_on_range()
+            .expect("root-carrier ASOR must validate");
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove root-carrier ASOR");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_sum_query_per_key(&proof, &path_query, v)
+                .expect("verify root-carrier ASOR");
+        assert_eq!(got_root, expected_root, "root must match GroveDB root");
+        assert_eq!(
+            results.len(),
+            2,
+            "expected one entry per matched root-level outer key"
+        );
+        // Both subtrees hold 1+2+3+4+5 = 15. Order: ascending lex —
+        // `test_leaf` < `test_leaf2`.
+        assert_eq!(results[0].0, TEST_LEAF.to_vec());
+        assert_eq!(results[1].0, b"test_leaf2".to_vec());
+        assert_eq!(results[0].1, 15);
+        assert_eq!(results[1].1, 15);
+    }
+
+    /// Mirror of `root_carrier_sum_with_empty_path_succeeds`: a leaf
+    /// `AggregateSumOnRange` query against an empty path is STILL
+    /// rejected — only carriers get the relaxation.
+    #[test]
+    fn root_leaf_sum_with_empty_path_still_rejected() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let pq = PathQuery::new_aggregate_sum_on_range(
+            Vec::new(),
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = pq
+            .validate_aggregate_sum_on_range()
+            .expect_err("leaf at empty path must still be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("leaf") && msg.contains("ProvableSumTree"),
+            "expected leaf-only rejection message, got: {msg}"
+        );
+        // Also exercise the verifier surface.
+        let dummy = vec![0u8; 4];
+        assert!(GroveDb::verify_aggregate_sum_query(&dummy, &pq, v).is_err());
+        assert!(db
+            .grove_db
+            .query_aggregate_sum(&pq, None, v)
+            .unwrap()
+            .is_err());
+    }
+
     #[test]
     fn per_key_sum_rejects_non_aggregate_sum_path_query() {
         // The per-key entry point rejects path queries that aren't

@@ -382,6 +382,96 @@ mod tests {
         }
     }
 
+    /// Root-carrier regression: a carrier `AggregateCountAndSumOnRange`
+    /// query with an empty `PathQuery::path` must validate and
+    /// round-trip correctly. The shape-aware empty-path fix in the
+    /// auto-dispatcher allows carriers to fan out at the root layer
+    /// while still rejecting leaf-shape combined-aggregate queries at
+    /// the root.
+    #[test]
+    fn root_carrier_combined_with_empty_path_succeeds() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        for leaf in [TEST_LEAF, b"test_leaf2"] {
+            db.insert(
+                [leaf].as_ref(),
+                b"pcps",
+                Element::empty_provable_count_provable_sum_tree(),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert pcps");
+            for (i, c) in (b'a'..=b'e').enumerate() {
+                db.insert(
+                    [leaf, b"pcps"].as_ref(),
+                    &[c],
+                    Element::new_sum_item((i as i64) + 1),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("insert sum item");
+            }
+        }
+        let expected_root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+
+        let mut carrier = Query::new();
+        carrier.insert_key(TEST_LEAF.to_vec());
+        carrier.insert_key(b"test_leaf2".to_vec());
+        carrier.set_subquery_path(vec![b"pcps".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_and_sum_on_range(
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        ));
+        let path_query = PathQuery::new(Vec::new(), SizedQuery::new(carrier, None, None));
+
+        path_query
+            .validate_aggregate_count_and_sum_on_range()
+            .expect("root-carrier ACASOR must validate");
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove root-carrier ACASOR");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_and_sum_query_per_key(&proof, &path_query, v)
+                .expect("verify root-carrier ACASOR");
+        assert_eq!(got_root, expected_root, "root must match GroveDB root");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, TEST_LEAF.to_vec());
+        assert_eq!(results[1].0, b"test_leaf2".to_vec());
+        // Each PCPS leaf holds 5 items summing to 15.
+        assert_eq!(results[0].1, 5); // count
+        assert_eq!(results[0].2, 15); // sum
+        assert_eq!(results[1].1, 5);
+        assert_eq!(results[1].2, 15);
+    }
+
+    /// Leaf `AggregateCountAndSumOnRange` at empty path is STILL
+    /// rejected — the shape-aware relaxation only applies to carriers.
+    #[test]
+    fn root_leaf_combined_with_empty_path_still_rejected() {
+        let v = GroveVersion::latest();
+        let _db = make_test_grovedb(v);
+        let pq = PathQuery::new_aggregate_count_and_sum_on_range(
+            Vec::new(),
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = pq
+            .validate_aggregate_count_and_sum_on_range()
+            .expect_err("leaf at empty path must still be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("leaf") && msg.contains("ProvableCountProvableSumTree"),
+            "expected leaf-only rejection message, got: {msg}"
+        );
+        let dummy = vec![0u8; 4];
+        assert!(GroveDb::verify_aggregate_count_and_sum_query(&dummy, &pq, v).is_err());
+    }
+
     #[test]
     fn per_key_combined_rejects_non_combined_path_query() {
         let v = GroveVersion::latest();

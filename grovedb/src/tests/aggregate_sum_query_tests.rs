@@ -1600,6 +1600,47 @@ mod tests {
     }
 
     #[test]
+    fn no_proof_sum_rejects_carrier_shape() {
+        // `query_aggregate_sum` returns a single `i64` and has no way to
+        // surface per-outer-key carrier sums. Calling it with a
+        // carrier-shape path query must be rejected up front by the
+        // leaf-only validator, BEFORE any storage reads happen — even
+        // though the dispatcher-level `validate_aggregate_sum_on_range`
+        // would have accepted the same query (which would in turn open
+        // the wrong tree). Mirror of `aggregate_count_query_tests`'s
+        // `no_proof_rejects_carrier_shape`.
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let (db, _) = setup_15_key_provable_sum_tree(v);
+
+        let mut carrier = Query::new();
+        carrier.insert_key(b"st".to_vec());
+        carrier.set_subquery(Query::new_aggregate_sum_on_range(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            crate::SizedQuery::new(carrier, None, None),
+        );
+
+        // Sanity: the dispatcher-level validator accepts this as a
+        // valid carrier, so the rejection below is specifically because
+        // `query_aggregate_sum` tightens to leaf-only.
+        assert!(path_query.validate_aggregate_sum_on_range().is_ok());
+
+        let err = db
+            .grove_db
+            .query_aggregate_sum(&path_query, None, v)
+            .unwrap()
+            .expect_err("carrier shape must be rejected at the no-proof entry");
+        assert!(
+            matches!(err, crate::Error::InvalidQuery(_)),
+            "expected InvalidQuery, got {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn no_proof_sum_normal_tree_rejected_at_merk() {
         // A path that resolves to a NormalTree (not a ProvableSumTree)
         // must be rejected by the merk-level tree-type gate.
