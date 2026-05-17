@@ -268,14 +268,19 @@ fn forged_kvdigest_count_changes_root_or_fails() {
             break;
         }
     }
-    if tampered {
-        let bytes = encode_proof(&ops);
-        match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
-            Ok((forged_root, _c, _s)) => {
-                assert_ne!(forged_root, honest_root);
-            }
-            Err(_) => {}
+    assert!(
+        tampered,
+        "test fixture must produce at least one KVDigestCountSum op for this range"
+    );
+    let bytes = encode_proof(&ops);
+    match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
+        Ok((forged_root, _c, _s)) => {
+            assert_ne!(
+                forged_root, honest_root,
+                "tampered KVDigestCountSum count must change reconstructed root hash"
+            );
         }
+        Err(_) => {}
     }
 }
 
@@ -301,14 +306,19 @@ fn forged_kvdigest_sum_changes_root_or_fails() {
             break;
         }
     }
-    if tampered {
-        let bytes = encode_proof(&ops);
-        match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
-            Ok((forged_root, _c, _s)) => {
-                assert_ne!(forged_root, honest_root);
-            }
-            Err(_) => {}
+    assert!(
+        tampered,
+        "test fixture must produce at least one KVDigestCountSum op for this range"
+    );
+    let bytes = encode_proof(&ops);
+    match verify_aggregate_count_and_sum_on_range_proof(&bytes, &inner_range).unwrap() {
+        Ok((forged_root, _c, _s)) => {
+            assert_ne!(
+                forged_root, honest_root,
+                "tampered KVDigestCountSum sum must change reconstructed root hash"
+            );
         }
+        Err(_) => {}
     }
 }
 
