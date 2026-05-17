@@ -898,6 +898,236 @@ mod tests {
     }
 
     #[test]
+    fn prove_count_indexed_top_k_paginated_at_root_path_errors() {
+        // Empty path → `InvalidPath` before any merk work; mirrors the
+        // existing `prove_count_indexed_top_k_at_root_path_errors`.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty_path: &[&[u8]] = &[];
+        let result = db
+            .prove_count_indexed_top_k_paginated(empty_path, 3, 0, true, None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidPath(_)) => {}
+            other => panic!("expected InvalidPath error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn prove_count_indexed_top_k_paginated_on_non_cidx_target_errors() {
+        // Path points at a regular Tree (not a cidx primary); the
+        // primary-check guard in the builder must reject.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // TEST_LEAF is a regular Tree, not a cidx — exercise the guard.
+        let result = db
+            .prove_count_indexed_top_k_paginated(
+                [TEST_LEAF].as_ref(),
+                3,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree"),
+                    "expected message to mention CountIndexedTree, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_paginated_rejects_corrupted_bytes() {
+        // Garbage bytes → bincode decode failure surfaced as CorruptedData.
+        let garbage = vec![0xff, 0xfe, 0xfd, 0xfc, 0xfb];
+        let result = GroveDb::verify_count_indexed_top_k_paginated(
+            &garbage,
+            &[TEST_LEAF, b"cidx"],
+            2,
+            0,
+            true,
+        );
+        match result {
+            Err(crate::Error::CorruptedData(_)) => {}
+            other => panic!("expected CorruptedData error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_top_k_paginated_rejects_path_length_mismatch() {
+        // Honest proof for path = [TEST_LEAF, cidx]; verifier called
+        // with a 3-segment path. The layer-count check at the top of
+        // the verifier must reject before any merk-level work.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, c) in [(b"a".as_ref(), 1u64), (b"b", 2)] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let proof = db
+            .prove_count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+
+        let err = GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"cidx", b"extra"],
+            2,
+            0,
+            true,
+        )
+        .expect_err("expected path-length mismatch");
+        match err {
+            crate::Error::CorruptedData(msg) => assert!(
+                msg.contains("layers but path has"),
+                "expected layer-count mismatch message, got {msg}"
+            ),
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn count_indexed_top_k_paginated_empty_cidx_returns_empty() {
+        // No entries in cidx → both offset=0 and offset>0 return
+        // empty results without erroring. Covers the empty-iterator
+        // branch in the skip phase.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+
+        let r0 = db
+            .count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                10,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("empty cidx, offset=0");
+        assert!(r0.is_empty());
+
+        let r5 = db
+            .count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                10,
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("empty cidx, offset=5");
+        assert!(r5.is_empty());
+    }
+
+    #[test]
+    fn prove_and_verify_count_indexed_top_k_paginated_ascending() {
+        // Same shape as the round-trip test above but with
+        // `descending = false`, exercising the ascending walk path
+        // in both prover and verifier.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, c) in [
+            (b"alice".as_ref(), 5u64),
+            (b"bob", 12),
+            (b"carol", 1),
+            (b"dave", 7),
+            (b"eve", 20),
+        ] {
+            let count_tree = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                count_tree,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        // Ascending full: carol(1), alice(5), dave(7), bob(12), eve(20).
+        // Skip first 2 (carol+alice), return next 2 (dave+bob).
+        let proof = db
+            .prove_count_indexed_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                2,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove ascending paginated");
+
+        let result = GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            2,
+            2,
+            false,
+        )
+        .expect("verify ascending paginated");
+
+        assert_eq!(
+            result.entries,
+            vec![(7u64, b"dave".to_vec()), (12u64, b"bob".to_vec())]
+        );
+        assert_eq!(result.skipped, 2);
+    }
+
+    #[test]
     fn count_indexed_count_range_filters_by_count() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
