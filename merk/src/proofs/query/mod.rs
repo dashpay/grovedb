@@ -6,6 +6,8 @@ pub use grovedb_query::*;
 mod merk_integration_tests;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
+mod aggregate_common;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_count;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod aggregate_sum;

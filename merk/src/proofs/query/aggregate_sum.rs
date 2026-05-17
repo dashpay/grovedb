@@ -45,75 +45,17 @@ use crate::{
 };
 use crate::{
     proofs::{
-        query::QueryItem,
+        query::{
+            aggregate_common::{
+                classify_subtree, key_strictly_inside, SubtreeClassification, NULL_HASH,
+            },
+            QueryItem,
+        },
         tree::{execute_with_options, Tree as ProofTree},
         Decoder, Node,
     },
     CryptoHash, Error,
 };
-
-/// All-zero `CryptoHash`, used in `Node::HashWithSum` for missing children.
-const NULL_HASH: CryptoHash = [0u8; 32];
-
-/// How a subtree's possible-key window relates to the inner range we're
-/// summing over. Mirrors the count side exactly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SubtreeClassification {
-    /// Every possible key in this subtree falls **outside** the range.
-    Disjoint,
-    /// Every possible key in this subtree falls **inside** the range.
-    Contained,
-    /// The subtree straddles a range boundary (or directly contains one).
-    Boundary,
-}
-
-/// Classify a subtree relative to the inner range. Identical logic to the
-/// count side — the bound math depends only on the key window, not on the
-/// aggregate flavor.
-fn classify_subtree(
-    subtree_lo_excl: Option<&[u8]>,
-    subtree_hi_excl: Option<&[u8]>,
-    range: &QueryItem,
-) -> SubtreeClassification {
-    let (range_lo, _range_lo_excl) = range.lower_bound();
-    let (range_hi, _range_hi_incl) = range.upper_bound();
-
-    // Disjoint-LEFT: subtree entirely below the range.
-    if let (Some(s_hi), Some(r_lo)) = (subtree_hi_excl, range_lo)
-        && s_hi <= r_lo
-    {
-        return SubtreeClassification::Disjoint;
-    }
-
-    // Disjoint-RIGHT: subtree entirely above the range.
-    if let (Some(s_lo), Some(r_hi)) = (subtree_lo_excl, range_hi)
-        && s_lo >= r_hi
-    {
-        return SubtreeClassification::Disjoint;
-    }
-
-    // Contained: subtree (s_lo, s_hi) ⊆ range.
-    let lower_contained = match range_lo {
-        None => true,
-        Some(r_lo) => match subtree_lo_excl {
-            Some(s_lo) => s_lo >= r_lo,
-            None => false,
-        },
-    };
-    let upper_contained = match range_hi {
-        None => true,
-        Some(r_hi) => match subtree_hi_excl {
-            Some(s_hi) => s_hi <= r_hi,
-            None => false,
-        },
-    };
-
-    if lower_contained && upper_contained {
-        SubtreeClassification::Contained
-    } else {
-        SubtreeClassification::Boundary
-    }
-}
 
 /// Returns true if `tree_type` is one that can host an `AggregateSumOnRange`
 /// proof. Only `ProvableSumTree` is valid — the `Sum` / `BigSum` trees use
@@ -858,14 +800,6 @@ fn verify_sum_shape(
             ))),
         },
     }
-}
-
-/// Returns true when `key` lies strictly between the exclusive bounds
-/// `(lo, hi)`, where `None` represents `-inf` / `+inf`.
-fn key_strictly_inside(key: &[u8], lo: Option<&[u8]>, hi: Option<&[u8]>) -> bool {
-    let lo_ok = lo.is_none_or(|l| key > l);
-    let hi_ok = hi.is_none_or(|h| key < h);
-    lo_ok && hi_ok
 }
 
 #[cfg(test)]
