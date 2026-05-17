@@ -1,4 +1,5 @@
-//! Shared helpers used by the aggregate-sum leaf-chain walker.
+//! Shared helpers used by the aggregate-sum leaf-chain walker and the
+//! per-key carrier walker.
 //!
 //! Envelope decoding lives one level up in
 //! [`crate::operations::proof::decode_grovedb_proof_canonical`] so the
@@ -10,10 +11,14 @@
 //! - [`verify_single_key_layer_proof_v0`] — verify a non-leaf merk
 //!   proof for one expected key and recover its value bytes + chain
 //!   commitment hash.
+//! - [`OuterMatch`] + [`execute_carrier_layer_proof`] — verify the
+//!   carrier's multi-key merk proof, collect one `OuterMatch` per
+//!   matched outer key.
 //! - [`enforce_lower_chain`] — `combine_hash(H(value), lower_root) ==
 //!   parent_value_hash`, the binding that ties each layer's sum to the
 //!   GroveDB root hash, plus the terminal-type gate that requires the
-//!   leaf-target element to be a `ProvableSumTree`.
+//!   leaf-target element to be a `ProvableSumTree` or
+//!   `ProvableCountProvableSumTree`.
 
 use grovedb_merk::{
     proofs::{
@@ -124,6 +129,84 @@ pub(super) fn verify_single_key_layer_proof_v0(
     })?;
 
     Ok((value_bytes, root_hash, proved.proof))
+}
+
+/// One matched outer key in the carrier layer's multi-key merk proof.
+pub(super) struct OuterMatch {
+    /// The matched outer key bytes.
+    pub(super) outer_key: Vec<u8>,
+    /// The serialized tree element bytes for the matched outer key (a
+    /// non-empty tree element of some flavor).
+    pub(super) value_bytes: Vec<u8>,
+    /// The value_hash the parent merk committed for this outer key — the
+    /// hash that must equal `combine_hash(H(value), lower_layer_root)`.
+    pub(super) commitment_hash: CryptoHash,
+}
+
+/// Execute the carrier-layer multi-key merk proof for `outer_items`,
+/// returning `(carrier_merk_root_hash, matched_outer_keys)`. Each
+/// `OuterMatch` carries the value bytes and the parent-recorded value_hash
+/// that the chain check will validate.
+///
+/// `outer_limit` is the `SizedQuery::limit` that bounds the outer walk
+/// (matching what the prover passed to `Merk::prove_unchecked_query_items`
+/// when it generated the carrier-layer merk proof). When the carrier
+/// query carries a non-`None` `SizedQuery::limit`, the prover truncates
+/// the outer walk after that many matched keys and emits structural
+/// Hash nodes for the rest; the verifier must therefore execute the
+/// proof with the same limit so that its merk walker stops at the same
+/// boundary instead of demanding KV data for the un-walked tail.
+pub(super) fn execute_carrier_layer_proof(
+    merk_bytes: &[u8],
+    outer_items: &[QueryItem],
+    left_to_right: bool,
+    outer_limit: Option<u16>,
+    path_query: &PathQuery,
+) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
+    // The grovedb_query::QueryItem and grovedb_merk::proofs::query::QueryItem
+    // types are identical (the merk crate re-exports the grovedb-query one).
+    let level_query = MerkQuery {
+        items: outer_items.to_vec(),
+        left_to_right,
+        ..Default::default()
+    };
+
+    // Walk direction must match the prover's; otherwise the merk
+    // walker stops at the first out-of-order boundary and only the
+    // last key in the proof is returned.
+    let (root_hash, merk_result) = level_query
+        .execute_proof(merk_bytes, outer_limit, left_to_right, 0)
+        .unwrap()
+        .map_err(|e| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "carrier aggregate-sum multi-key proof failed to verify: {}",
+                    e
+                ),
+            )
+        })?;
+
+    let mut matched = Vec::with_capacity(merk_result.result_set.len());
+    for proved in &merk_result.result_set {
+        let value = proved.value.clone().ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "carrier aggregate-sum proof returned a result row without value bytes \
+                     for key {}",
+                    hex::encode(&proved.key)
+                ),
+            )
+        })?;
+        matched.push(OuterMatch {
+            outer_key: proved.key.clone(),
+            value_bytes: value,
+            commitment_hash: proved.proof,
+        });
+    }
+
+    Ok((root_hash, matched))
 }
 
 /// Enforce the layer-chain hash equality plus, at the terminal layer,

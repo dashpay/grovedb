@@ -13,22 +13,41 @@
 //! [`GroveDb::prove_subqueries`] / [`GroveDb::prove_subqueries_v1`] — see
 //! the "Aggregate-sum short-circuit" branches there.
 //!
+//! ## Two shapes
+//!
+//! `AggregateSumOnRange` queries come in two flavors (mirror of the
+//! count side):
+//!
+//! - **Leaf** — a single `AggregateSumOnRange(_)` item at the top level
+//!   of the inner `Query`. The proof descends `path_query.path` via
+//!   single-key existence checks and produces a single `i64` at the
+//!   leaf merk. Surfaced through
+//!   [`GroveDb::verify_aggregate_sum_query`].
+//!
+//! - **Carrier** — an outer query whose items are `Key(_)` / `Range*(_)`
+//!   (one IN-style fan-out dimension) and whose
+//!   `default_subquery_branch.subquery` resolves to a leaf
+//!   `AggregateSumOnRange`. Each matched outer key produces its own
+//!   sum. Surfaced through
+//!   [`GroveDb::verify_aggregate_sum_query_per_key`].
+//!
 //! ## Module layout
 //!
-//! - [`leaf_chain`] — the recursive walker that descends `path_query.path`
-//!   layer by layer and delegates to the merk-level sum verifier at the
-//!   leaf.
+//! - [`classification`] — `AggregateSumClassification` struct and the
+//!   `classify_aggregate_sum_path_query` function that distinguishes
+//!   leaf vs. carrier shape.
+//! - [`leaf_chain`] — the recursive walker used by the legacy
+//!   single-`i64` entry point.
+//! - [`per_key`] — the carrier-shape walker that drives both shapes
+//!   through the new `(outer_key, sum)` entry point.
 //! - [`helpers`] — shared utilities (envelope decode, single-key layer
-//!   verification, chain enforcement, leaf sum verification).
-//!
-//! Unlike [`super::aggregate_count`], `AggregateSumOnRange` only supports
-//! the leaf shape (a single `AggregateSumOnRange(_)` item at the top level
-//! of the inner `Query`). The carrier shape (outer `Key`/`Range*` items
-//! routing to an aggregate-sum subquery) is not yet wired in the merk-level
-//! prover, so there is no per-key entry point or classification module.
+//!   verification, chain enforcement, leaf sum verification, multi-key
+//!   outer proof execution).
 
+mod classification;
 mod helpers;
 mod leaf_chain;
+mod per_key;
 
 use grovedb_merk::CryptoHash;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
@@ -90,7 +109,12 @@ impl GroveDb {
                 .verify_query_with_options
         );
 
-        let inner_range = path_query.validate_aggregate_sum_on_range()?.clone();
+        // Strict-leaf validation so the legacy single-`i64` entry point
+        // continues to reject carrier-shaped path queries. The dispatcher
+        // `validate_aggregate_sum_on_range` (and its SizedQuery sibling)
+        // now accepts both leaf and carrier shapes; carrier queries must
+        // use `verify_aggregate_sum_query_per_key` instead.
+        let inner_range = path_query.validate_leaf_aggregate_sum_on_range()?.clone();
 
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
@@ -102,6 +126,76 @@ impl GroveDb {
             &path_keys,
             0,
             &inner_range,
+            grove_version,
+        )
+    }
+
+    /// Verify a serialized `prove_query` proof against an
+    /// `AggregateSumOnRange` `PathQuery` in either the leaf or carrier
+    /// shape, returning one `(outer_key, sum)` pair per matched outer
+    /// key.
+    ///
+    /// For a **leaf** aggregate-sum query the returned vector contains
+    /// exactly one entry whose key is an empty byte string and whose
+    /// sum is the same `i64`
+    /// [`GroveDb::verify_aggregate_sum_query`] would have returned.
+    /// This makes carrier and leaf consumers symmetric: callers that
+    /// always process a `Vec<(Vec<u8>, i64)>` don't need to branch on
+    /// the shape.
+    ///
+    /// For a **carrier** aggregate-sum query the outer items must be
+    /// `Key(_)` / `Range*(_)`, the `default_subquery_branch.subquery`
+    /// must validate as a leaf `AggregateSumOnRange`, and the optional
+    /// `subquery_path` is followed exactly (single-key descent per
+    /// element) before the sum proof. The returned vector has one
+    /// entry per matched outer key in **query-direction order**: when
+    /// the carrier's `left_to_right` is `true` (the default) entries
+    /// come back in ascending lexicographic key order; when
+    /// `left_to_right` is `false` they come back in descending order,
+    /// mirroring the merk proof's own emission order. Outer-key
+    /// candidates that the prover proved as absent contribute no entry.
+    ///
+    /// Like [`GroveDb::verify_aggregate_sum_query`], this entry point
+    /// requires **V1 proof envelopes**. V0 envelopes predate the
+    /// aggregate-sum feature and are rejected with
+    /// `Error::InvalidProof`.
+    ///
+    /// Cryptographic guarantees:
+    /// - Every layer is committed via the same `combine_hash(H(value),
+    ///   lower_hash) == parent_proof_hash` chain check used by the leaf
+    ///   verifier, so a forged path through the carrier or
+    ///   `subquery_path` produces a root-hash mismatch.
+    /// - Each per-outer-key sum is committed by the leaf
+    ///   `HashWithSum` / `KVDigestSum` recomputation; sums can't be
+    ///   tampered with independently.
+    pub fn verify_aggregate_sum_query_per_key(
+        proof: &[u8],
+        path_query: &PathQuery,
+        grove_version: &GroveVersion,
+    ) -> Result<(CryptoHash, Vec<(Vec<u8>, i64)>), Error> {
+        check_grovedb_v0!(
+            "verify_aggregate_sum_query_per_key",
+            grove_version
+                .grovedb_versions
+                .operations
+                .proof
+                .verify_query_with_options
+        );
+
+        // Classify the query and extract the leaf inner range plus the
+        // optional carrier subquery_path. For leaf queries the carrier
+        // descent below is skipped (carrier_outer_items is None).
+        let classification = classification::classify_aggregate_sum_path_query(path_query)?;
+
+        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+
+        let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
+        per_key::verify_v1_with_classification(
+            root_layer,
+            path_query,
+            &path_keys,
+            &classification,
             grove_version,
         )
     }

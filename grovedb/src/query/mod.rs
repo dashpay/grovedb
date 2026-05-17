@@ -313,18 +313,30 @@ impl SizedQuery {
 
     /// Mirror of [`Self::validate_aggregate_count_on_range`] for
     /// `AggregateSumOnRange`. Forwards to
-    /// [`Query::validate_aggregate_sum_on_range`] and additionally rejects
-    /// any non-`None` `limit` or `offset`.
+    /// [`Query::validate_aggregate_sum_on_range`] and additionally
+    /// enforces the appropriate per-shape size-constraint rules:
+    ///
+    /// - **Leaf** shape (single `AggregateSumOnRange(_)` item, no
+    ///   subqueries): both `SizedQuery::limit` and `SizedQuery::offset`
+    ///   are rejected. A leaf returns a single `i64`; pagination would
+    ///   silently change the answer.
+    /// - **Carrier** shape (outer `Key`/`Range*` items routing to a leaf
+    ///   `AggregateSumOnRange` subquery): `SizedQuery::limit` is
+    ///   **allowed** and caps the number of outer-key matches the
+    ///   carrier walks (each matched outer key still produces a complete
+    ///   leaf-ASOR `i64`). `SizedQuery::offset` is still rejected —
+    ///   skipping outer matches changes which `(outer_key, i64)` pairs
+    ///   end up in the proof, and the use case for that hasn't been
+    ///   designed yet.
     pub fn validate_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
-        if self.limit.is_some() {
-            return Err(Error::InvalidQuery(
-                "AggregateSumOnRange queries may not set SizedQuery::limit",
-            ));
-        }
-        if self.offset.is_some() {
-            return Err(Error::InvalidQuery(
-                "AggregateSumOnRange queries may not set SizedQuery::offset",
-            ));
+        // Inner classification first, then per-shape size-constraint
+        // check. Queries that aren't aggregate-sum at all (neither leaf
+        // nor carrier) fall through to the Query-level validator below,
+        // which surfaces the canonical "no aggregate-sum item" error.
+        if self.query.aggregate_sum_on_range().is_some() {
+            self.check_leaf_aggregate_sum_size_constraints()?;
+        } else if self.query.has_aggregate_sum_on_range_anywhere() {
+            self.check_carrier_aggregate_sum_size_constraints()?;
         }
         self.query
             .validate_aggregate_sum_on_range()
@@ -332,27 +344,122 @@ impl SizedQuery {
             .map_err(Error::InvalidQuery)
     }
 
-    /// Mirror of [`Self::validate_aggregate_sum_on_range`] for the combined
-    /// `AggregateCountAndSumOnRange` variant. Forwards to
-    /// [`Query::validate_aggregate_count_and_sum_on_range`] and
-    /// additionally rejects any non-`None` `limit` or `offset` — the
-    /// combined variant returns a single `(count, sum)` pair from a
-    /// single proof; pagination would silently change both answers.
-    pub fn validate_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+    /// Strict variant of [`Self::validate_aggregate_sum_on_range`] that
+    /// only accepts the **leaf** shape (single `AggregateSumOnRange(_)`
+    /// item, no subqueries). Used by entry points that produce a single
+    /// `i64` and need to reject the carrier shape up front. Pagination
+    /// (`SizedQuery::limit` / `SizedQuery::offset`) is rejected — see
+    /// [`Self::check_leaf_aggregate_sum_size_constraints`].
+    pub fn validate_leaf_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        self.check_leaf_aggregate_sum_size_constraints()?;
+        self.query
+            .validate_leaf_aggregate_sum_on_range()
+            .map_err(sum_query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
+
+    /// Size-constraint check used for **leaf** `AggregateSumOnRange`
+    /// queries. A leaf returns a single `i64`; setting `limit` or
+    /// `offset` would silently change the answer, so both are rejected.
+    fn check_leaf_aggregate_sum_size_constraints(&self) -> Result<(), Error> {
         if self.limit.is_some() {
             return Err(Error::InvalidQuery(
-                "AggregateCountAndSumOnRange queries may not set SizedQuery::limit",
+                "leaf AggregateSumOnRange queries may not set SizedQuery::limit — a leaf \
+                 returns a single i64 and pagination would silently change the answer",
             ));
         }
         if self.offset.is_some() {
             return Err(Error::InvalidQuery(
-                "AggregateCountAndSumOnRange queries may not set SizedQuery::offset",
+                "leaf AggregateSumOnRange queries may not set SizedQuery::offset — same \
+                 reason as limit",
             ));
+        }
+        Ok(())
+    }
+
+    /// Size-constraint check used for **carrier** `AggregateSumOnRange`
+    /// queries. `SizedQuery::limit` is allowed and caps the number of
+    /// outer-key matches the carrier walks (each matched outer key still
+    /// produces a complete leaf-ASOR `i64`; the inner range is *not*
+    /// capped). `SizedQuery::offset` is still rejected — paginating into
+    /// the outer dimension changes which `(outer_key, i64)` pairs end up
+    /// in the proof, and the use case for that hasn't been designed yet.
+    fn check_carrier_aggregate_sum_size_constraints(&self) -> Result<(), Error> {
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "carrier AggregateSumOnRange queries may not set SizedQuery::offset — \
+                 skipping outer matches changes which (outer_key, i64) pairs end up in the \
+                 proof; the use case for this isn't designed yet",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Mirror of [`Self::validate_aggregate_sum_on_range`] for the combined
+    /// `AggregateCountAndSumOnRange` variant. Forwards to
+    /// [`Query::validate_aggregate_count_and_sum_on_range`] and
+    /// additionally enforces the appropriate per-shape size-constraint
+    /// rules — same model as the sum side.
+    pub fn validate_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.query.aggregate_count_and_sum_on_range().is_some() {
+            self.check_leaf_aggregate_count_and_sum_size_constraints()?;
+        } else if self.query.has_aggregate_count_and_sum_on_range_anywhere() {
+            self.check_carrier_aggregate_count_and_sum_size_constraints()?;
         }
         self.query
             .validate_aggregate_count_and_sum_on_range()
             .map_err(count_and_sum_query_validation_error_to_static_str)
             .map_err(Error::InvalidQuery)
+    }
+
+    /// Strict variant of
+    /// [`Self::validate_aggregate_count_and_sum_on_range`] that only
+    /// accepts the **leaf** shape. Used by entry points that produce a
+    /// single `(u64, i64)` and need to reject the carrier shape up front.
+    pub fn validate_leaf_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        self.check_leaf_aggregate_count_and_sum_size_constraints()?;
+        self.query
+            .validate_leaf_aggregate_count_and_sum_on_range()
+            .map_err(count_and_sum_query_validation_error_to_static_str)
+            .map_err(Error::InvalidQuery)
+    }
+
+    /// Size-constraint check used for **leaf**
+    /// `AggregateCountAndSumOnRange` queries. A leaf returns a single
+    /// `(u64, i64)` pair; setting `limit` or `offset` would silently
+    /// change both answers, so both are rejected.
+    fn check_leaf_aggregate_count_and_sum_size_constraints(&self) -> Result<(), Error> {
+        if self.limit.is_some() {
+            return Err(Error::InvalidQuery(
+                "leaf AggregateCountAndSumOnRange queries may not set SizedQuery::limit — a \
+                 leaf returns a single (u64, i64) and pagination would silently change both \
+                 answers",
+            ));
+        }
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "leaf AggregateCountAndSumOnRange queries may not set SizedQuery::offset — \
+                 same reason as limit",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Size-constraint check used for **carrier**
+    /// `AggregateCountAndSumOnRange` queries. `SizedQuery::limit` is
+    /// allowed and caps the number of outer-key matches the carrier
+    /// walks (each matched outer key still produces a complete
+    /// leaf-ACASOR `(u64, i64)`; the inner range is *not* capped).
+    /// `SizedQuery::offset` is still rejected.
+    fn check_carrier_aggregate_count_and_sum_size_constraints(&self) -> Result<(), Error> {
+        if self.offset.is_some() {
+            return Err(Error::InvalidQuery(
+                "carrier AggregateCountAndSumOnRange queries may not set SizedQuery::offset — \
+                 skipping outer matches changes which (outer_key, u64, i64) triples end up in \
+                 the proof; the use case for this isn't designed yet",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -522,6 +629,42 @@ impl PathQuery {
     /// item, no subqueries).
     pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
         self.query.validate_leaf_aggregate_count_on_range()
+    }
+
+    /// Strict variant of [`Self::validate_aggregate_sum_on_range`] that
+    /// only accepts the **leaf** shape (single `AggregateSumOnRange(_)`
+    /// item, no subqueries). Used by
+    /// [`crate::GroveDb::verify_aggregate_sum_query`] which produces a
+    /// single `i64` and needs to reject the carrier shape up front.
+    pub fn validate_leaf_aggregate_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateSumOnRange queries may not target the root merk: \
+                 the GroveDB root is always a NormalTree, never a \
+                 ProvableSumTree, so a sum aggregate at the root layer has \
+                 no valid target",
+            ));
+        }
+        self.query.validate_leaf_aggregate_sum_on_range()
+    }
+
+    /// Strict variant of
+    /// [`Self::validate_aggregate_count_and_sum_on_range`] that only
+    /// accepts the **leaf** shape (single
+    /// `AggregateCountAndSumOnRange(_)` item, no subqueries). Used by
+    /// [`crate::GroveDb::verify_aggregate_count_and_sum_query`] which
+    /// produces a single `(u64, i64)` and needs to reject the carrier
+    /// shape up front.
+    pub fn validate_leaf_aggregate_count_and_sum_on_range(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "AggregateCountAndSumOnRange queries may not target the root \
+                 merk: the GroveDB root is always a NormalTree, never a \
+                 ProvableCountProvableSumTree, so a combined count+sum \
+                 aggregate at the root layer has no valid target",
+            ));
+        }
+        self.query.validate_leaf_aggregate_count_and_sum_on_range()
     }
 
     /// Validates that this `PathQuery` is an offset-paginated range query
@@ -2909,6 +3052,153 @@ mod tests {
         sq.offset = Some(3);
         let err = sq
             .validate_aggregate_count_on_range()
+            .expect_err("carrier offset must fail");
+        match err {
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("carrier"), "unexpected message: {msg}");
+                assert!(msg.contains("offset"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidQuery"),
+        }
+    }
+
+    #[test]
+    fn sized_query_validate_leaf_asor_rejects_limit_and_offset() {
+        // Leaf shape (single AggregateSumOnRange item, no subqueries):
+        // both SizedQuery::limit and SizedQuery::offset are rejected
+        // because a leaf returns a single i64 and pagination would
+        // silently change the answer.
+        let mut sq = SizedQuery::new(
+            Query::new_aggregate_sum_on_range(QueryItem::Range(b"a".to_vec()..b"z".to_vec())),
+            Some(10),
+            None,
+        );
+        let err = sq
+            .validate_aggregate_sum_on_range()
+            .expect_err("limit must fail");
+        match err {
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("limit"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidQuery"),
+        }
+
+        sq.limit = None;
+        sq.offset = Some(5);
+        let err = sq
+            .validate_aggregate_sum_on_range()
+            .expect_err("offset must fail");
+        match err {
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("offset"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidQuery"),
+        }
+    }
+
+    #[test]
+    fn sized_query_validate_carrier_asor_accepts_limit_rejects_offset() {
+        // Sum-side mirror of
+        // `sized_query_validate_carrier_acor_accepts_limit_rejects_offset`.
+        // Carrier shape (outer Key/Range items + AggregateSumOnRange
+        // subquery): SizedQuery::limit is permitted (caps the outer
+        // walk), but SizedQuery::offset is still rejected pending a
+        // separate design pass.
+        let mut carrier = Query::new();
+        carrier.insert_key(b"k1".to_vec());
+        carrier.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(Query::new_aggregate_sum_on_range(
+                QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            ))),
+        };
+        let mut sq = SizedQuery::new(carrier, Some(20), None);
+
+        // limit=Some(20) is now accepted on the carrier shape.
+        let inner = sq
+            .validate_aggregate_sum_on_range()
+            .expect("carrier with limit must validate");
+        assert!(matches!(inner, QueryItem::Range(_)));
+
+        // offset is still rejected, with a carrier-specific message.
+        sq.limit = None;
+        sq.offset = Some(3);
+        let err = sq
+            .validate_aggregate_sum_on_range()
+            .expect_err("carrier offset must fail");
+        match err {
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("carrier"), "unexpected message: {msg}");
+                assert!(msg.contains("offset"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidQuery"),
+        }
+    }
+
+    #[test]
+    fn sized_query_validate_leaf_acasor_rejects_limit_and_offset() {
+        // Combined-aggregate leaf shape: both SizedQuery::limit and
+        // SizedQuery::offset are rejected — pagination would silently
+        // change both the count and the sum.
+        let mut sq = SizedQuery::new(
+            Query::new_aggregate_count_and_sum_on_range(QueryItem::Range(
+                b"a".to_vec()..b"z".to_vec(),
+            )),
+            Some(10),
+            None,
+        );
+        let err = sq
+            .validate_aggregate_count_and_sum_on_range()
+            .expect_err("limit must fail");
+        match err {
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("limit"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidQuery"),
+        }
+
+        sq.limit = None;
+        sq.offset = Some(5);
+        let err = sq
+            .validate_aggregate_count_and_sum_on_range()
+            .expect_err("offset must fail");
+        match err {
+            Error::InvalidQuery(msg) => {
+                assert!(msg.contains("leaf"), "unexpected message: {msg}");
+                assert!(msg.contains("offset"), "unexpected message: {msg}");
+            }
+            _ => panic!("expected InvalidQuery"),
+        }
+    }
+
+    #[test]
+    fn sized_query_validate_carrier_acasor_accepts_limit_rejects_offset() {
+        // Combined-side mirror of
+        // `sized_query_validate_carrier_acor_accepts_limit_rejects_offset`.
+        let mut carrier = Query::new();
+        carrier.insert_key(b"k1".to_vec());
+        carrier.default_subquery_branch = SubqueryBranch {
+            subquery_path: None,
+            subquery: Some(Box::new(Query::new_aggregate_count_and_sum_on_range(
+                QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            ))),
+        };
+        let mut sq = SizedQuery::new(carrier, Some(20), None);
+
+        // limit=Some(20) is now accepted on the carrier shape.
+        let inner = sq
+            .validate_aggregate_count_and_sum_on_range()
+            .expect("carrier with limit must validate");
+        assert!(matches!(inner, QueryItem::Range(_)));
+
+        // offset is still rejected, with a carrier-specific message.
+        sq.limit = None;
+        sq.offset = Some(3);
+        let err = sq
+            .validate_aggregate_count_and_sum_on_range()
             .expect_err("carrier offset must fail");
         match err {
             Error::InvalidQuery(msg) => {

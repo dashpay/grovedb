@@ -1,4 +1,5 @@
-//! Shared helpers used by the combined-aggregate leaf-chain walker.
+//! Shared helpers used by the combined-aggregate leaf-chain walker
+//! and the per-key carrier walker.
 //!
 //! Mirror of [`super::super::aggregate_sum::helpers`] for the
 //! dual-axis PCPS host.
@@ -9,6 +10,9 @@
 //! - [`verify_single_key_layer_proof_v0`] — verify a non-leaf merk
 //!   proof for one expected key and recover its value bytes + chain
 //!   commitment hash.
+//! - [`OuterMatch`] + [`execute_carrier_layer_proof`] — verify the
+//!   carrier's multi-key merk proof, collect one `OuterMatch` per
+//!   matched outer key.
 //! - [`enforce_lower_chain`] — `combine_hash(H(value), lower_root) ==
 //!   parent_value_hash`, the binding that ties each layer's
 //!   `(count, sum)` to the GroveDB root hash, plus the terminal-type
@@ -123,6 +127,74 @@ pub(super) fn verify_single_key_layer_proof_v0(
     })?;
 
     Ok((value_bytes, root_hash, proved.proof))
+}
+
+/// One matched outer key in the carrier layer's multi-key merk proof.
+pub(super) struct OuterMatch {
+    /// The matched outer key bytes.
+    pub(super) outer_key: Vec<u8>,
+    /// The serialized tree element bytes for the matched outer key (a
+    /// non-empty tree element of some flavor).
+    pub(super) value_bytes: Vec<u8>,
+    /// The value_hash the parent merk committed for this outer key — the
+    /// hash that must equal `combine_hash(H(value), lower_layer_root)`.
+    pub(super) commitment_hash: CryptoHash,
+}
+
+/// Execute the carrier-layer multi-key merk proof for `outer_items`,
+/// returning `(carrier_merk_root_hash, matched_outer_keys)`. Each
+/// `OuterMatch` carries the value bytes and the parent-recorded
+/// value_hash that the chain check will validate.
+///
+/// `outer_limit` is the `SizedQuery::limit` that bounds the outer walk
+/// (matching what the prover passed to `Merk::prove_unchecked_query_items`
+/// when it generated the carrier-layer merk proof).
+pub(super) fn execute_carrier_layer_proof(
+    merk_bytes: &[u8],
+    outer_items: &[QueryItem],
+    left_to_right: bool,
+    outer_limit: Option<u16>,
+    path_query: &PathQuery,
+) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
+    let level_query = MerkQuery {
+        items: outer_items.to_vec(),
+        left_to_right,
+        ..Default::default()
+    };
+
+    let (root_hash, merk_result) = level_query
+        .execute_proof(merk_bytes, outer_limit, left_to_right, 0)
+        .unwrap()
+        .map_err(|e| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "carrier combined-aggregate multi-key proof failed to verify: {}",
+                    e
+                ),
+            )
+        })?;
+
+    let mut matched = Vec::with_capacity(merk_result.result_set.len());
+    for proved in &merk_result.result_set {
+        let value = proved.value.clone().ok_or_else(|| {
+            Error::InvalidProof(
+                path_query.clone(),
+                format!(
+                    "carrier combined-aggregate proof returned a result row without value \
+                     bytes for key {}",
+                    hex::encode(&proved.key)
+                ),
+            )
+        })?;
+        matched.push(OuterMatch {
+            outer_key: proved.key.clone(),
+            value_bytes: value,
+            commitment_hash: proved.proof,
+        });
+    }
+
+    Ok((root_hash, matched))
 }
 
 /// Enforce the layer-chain hash equality plus, at the terminal layer,
