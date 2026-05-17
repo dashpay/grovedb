@@ -215,8 +215,10 @@ impl SizedQuery {
     ///   an offset to honor. (Queries with offset = `None` / `Some(0)`
     ///   take the regular proof path, which already handles them.)
     /// - The underlying `Query` has exactly one item, and that item is a
-    ///   plain range (`Key`, `Range`, `RangeInclusive`, `RangeFrom`,
-    ///   `RangeFull`, `RangeTo`, `RangeToInclusive`, or `RangeAfter*`).
+    ///   plain range (`Range`, `RangeInclusive`, `RangeFrom`, `RangeFull`,
+    ///   `RangeTo`, `RangeToInclusive`, or `RangeAfter*`). `QueryItem::Key`
+    ///   is explicitly rejected — it matches at most one element, so any
+    ///   offset > 0 is structurally guaranteed to return zero items.
     ///   Aggregate-count / aggregate-sum wrappers are rejected — they
     ///   have their own paginated semantics.
     /// - No subqueries (`default_subquery_branch.subquery.is_none()` and
