@@ -9,7 +9,9 @@ use crate::version::{
         GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBQueryLimits,
         GroveDBReplicationVersions, GroveDBVersions,
     },
-    merk_versions::{MerkAverageCaseCostsVersions, MerkBatchVersions, MerkVersions},
+    merk_versions::{
+        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkVersions,
+    },
     GroveVersion,
 };
 
@@ -212,6 +214,11 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 1,
             sum_tree_estimated_size: 1,
+        },
+        proof: MerkProofVersions {
+            // Initial implementation; introduced alongside the V1
+            // proof envelope.
+            prove_count_offset_on_range: 0,
         },
     },
 };

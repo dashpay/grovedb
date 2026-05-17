@@ -205,6 +205,106 @@ impl SizedQuery {
         Ok(())
     }
 
+    /// Validates that this `SizedQuery` is a well-formed offset-paginated
+    /// range query against a `ProvableCountTree` / `ProvableCountSumTree`.
+    /// On success returns a reference to the single range `QueryItem`.
+    ///
+    /// Eligibility rules (all required):
+    ///
+    /// - `offset.is_some() && offset != Some(0)` — there must actually be
+    ///   an offset to honor. (Queries with offset = `None` / `Some(0)`
+    ///   take the regular proof path, which already handles them.)
+    /// - The underlying `Query` has exactly one item, and that item is a
+    ///   plain range (`Range`, `RangeInclusive`, `RangeFrom`, `RangeFull`,
+    ///   `RangeTo`, `RangeToInclusive`, or `RangeAfter*`). `QueryItem::Key`
+    ///   is explicitly rejected — it matches at most one element, so any
+    ///   offset > 0 is structurally guaranteed to return zero items.
+    ///   Aggregate-count / aggregate-sum wrappers are rejected — they
+    ///   have their own paginated semantics.
+    /// - No subqueries (`default_subquery_branch.subquery.is_none()` and
+    ///   `conditional_subquery_branches.is_empty()`). Pagination across
+    ///   subqueries is out of scope for the initial PR.
+    ///
+    /// The tree-type check (`ProvableCountTree` /
+    /// `ProvableCountSumTree`) happens later, at proof generation time,
+    /// because it requires opening the merk. This function is purely
+    /// syntactic.
+    pub fn validate_count_offset_paginated(&self) -> Result<&QueryItem, Error> {
+        // Must actually be paginated.
+        if !matches!(self.offset, Some(o) if o > 0) {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries must set SizedQuery::offset to a non-zero value",
+            ));
+        }
+        // Reject queries that already have aggregate wrappers — they
+        // have separate pagination semantics.
+        if self.query.has_aggregate_count_on_range_anywhere() {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries cannot wrap AggregateCountOnRange",
+            ));
+        }
+        if self.query.has_aggregate_sum_on_range_anywhere() {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries cannot wrap AggregateSumOnRange",
+            ));
+        }
+        // Reject subqueries. We support a single-range scan only.
+        if self.query.default_subquery_branch.subquery.is_some()
+            || self.query.default_subquery_branch.subquery_path.is_some()
+        {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries cannot have a default subquery branch",
+            ));
+        }
+        if let Some(branches) = self.query.conditional_subquery_branches.as_ref()
+            && !branches.is_empty()
+        {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries cannot have conditional subquery branches",
+            ));
+        }
+        // Must be exactly one range item.
+        if self.query.items.len() != 1 {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries must consist of exactly one range QueryItem",
+            ));
+        }
+        let item = &self.query.items[0];
+        // Range-shaped variants are fine. `QueryItem::Key(_)` is
+        // **rejected**: it matches at most one key, so an offset > 0
+        // is structurally guaranteed to return zero items — pagination
+        // semantics on a single-key match are nonsensical and almost
+        // always a user error (the caller probably meant a range).
+        // Returning an explicit `InvalidQuery` here is clearer than
+        // silently producing an empty result.
+        //
+        // Aggregate wrappers were rejected earlier; the explicit
+        // match-all-variants pattern below means adding a new
+        // `QueryItem` variant elsewhere produces a compile-time visit
+        // to this match.
+        match item {
+            QueryItem::Range(_)
+            | QueryItem::RangeInclusive(_)
+            | QueryItem::RangeFrom(_)
+            | QueryItem::RangeFull(_)
+            | QueryItem::RangeTo(_)
+            | QueryItem::RangeToInclusive(_)
+            | QueryItem::RangeAfter(_)
+            | QueryItem::RangeAfterTo(_)
+            | QueryItem::RangeAfterToInclusive(_) => Ok(item),
+            QueryItem::Key(_) => Err(Error::InvalidQuery(
+                "count-offset paginated queries do not support QueryItem::Key — a \
+                 single-key match has at most one in-range item, so offset > 0 is \
+                 guaranteed to return zero items. Use a range variant instead",
+            )),
+            QueryItem::AggregateCountOnRange(_) | QueryItem::AggregateSumOnRange(_) => {
+                Err(Error::InvalidQuery(
+                    "count-offset paginated queries cannot wrap an aggregate QueryItem",
+                ))
+            }
+        }
+    }
+
     /// Mirror of [`Self::validate_aggregate_count_on_range`] for
     /// `AggregateSumOnRange`. Forwards to
     /// [`Query::validate_aggregate_sum_on_range`] and additionally rejects
@@ -349,6 +449,38 @@ impl PathQuery {
     /// item, no subqueries).
     pub fn validate_leaf_aggregate_count_on_range(&self) -> Result<&QueryItem, Error> {
         self.query.validate_leaf_aggregate_count_on_range()
+    }
+
+    /// Validates that this `PathQuery` is an offset-paginated range query
+    /// against a `ProvableCountTree` / `ProvableCountSumTree`. Returns
+    /// the single range `QueryItem` on success.
+    ///
+    /// The tree-type check happens later when the leaf merk is opened.
+    /// This function is purely syntactic — it gates the *query shape*
+    /// (single range, no subqueries, offset > 0). Forwards to
+    /// [`SizedQuery::validate_count_offset_paginated`].
+    ///
+    /// Rejects empty paths up-front for the same reason as
+    /// [`Self::validate_aggregate_count_on_range`]: the GroveDB root
+    /// merk is always a `NormalTree`, never a count tree, so a
+    /// root-level offset-paginated query has no valid target.
+    pub fn validate_count_offset_paginated(&self) -> Result<&QueryItem, Error> {
+        if self.path.is_empty() {
+            return Err(Error::InvalidQuery(
+                "count-offset paginated queries may not target the root merk: \
+                 the GroveDB root is always a NormalTree, never a \
+                 ProvableCountTree / ProvableCountSumTree",
+            ));
+        }
+        self.query.validate_count_offset_paginated()
+    }
+
+    /// Returns `true` if this `PathQuery` has a non-zero offset set.
+    /// Used to detect "the caller wants pagination" before deciding
+    /// whether the query is eligible for the count-offset paginated
+    /// proof flow.
+    pub fn has_non_zero_offset(&self) -> bool {
+        matches!(self.query.offset, Some(o) if o > 0)
     }
 
     /// Returns `true` if this `PathQuery`'s underlying query carries an

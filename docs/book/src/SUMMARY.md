@@ -13,6 +13,7 @@
 - [Aggregate Sum Queries](aggregate-sum-queries.md)
 - [Aggregate Count Queries](aggregate-count-queries.md)
 - [Aggregate Sum on Range Queries](aggregate-sum-on-range-queries.md)
+- [Count-Offset Paginated Queries](count-offset-paginated-queries.md)
 - [The CountIndexedTree](count-indexed-tree.md)
 - [Batch Operations](batch-operations.md)
 - [Cost Tracking](cost-tracking.md)

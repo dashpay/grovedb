@@ -135,8 +135,13 @@ pub enum Element {
     /// contributes 0 to its parent count tree's aggregate count when inserted.
     /// Sums still propagate to parent sum trees.
     ///
-    /// May only be inserted into count-bearing trees (`CountTree`,
-    /// `ProvableCountTree`, `CountSumTree`, `ProvableCountSumTree`).
+    /// May only be inserted into the non-provable count-bearing trees
+    /// (`CountTree`, `CountSumTree`). `ProvableCountTree` and
+    /// `ProvableCountSumTree` bind their aggregate count into every node
+    /// hash via `node_hash_with_count`, so a `NonCounted` child would
+    /// commit a cryptographic count that diverges from the actual number
+    /// of stored elements; the insert path rejects the wrapper in those
+    /// parents.
     ///
     /// Invariant: a `NonCounted` may not wrap another `NonCounted`. Enforced
     /// at construction and at deserialization.
@@ -164,9 +169,14 @@ pub enum Element {
     /// hashing, and its own internal aggregates, but contributes 0 to
     /// BOTH its parent's running sum AND the parent's count when inserted.
     ///
-    /// May only be inserted into count-AND-sum-bearing trees (`CountSumTree`,
-    /// `ProvableCountSumTree`) — the only tree types where suppressing both
-    /// axes is meaningful. Any other parent rejects the wrapper at insert.
+    /// May only be inserted into `CountSumTree` — the only non-provable
+    /// count-AND-sum-bearing tree, where suppressing both axes is
+    /// meaningful and the parent count is NOT cryptographically committed.
+    /// `ProvableCountSumTree` is rejected for the same reason as in
+    /// `NonCounted`: its count is bound into every node hash, so a
+    /// suppressed-count child would commit a cryptographic count that
+    /// diverges from the actual element count. Any other parent likewise
+    /// rejects the wrapper at insert.
     ///
     /// For `SumTree` / `BigSumTree` / `ProvableSumTree` inners, this wrapper
     /// suppresses the implicit count-of-one a subtree would contribute to a

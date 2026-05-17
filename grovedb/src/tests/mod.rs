@@ -17,6 +17,7 @@ mod checkpoint_tests;
 mod chunk_branch_proof_tests;
 mod commitment_tree_tests;
 mod count_indexed_tree_tests;
+mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
 mod delete_cost_estimation_tests;

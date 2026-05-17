@@ -300,4 +300,181 @@ mod tests {
         .unwrap()
         .expect("insert into wrapped subtree must succeed");
     }
+
+    /// Helper: assert the error's debug rendering carries the
+    /// NonCounted parent-type guard wording. Used by the Provable*
+    /// rejection coverage below.
+    fn assert_is_non_counted_guard_error(err: &crate::Error) {
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("non-counted"),
+            "expected NonCounted parent-type guard error, got: {msg}"
+        );
+    }
+
+    /// `Element::NonCounted` is rejected as a child of `ProvableCountTree`
+    /// at insert time. The provable variant commits its aggregate count
+    /// into every node hash, so a NonCounted child would commit a
+    /// cryptographic count that disagrees with the actual number of
+    /// stored elements.
+    #[test]
+    fn direct_insert_rejects_non_counted_into_provable_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pct",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pct");
+
+        let nc = Element::new_non_counted(Element::new_item(b"x".to_vec())).expect("wrap ok");
+        let err = db
+            .insert(
+                [TEST_LEAF, b"pct"].as_ref(),
+                b"k",
+                nc,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect_err("direct insert into ProvableCountTree must fail");
+        assert_is_non_counted_guard_error(&err);
+    }
+
+    /// Same rejection via the batch path. Pinned separately because the
+    /// batch flow has its own validator (`grovedb/src/batch/mod.rs`)
+    /// rather than going through the per-merk insert guard, and we
+    /// want to assert both surfaces enforce the rule consistently.
+    #[test]
+    fn batch_insert_rejects_non_counted_into_provable_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pct",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pct");
+
+        let nc = Element::new_non_counted(Element::new_item(b"x".to_vec())).expect("wrap ok");
+        let op = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"pct".to_vec()],
+            b"k".to_vec(),
+            nc,
+        );
+
+        let err = db
+            .apply_batch(vec![op], None, None, grove_version)
+            .unwrap()
+            .expect_err("batch insert into ProvableCountTree must fail");
+        assert_is_non_counted_guard_error(&err);
+    }
+
+    /// Same rejection against a `ProvableCountSumTree` parent. Both
+    /// provable count variants commit the count into node hashes, so
+    /// both must reject the wrapper.
+    #[test]
+    fn direct_insert_rejects_non_counted_into_provable_count_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcst",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcst");
+
+        let nc = Element::new_non_counted(Element::new_sum_item(7)).expect("wrap ok");
+        let err = db
+            .insert(
+                [TEST_LEAF, b"pcst"].as_ref(),
+                b"k",
+                nc,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect_err("direct insert into ProvableCountSumTree must fail");
+        assert_is_non_counted_guard_error(&err);
+    }
+
+    #[test]
+    fn batch_insert_rejects_non_counted_into_provable_count_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcst",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert pcst");
+
+        let nc = Element::new_non_counted(Element::new_sum_item(7)).expect("wrap ok");
+        let op = QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec(), b"pcst".to_vec()],
+            b"k".to_vec(),
+            nc,
+        );
+
+        let err = db
+            .apply_batch(vec![op], None, None, grove_version)
+            .unwrap()
+            .expect_err("batch insert into ProvableCountSumTree must fail");
+        assert_is_non_counted_guard_error(&err);
+    }
+
+    /// `NonCounted` IS still accepted in `CountSumTree` (non-provable
+    /// count+sum parent). Pin this so a future tightening of the
+    /// wrapper rule (e.g., "only `CountTree`") shows up here.
+    #[test]
+    fn non_counted_still_accepted_in_count_sum_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cst",
+            Element::empty_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert cst");
+
+        let nc = Element::new_non_counted(Element::new_sum_item(11)).expect("wrap ok");
+        db.insert(
+            [TEST_LEAF, b"cst"].as_ref(),
+            b"k",
+            nc,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("NonCounted must still be accepted in CountSumTree");
+    }
 }
