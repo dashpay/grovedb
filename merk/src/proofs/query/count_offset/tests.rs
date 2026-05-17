@@ -138,6 +138,74 @@ fn round_trip_offset_5_limit_3_full_range_ascending() {
 }
 
 #[test]
+fn returned_items_carry_full_committed_payload() {
+    // The keys-only assertion in `round_trip_keys` would still pass
+    // even if the verifier silently rewrote `value`, `value_hash`, or
+    // `child_hash_verified`. Pin one happy-path case on the full
+    // `CountOffsetReturnedItem` shape so the prover/verifier contract
+    // for committed metadata can't regress unobserved.
+    //
+    // Fixture: keys 'a'..='o' each paired with a single-byte value =
+    // the key's alphabetical index. Stored as
+    // `ProvableCountedMerkNode(1)` (Item-flavored) → the merk node
+    // type is `KVCount`, which commits `value_hash = H(value_bytes)`
+    // (no `combine_hash` since these aren't tree entries). The
+    // count-offset prover never emits
+    // `KVValueHashFeatureTypeWithChildHash`, so
+    // `child_hash_verified` must be `false`.
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_key_provable_count_tree(v);
+    let result = merk
+        .prove_count_offset_on_range(
+            &QueryItem::RangeFull(std::ops::RangeFull),
+            5,
+            Some(3),
+            true,
+            v,
+        )
+        .unwrap()
+        .expect("prove should succeed");
+    let bytes = encode_proof(&result.ops);
+    let verified = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        5,
+        Some(3),
+        true,
+    )
+    .unwrap()
+    .expect("verify should succeed");
+    assert_eq!(verified.root_hash, root, "root hash mismatch");
+    assert_eq!(verified.skipped, 5, "skipped count mismatch");
+    assert_eq!(verified.returned_items.len(), 3, "expected 3 items");
+
+    // Build the expected full row for "f" — alphabetical index 5 → value bytes [5].
+    let expected_f = crate::proofs::query::count_offset::CountOffsetReturnedItem {
+        key: b"f".to_vec(),
+        value: vec![5u8],
+        value_hash: crate::tree::value_hash(&[5u8]).unwrap(),
+        child_hash_verified: false,
+    };
+    assert_eq!(
+        verified.returned_items[0], expected_f,
+        "full payload for first returned item must match committed bytes / value_hash / \
+         child_hash_verified"
+    );
+    // Sanity-check that the remaining two rows also expose Item-flavored
+    // value_hash (no `combine_hash`) and child_hash_verified = false —
+    // i.e. the full-payload contract isn't a one-off.
+    for (i, expected_idx) in [(1usize, 6u8), (2usize, 7u8)].into_iter() {
+        let item = &verified.returned_items[i];
+        assert_eq!(item.value, vec![expected_idx]);
+        assert_eq!(
+            item.value_hash,
+            crate::tree::value_hash(&[expected_idx]).unwrap()
+        );
+        assert!(!item.child_hash_verified);
+    }
+}
+
+#[test]
 fn round_trip_offset_5_limit_3_full_range_descending() {
     // 15 keys, descending: offset 5 → skip o,n,m,l,k, limit 3 → return j, i, h.
     let v = GroveVersion::latest();

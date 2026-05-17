@@ -205,11 +205,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("no offset must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("non-zero value"),
-            "error should mention non-zero offset; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("non-zero value")),
+            "error should be InvalidQuery mentioning non-zero offset; got {:?}",
+            err
         );
     }
 
@@ -221,11 +220,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("offset = 0 must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("non-zero value"),
-            "error should mention non-zero offset; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("non-zero value")),
+            "error should be InvalidQuery mentioning non-zero offset; got {:?}",
+            err
         );
     }
 
@@ -242,11 +240,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("aggregate count wrapper must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("AggregateCountOnRange"),
-            "error should mention AggregateCountOnRange; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("AggregateCountOnRange")),
+            "error should be InvalidQuery mentioning AggregateCountOnRange; got {:?}",
+            err
         );
     }
 
@@ -260,11 +257,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("aggregate sum wrapper must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("AggregateSumOnRange"),
-            "error should mention AggregateSumOnRange; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("AggregateSumOnRange")),
+            "error should be InvalidQuery mentioning AggregateSumOnRange; got {:?}",
+            err
         );
     }
 
@@ -277,11 +273,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("default subquery must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("default subquery branch"),
-            "error should mention default subquery branch; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("default subquery branch")),
+            "error should be InvalidQuery mentioning default subquery branch; got {:?}",
+            err
         );
     }
 
@@ -294,11 +289,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("default subquery_path must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("default subquery branch"),
-            "error should mention default subquery branch; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("default subquery branch")),
+            "error should be InvalidQuery mentioning default subquery branch; got {:?}",
+            err
         );
     }
 
@@ -311,11 +305,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("multi-item query must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("exactly one range QueryItem"),
-            "error should mention single-item requirement; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("exactly one range QueryItem")),
+            "error should be InvalidQuery mentioning single-item requirement; got {:?}",
+            err
         );
     }
 
@@ -360,11 +353,10 @@ mod tests {
         let err = sized
             .validate_count_offset_paginated()
             .expect_err("single-key + offset must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("QueryItem::Key"),
-            "error should mention the rejected variant; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("QueryItem::Key")),
+            "error should be InvalidQuery mentioning the rejected variant; got {:?}",
+            err
         );
     }
 
@@ -379,11 +371,10 @@ mod tests {
         let err = pq
             .validate_count_offset_paginated()
             .expect_err("empty path must reject");
-        let msg = format!("{:?}", err);
         assert!(
-            msg.contains("root merk"),
-            "error should mention root merk; got {}",
-            msg
+            matches!(err, crate::Error::InvalidQuery(msg) if msg.contains("root merk")),
+            "error should be InvalidQuery mentioning root merk; got {:?}",
+            err
         );
     }
 
