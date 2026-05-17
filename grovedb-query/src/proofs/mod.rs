@@ -555,4 +555,220 @@ mod tests {
             display
         );
     }
+
+    // Display tests for the ProvableCountProvableSumTree dual-axis proof
+    // nodes. Each variant has its own Display arm; testing them
+    // individually keeps any future drift from being masked by a
+    // wildcard match.
+
+    #[test]
+    fn display_kv_count_sum() {
+        let node = Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 3, -7);
+        let display = node.to_string();
+        assert!(display.starts_with("KVCountSum("), "got: {}", display);
+        assert!(
+            display.contains("count=3"),
+            "expected count=3: {}",
+            display
+        );
+        assert!(display.contains("sum=-7"), "expected sum=-7: {}", display);
+    }
+
+    #[test]
+    fn display_kv_hash_count_sum() {
+        let node = Node::KVHashCountSum([0xAB; HASH_LENGTH], 5, 100);
+        let display = node.to_string();
+        assert!(display.starts_with("KVHashCountSum("), "got: {}", display);
+        assert!(display.contains("count=5"), "expected count: {}", display);
+        assert!(
+            display.contains("sum=100"),
+            "expected sum=100: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn display_kv_ref_value_hash_count_sum() {
+        let node = Node::KVRefValueHashCountSum(
+            b"k".to_vec(),
+            b"v".to_vec(),
+            [0xCD; HASH_LENGTH],
+            u64::MAX,
+            i64::MIN,
+        );
+        let display = node.to_string();
+        assert!(
+            display.starts_with("KVRefValueHashCountSum("),
+            "got: {}",
+            display
+        );
+        assert!(
+            display.contains(&u64::MAX.to_string()),
+            "expected u64::MAX: {}",
+            display
+        );
+        assert!(
+            display.contains(&i64::MIN.to_string()),
+            "expected i64::MIN: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn display_kv_digest_count_sum() {
+        let node = Node::KVDigestCountSum(b"k".to_vec(), [0xEF; HASH_LENGTH], 7, i64::MAX);
+        let display = node.to_string();
+        assert!(
+            display.starts_with("KVDigestCountSum("),
+            "got: {}",
+            display
+        );
+        assert!(display.contains("count=7"), "expected count=7: {}", display);
+        assert!(
+            display.contains(&i64::MAX.to_string()),
+            "expected i64::MAX: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn display_hash_with_count_and_sum() {
+        let node = Node::HashWithCountAndSum(
+            [0x11; HASH_LENGTH],
+            [0x22; HASH_LENGTH],
+            [0x33; HASH_LENGTH],
+            42,
+            -100,
+        );
+        let display = node.to_string();
+        assert!(
+            display.starts_with("HashWithCountAndSum("),
+            "got: {}",
+            display
+        );
+        assert!(
+            display.contains("count=42"),
+            "expected count=42: {}",
+            display
+        );
+        assert!(
+            display.contains("sum=-100"),
+            "expected sum=-100: {}",
+            display
+        );
+        assert!(
+            display.contains(&hex::encode([0x11; HASH_LENGTH])),
+            "expected kv_hash hex: {}",
+            display
+        );
+    }
+
+    // Encoding round-trip tests for the dual-axis Node variants. These
+    // exercise the Push + PushInverted Encode arms (tag bytes 0x40..=0x4D)
+    // and the matching Decode arms; without these tests the encoding.rs
+    // additions show up as ~263 uncovered lines.
+
+    fn round_trip_push(node: Node) {
+        use ed::{Decode, Encode};
+        let op = Op::Push(node.clone());
+        let mut buf = Vec::new();
+        op.encode_into(&mut buf).expect("encode push");
+        let decoded = Op::decode(&buf[..]).expect("decode push");
+        match decoded {
+            Op::Push(n) => assert_eq!(n, node, "Push round trip"),
+            other => panic!("expected Push, got {:?}", other),
+        }
+        // PushInverted round trip uses a different tag byte; verify it too.
+        let op_inv = Op::PushInverted(node.clone());
+        let mut buf_inv = Vec::new();
+        op_inv.encode_into(&mut buf_inv).expect("encode pushinv");
+        let decoded_inv = Op::decode(&buf_inv[..]).expect("decode pushinv");
+        match decoded_inv {
+            Op::PushInverted(n) => assert_eq!(n, node, "PushInverted round trip"),
+            other => panic!("expected PushInverted, got {:?}", other),
+        }
+        // Tag bytes must differ between Push and PushInverted.
+        assert_ne!(
+            buf[0], buf_inv[0],
+            "Push and PushInverted must use distinct tag bytes for this Node variant"
+        );
+    }
+
+    #[test]
+    fn round_trip_kv_count_sum_small_value() {
+        round_trip_push(Node::KVCountSum(b"k".to_vec(), b"value".to_vec(), 3, -7));
+    }
+
+    #[test]
+    fn round_trip_kv_count_sum_large_value() {
+        // value.len() >= 65536 triggers the alternate large-value tag byte
+        // (0x41 / 0x48 for Push / PushInverted respectively).
+        let large_value = vec![0xAA; 70_000];
+        round_trip_push(Node::KVCountSum(
+            b"k".to_vec(),
+            large_value,
+            u64::MAX,
+            i64::MAX,
+        ));
+    }
+
+    #[test]
+    fn round_trip_kv_hash_count_sum() {
+        round_trip_push(Node::KVHashCountSum([0xAB; HASH_LENGTH], 42, 100));
+    }
+
+    #[test]
+    fn round_trip_kv_ref_value_hash_count_sum_small_value() {
+        round_trip_push(Node::KVRefValueHashCountSum(
+            b"k".to_vec(),
+            b"v".to_vec(),
+            [0xCD; HASH_LENGTH],
+            7,
+            -3,
+        ));
+    }
+
+    #[test]
+    fn round_trip_kv_ref_value_hash_count_sum_large_value() {
+        let large_value = vec![0xBB; 70_000];
+        round_trip_push(Node::KVRefValueHashCountSum(
+            b"k".to_vec(),
+            large_value,
+            [0xCD; HASH_LENGTH],
+            0,
+            i64::MIN,
+        ));
+    }
+
+    #[test]
+    fn round_trip_kv_digest_count_sum() {
+        round_trip_push(Node::KVDigestCountSum(
+            b"k".to_vec(),
+            [0xEF; HASH_LENGTH],
+            u64::MAX,
+            i64::MIN,
+        ));
+    }
+
+    #[test]
+    fn round_trip_hash_with_count_and_sum_extremes() {
+        // Cover several extreme value combinations so the varint encoding
+        // for both axes is exercised for u64 and i64 boundary cases.
+        for &(count, sum) in &[
+            (0u64, 0i64),
+            (1, 1),
+            (1, -1),
+            (u64::MAX, i64::MAX),
+            (u64::MAX, i64::MIN),
+            (42, -100),
+        ] {
+            round_trip_push(Node::HashWithCountAndSum(
+                [0x11; HASH_LENGTH],
+                [0x22; HASH_LENGTH],
+                [0x33; HASH_LENGTH],
+                count,
+                sum,
+            ));
+        }
+    }
 }

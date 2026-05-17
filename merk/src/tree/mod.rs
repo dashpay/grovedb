@@ -1907,4 +1907,24 @@ mod test {
 
         let _ = tree.hash_for_link(TreeType::ProvableCountSumTree);
     }
+
+    /// Mirror for `ProvableCountProvableSumTree`: a non-dual-axis
+    /// feature_type must abort the hash dispatch rather than silently
+    /// produce a stripped hash. Without this gate, a corrupted on-disk
+    /// record routing a `BasicMerkNode` through the PCPS dispatch arm
+    /// would fall through to `self.hash()` and produce a hash that omits
+    /// BOTH the count AND sum commitment — confusing root mismatch with
+    /// no indication of the underlying invariant break.
+    #[test]
+    #[should_panic(expected = "ProvableCountProvableSumTree::hash_for_link")]
+    fn provable_count_provable_sum_tree_hash_for_link_panics_on_feature_type_mismatch() {
+        use crate::TreeType;
+
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        let _ = tree.hash_for_link(TreeType::ProvableCountProvableSumTree);
+    }
 }

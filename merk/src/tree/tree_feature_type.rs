@@ -283,5 +283,42 @@ mod tests {
             AggregateData::from(TreeFeatureType::ProvableSummedMerkNode(-1)),
             AggregateData::ProvableSum(-1)
         );
+        // ProvableCountedAndProvableSummedMerkNode maps to the dual-axis
+        // ProvableCountAndProvableSum variant — distinct from
+        // ProvableCountAndSum (which uses the count-only hash dispatch).
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(7, -42)),
+            AggregateData::ProvableCountAndProvableSum(7, -42)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                u64::MAX,
+                i64::MIN
+            )),
+            AggregateData::ProvableCountAndProvableSum(u64::MAX, i64::MIN)
+        );
+    }
+
+    /// AggregateData::ProvableCountAndProvableSum coverage for the three
+    /// helper accessors and parent_tree_type. Sibling to the existing
+    /// per-variant tests; without these the new arm shows as uncovered.
+    #[test]
+    fn aggregate_data_provable_count_and_provable_sum_helpers() {
+        let agg = AggregateData::ProvableCountAndProvableSum(7, -42);
+        assert_eq!(agg.parent_tree_type(), TreeType::ProvableCountProvableSumTree);
+        assert_eq!(agg.as_sum_i64(), -42);
+        assert_eq!(agg.as_count_u64(), 7);
+        assert_eq!(agg.as_summed_i128(), -42);
+
+        // Extremes — both axes go through the boundary.
+        let agg_max = AggregateData::ProvableCountAndProvableSum(u64::MAX, i64::MAX);
+        assert_eq!(agg_max.as_sum_i64(), i64::MAX);
+        assert_eq!(agg_max.as_count_u64(), u64::MAX);
+        assert_eq!(agg_max.as_summed_i128(), i64::MAX as i128);
+
+        let agg_min = AggregateData::ProvableCountAndProvableSum(0, i64::MIN);
+        assert_eq!(agg_min.as_sum_i64(), i64::MIN);
+        assert_eq!(agg_min.as_count_u64(), 0);
+        assert_eq!(agg_min.as_summed_i128(), i64::MIN as i128);
     }
 }

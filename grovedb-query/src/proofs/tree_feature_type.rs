@@ -504,4 +504,98 @@ mod tests {
             NodeType::ProvableSumNode
         );
     }
+
+    /// `ProvableCountedAndProvableSummedMerkNode` round-trips through
+    /// `Encode`/`Decode` with tag byte 8 followed by two varints
+    /// (u64 count + i64 sum), mirroring `ProvableCountedSummedMerkNode`'s
+    /// wire layout. Covers the count/sum extremes.
+    #[test]
+    fn provable_counted_and_provable_summed_round_trip() {
+        for &(count, sum) in &[
+            (0u64, 0i64),
+            (1, 1),
+            (1, -1),
+            (42, -42),
+            (u64::MAX, i64::MAX),
+            (u64::MAX, i64::MIN),
+            (7, 0),
+            (0, -7),
+        ] {
+            let original = ProvableCountedAndProvableSummedMerkNode(count, sum);
+            let mut buf = Vec::new();
+            original.encode_into(&mut buf).expect("encode");
+            assert_eq!(buf[0], 8, "tag byte for the dual-axis feature type");
+            assert_eq!(
+                buf.len(),
+                original.encoding_length().expect("encoding_length"),
+                "encoding_length must match the actual byte count"
+            );
+            let back = TreeFeatureType::decode(&buf[..]).expect("decode");
+            assert_eq!(back, original);
+        }
+    }
+
+    /// The new `ProvableCountProvableSumNode` mirrors `CountSumNode`'s
+    /// feature length / cost for accounting consistency. The variant tag
+    /// flows through `node_type()`.
+    #[test]
+    fn provable_count_provable_sum_node_matches_count_sum_layout() {
+        assert_eq!(
+            NodeType::ProvableCountProvableSumNode.feature_len(),
+            NodeType::CountSumNode.feature_len()
+        );
+        assert_eq!(
+            NodeType::ProvableCountProvableSumNode.cost(),
+            NodeType::CountSumNode.cost()
+        );
+        assert_eq!(
+            ProvableCountedAndProvableSummedMerkNode(0, 0).node_type(),
+            NodeType::ProvableCountProvableSumNode
+        );
+    }
+
+    /// `count()` returns the count for the dual-axis variant and `None`
+    /// for pure-sum variants. Complements the existing
+    /// `count_helper_returns_some_only_for_count_bearing` test by
+    /// covering the new variant.
+    #[test]
+    fn count_helper_pulls_count_from_dual_axis_variant() {
+        assert_eq!(
+            ProvableCountedAndProvableSummedMerkNode(7, -42).count(),
+            Some(7)
+        );
+        assert_eq!(
+            ProvableCountedAndProvableSummedMerkNode(0, i64::MAX).count(),
+            Some(0)
+        );
+        assert_eq!(
+            ProvableCountedAndProvableSummedMerkNode(u64::MAX, 0).count(),
+            Some(u64::MAX)
+        );
+    }
+
+    /// `zero_count` zeroes the count component on the dual-axis variant
+    /// and leaves the sum untouched. Symmetric: `zero_sum` zeroes the
+    /// sum and leaves the count untouched.
+    #[test]
+    fn zero_count_and_zero_sum_only_zero_their_axis_for_dual_axis() {
+        let mut n = ProvableCountedAndProvableSummedMerkNode(7, -42);
+        n.zero_count();
+        assert_eq!(n, ProvableCountedAndProvableSummedMerkNode(0, -42));
+
+        let mut n = ProvableCountedAndProvableSummedMerkNode(7, -42);
+        n.zero_sum();
+        assert_eq!(n, ProvableCountedAndProvableSummedMerkNode(7, 0));
+    }
+
+    /// Decoder rejects an unknown leading tag byte. Tag byte 9 is the
+    /// next unallocated slot above 8 (`ProvableCountedAndProvableSummed`),
+    /// so it exercises the byte-mismatch path without colliding with any
+    /// existing variant.
+    #[test]
+    fn decode_rejects_tag_byte_9() {
+        let buf = vec![9u8, 0];
+        let res = TreeFeatureType::decode(&buf[..]);
+        assert!(res.is_err(), "decode must reject unknown tag byte");
+    }
 }

@@ -1601,4 +1601,162 @@ mod test {
             Node::HashWithSum([0; HASH_LENGTH], [0; HASH_LENGTH], [0; HASH_LENGTH], 0).into();
         assert_eq!(hash_with_sum.key(), None);
     }
+
+    // ProvableCountProvableSumTree dual-axis Node hash reconstruction
+    // tests. Each variant must hash via `node_hash_with_count_and_sum`
+    // (which binds BOTH count and sum), and tampering with either axis
+    // must change the resulting node hash. These mirror the sum-side
+    // tests above.
+
+    /// `Node::KVCountSum` hash reconstruction binds the count.
+    #[test]
+    fn kvcountsum_forged_count_changes_root_hash() {
+        let honest: ProofTree = Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 3, 100).into();
+        let forged: ProofTree = Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 4, 100).into();
+        assert_ne!(
+            honest.hash().unwrap(),
+            forged.hash().unwrap(),
+            "tampering with count on KVCountSum must change the hash"
+        );
+    }
+
+    /// `Node::KVCountSum` hash reconstruction binds the sum.
+    #[test]
+    fn kvcountsum_forged_sum_changes_root_hash() {
+        let honest: ProofTree = Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 3, 100).into();
+        let forged: ProofTree = Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 3, 101).into();
+        assert_ne!(
+            honest.hash().unwrap(),
+            forged.hash().unwrap(),
+            "tampering with sum on KVCountSum must change the hash"
+        );
+    }
+
+    /// `Node::KVDigestCountSum` hash reconstruction is bound to both axes.
+    #[test]
+    fn kvdigestcountsum_forged_axes_change_root_hash() {
+        use crate::tree::HASH_LENGTH;
+        let key = b"k".to_vec();
+        let value_hash = [0x77; HASH_LENGTH];
+        let honest: ProofTree = Node::KVDigestCountSum(key.clone(), value_hash, 5, 42).into();
+        let forged_count: ProofTree =
+            Node::KVDigestCountSum(key.clone(), value_hash, 6, 42).into();
+        let forged_sum: ProofTree = Node::KVDigestCountSum(key, value_hash, 5, 43).into();
+        assert_ne!(honest.hash().unwrap(), forged_count.hash().unwrap());
+        assert_ne!(honest.hash().unwrap(), forged_sum.hash().unwrap());
+    }
+
+    /// `Node::KVHashCountSum` (non-queried path) hash is dual-axis bound.
+    #[test]
+    fn kvhashcountsum_forged_axes_change_root_hash() {
+        use crate::tree::HASH_LENGTH;
+        let kv_hash = [0xAA; HASH_LENGTH];
+        let honest: ProofTree = Node::KVHashCountSum(kv_hash, 10, 50).into();
+        let forged_count: ProofTree = Node::KVHashCountSum(kv_hash, 11, 50).into();
+        let forged_sum: ProofTree = Node::KVHashCountSum(kv_hash, 10, 51).into();
+        assert_ne!(honest.hash().unwrap(), forged_count.hash().unwrap());
+        assert_ne!(honest.hash().unwrap(), forged_sum.hash().unwrap());
+    }
+
+    /// `Node::KVRefValueHashCountSum` exercises the combined-hash path
+    /// (combine + kv_digest_to_kv_hash + node_hash_with_count_and_sum)
+    /// and is bound on both axes.
+    #[test]
+    fn kvrefvaluehashcountsum_forged_axes_change_root_hash() {
+        use crate::tree::HASH_LENGTH;
+        let key = b"k".to_vec();
+        let value = b"v".to_vec();
+        let node_value_hash = [0x33; HASH_LENGTH];
+        let honest: ProofTree =
+            Node::KVRefValueHashCountSum(key.clone(), value.clone(), node_value_hash, 7, -3)
+                .into();
+        let forged_count: ProofTree =
+            Node::KVRefValueHashCountSum(key.clone(), value.clone(), node_value_hash, 8, -3)
+                .into();
+        let forged_sum: ProofTree =
+            Node::KVRefValueHashCountSum(key, value, node_value_hash, 7, -4).into();
+        assert_ne!(honest.hash().unwrap(), forged_count.hash().unwrap());
+        assert_ne!(honest.hash().unwrap(), forged_sum.hash().unwrap());
+    }
+
+    /// `Node::HashWithCountAndSum` collapsed-subtree variant: forging
+    /// either axis changes the recomputed node hash, so the parent's
+    /// Merkle-root check would diverge.
+    #[test]
+    fn hashwithcountandsum_forged_axes_change_root_hash() {
+        use crate::tree::HASH_LENGTH;
+        let kv = [0x11; HASH_LENGTH];
+        let l = [0x22; HASH_LENGTH];
+        let r = [0x33; HASH_LENGTH];
+        let honest: ProofTree = Node::HashWithCountAndSum(kv, l, r, 100, 200).into();
+        let forged_count: ProofTree = Node::HashWithCountAndSum(kv, l, r, 101, 200).into();
+        let forged_sum: ProofTree = Node::HashWithCountAndSum(kv, l, r, 100, 201).into();
+        assert_ne!(honest.hash().unwrap(), forged_count.hash().unwrap());
+        assert_ne!(honest.hash().unwrap(), forged_sum.hash().unwrap());
+    }
+
+    /// `aggregate_data()` on a dual-axis proof node must surface
+    /// `AggregateData::ProvableCountAndProvableSum(_, _)` for both
+    /// `Node::KVCountSum` and `Node::HashWithCountAndSum`.
+    #[test]
+    fn aggregate_data_returns_provable_count_and_provable_sum_for_dual_axis_nodes() {
+        use crate::tree::{AggregateData, HASH_LENGTH};
+
+        let kv_cs: ProofTree = Node::KVCountSum(b"k".to_vec(), b"v".to_vec(), 7, -42).into();
+        match kv_cs.aggregate_data().expect("aggregate_data ok") {
+            AggregateData::ProvableCountAndProvableSum(c, s) => {
+                assert_eq!(c, 7);
+                assert_eq!(s, -42);
+            }
+            other => panic!("expected ProvableCountAndProvableSum, got {:?}", other),
+        }
+
+        let hwcs: ProofTree = Node::HashWithCountAndSum(
+            [0; HASH_LENGTH],
+            [0; HASH_LENGTH],
+            [0; HASH_LENGTH],
+            u64::MAX,
+            i64::MIN,
+        )
+        .into();
+        match hwcs.aggregate_data().expect("aggregate_data ok") {
+            AggregateData::ProvableCountAndProvableSum(c, s) => {
+                assert_eq!(c, u64::MAX);
+                assert_eq!(s, i64::MIN);
+            }
+            other => panic!("expected ProvableCountAndProvableSum, got {:?}", other),
+        }
+    }
+
+    /// `Tree::key()` must return the key for the three keyed dual-axis
+    /// variants and `None` for the keyless ones, mirroring
+    /// `key_returns_correct_key_for_sum_nodes`.
+    #[test]
+    fn key_returns_correct_key_for_dual_axis_nodes() {
+        use crate::tree::HASH_LENGTH;
+
+        let kv_cs: ProofTree = Node::KVCountSum(b"a".to_vec(), vec![1], 0, 0).into();
+        assert_eq!(kv_cs.key(), Some(b"a".as_slice()));
+
+        let kv_digest: ProofTree =
+            Node::KVDigestCountSum(b"b".to_vec(), [0; HASH_LENGTH], 0, 0).into();
+        assert_eq!(kv_digest.key(), Some(b"b".as_slice()));
+
+        let kv_ref: ProofTree =
+            Node::KVRefValueHashCountSum(b"c".to_vec(), vec![1], [0; HASH_LENGTH], 0, 0).into();
+        assert_eq!(kv_ref.key(), Some(b"c".as_slice()));
+
+        let kv_hash: ProofTree = Node::KVHashCountSum([0; HASH_LENGTH], 0, 0).into();
+        assert_eq!(kv_hash.key(), None);
+
+        let hash_w: ProofTree = Node::HashWithCountAndSum(
+            [0; HASH_LENGTH],
+            [0; HASH_LENGTH],
+            [0; HASH_LENGTH],
+            0,
+            0,
+        )
+        .into();
+        assert_eq!(hash_w.key(), None);
+    }
 }

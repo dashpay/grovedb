@@ -301,6 +301,7 @@ mod tests {
             TreeType::BulkAppendTree(3),
             TreeType::DenseAppendOnlyFixedSizeTree(8),
             TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
         ];
         for v in &variants {
             let d = v.discriminant();
@@ -345,6 +346,10 @@ mod tests {
             format!("{}", TreeType::ProvableSumTree),
             "Provable Sum Tree"
         );
+        assert_eq!(
+            format!("{}", TreeType::ProvableCountProvableSumTree),
+            "Provable Count Provable Sum Tree"
+        );
     }
 
     #[test]
@@ -361,6 +366,7 @@ mod tests {
         assert!(TreeType::BulkAppendTree(0).uses_non_merk_data_storage());
         assert!(TreeType::DenseAppendOnlyFixedSizeTree(0).uses_non_merk_data_storage());
         assert!(!TreeType::ProvableSumTree.uses_non_merk_data_storage());
+        assert!(!TreeType::ProvableCountProvableSumTree.uses_non_merk_data_storage());
     }
 
     #[test]
@@ -378,6 +384,8 @@ mod tests {
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_count_bearing());
         // ProvableSumTree carries a sum aggregate, not a count.
         assert!(!TreeType::ProvableSumTree.is_count_bearing());
+        // ProvableCountProvableSumTree carries BOTH a count AND a sum.
+        assert!(TreeType::ProvableCountProvableSumTree.is_count_bearing());
     }
 
     #[test]
@@ -394,6 +402,7 @@ mod tests {
         assert!(!TreeType::BulkAppendTree(0).is_sum_bearing());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_sum_bearing());
         assert!(TreeType::ProvableSumTree.is_sum_bearing());
+        assert!(TreeType::ProvableCountProvableSumTree.is_sum_bearing());
     }
 
     #[test]
@@ -409,6 +418,11 @@ mod tests {
         assert!(!TreeType::MmrTree.is_count_and_sum_bearing());
         assert!(!TreeType::BulkAppendTree(0).is_count_and_sum_bearing());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).is_count_and_sum_bearing());
+        assert!(!TreeType::ProvableSumTree.is_count_and_sum_bearing());
+        // ProvableCountProvableSumTree is the dual-axis variant: both
+        // count and sum aggregates are carried, and NotCountedOrSummed
+        // children are accepted.
+        assert!(TreeType::ProvableCountProvableSumTree.is_count_and_sum_bearing());
 
         // Equivalence: is_count_and_sum_bearing iff both is_count_bearing
         // and is_sum_bearing.
@@ -420,6 +434,8 @@ mod tests {
             TreeType::CountSumTree,
             TreeType::ProvableCountTree,
             TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
             TreeType::CommitmentTree(0),
             TreeType::MmrTree,
             TreeType::BulkAppendTree(0),
@@ -448,6 +464,7 @@ mod tests {
         assert!(!TreeType::BulkAppendTree(0).allows_sum_item());
         assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).allows_sum_item());
         assert!(TreeType::ProvableSumTree.allows_sum_item());
+        assert!(TreeType::ProvableCountProvableSumTree.allows_sum_item());
     }
 
     #[test]
@@ -500,6 +517,10 @@ mod tests {
             TreeType::ProvableSumTree.empty_tree_feature_type(),
             TreeFeatureType::ProvableSummedMerkNode(0)
         );
+        assert_eq!(
+            TreeType::ProvableCountProvableSumTree.empty_tree_feature_type(),
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0)
+        );
     }
 
     #[test]
@@ -551,6 +572,10 @@ mod tests {
         assert_eq!(
             TreeType::ProvableSumTree.to_element_type(),
             Some(ElementType::ProvableSumTree)
+        );
+        assert_eq!(
+            TreeType::ProvableCountProvableSumTree.to_element_type(),
+            Some(ElementType::ProvableCountProvableSumTree)
         );
     }
 }
