@@ -231,19 +231,21 @@ impl GroveDb {
             Err(_e) => {
                 return Err(Error::InvalidQuery(
                     "count-offset paginated queries are only valid against \
-                     ProvableCountTree / ProvableCountSumTree merks; the target path \
-                     could not be resolved to an eligible merk",
+                     ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree \
+                     merks; the target path could not be resolved to an eligible merk",
                 ))
                 .wrap_with_cost(cost);
             }
         };
         if !matches!(
             target.tree_type,
-            MerkTreeType::ProvableCountTree | MerkTreeType::ProvableCountSumTree
+            MerkTreeType::ProvableCountTree
+                | MerkTreeType::ProvableCountSumTree
+                | MerkTreeType::ProvableCountProvableSumTree
         ) {
             return Err(Error::InvalidQuery(
                 "count-offset paginated queries are only valid against \
-                 ProvableCountTree / ProvableCountSumTree merks",
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree merks",
             ))
             .wrap_with_cost(cost);
         }
@@ -1414,11 +1416,14 @@ impl GroveDb {
             );
             if !matches!(
                 subtree.tree_type,
-                MerkTreeType::ProvableCountTree | MerkTreeType::ProvableCountSumTree
+                MerkTreeType::ProvableCountTree
+                    | MerkTreeType::ProvableCountSumTree
+                    | MerkTreeType::ProvableCountProvableSumTree
             ) {
                 return Err(Error::InvalidQuery(
                     "count-offset paginated queries are only valid against \
-                     ProvableCountTree / ProvableCountSumTree merks",
+                     ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree \
+                     merks",
                 ))
                 .wrap_with_cost(cost);
             }

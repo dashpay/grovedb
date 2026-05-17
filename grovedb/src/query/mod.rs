@@ -206,8 +206,9 @@ impl SizedQuery {
     }
 
     /// Validates that this `SizedQuery` is a well-formed offset-paginated
-    /// range query against a `ProvableCountTree` / `ProvableCountSumTree`.
-    /// On success returns a reference to the single range `QueryItem`.
+    /// range query against a `ProvableCountTree` / `ProvableCountSumTree` /
+    /// `ProvableCountProvableSumTree`. On success returns a reference
+    /// to the single range `QueryItem`.
     ///
     /// Eligibility rules (all required):
     ///
@@ -225,10 +226,10 @@ impl SizedQuery {
     ///   `conditional_subquery_branches.is_empty()`). Pagination across
     ///   subqueries is out of scope for the initial PR.
     ///
-    /// The tree-type check (`ProvableCountTree` /
-    /// `ProvableCountSumTree`) happens later, at proof generation time,
-    /// because it requires opening the merk. This function is purely
-    /// syntactic.
+    /// The tree-type check (`ProvableCountTree` / `ProvableCountSumTree` /
+    /// `ProvableCountProvableSumTree`) happens later, at proof generation
+    /// time, because it requires opening the merk. This function is
+    /// purely syntactic.
     pub fn validate_count_offset_paginated(&self) -> Result<&QueryItem, Error> {
         // Must actually be paginated.
         if !matches!(self.offset, Some(o) if o > 0) {
@@ -452,8 +453,9 @@ impl PathQuery {
     }
 
     /// Validates that this `PathQuery` is an offset-paginated range query
-    /// against a `ProvableCountTree` / `ProvableCountSumTree`. Returns
-    /// the single range `QueryItem` on success.
+    /// against a `ProvableCountTree` / `ProvableCountSumTree` /
+    /// `ProvableCountProvableSumTree`. Returns the single range
+    /// `QueryItem` on success.
     ///
     /// The tree-type check happens later when the leaf merk is opened.
     /// This function is purely syntactic — it gates the *query shape*
@@ -469,7 +471,7 @@ impl PathQuery {
             return Err(Error::InvalidQuery(
                 "count-offset paginated queries may not target the root merk: \
                  the GroveDB root is always a NormalTree, never a \
-                 ProvableCountTree / ProvableCountSumTree",
+                 ProvableCountTree / ProvableCountSumTree / ProvableCountProvableSumTree",
             ));
         }
         self.query.validate_count_offset_paginated()

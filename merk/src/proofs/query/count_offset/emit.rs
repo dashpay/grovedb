@@ -46,7 +46,9 @@ use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_element::{Element, ElementType, ProofNodeType};
 use grovedb_version::version::GroveVersion;
 
-use super::provable_count_from_aggregate;
+use super::{
+    binds_sum_into_hash, provable_count_from_aggregate, provable_sum_from_dual_axis_aggregate,
+};
 use crate::{
     proofs::{
         query::{
@@ -55,8 +57,8 @@ use crate::{
         },
         Node, Op,
     },
-    tree::{kv::ValueDefinedCostType, Fetch, RefWalker},
-    CryptoHash, Error,
+    tree::{kv::ValueDefinedCostType, AggregateData, Fetch, RefWalker},
+    CryptoHash, Error, TreeType,
 };
 
 /// Mutable state threaded through the recursion. Wrapped in a struct so
@@ -97,6 +99,7 @@ pub(super) fn emit_count_offset_proof<S>(
     subtree_hi_excl: Option<&[u8]>,
     state: &mut EmitState,
     ops: &mut LinkedList<Op>,
+    tree_type: TreeType,
     grove_version: &GroveVersion,
 ) -> CostResult<u64, Error>
 where
@@ -145,9 +148,14 @@ where
     };
 
     if let Some(action) = collapse_action {
-        // Emit one HashWithCount for the entire subtree. The four
-        // committed fields recompute `node_hash_with_count`; tampering
-        // with the count fails the parent's hash check.
+        // Emit one collapsed-subtree op. The four (or five for dual-axis)
+        // committed fields recompute the parent's hashing function;
+        // tampering with the count (or sum) fails the parent's hash check.
+        //
+        // For PCPS hosts: emit `HashWithCountAndSum(kv, l, r, count, sum)`
+        // so the verifier can reconstruct `node_hash_with_count_and_sum`.
+        // For single-axis hosts (`ProvableCountTree` /
+        // `ProvableCountSumTree`): emit the count-only `HashWithCount`.
         let kv_hash = *walker.tree().kv_hash();
         let left_child_hash = walker
             .tree()
@@ -159,7 +167,21 @@ where
             .link(false)
             .map(|l| *l.hash())
             .unwrap_or(NULL_HASH);
-        let node = Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, subtree_count);
+        let node = if binds_sum_into_hash(tree_type) {
+            let subtree_sum = match provable_sum_from_dual_axis_aggregate(aggregate) {
+                Ok(s) => s,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
+            Node::HashWithCountAndSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                subtree_count,
+                subtree_sum,
+            )
+        } else {
+            Node::HashWithCount(kv_hash, left_child_hash, right_child_hash, subtree_count)
+        };
         ops.push_back(if state.left_to_right {
             Op::Push(node)
         } else {
@@ -179,6 +201,24 @@ where
     let node_key: Vec<u8> = walker.tree().key().to_vec();
     let node_value_hash: CryptoHash = *walker.tree().value_hash();
     let node_count: u64 = subtree_count;
+    // For PCPS hosts we also need the per-node sum so we can emit
+    // `KVDigestCountSum` (carrying both axes) at boundary positions.
+    // Single-axis hosts ignore this.
+    let node_sum: i64 = if binds_sum_into_hash(tree_type) {
+        match aggregate {
+            AggregateData::ProvableCountAndProvableSum(_, s) => s,
+            other => {
+                return Err(Error::InvalidProofError(format!(
+                    "expected ProvableCountAndProvableSum aggregate on a \
+                     ProvableCountProvableSumTree node, got {:?}",
+                    other
+                )))
+                .wrap_with_cost(cost);
+            }
+        }
+    } else {
+        0
+    };
 
     let left_link_count: u64 = walker
         .tree()
@@ -321,6 +361,7 @@ where
                 child_hi,
                 state,
                 ops,
+                tree_type,
                 grove_version,
             )
         );
@@ -356,15 +397,27 @@ where
     // exposed, so emitting the key costs only proof size — not
     // soundness — and is what `AggregateCountOnRange` does for the
     // same reason.
+    // Helper closure: emit the right boundary-node flavor (key +
+    // value_hash + count [+ sum]) for this host. For PCPS we emit
+    // `KVDigestCountSum` carrying both axes; for single-axis hosts the
+    // count-only `KVDigestCount`.
+    let make_boundary_node = || {
+        if binds_sum_into_hash(tree_type) {
+            Node::KVDigestCountSum(node_key.clone(), node_value_hash, node_count, node_sum)
+        } else {
+            Node::KVDigestCount(node_key.clone(), node_value_hash, node_count)
+        }
+    };
+
     let self_node = if !is_in_range || own_struct == 0 {
         // Path node or NonCounted in-range. No state mutation; the
         // structural-count check handles own=0 enforcement.
-        Node::KVDigestCount(node_key.clone(), node_value_hash, node_count)
+        make_boundary_node()
     } else if state.offset_remaining > 0 {
         state.offset_remaining -= 1;
-        Node::KVDigestCount(node_key.clone(), node_value_hash, node_count)
+        make_boundary_node()
     } else if state.limit_remaining == Some(0) {
-        Node::KVDigestCount(node_key.clone(), node_value_hash, node_count)
+        make_boundary_node()
     } else {
         // Returned item. Pick the value-node flavor based on element
         // type so the proof shape matches what the regular count-tree
@@ -373,7 +426,7 @@ where
             *l -= 1;
         }
         state.returned = state.returned.saturating_add(1);
-        emit_returned_node(walker, node_count)
+        emit_returned_node(walker, node_count, tree_type)
     };
 
     ops.push_back(if state.left_to_right {
@@ -422,6 +475,7 @@ where
                 child_hi,
                 state,
                 ops,
+                tree_type,
                 grove_version,
             )
         );
@@ -486,44 +540,65 @@ enum CollapseAction {
 /// AggregateData at verify time — the verifier's `own_count = aggregate
 /// − left_struct − right_struct` derivation would underflow at every
 /// internal node and the proof would reject.
-fn emit_returned_node<S>(walker: &RefWalker<'_, S>, count: u64) -> Node
+fn emit_returned_node<S>(walker: &RefWalker<'_, S>, count: u64, tree_type: TreeType) -> Node
 where
     S: Fetch + Sized + Clone,
 {
     let value_bytes = walker.tree().value_as_slice();
     let key = walker.tree().key().to_vec();
 
-    // For ProvableCountTree / ProvableCountSumTree we want the
-    // count-bearing variant so the verifier's hash recomputation
-    // includes the count. The element type tells us whether the value
-    // is hashed directly (Item-flavored → `KVCount`) or via the
-    // combined value+inner_root hash (Tree/Reference → carry the
-    // feature_type so the verifier can route the right hash function).
-    let parent_tree_type = Some(ElementType::ProvableCountTree);
+    // For each host we want the count-bearing (or count+sum-bearing)
+    // variant so the verifier's hash recomputation includes the
+    // aggregates. The element type tells us whether the value is
+    // hashed directly (Item-flavored → `KVCount` / `KVCountSum`) or
+    // via the combined value+inner_root hash (Tree/Reference → carry
+    // the feature_type so the verifier can route the right hash
+    // function). PCPS hosts use the dual-axis variants so the
+    // verifier reconstructs `node_hash_with_count_and_sum`.
+    let parent_tree_type = tree_type.to_element_type();
     let kind = ElementType::from_serialized_value(value_bytes)
         .map(|et| et.proof_node_type(parent_tree_type))
-        .unwrap_or(ProofNodeType::KvCount);
+        .unwrap_or(if binds_sum_into_hash(tree_type) {
+            ProofNodeType::KvCountSum
+        } else {
+            ProofNodeType::KvCount
+        });
 
     match kind {
         ProofNodeType::Kv => walker.to_kv_node(),
         ProofNodeType::KvCount => Node::KVCount(key, value_bytes.to_vec(), count),
+        ProofNodeType::KvCountSum => {
+            // PCPS host, Item-flavored entry: emit the dual-axis
+            // `KVCountSum` so the verifier can reconstruct
+            // `node_hash_with_count_and_sum`. Use the existing
+            // `to_kv_count_sum_node()` helper for consistency with the
+            // regular count-tree proof flow (it reads the aggregate
+            // count + sum out of `aggregate_data()` directly).
+            walker.to_kv_count_sum_node()
+        }
         ProofNodeType::KvSum => {
             // Reaching this branch would mean a SumItem (not a
             // CountAndSumItem) is sitting under a count tree, which the
-            // batch layer should never produce. Fall back to KVCount so
-            // the proof shape stays count-bound.
-            Node::KVCount(key, value_bytes.to_vec(), count)
+            // batch layer should never produce. Fall back to the
+            // host-appropriate count-bearing variant so the proof
+            // shape stays valid.
+            if binds_sum_into_hash(tree_type) {
+                walker.to_kv_count_sum_node()
+            } else {
+                Node::KVCount(key, value_bytes.to_vec(), count)
+            }
         }
         ProofNodeType::KvValueHash => walker.to_kv_value_hash_node(),
         // For tree/reference children of a count tree, delegate to the
         // regular flow's helper so the feature_type carries the
-        // aggregate count (not the on-disk own count). The same helper
-        // is what `create_proof_internal` uses, so the resulting node
-        // is byte-identical to what a regular count-tree proof emits
+        // aggregate count (and, for PCPS, sum). The same helper is
+        // what `create_proof_internal` uses, so the resulting node is
+        // byte-identical to what a regular count-tree proof emits
         // for the same entry.
         ProofNodeType::KvValueHashFeatureType
         | ProofNodeType::KvRefValueHash
         | ProofNodeType::KvRefValueHashCount
-        | ProofNodeType::KvRefValueHashSum => walker.to_kv_value_hash_feature_type_node(),
+        | ProofNodeType::KvRefValueHashSum
+        | ProofNodeType::KvRefValueHashCountSum => walker.to_kv_value_hash_feature_type_node(),
     }
 }

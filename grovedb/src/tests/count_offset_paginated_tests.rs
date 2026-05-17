@@ -1196,4 +1196,62 @@ mod tests {
             err,
         );
     }
+
+    /// PCPS host parallel of `end_to_end_offset_on_provable_count_sum_tree`.
+    /// `ProvableCountProvableSumTree` hashes via
+    /// `node_hash_with_count_and_sum` — both count AND sum are bound to
+    /// every node hash. The count-offset emit path detects this via
+    /// `binds_sum_into_hash(tree_type)` and dispatches the dual-axis
+    /// Node variants (`HashWithCountAndSum`, `KVDigestCountSum`,
+    /// `KVCountSum`) so the verifier reconstructs the right hash
+    /// function. Without that dispatch, the merk-level proof would
+    /// either reject at the allowlist (single-axis allowlist doesn't
+    /// include the dual-axis variants) or — worse — produce a root
+    /// hash mismatch at the GroveDB layer.
+    #[test]
+    fn end_to_end_offset_on_provable_count_provable_sum_tree() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert PCPS");
+        for i in 0..15u8 {
+            let key = vec![b'a' + i];
+            // Plain Items contribute 1 to count and 0 to sum; the
+            // host's hashed sum still differs from 0 because the
+            // batch layer encodes the per-node feature_type with the
+            // own sum, and aggregate_data sums children — but for an
+            // Item leaf both axes are 0 own and contribute (1, 0) to
+            // the parent. The headline check is round-trip + the
+            // returned keys, which exercises every dual-axis variant
+            // the count-offset emit path can produce.
+            db.insert(
+                &[b"pcps"],
+                key.as_slice(),
+                Element::new_item(format!("v_{}", i).into_bytes()),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert item");
+        }
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let proved = round_trip_offset(&db, vec![b"pcps".to_vec()], q, Some(3), Some(5), v);
+        assert_eq!(
+            proved_keys(&proved),
+            vec![b"f".to_vec(), b"g".to_vec(), b"h".to_vec()],
+            "PCPS: offset 5 + limit 3 ascending should return f,g,h — same answer as \
+             ProvableCountSumTree, but the proof bytes use the dual-axis Node variants"
+        );
+    }
 }
