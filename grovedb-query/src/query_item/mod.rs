@@ -1292,6 +1292,20 @@ impl QueryItem {
         }
 
         // Key should also be something, otherwise terminate early.
+        // Aggregate-wrapper variants delegate directly to their inner item.
+        // Returning before the `iter.key()` read below avoids
+        //   (a) double-charging the `iter.key()` cost when the inner item
+        //       reads it again, and
+        //   (b) duplicating the raw-iter read itself.
+        // The depth-bounded decoder + nested-aggregate validators already
+        // prevent wrapper-of-wrapper shapes, so recursion here is bounded.
+        if let QueryItem::AggregateCountOnRange(inner)
+        | QueryItem::AggregateSumOnRange(inner)
+        | QueryItem::AggregateCountAndSumOnRange(inner) = self
+        {
+            return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
+        }
+
         let key = if let Some(key) = iter.key().unwrap_add_cost(&mut cost) {
             key
         } else {
@@ -1345,14 +1359,10 @@ impl QueryItem {
                     }
                 }
             }
-            QueryItem::AggregateCountOnRange(inner) => {
-                return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
-            }
-            QueryItem::AggregateSumOnRange(inner) => {
-                return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
-            }
-            QueryItem::AggregateCountAndSumOnRange(inner) => {
-                return inner.iter_is_valid_for_type(iter, limit, aggregate_limit, left_to_right);
+            QueryItem::AggregateCountOnRange(_)
+            | QueryItem::AggregateSumOnRange(_)
+            | QueryItem::AggregateCountAndSumOnRange(_) => {
+                unreachable!("aggregate-wrapper variants short-circuit at the top of the function")
             }
         };
 
