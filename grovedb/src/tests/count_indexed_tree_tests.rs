@@ -1127,6 +1127,432 @@ mod tests {
         assert_eq!(result.skipped, 2);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // AggregateCountOnRange against the cidx secondary
+    // (mirrors PR #656/#662 — count-only query, O(log n) merk cost)
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn count_indexed_count_range_aggregate_returns_inrange_count() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+
+        // Counts: 1, 5, 7, 12, 20.
+        for (k, c) in [
+            (b"a".as_ref(), 1u64),
+            (b"b", 5),
+            (b"c", 7),
+            (b"d", 12),
+            (b"e", 20),
+        ] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        // [5, 12]: b, c, d → 3.
+        let in_mid = db
+            .count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                12,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("aggregate count [5,12]");
+        assert_eq!(in_mid, 3);
+
+        // [0, u64::MAX]: all 5.
+        let total = db
+            .count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("aggregate count full");
+        assert_eq!(total, 5);
+
+        // [100, 200]: no matches.
+        let none = db
+            .count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                200,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("aggregate count empty range");
+        assert_eq!(none, 0);
+
+        // Degenerate (lo > hi): 0 by contract.
+        let degenerate = db
+            .count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("aggregate count degenerate");
+        assert_eq!(degenerate, 0);
+
+        // Single-point [7, 7]: just c → 1.
+        let point = db
+            .count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                7,
+                7,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("aggregate count single-point");
+        assert_eq!(point, 1);
+    }
+
+    #[test]
+    fn count_indexed_count_range_aggregate_on_empty_cidx_returns_zero() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+
+        let n = db
+            .count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("empty cidx");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn prove_and_verify_count_indexed_count_range_aggregate_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, c) in [
+            (b"a".as_ref(), 1u64),
+            (b"b", 5),
+            (b"c", 7),
+            (b"d", 12),
+            (b"e", 20),
+            (b"f", 25),
+            (b"g", 30),
+        ] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        // Prove count for [5, 25]: matches b, c, d, e, f → 5.
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                25,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove aggregate count");
+
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            5,
+            25,
+        )
+        .expect("verify aggregate count");
+        assert_eq!(result.count, 5);
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().expect("root");
+        assert_eq!(result.root_hash, expected_root);
+
+        // Full-range proof: 7 entries.
+        let full_proof = db
+            .prove_count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove full");
+        let full = GroveDb::verify_count_indexed_count_range_aggregate(
+            &full_proof,
+            &[TEST_LEAF, b"cidx"],
+            0,
+            u64::MAX,
+        )
+        .expect("verify full");
+        assert_eq!(full.count, 7);
+        assert_eq!(full.root_hash, expected_root);
+    }
+
+    #[test]
+    fn prove_and_verify_count_indexed_count_range_aggregate_no_matches() {
+        // No entries in [lo, hi] should still produce a valid proof
+        // committing count = 0.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, c) in [(b"a".as_ref(), 1u64), (b"b", 5)] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                200,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove out-of-range");
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            100,
+            200,
+        )
+        .expect("verify out-of-range");
+        assert_eq!(result.count, 0);
+    }
+
+    #[test]
+    fn verify_count_indexed_count_range_aggregate_rejects_bounds_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, c) in [(b"a".as_ref(), 1u64), (b"b", 5), (b"c", 10)] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                3,
+                7,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+
+        // lo mismatch.
+        assert!(GroveDb::verify_count_indexed_count_range_aggregate(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            0,
+            7
+        )
+        .is_err());
+        // hi mismatch.
+        assert!(GroveDb::verify_count_indexed_count_range_aggregate(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            3,
+            100
+        )
+        .is_err());
+        // Honest verify succeeds.
+        assert!(GroveDb::verify_count_indexed_count_range_aggregate(
+            &proof,
+            &[TEST_LEAF, b"cidx"],
+            3,
+            7
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn prove_count_indexed_count_range_aggregate_at_root_path_errors() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty_path: &[&[u8]] = &[];
+        let result = db
+            .prove_count_indexed_count_range_aggregate(empty_path, 0, 100, None, grove_version)
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidPath(_)) => {}
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_count_range_aggregate_rejects_corrupted_bytes() {
+        let garbage = vec![0xff, 0xfe, 0xfd];
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(
+            &garbage,
+            &[TEST_LEAF, b"cidx"],
+            0,
+            100,
+        );
+        match result {
+            Err(crate::Error::CorruptedData(_)) => {}
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn count_indexed_count_range_aggregate_matches_proof_count() {
+        // Cross-check: the no-proof variant and the proof variant
+        // must agree on the count.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, c) in [
+            (b"a".as_ref(), 5u64),
+            (b"b", 10),
+            (b"c", 15),
+            (b"d", 20),
+            (b"e", 25),
+        ] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        for (lo, hi) in [(0u64, u64::MAX), (10, 20), (5, 5), (0, 9), (16, u64::MAX)] {
+            let no_proof = db
+                .count_indexed_count_range_aggregate(
+                    [TEST_LEAF, b"cidx"].as_ref(),
+                    lo,
+                    hi,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("count");
+            let proof = db
+                .prove_count_indexed_count_range_aggregate(
+                    [TEST_LEAF, b"cidx"].as_ref(),
+                    lo,
+                    hi,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("prove");
+            let verified = GroveDb::verify_count_indexed_count_range_aggregate(
+                &proof,
+                &[TEST_LEAF, b"cidx"],
+                lo,
+                hi,
+            )
+            .expect("verify");
+            assert_eq!(
+                no_proof, verified.count,
+                "no-proof and proof variants disagree for [{lo}, {hi}]"
+            );
+        }
+    }
+
     #[test]
     fn count_indexed_count_range_filters_by_count() {
         let grove_version = GroveVersion::latest();

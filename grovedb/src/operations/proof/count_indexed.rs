@@ -136,6 +136,55 @@ pub struct CountIndexedPaginatedProof {
     pub descending: bool,
 }
 
+/// Wire-format envelope for a count-only aggregate proof over a
+/// `CountIndexedTree`'s secondary index. Carries the same layer
+/// proofs + primary-root attestation + ancestor-cidx attestations as
+/// the other cidx envelopes, but the `secondary_proof` is an
+/// `AggregateCountOnRange` proof against the secondary — emitting
+/// only `HashWithCount` + `KVDigestCount` ops, no value-bearing
+/// nodes — and the envelope echoes the `(lo_count, hi_count)`
+/// bracket so the verifier can authenticate the requested range.
+///
+/// Returns just a `u64` count + root hash on verify; the entries
+/// themselves are not surfaced (callers wanting the list should use
+/// [`CountIndexedRangeProof`] / `verify_count_indexed_query`).
+#[derive(Encode, Decode, Debug)]
+pub struct CountIndexedAggregateCountProof {
+    /// Single-key Merk proof per path layer. Same shape and semantics
+    /// as [`CountIndexedRangeProof::layer_proofs`].
+    pub layer_proofs: Vec<Vec<u8>>,
+    /// Cidx primary's root hash for the H1-A composition.
+    pub primary_root_hash: [u8; 32],
+    /// Per-intermediate-layer cidx secondary attestation. Same shape
+    /// and semantics as
+    /// [`CountIndexedRangeProof::ancestor_cidx_secondary_root_hashes`].
+    pub ancestor_cidx_secondary_root_hashes: Vec<Option<[u8; 32]>>,
+    /// Encoded `AggregateCountOnRange` proof bytes for the cidx
+    /// secondary. Verified with `verify_aggregate_count_on_range_proof`
+    /// against the echoed `(lo_count, hi_count)` range.
+    pub secondary_proof: Vec<u8>,
+    /// Echoed inclusive lower bound on `count_value`. Verifier rejects
+    /// on mismatch with the caller's expected value.
+    pub lo_count: u64,
+    /// Echoed inclusive upper bound on `count_value`. Verifier rejects
+    /// on mismatch.
+    pub hi_count: u64,
+}
+
+/// Verified result of a `CountIndexedTree` aggregate-count query.
+#[derive(Debug)]
+pub struct CountIndexedAggregateCountResult {
+    /// GroveDB root hash this proof reconstructs. Caller compares to a
+    /// trusted root to complete verification.
+    pub root_hash: CryptoHash,
+    /// Number of cidx entries whose `count_value` falls in the echoed
+    /// `[lo_count, hi_count]` range, as committed by the proof. The
+    /// `AggregateCountOnRange` proof binds this count cryptographically
+    /// to the secondary's root hash, which the verifier then chains to
+    /// the GroveDB root via the H1-A composition.
+    pub count: u64,
+}
+
 /// Verified result of an offset-paginated `CountIndexedTree` top-k
 /// query.
 ///
@@ -237,6 +286,61 @@ impl GroveDb {
             cost,
             bincode::encode_to_vec(&envelope, bincode::config::standard())
                 .map_err(|e| Error::CorruptedData(format!("encoding cidx paginated proof: {e}")))
+        );
+
+        Ok(bytes).wrap_with_cost(cost)
+    }
+
+    /// Generate a proof for the **count** of cidx entries whose
+    /// `count_value` falls in `[lo_count, hi_count]`, without
+    /// surfacing the entries themselves. The proof size is
+    /// O(log n + boundary) regardless of how many entries match —
+    /// every fully-inside subtree of the secondary collapses to a
+    /// single `HashWithCount` op.
+    ///
+    /// `lo_count > hi_count` is a degenerate range; the proof
+    /// commits `count = 0`. `lo_count == 0 && hi_count == u64::MAX`
+    /// proves the total entry count of the cidx.
+    ///
+    /// Use [`Self::verify_count_indexed_count_range_aggregate`] to
+    /// verify. The verifier echoes the `(lo_count, hi_count)`
+    /// against the caller's expected values; a mismatch is rejected
+    /// before the merk-level proof is decoded.
+    pub fn prove_count_indexed_count_range_aggregate<'b, B, P>(
+        &self,
+        path: P,
+        lo_count: u64,
+        hi_count: u64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<u8>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let envelope = cost_return_on_error!(
+            &mut cost,
+            self.build_count_indexed_aggregate_count_proof(
+                path,
+                lo_count,
+                hi_count,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+
+        let bytes = cost_return_on_error_no_add!(
+            cost,
+            bincode::encode_to_vec(&envelope, bincode::config::standard()).map_err(|e| {
+                Error::CorruptedData(format!("encoding cidx aggregate-count proof: {e}"))
+            })
         );
 
         Ok(bytes).wrap_with_cost(cost)
@@ -672,6 +776,230 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
+    /// Build an aggregate-count cidx proof envelope. Same layer-
+    /// walking + primary-attestation shape as
+    /// [`Self::build_count_indexed_proof`] but the secondary half is
+    /// produced via `Merk::prove_aggregate_count_on_range` against a
+    /// secondary keyspace range derived from `[lo_count, hi_count]`.
+    /// `lo_count > hi_count` short-circuits to an empty-merk-style
+    /// secondary proof and `count = 0`.
+    fn build_count_indexed_aggregate_count_proof<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        lo_count: u64,
+        hi_count: u64,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<CountIndexedAggregateCountProof, Error> {
+        use grovedb_merk::proofs::{encode_into, query::QueryItem as MerkQueryItemForRange};
+
+        let mut cost = OperationCost::default();
+
+        let path_keys: Vec<Vec<u8>> = path.to_vec();
+        if path_keys.is_empty() {
+            return Err(Error::InvalidPath(
+                "cannot prove cidx aggregate-count at root path".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // 1. Single-key Merk proofs per layer + per-cidx-ancestor
+        //    secondary-root attestation. Identical shape to the other
+        //    cidx proof builders.
+        let mut layer_proofs: Vec<Vec<u8>> = Vec::with_capacity(path_keys.len());
+        let last_idx = path_keys.len() - 1;
+        let mut ancestor_cidx_secondary_root_hashes: Vec<Option<[u8; 32]>> =
+            Vec::with_capacity(last_idx);
+        for depth in 0..path_keys.len() {
+            let parent_slices: Vec<&[u8]> =
+                path_keys[..depth].iter().map(|p| p.as_slice()).collect();
+            let parent_path: SubtreePath<&[u8]> = parent_slices.as_slice().into();
+            let parent_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(
+                    parent_path.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            let key = path_keys[depth].clone();
+            if depth < last_idx {
+                let intermediate = cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&parent_merk, key.as_slice(), true, grove_version).map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "cidx aggregate-count proof: fetch intermediate-layer element at \
+                             depth {depth}: {e}"
+                        ))
+                    })
+                );
+                let attestation = match intermediate.underlying() {
+                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                        let ancestor_cidx_path_owned: SubtreePathBuilder<Vec<u8>> =
+                            SubtreePathBuilder::owned_from_iter(
+                                path_keys[..=depth].iter().cloned(),
+                            );
+                        let ancestor_cidx_path = SubtreePath::from(&ancestor_cidx_path_owned);
+                        let ancestor_secondary_root_key = match intermediate.underlying() {
+                            Element::CountIndexedTree(_, s, ..)
+                            | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                            _ => unreachable!(),
+                        };
+                        let ancestor_secondary = cost_return_on_error!(
+                            &mut cost,
+                            self.open_count_indexed_secondary_at_path(
+                                ancestor_cidx_path,
+                                ancestor_secondary_root_key,
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (sec_hash, _, _) = cost_return_on_error!(
+                            &mut cost,
+                            ancestor_secondary
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(|e| Error::CorruptedData(format!(
+                                    "cidx aggregate-count proof: ancestor secondary root hash \
+                                     at depth {depth}: {e}"
+                                )))
+                        );
+                        Some(sec_hash)
+                    }
+                    _ => None,
+                };
+                ancestor_cidx_secondary_root_hashes.push(attestation);
+            }
+            let mut q = MerkQuery::new();
+            q.insert_item(MerkQueryItem::Key(key));
+            let result = cost_return_on_error!(
+                &mut cost,
+                parent_merk
+                    .prove(q, None, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "cidx aggregate-count proof: prove single-key at layer depth {depth}: \
+                         {e}"
+                    )))
+            );
+            layer_proofs.push(result.proof);
+        }
+
+        // 2. Open primary; capture root hash for attestation.
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        if !primary_merk.tree_type.is_count_indexed_primary() {
+            return Err(Error::InvalidPath(
+                "prove_count_indexed_count_range_aggregate requires the path's last segment to \
+                 be a CountIndexedTree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let (primary_root_hash, _, _) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(|e| Error::CorruptedData(format!(
+                    "cidx aggregate-count proof: primary root hash: {e}"
+                )))
+        );
+
+        // 3. Open secondary; produce an aggregate-count proof over the
+        //    secondary keyspace range derived from [lo_count, hi_count].
+        let secondary_root_key = cost_return_on_error!(
+            &mut cost,
+            self.read_count_indexed_secondary_root_key_for_proof(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_count_indexed_secondary_at_path(
+                path,
+                secondary_root_key,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+
+        // Build the inner-range query against the secondary's keyspace.
+        // Mirrors the bound construction in
+        // `count_indexed_count_range_aggregate` — same `(lo_be, (hi+1)_be)`
+        // bracket logic, exclusive upper. Degenerate `lo > hi` is
+        // handled by short-circuiting to an empty proof (count = 0) at
+        // the top of `prove_count_indexed_count_range_aggregate` —
+        // actually no, we don't short-circuit there. Handle here.
+        let serialized = if lo_count > hi_count {
+            // Degenerate range — emit an empty proof. The verifier's
+            // `verify_aggregate_count_on_range_proof` returns
+            // `(NULL_HASH, 0)` on empty input, but the verifier also
+            // chains the secondary root through the H1-A composition,
+            // so emitting an empty proof here would break the chain.
+            //
+            // Instead, build a real proof against a guaranteed-empty
+            // secondary range (`lo == hi + 1`) so the merk emits a
+            // proof shape that hashes to the actual secondary root.
+            // The merk will report `count = 0` because no entries
+            // match, but the root hash is the real one.
+            let lo_bytes = (hi_count.saturating_add(1)).to_be_bytes().to_vec();
+            let upper_bytes = lo_bytes.clone(); // empty range
+            let inner_range = MerkQueryItemForRange::Range(lo_bytes..upper_bytes);
+            let (ops, _count) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .prove_aggregate_count_on_range(&inner_range, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "cidx aggregate-count proof: secondary degenerate-range proof: {e}"
+                    )))
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(ops.iter(), &mut serialized);
+            serialized
+        } else {
+            let lo_bytes = lo_count.to_be_bytes().to_vec();
+            let inner_range = if hi_count == u64::MAX {
+                MerkQueryItemForRange::RangeFrom(lo_bytes..)
+            } else {
+                let upper_bytes = (hi_count + 1).to_be_bytes().to_vec();
+                MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+            };
+            let (ops, _count) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .prove_aggregate_count_on_range(&inner_range, grove_version)
+                    .map_err(|e| Error::CorruptedData(format!(
+                        "cidx aggregate-count proof: secondary range proof: {e}"
+                    )))
+            );
+            let mut serialized = Vec::with_capacity(128);
+            encode_into(ops.iter(), &mut serialized);
+            serialized
+        };
+
+        Ok(CountIndexedAggregateCountProof {
+            layer_proofs,
+            primary_root_hash,
+            ancestor_cidx_secondary_root_hashes,
+            secondary_proof: serialized,
+            lo_count,
+            hi_count,
+        })
+        .wrap_with_cost(cost)
+    }
+
     fn read_count_indexed_secondary_root_key_for_proof<'db, 'b, B: AsRef<[u8]>>(
         &'db self,
         path: SubtreePath<'b, B>,
@@ -1002,6 +1330,177 @@ impl GroveDb {
             root_hash: current_layer_root,
             entries,
             skipped: count_offset_result.skipped,
+        })
+    }
+
+    /// Verify a proof produced by
+    /// [`Self::prove_count_indexed_count_range_aggregate`]. Returns
+    /// the GroveDB root hash and the cryptographically-committed
+    /// count of cidx entries in `[expected_lo_count,
+    /// expected_hi_count]`.
+    ///
+    /// `expected_lo_count` and `expected_hi_count` MUST match the
+    /// request that produced the proof. The verifier authenticates
+    /// the echoed bounds against these before doing any merk work,
+    /// so a malicious prover cannot answer a request about
+    /// `[100, 200]` with a valid proof about `[50, 300]`.
+    pub fn verify_count_indexed_count_range_aggregate(
+        proof_bytes: &[u8],
+        path: &[&[u8]],
+        expected_lo_count: u64,
+        expected_hi_count: u64,
+    ) -> Result<CountIndexedAggregateCountResult, Error> {
+        // Same DoS bound as the other cidx verifiers.
+        let config = bincode::config::standard().with_limit::<{ 16 * 1024 * 1024 }>();
+        let (envelope, _): (CountIndexedAggregateCountProof, _) =
+            bincode::decode_from_slice(proof_bytes, config).map_err(|e| {
+                Error::CorruptedData(format!("decoding cidx aggregate-count proof: {e}"))
+            })?;
+
+        if envelope.lo_count != expected_lo_count {
+            return Err(Error::CorruptedData(format!(
+                "cidx aggregate-count proof lo_count mismatch: expected {}, envelope carries {}",
+                expected_lo_count, envelope.lo_count
+            )));
+        }
+        if envelope.hi_count != expected_hi_count {
+            return Err(Error::CorruptedData(format!(
+                "cidx aggregate-count proof hi_count mismatch: expected {}, envelope carries {}",
+                expected_hi_count, envelope.hi_count
+            )));
+        }
+
+        Self::verify_count_indexed_aggregate_count_inner(envelope, path)
+    }
+
+    /// Shared verifier core for the aggregate-count cidx proof. Mirror
+    /// of [`Self::verify_count_indexed_paginated_inner`] but the
+    /// secondary proof is `verify_aggregate_count_on_range_proof` —
+    /// returns just `(root_hash, count)` instead of a list of items.
+    fn verify_count_indexed_aggregate_count_inner(
+        envelope: CountIndexedAggregateCountProof,
+        path: &[&[u8]],
+    ) -> Result<CountIndexedAggregateCountResult, Error> {
+        use grovedb_merk::proofs::query::{
+            verify_aggregate_count_on_range_proof, QueryItem as MerkQueryItemForRange,
+        };
+
+        if envelope.layer_proofs.len() != path.len() {
+            return Err(Error::CorruptedData(format!(
+                "cidx aggregate-count proof has {} layers but path has {} segments",
+                envelope.layer_proofs.len(),
+                path.len()
+            )));
+        }
+        if envelope.layer_proofs.is_empty() {
+            return Err(Error::CorruptedData(
+                "cidx aggregate-count proof has zero layers; expected at least one (the path \
+                 to the cidx element)"
+                    .to_string(),
+            ));
+        }
+
+        // 1a. Rebuild the same inner-range the prover used.
+        // `lo > hi` is a degenerate range that the prover handles by
+        // emitting a proof against the empty `(hi+1)_be..(hi+1)_be`
+        // range; the verifier rebuilds the matching item so the
+        // verify call hashes to the same secondary root the prover
+        // committed.
+        let inner_range = if envelope.lo_count > envelope.hi_count {
+            let bytes = envelope.hi_count.saturating_add(1).to_be_bytes().to_vec();
+            MerkQueryItemForRange::Range(bytes.clone()..bytes)
+        } else if envelope.hi_count == u64::MAX {
+            let bytes = envelope.lo_count.to_be_bytes().to_vec();
+            MerkQueryItemForRange::RangeFrom(bytes..)
+        } else {
+            let lo_bytes = envelope.lo_count.to_be_bytes().to_vec();
+            let upper_bytes = (envelope.hi_count + 1).to_be_bytes().to_vec();
+            MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+        };
+
+        let (secondary_root_hash, count) =
+            verify_aggregate_count_on_range_proof(&envelope.secondary_proof, &inner_range)
+                .unwrap()
+                .map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "cidx aggregate-count proof: secondary proof failed to verify: {e}"
+                    ))
+                })?;
+
+        // 1b. Verify the deepest layer (cidx element) using H1-A.
+        let last_idx = envelope.layer_proofs.len() - 1;
+        let cidx_key = path[last_idx];
+        let (cidx_value_bytes, mut current_layer_root, cidx_value_hash_recorded) =
+            execute_single_key_proof(
+                &envelope.layer_proofs[last_idx],
+                cidx_key,
+                "cidx aggregate-count layer",
+            )?;
+        let actual_value_hash = value_hash(&cidx_value_bytes).value().to_owned();
+        let combined = combine_hash_three(
+            &actual_value_hash,
+            &envelope.primary_root_hash,
+            &secondary_root_hash,
+        )
+        .value()
+        .to_owned();
+        if combined != cidx_value_hash_recorded {
+            return Err(Error::CorruptedData(format!(
+                "cidx aggregate-count proof: layer chain mismatch — parent recorded value_hash \
+                 {} but combine_hash_three(H(cidx_bytes), primary_root, secondary_root) is {}",
+                hex::encode(cidx_value_hash_recorded),
+                hex::encode(combined)
+            )));
+        }
+
+        // 1c. Walk shallower layers — identical shape to the
+        // other cidx verifiers.
+        if envelope.ancestor_cidx_secondary_root_hashes.len() != last_idx {
+            return Err(Error::CorruptedData(format!(
+                "cidx aggregate-count proof: ancestor_cidx_secondary_root_hashes has length \
+                 {} but expected {}",
+                envelope.ancestor_cidx_secondary_root_hashes.len(),
+                last_idx
+            )));
+        }
+        for depth in (0..last_idx).rev() {
+            let key = path[depth];
+            let (value_bytes, layer_root, recorded_value_hash) = execute_single_key_proof(
+                &envelope.layer_proofs[depth],
+                key,
+                "cidx aggregate-count intermediate layer",
+            )?;
+            let val_h = value_hash(&value_bytes).value().to_owned();
+            let combined = match envelope.ancestor_cidx_secondary_root_hashes[depth] {
+                Some(ancestor_secondary_root) => {
+                    combine_hash_three(&val_h, &current_layer_root, &ancestor_secondary_root)
+                        .value()
+                        .to_owned()
+                }
+                None => combine_hash(&val_h, &current_layer_root).value().to_owned(),
+            };
+            if combined != recorded_value_hash {
+                let chain_kind = if envelope.ancestor_cidx_secondary_root_hashes[depth].is_some() {
+                    "combine_hash_three"
+                } else {
+                    "combine_hash"
+                };
+                return Err(Error::CorruptedData(format!(
+                    "cidx aggregate-count proof: intermediate layer at depth {} chain \
+                     mismatch: parent recorded value_hash {} but {}(H(value), child_root, ...) \
+                     is {}",
+                    depth,
+                    hex::encode(recorded_value_hash),
+                    chain_kind,
+                    hex::encode(combined)
+                )));
+            }
+            current_layer_root = layer_root;
+        }
+
+        Ok(CountIndexedAggregateCountResult {
+            root_hash: current_layer_root,
+            count,
         })
     }
 

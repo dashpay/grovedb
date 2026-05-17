@@ -1276,6 +1276,92 @@ impl GroveDb {
         Ok(results).wrap_with_cost(cost)
     }
 
+    /// Count the number of cidx entries whose `count_value` falls in
+    /// `[lo_count, hi_count]`, without returning the entries
+    /// themselves.
+    ///
+    /// Wraps `Merk::count_aggregate_on_range` against the cidx
+    /// secondary (which is a `ProvableCountTree`); the merk walks the
+    /// secondary in O(log n + boundary) using each internal node's
+    /// stored count to short-circuit fully-inside / fully-outside
+    /// subtrees. Use this when the caller only needs the *count* of
+    /// matching entries — answering questions like "how many users
+    /// have a score in `[100, 500]`?" — rather than the list of
+    /// matching keys. For the listing form use
+    /// [`Self::count_indexed_count_range`].
+    ///
+    /// `lo_count > hi_count` returns `Ok(0)` (degenerate range).
+    /// `lo_count == 0 && hi_count == u64::MAX` is equivalent to "how
+    /// many entries does this cidx have?". This call has no
+    /// cryptographic guarantee — the returned count is whatever the
+    /// merk reports. For a verifiable count, use
+    /// [`Self::prove_count_indexed_count_range_aggregate`] +
+    /// [`Self::verify_count_indexed_count_range_aggregate`].
+    pub fn count_indexed_count_range_aggregate<'b, B, P>(
+        &self,
+        path: P,
+        lo_count: u64,
+        hi_count: u64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
+
+        let mut cost = OperationCost::default();
+        if lo_count > hi_count {
+            return Ok(0u64).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_root_key = cost_return_on_error!(
+            &mut cost,
+            self.read_count_indexed_secondary_root_key(path.clone(), tx_ref, None, grove_version)
+        );
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_count_indexed_secondary_at_path(
+                path,
+                secondary_root_key,
+                tx_ref,
+                None,
+                grove_version,
+            )
+        );
+
+        // Build the secondary inner-range query. Secondary keys are
+        // `count_be ‖ original_key`; an entry is in [lo_count, hi_count]
+        // iff its key falls in `[lo_count_be ‖ <empty>, (hi_count+1)_be ‖
+        // <empty>)` — exclusive on the upper, inclusive on the lower. The
+        // empty key on each side anchors against any original_key suffix.
+        // (Mirrors the bound construction in
+        // [`Self::count_indexed_count_range`]; kept inline rather than
+        // shared because the two callers want different `QueryItem`
+        // shapes.)
+        let lo_bytes = lo_count.to_be_bytes().to_vec();
+        let inner_range = if hi_count == u64::MAX {
+            MerkQueryItemForRange::RangeFrom(lo_bytes..)
+        } else {
+            let upper_bytes = (hi_count + 1).to_be_bytes().to_vec();
+            MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+        };
+
+        let count = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .count_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!("cidx aggregate count on range: {e}")))
+        );
+
+        Ok(count).wrap_with_cost(cost)
+    }
+
     /// Read the `secondary_root_key` field from a CountIndexedTree element
     /// at the given path. Returns an error if the path's last segment is
     /// not a count-indexed-tree element.
