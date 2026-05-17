@@ -247,23 +247,42 @@ A malicious prover could try several attacks:
 These rejection branches all have dedicated forging tests in
 `merk/src/proofs/query/count_offset/tests.rs`.
 
-## Returned tree elements — what's supported
+## Unsupported in-range value shapes (P1 / P2)
 
-Items, references, and **empty** tree elements inside a count tree are
-returned faithfully. **Non-empty** tree elements inside a count tree are
-**rejected** by the GroveDB-layer post-pass in `run_count_offset_layer_dispatch`
-with `Error::NotSupported("count-offset paginated proofs do not yet
-support non-empty tree return values…")`.
+The count-offset proof flow's scope is **plain `Item` /`SumItem` /
+`ItemWithSumItem` and empty trees inside a count tree**. Three shapes
+that *can* legally appear inside a `ProvableCountTree` are explicitly
+rejected — the prover refuses to descend through them at proof time,
+and the verifier refuses to accept them at verify time (defense in
+depth against forged proofs):
 
-The reason: V1 strict-mode requires non-empty tree returns to carry a
-`KVValueHashFeatureTypeWithChildHash` proof node so the verifier can
-check `combine_hash(H(value), child_hash) == value_hash`. The current
-count-offset prover doesn't emit that variant, so accepting non-empty
-trees would silently bypass the child-hash invariant. Lifting this
-restriction is a follow-up: the prover would emit the
-`KVValueHashFeatureTypeWithChildHash` variant for non-empty tree
-children of a count tree, and the GroveDB-layer post-pass would
-drop the rejection.
+| Rejected shape                              | Why                                                                                                                                                                                                                                                          |
+|---------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **`NonCounted`-wrapped in-range entry**     | Regular GroveDB returns the inner value; the count-offset flow has no way to emit it (own_count = 0 routes the prover to `KVDigestCount`, which carries only the key/hash). Silently dropping it would be a correctness divergence — we reject upfront.       |
+| **`Reference` / `ReferenceWithSumItem`**    | The regular flow's reference post-pass dereferences these to the target's value bytes. The count-offset short-circuit returns *before* that post-pass, so a verified result would expose the raw `Element::Reference` rather than the dereferenced target.    |
+| **Non-empty tree** (any tree variant)       | V1 strict-mode requires a `KVValueHashFeatureTypeWithChildHash` proof node for these, which the count-offset prover doesn't emit. Accepting one without that node would silently bypass the child-hash invariant the regular flow enforces.                    |
+
+When the prover encounters any of these inside its scan, it returns
+`Error::InvalidProofError` with a message naming the rejected shape and
+the limitation; the GroveDB caller surfaces this as
+`CostResult<_, Error>`. When the verifier encounters one in the
+reconstructed returned-items list, it returns `Error::NotSupported` for
+the first two and `Error::InvalidProof` for `NonCounted` (a
+`NonCounted`-wrapped entry should never be surfaced in
+`returned_items` by an honest prover, so a `NonCounted` value here
+indicates forgery rather than scope).
+
+Lifting any of these is straightforward follow-up work:
+
+- **Non-empty trees**: emit `KVValueHashFeatureTypeWithChildHash` (mirroring
+  the regular V1 prover) and drop the verifier-side rejection.
+- **References**: apply the same reference-post-pass the regular V1
+  prover uses, rewriting `Reference` / `ReferenceWithSumItem` value
+  nodes into `KVRefValueHashCount` with the dereferenced target's bytes.
+- **NonCounted entries**: emit them as value-bearing nodes with no
+  offset/limit state mutation, and update the verifier's
+  `classify_self` to accept value-bearing nodes with `own_count = 0`
+  inside the limit window.
 
 ## API surface
 

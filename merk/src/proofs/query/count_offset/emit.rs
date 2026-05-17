@@ -43,7 +43,7 @@
 use std::collections::LinkedList;
 
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-use grovedb_element::{ElementType, ProofNodeType};
+use grovedb_element::{Element, ElementType, ProofNodeType};
 use grovedb_version::version::GroveVersion;
 
 use super::provable_count_from_aggregate;
@@ -204,6 +204,79 @@ where
         .saturating_sub(right_link_count);
 
     let is_in_range = range.contains(&node_key);
+
+    // Reject value shapes the count-offset proof flow does not yet
+    // support, so the prover surfaces an explicit `NotSupported`
+    // instead of producing a proof that silently diverges from regular
+    // GroveDB query semantics. Three cases, each pinned to a finding
+    // in the PR review:
+    //
+    //   • **NonCounted-wrapped in-range entry** (`own_struct == 0`):
+    //     regular GroveDB returns the NonCounted item's value; the
+    //     current count-offset flow has no way to emit it (the proof's
+    //     `KVDigestCount` carries only the key/hash, not the value).
+    //     Silently dropping it would be a correctness divergence — we
+    //     reject upfront instead.
+    //
+    //   • **Reference / ReferenceWithSumItem** in-range entry: regular
+    //     GroveDB's reference post-pass dereferences these into the
+    //     target's value bytes. The count-offset short-circuit returns
+    //     before that post-pass, so a verified result would contain
+    //     the raw `Element::Reference` rather than the target. Reject.
+    //
+    //   • **Non-empty tree** in-range entry: V1 strict-mode requires a
+    //     `KVValueHashFeatureTypeWithChildHash` proof node for these,
+    //     which the count-offset prover doesn't emit. The verifier
+    //     would reject the resulting proof anyway; rejecting at prove
+    //     time saves the work of producing an honest-but-unverifiable
+    //     proof.
+    //
+    // Lifting any of these is straightforward future work: emit the
+    // appropriate node variant and update the verifier symmetrically.
+    if is_in_range {
+        if own_struct == 0 {
+            return Err(Error::InvalidProofError(
+                "count-offset paginated proofs do not yet support NonCounted-wrapped \
+                 in-range entries (regular GroveDB query semantics return their values, \
+                 but this proof flow has no way to emit those without changing the wire \
+                 format)"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let value_bytes = walker.tree().value_as_slice();
+        match Element::deserialize(value_bytes, grove_version) {
+            Ok(elem) => {
+                let inner = elem.into_underlying();
+                if inner.is_reference() {
+                    return Err(Error::InvalidProofError(
+                        "count-offset paginated proofs do not yet support \
+                         Reference / ReferenceWithSumItem in-range entries — the regular \
+                         flow's reference post-pass isn't applied on the count-offset \
+                         short-circuit, so a verified result would expose the raw \
+                         Element::Reference rather than the dereferenced target"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+                if inner.is_non_empty_tree() {
+                    return Err(Error::InvalidProofError(
+                        "count-offset paginated proofs do not yet support non-empty tree \
+                         return values — the prover doesn't emit \
+                         KVValueHashFeatureTypeWithChildHash for these, which V1 \
+                         strict-mode requires"
+                            .to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            }
+            Err(_) => {
+                // Raw / non-Element value bytes — accept (this is the
+                // path raw merk users hit; they get tamper-resistant
+                // KVCount emission and that's it).
+            }
+        }
+    }
 
     // The two children get traversed in direction order. For ascending
     // (left_to_right = true), first = left, second = right. For

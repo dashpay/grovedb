@@ -744,30 +744,162 @@ mod tests {
             // the non-empty tree).
             SizedQuery::new(q, Some(1), Some(1)),
         );
-        let proof = db.prove_query(&path_query, None, v);
-        // The prover may either error (it doesn't currently — the
-        // emitter happily produces a tree-element node) or succeed;
-        // the verifier MUST reject the tree-element return with
-        // `Error::NotSupported`.
-        match proof.unwrap() {
-            Ok(bytes) => {
-                let result = GroveDb::verify_query_raw(&bytes, &path_query, v);
-                assert!(
-                    matches!(result, Err(crate::Error::NotSupported(_))),
-                    "verifier must reject non-empty tree return in count-offset; got {:?}",
-                    result
-                );
-            }
-            Err(e) => {
-                // Acceptable alternative: prover refuses up-front.
-                let msg = format!("{}", e);
-                assert!(
-                    msg.contains("tree") || msg.contains("count-offset"),
-                    "prover rejection should mention the underlying limitation; got {}",
-                    msg
-                );
-            }
-        }
+        // The prover now rejects this case up-front via the merk-level
+        // descent check — it refuses to produce an honest proof that
+        // the verifier would later reject. We assert the prover-side
+        // rejection specifically.
+        let result = db.prove_query(&path_query, None, v).unwrap();
+        let err = result.expect_err("prover must reject non-empty tree return");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("non-empty tree"),
+            "prover rejection should mention the non-empty tree limitation; got {}",
+            msg
+        );
+    }
+
+    /// Prover-side rejection for `NonCounted`-wrapped in-range entries.
+    /// Earlier drafts silently dropped these from the result (own_count
+    /// = 0 → no return); the merk prover now refuses to descend through
+    /// them, surfacing the divergence from regular-GroveDB semantics
+    /// explicitly.
+    #[test]
+    fn rejects_count_offset_with_non_counted_entry() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert count tree");
+
+        // Fixture: a = counted Item, b = NonCounted(Item), c = counted Item.
+        // With offset=1, the prover descends through b (skipping
+        // counted items in the tree's count-aware order). Hitting b
+        // must surface as an error rather than silently producing a
+        // proof that drops it.
+        db.insert(
+            &[b"counts"],
+            b"a",
+            Element::new_item(b"v_a".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert a");
+        db.insert(
+            &[b"counts"],
+            b"b",
+            Element::new_non_counted(Element::new_item(b"v_b".to_vec())).expect("non_counted wrap"),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert NonCounted(b)");
+        db.insert(
+            &[b"counts"],
+            b"c",
+            Element::new_item(b"v_c".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert c");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(2), Some(1)),
+        );
+        let result = db.prove_query(&path_query, None, v).unwrap();
+        let err = result.expect_err("prover must reject NonCounted in-range entry");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("NonCounted"),
+            "prover rejection should mention NonCounted; got {}",
+            msg
+        );
+    }
+
+    /// Prover-side rejection for `Reference` in-range entries. Earlier
+    /// drafts returned the raw `Element::Reference` bytes verbatim
+    /// because the count-offset short-circuit doesn't run the regular
+    /// flow's reference post-pass. The prover now refuses to emit
+    /// these.
+    #[test]
+    fn rejects_count_offset_with_reference_entry() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        // The reference target.
+        db.insert(
+            &[b"counts"],
+            b"a",
+            Element::new_item(b"target_value".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert a");
+        // The reference pointing at "a".
+        use crate::reference_path::ReferencePathType;
+        db.insert(
+            &[b"counts"],
+            b"b",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"counts".to_vec(),
+                b"a".to_vec(),
+            ])),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert reference b");
+        db.insert(
+            &[b"counts"],
+            b"c",
+            Element::new_item(b"v_c".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert c");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(2), Some(1)),
+        );
+        let result = db.prove_query(&path_query, None, v).unwrap();
+        let err = result.expect_err("prover must reject Reference in-range entry");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("Reference"),
+            "prover rejection should mention Reference; got {}",
+            msg
+        );
     }
 
     // ──────── check_count_offset_target_tree_type error normalization ────────

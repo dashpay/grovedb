@@ -480,11 +480,10 @@ fn classify_self<'a>(
 ) -> Result<BoundaryKind<'a>, Error> {
     match node {
         Node::KVDigestCount(_, _, _) => {
-            // KVDigestCount sits at five possible positions:
+            // KVDigestCount sits at four allowed positions:
             //   - Out-of-range path node (own=0 OR own=1 — the value
             //     happens to be out of the range — both fine, no
             //     mutation)
-            //   - In-range NonCounted entry (own=0, no mutation)
             //   - In-range counted entry, offset window (own=1, consume
             //     offset slot)
             //   - In-range counted entry, past limit (own=1, no
@@ -494,8 +493,24 @@ fn classify_self<'a>(
             //     instead. apply_self_state catches this case via the
             //     "digest at offset=0 with limit slots remaining"
             //     check.
+            //
+            // **Rejected**: in-range with `own_count == 0` (a
+            // NonCounted-wrapped entry inside the range). The
+            // count-offset prover refuses to descend through these and
+            // surfaces `NotSupported` instead — see the rejection in
+            // `emit_count_offset_proof`. Encountering one here means
+            // either a corrupt prover output or a forged proof
+            // attempting to slip a NonCounted item through.
             if in_range && own_count == 1 {
                 Ok(BoundaryKind::InRangeCountedDigest)
+            } else if in_range && own_count == 0 {
+                Err(Error::InvalidProofError(
+                    "count-offset proof: KVDigestCount at in-range position with \
+                     own_count=0 (NonCounted-wrapped entry) — count-offset proofs \
+                     don't yet support these; an honest prover refuses to descend \
+                     through them"
+                        .to_string(),
+                ))
             } else {
                 Ok(BoundaryKind::PathLikeOrNonCounted)
             }

@@ -503,22 +503,67 @@ impl GroveDb {
         // latter is wrong for tree-flavored entries (whose committed
         // value-hash is `combine_hash(H(value), child_root)`).
         //
-        // Non-empty tree returned items are rejected here: this PR's
-        // count-offset prover never emits the
-        // `KVValueHashFeatureTypeWithChildHash` node a non-empty tree
-        // return would need for V1 strict-mode soundness, so
-        // accepting one would silently bypass the child-hash invariant
-        // the regular flow enforces. Items, references, and empty
-        // trees inside a count tree are fine.
+        // Defense-in-depth: reject any returned value whose deserialized
+        // element type is one of the three shapes the count-offset
+        // proof flow doesn't yet support. The prover-side checks in
+        // `emit_count_offset_proof` already block these, so an honest
+        // proof will never reach this loop with them — but a forged
+        // proof might, and we don't want to silently pass tampered
+        // values through. The three rejected shapes are:
+        //
+        //   • **NonCounted-wrapped** entries — silently dropped in
+        //     normal traversal (own_count = 0) and not surfaced via
+        //     the merk's `returned_items`. If one appears here, the
+        //     proof was forged.
+        //   • **Reference / ReferenceWithSumItem** — would need the
+        //     regular flow's reference post-pass to dereference the
+        //     target; we don't run that on the count-offset
+        //     short-circuit, so a raw reference here would be returned
+        //     verbatim. Reject.
+        //   • **Non-empty tree** — V1 strict-mode would require a
+        //     `KVValueHashFeatureTypeWithChildHash` proof node here;
+        //     accepting one without that would silently bypass the
+        //     child-hash invariant the regular flow enforces.
         for item in count_offset_result.returned_items.iter() {
-            if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version)
-                && elem.into_underlying().is_non_empty_tree()
-            {
-                return Err(Error::NotSupported(format!(
-                    "count-offset paginated proofs do not yet support \
-                     non-empty tree return values (key {})",
-                    hex::encode(&item.key)
-                )));
+            if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version) {
+                // NonCounted-wrapped values are checked **before**
+                // unwrapping via `into_underlying`, since the wrapper
+                // itself is the rejected shape. The merk-level prover
+                // already refuses to emit NonCounted entries as
+                // value-bearing nodes, so an honest proof can never
+                // surface one here. Reject as `InvalidProof`
+                // (forgery) rather than `NotSupported` to make the
+                // distinction visible.
+                if elem.is_non_counted() {
+                    return Err(Error::InvalidProof(
+                        query.clone(),
+                        format!(
+                            "count-offset paginated proofs do not surface \
+                             NonCounted-wrapped entries in returned items — proof at \
+                             key {} appears forged",
+                            hex::encode(&item.key)
+                        ),
+                    ));
+                }
+                let inner = elem.into_underlying();
+                if inner.is_non_empty_tree() {
+                    return Err(Error::NotSupported(format!(
+                        "count-offset paginated proofs do not yet support \
+                         non-empty tree return values (key {})",
+                        hex::encode(&item.key)
+                    )));
+                }
+                if inner.is_reference() {
+                    return Err(Error::NotSupported(format!(
+                        "count-offset paginated proofs do not yet support \
+                         Reference / ReferenceWithSumItem return values (key {}); the \
+                         regular flow's reference post-pass isn't applied on the \
+                         count-offset short-circuit, so an accepted reference here \
+                         would surface the raw Element::Reference rather than the \
+                         dereferenced target",
+                        hex::encode(&item.key)
+                    )));
+                }
             }
             let proved_key_optional_value = grovedb_merk::proofs::query::ProvedKeyOptionalValue {
                 key: item.key.clone(),
