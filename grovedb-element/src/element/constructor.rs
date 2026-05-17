@@ -509,6 +509,10 @@ impl Element {
     /// Use `into_non_counted` to wrap idempotently when `inner` may already
     /// be `NonCounted`; use that helper's `Result` return for the
     /// cross-wrapper case.
+    ///
+    /// Note: at insert time the parent must be `CountTree` or
+    /// `CountSumTree` (the non-provable count-bearing variants). Provable
+    /// count parents reject the wrapper at the merk-layer insert guard.
     pub fn new_non_counted(inner: Element) -> Result<Self, ElementError> {
         if matches!(
             inner,
@@ -609,9 +613,12 @@ impl Element {
     /// any wrapper (`NonCounted`, `NotSummed`, `NotCountedOrSummed`) — is
     /// rejected with `InvalidInput`.
     ///
-    /// Note: at insert time the parent must be `CountSumTree`,
-    /// `ProvableCountSumTree`, or `ProvableCountProvableSumTree`. The
-    /// merk-layer insert guard enforces that.
+    /// Note: at insert time the parent must be `CountSumTree`. Provable
+    /// count-and-sum parents (`ProvableCountSumTree`,
+    /// `ProvableCountProvableSumTree`) reject the wrapper at the
+    /// merk-layer insert guard — they cryptographically commit the
+    /// count (and, for PCPS, the sum) into every node hash and must
+    /// reflect actual contents.
     pub fn new_not_counted_or_summed(inner: Element) -> Result<Self, ElementError> {
         match inner {
             Element::SumTree(..)

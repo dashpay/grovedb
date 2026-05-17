@@ -17,8 +17,15 @@
 //!    the same content.
 //! 4. Headline: the same tree produces VERIFIABLE count proofs AND
 //!    verifiable sum proofs against the same root hash.
-//! 5. Wrapper interactions: `NonCounted` / `NotSummed` /
-//!    `NotCountedOrSummed` wrap correctly and behave per their contracts.
+//! 5. Wrapper interactions:
+//!    - `NonCounted` / `NotCountedOrSummed` REJECTED inside a PCPS
+//!      parent — PCPS commits its count (and sum) into every node
+//!      hash, so a suppressed-child wrapper would create a
+//!      cryptographically-committed count/sum that disagrees with the
+//!      actual element contents. Parallels the rejection rule from
+//!      PR #672 for `ProvableCountTree` / `ProvableCountSumTree`.
+//!    - `NotSummed` still ACCEPTED in a PCPS parent (consistent with
+//!      PR #672 deferring the NotSummed-in-Provable* question).
 
 #[cfg(test)]
 mod tests {
@@ -297,11 +304,16 @@ mod tests {
         assert_eq!(proven_sum, 150);
     }
 
-    /// 5. Wrapper compatibility: a `NonCounted(ProvableCountProvableSumTree)`
-    /// is acceptable inside a count-bearing parent (PCPS is count-bearing,
-    /// and `NonCounted` suppresses its count contribution to the parent).
+    /// 5a. Wrapper rejection: a `NonCounted(...)` child must NOT be
+    /// insertable under a `ProvableCountProvableSumTree` parent. PCPS
+    /// commits its aggregate count into every node hash via
+    /// `node_hash_with_count_and_sum`, so a `NonCounted` child would
+    /// commit a cryptographic count that diverges from the actual
+    /// number of stored elements — the same footgun PR #672 closed
+    /// for `ProvableCountTree` / `ProvableCountSumTree`. This test
+    /// pins the rejection at the GroveDB insert surface.
     #[test]
-    fn non_counted_pcps_inserts_into_pcps_parent_without_incrementing_count() {
+    fn non_counted_rejected_under_provable_count_provable_sum_tree_parent() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
@@ -314,36 +326,29 @@ mod tests {
             grove_version,
         )
         .unwrap()
-        .expect("insert outer");
+        .expect("insert outer pcps");
 
-        // A non-counted PCPS as inner: count contribution suppressed.
-        let nc_inner = Element::new_non_counted(Element::empty_provable_count_provable_sum_tree())
-            .expect("wrap NonCounted");
-        db.insert(
-            &[b"outer".as_slice()],
-            b"inner",
-            nc_inner,
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert non-counted inner pcps");
-
-        // Outer's count should be 0 — the NonCounted wrapper suppresses
-        // the implicit +1 from a tree subtree.
-        let outer = db
-            .get(&[] as &[&[u8]], b"outer", None, grove_version)
-            .unwrap()
-            .expect("get outer");
-        let (count, sum) = outer
-            .as_provable_count_provable_sum_tree_value()
-            .expect("pcps");
-        assert_eq!(
-            count, 0,
-            "NonCounted wrapper must suppress the inner tree's +1 contribution"
+        // NonCounted wrapping a sum-bearing tree (a fresh SumTree) —
+        // the wrapper is well-formed at construction; what we're
+        // testing is the *parent's* rejection at insert. Use SumTree
+        // as the inner since NonCounted accepts any tree variant
+        // structurally.
+        let nc_inner =
+            Element::new_non_counted(Element::empty_sum_tree()).expect("wrap NonCounted");
+        let result = db
+            .insert(
+                &[b"outer".as_slice()],
+                b"inner",
+                nc_inner,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "NonCounted must be rejected under a ProvableCountProvableSumTree parent — got Ok"
         );
-        assert_eq!(sum, 0);
     }
 
     /// 6. `NotSummed(ProvableCountProvableSumTree)` is insertable in
@@ -426,10 +431,16 @@ mod tests {
         assert_eq!(inner_sum, 100);
     }
 
-    /// 7. `NotCountedOrSummed(PCPS)` is insertable in PCPS parents and
-    /// suppresses BOTH count and sum contributions.
+    /// 5b. Wrapper rejection: a `NotCountedOrSummed(...)` child must NOT
+    /// be insertable under a `ProvableCountProvableSumTree` parent.
+    /// PCPS commits BOTH its aggregate count and its aggregate sum
+    /// into every node hash via `node_hash_with_count_and_sum`; a
+    /// `NotCountedOrSummed` child would commit cryptographic
+    /// aggregates on both axes that diverge from the actual element
+    /// contents. Parallels PR #672's rejection rule for
+    /// `ProvableCountSumTree`.
     #[test]
-    fn not_counted_or_summed_pcps_inserts_into_pcps_parent_and_zeros_both_axes() {
+    fn not_counted_or_summed_rejected_under_provable_count_provable_sum_tree_parent() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
@@ -442,44 +453,29 @@ mod tests {
             grove_version,
         )
         .unwrap()
-        .expect("insert outer");
+        .expect("insert outer pcps");
 
-        let ncos_inner =
-            Element::new_not_counted_or_summed(Element::empty_provable_count_provable_sum_tree())
-                .expect("wrap NotCountedOrSummed");
-        db.insert(
-            &[b"outer".as_slice()],
-            b"inner",
-            ncos_inner,
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert ncos inner pcps");
-
-        // Add a sum item to the inner. With NCOS wrapper, neither the
-        // +1 count nor the +50 sum should propagate.
-        db.insert(
-            &[b"outer".as_slice(), b"inner".as_slice()],
-            b"a",
-            Element::new_sum_item(50),
-            None,
-            None,
-            grove_version,
-        )
-        .unwrap()
-        .expect("insert sum item");
-
-        let outer = db
-            .get(&[] as &[&[u8]], b"outer", None, grove_version)
-            .unwrap()
-            .expect("get outer");
-        let (count, sum) = outer
-            .as_provable_count_provable_sum_tree_value()
-            .expect("pcps");
-        assert_eq!(count, 0, "NotCountedOrSummed must suppress count");
-        assert_eq!(sum, 0, "NotCountedOrSummed must suppress sum");
+        // NotCountedOrSummed wrapping a sum-bearing tree (a fresh
+        // SumTree, the simplest acceptable inner). The wrapper is
+        // well-formed at construction; what we're testing is the
+        // *parent's* rejection at insert.
+        let ncos_inner = Element::new_not_counted_or_summed(Element::empty_sum_tree())
+            .expect("wrap NotCountedOrSummed");
+        let result = db
+            .insert(
+                &[b"outer".as_slice()],
+                b"inner",
+                ncos_inner,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "NotCountedOrSummed must be rejected under a ProvableCountProvableSumTree parent — \
+             got Ok"
+        );
     }
 
     /// Shared body of the PCPS reference proof round-trip tests

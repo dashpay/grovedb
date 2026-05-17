@@ -179,11 +179,15 @@ impl TreeType {
     }
 
     /// Returns whether this tree type carries BOTH a count and a sum
-    /// aggregate. Only these tree types may host
-    /// `Element::NotCountedOrSummed` children — in any other parent the
-    /// wrapper would suppress an aggregate the parent doesn't track, so it
-    /// is rejected at insert time. Equivalent to `is_count_bearing() &&
-    /// is_sum_bearing()`.
+    /// aggregate. Equivalent to `is_count_bearing() && is_sum_bearing()`.
+    ///
+    /// NOTE: this predicate intentionally still includes
+    /// `ProvableCountSumTree`. It answers the structural question
+    /// "does this tree track both axes?" — used by aggregate logic.
+    /// For the wrapper-acceptance question ("may this parent host a
+    /// `NotCountedOrSummed` child?"), use
+    /// `accepts_not_counted_or_summed_children`, which additionally
+    /// rejects the `Provable*` variants.
     pub const fn is_count_and_sum_bearing(&self) -> bool {
         matches!(
             self,
@@ -191,6 +195,33 @@ impl TreeType {
                 | TreeType::ProvableCountSumTree
                 | TreeType::ProvableCountProvableSumTree
         )
+    }
+
+    /// Returns whether this parent tree type may host an
+    /// `Element::NonCounted` child.
+    ///
+    /// Stricter than `is_count_bearing`: the wrapper is allowed only in
+    /// the non-provable count-bearing trees (`CountTree`, `CountSumTree`).
+    /// `ProvableCountTree` / `ProvableCountSumTree` bind their aggregate
+    /// count into every node's hash via `node_hash_with_count`, so a
+    /// `NonCounted` child would commit a cryptographic count that
+    /// diverges from the actual number of stored elements — confusing
+    /// for callers and a footgun for proof-driven readers. The wrapper
+    /// is rejected at insert time in those parents.
+    pub const fn accepts_non_counted_children(&self) -> bool {
+        matches!(self, TreeType::CountTree | TreeType::CountSumTree)
+    }
+
+    /// Returns whether this parent tree type may host an
+    /// `Element::NotCountedOrSummed` child.
+    ///
+    /// Stricter than `is_count_and_sum_bearing`: only the non-provable
+    /// count-and-sum-bearing tree (`CountSumTree`) is accepted.
+    /// `ProvableCountSumTree` is excluded for the same reason as in
+    /// `accepts_non_counted_children` — the count (and sum) are
+    /// cryptographically committed and must reflect actual contents.
+    pub const fn accepts_not_counted_or_summed_children(&self) -> bool {
+        matches!(self, TreeType::CountSumTree)
     }
 
     /// Returns whether this tree type allows sum items as children.
@@ -448,6 +479,68 @@ mod tests {
                 tt
             );
         }
+    }
+
+    #[test]
+    fn accepts_non_counted_children() {
+        // Allowed: non-provable count-bearing parents.
+        assert!(TreeType::CountTree.accepts_non_counted_children());
+        assert!(TreeType::CountSumTree.accepts_non_counted_children());
+        // Rejected: provable count-bearing parents (cryptographic count
+        // would diverge from actual element count). Includes the
+        // dual-axis PCPS host — its count is hash-committed too.
+        assert!(!TreeType::ProvableCountTree.accepts_non_counted_children());
+        assert!(!TreeType::ProvableCountSumTree.accepts_non_counted_children());
+        assert!(!TreeType::ProvableCountProvableSumTree.accepts_non_counted_children());
+        // Everything else: also rejected.
+        assert!(!TreeType::NormalTree.accepts_non_counted_children());
+        assert!(!TreeType::SumTree.accepts_non_counted_children());
+        assert!(!TreeType::BigSumTree.accepts_non_counted_children());
+        assert!(!TreeType::CommitmentTree(0).accepts_non_counted_children());
+        assert!(!TreeType::MmrTree.accepts_non_counted_children());
+        assert!(!TreeType::BulkAppendTree(0).accepts_non_counted_children());
+        assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).accepts_non_counted_children());
+        assert!(!TreeType::ProvableSumTree.accepts_non_counted_children());
+
+        // Implication: every parent that accepts a NonCounted child is
+        // count-bearing, but not vice-versa (Provable* are count-bearing
+        // and reject the wrapper).
+        for tt in [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+        ] {
+            if tt.accepts_non_counted_children() {
+                assert!(tt.is_count_bearing(), "{:?}", tt);
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_not_counted_or_summed_children() {
+        // Only CountSumTree accepts NotCountedOrSummed.
+        assert!(TreeType::CountSumTree.accepts_not_counted_or_summed_children());
+        // Provable count-and-sum-bearing parents are rejected — committed
+        // count (and, for PCPS, sum) would diverge from actual contents.
+        assert!(!TreeType::ProvableCountSumTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::ProvableCountProvableSumTree.accepts_not_counted_or_summed_children());
+        // Single-axis trees: rejected (would suppress an axis they don't track).
+        assert!(!TreeType::NormalTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::SumTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::BigSumTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::CountTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::ProvableCountTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::CommitmentTree(0).accepts_not_counted_or_summed_children());
+        assert!(!TreeType::MmrTree.accepts_not_counted_or_summed_children());
+        assert!(!TreeType::BulkAppendTree(0).accepts_not_counted_or_summed_children());
+        assert!(!TreeType::DenseAppendOnlyFixedSizeTree(0).accepts_not_counted_or_summed_children());
+        assert!(!TreeType::ProvableSumTree.accepts_not_counted_or_summed_children());
     }
 
     #[test]
