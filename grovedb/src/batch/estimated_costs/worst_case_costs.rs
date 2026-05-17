@@ -28,7 +28,8 @@ use crate::Element;
 #[cfg(feature = "minimal")]
 use crate::{
     batch::{
-        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath, TreeCache,
+        key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
+        RefreshReferenceMode, TreeCache,
     },
     Error, GroveDb,
 };
@@ -112,7 +113,7 @@ impl GroveOp {
             GroveOp::RefreshReference {
                 reference_path_type,
                 max_reference_hop,
-                sum_value,
+                mode,
                 flags,
                 non_counted,
                 ..
@@ -120,18 +121,30 @@ impl GroveOp {
                 // Build the element shape the apply path will write —
                 // see the corresponding comment in the average-case
                 // estimator.
-                let inner = match sum_value {
-                    None => Element::Reference(
+                let inner = match mode {
+                    RefreshReferenceMode::PlainReferenceTrusted
+                    | RefreshReferenceMode::PlainReferenceUntrusted => Element::Reference(
                         reference_path_type.clone(),
                         *max_reference_hop,
                         flags.clone(),
                     ),
-                    Some(sum) => Element::ReferenceWithSumItem(
-                        reference_path_type.clone(),
-                        *max_reference_hop,
-                        *sum,
-                        flags.clone(),
-                    ),
+                    RefreshReferenceMode::SumItemReferenceTrusted(sum)
+                    | RefreshReferenceMode::SumItemReferenceUntrustedValueUpdate(sum) => {
+                        Element::ReferenceWithSumItem(
+                            reference_path_type.clone(),
+                            *max_reference_hop,
+                            *sum,
+                            flags.clone(),
+                        )
+                    }
+                    RefreshReferenceMode::SumItemReferenceUntrustedNoValueUpdate => {
+                        Element::ReferenceWithSumItem(
+                            reference_path_type.clone(),
+                            *max_reference_hop,
+                            0,
+                            flags.clone(),
+                        )
+                    }
                 };
                 let element = if *non_counted {
                     Element::NonCounted(Box::new(inner))

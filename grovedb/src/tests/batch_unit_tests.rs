@@ -108,10 +108,9 @@ mod tests {
                 // 5
                 reference_path_type: ReferencePathType::AbsolutePathReference(vec![]),
                 max_reference_hop: None,
-                sum_value: None,
+                mode: crate::batch::RefreshReferenceMode::PlainReferenceUntrusted,
                 flags: None,
                 non_counted: false,
-                trust_refresh_reference: false,
             },
             GroveOp::Replace {
                 // 6

@@ -422,22 +422,24 @@ mod tests {
         assert_eq!(agg, AggregateData::Sum(50));
     }
 
-    /// Structural regression test for the unification of
-    /// `GroveOp::RefreshReference` and the (now-removed)
-    /// `GroveOp::RefreshReferenceWithSumItem` into a single variant
-    /// distinguished by `sum_value: Option<SumValue>`.
+    /// Structural regression test for the unified
+    /// `GroveOp::RefreshReference` variant + the
+    /// [`RefreshReferenceMode`] enum that encodes both on-disk shape
+    /// and trust mode in 5 variants. The (NoValueUpdate, trusted)
+    /// combination doesn't exist by construction.
     ///
-    /// `refresh_reference_op` and `refresh_reference_with_sum_item_op`
-    /// must both construct `GroveOp::RefreshReference`, distinguished
-    /// only by whether `sum_value` is `None` or `Some(..)`. The op-tag
-    /// is the same in both cases.
+    /// All three public constructors (`refresh_reference_op`,
+    /// `refresh_reference_with_sum_item_op`,
+    /// `refresh_reference_with_sum_item_keep_sum_op`) must build the
+    /// same `GroveOp::RefreshReference`, distinguished only by the
+    /// `mode` variant.
     #[test]
     fn refresh_reference_constructors_share_unified_variant() {
-        use crate::batch::GroveOp;
+        use crate::batch::{GroveOp, RefreshReferenceMode};
 
         let ref_path = ReferencePathType::AbsolutePathReference(vec![b"target".to_vec()]);
 
-        let plain = QualifiedGroveDbOp::refresh_reference_op(
+        let plain_trusted = QualifiedGroveDbOp::refresh_reference_op(
             vec![TEST_LEAF.to_vec()],
             b"link".to_vec(),
             ref_path.clone(),
@@ -447,10 +449,20 @@ mod tests {
         )
         .op;
 
-        let with_sum = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+        let plain_untrusted = QualifiedGroveDbOp::refresh_reference_op(
             vec![TEST_LEAF.to_vec()],
             b"link".to_vec(),
-            ref_path,
+            ref_path.clone(),
+            Some(2),
+            None,
+            /* trust_refresh_reference = */ false,
+        )
+        .op;
+
+        let with_sum_trusted = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            ref_path.clone(),
             Some(2),
             42,
             None,
@@ -459,50 +471,76 @@ mod tests {
         )
         .op;
 
-        // Both are `GroveOp::RefreshReference`.
-        assert!(
-            matches!(plain, GroveOp::RefreshReference { .. }),
-            "plain constructor must build unified RefreshReference"
+        let with_sum_untrusted = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            ref_path.clone(),
+            Some(2),
+            42,
+            None,
+            /* non_counted = */ false,
+            /* trust_refresh_reference = */ false,
+        )
+        .op;
+
+        let keep_sum = QualifiedGroveDbOp::refresh_reference_with_sum_item_keep_sum_op(
+            vec![TEST_LEAF.to_vec()],
+            b"link".to_vec(),
+            ref_path,
+            Some(2),
+            None,
+            /* non_counted = */ false,
+        )
+        .op;
+
+        // All five are `GroveOp::RefreshReference`.
+        for op in [
+            &plain_trusted,
+            &plain_untrusted,
+            &with_sum_trusted,
+            &with_sum_untrusted,
+            &keep_sum,
+        ] {
+            assert!(
+                matches!(op, GroveOp::RefreshReference { .. }),
+                "all constructors must build unified RefreshReference; got {op:?}"
+            );
+        }
+
+        // `mode` discriminates the five shapes.
+        let mode_of = |op: &GroveOp| -> RefreshReferenceMode {
+            let GroveOp::RefreshReference { mode, .. } = op else {
+                unreachable!()
+            };
+            mode.clone()
+        };
+        assert_eq!(
+            mode_of(&plain_trusted),
+            RefreshReferenceMode::PlainReferenceTrusted,
         );
-        assert!(
-            matches!(with_sum, GroveOp::RefreshReference { .. }),
-            "sum-item constructor must build unified RefreshReference"
+        assert_eq!(
+            mode_of(&plain_untrusted),
+            RefreshReferenceMode::PlainReferenceUntrusted,
+        );
+        assert_eq!(
+            mode_of(&with_sum_trusted),
+            RefreshReferenceMode::SumItemReferenceTrusted(42),
+        );
+        assert_eq!(
+            mode_of(&with_sum_untrusted),
+            RefreshReferenceMode::SumItemReferenceUntrustedValueUpdate(42),
+        );
+        assert_eq!(
+            mode_of(&keep_sum),
+            RefreshReferenceMode::SumItemReferenceUntrustedNoValueUpdate,
         );
 
-        // `sum_value` discriminates the two shapes.
-        let GroveOp::RefreshReference {
-            sum_value: plain_sum,
-            non_counted: plain_nc,
-            ..
-        } = plain
-        else {
-            unreachable!()
-        };
-        let GroveOp::RefreshReference {
-            sum_value: sum_sum,
-            non_counted: sum_nc,
-            ..
-        } = with_sum
-        else {
-            unreachable!()
-        };
-        assert_eq!(
-            plain_sum, None,
-            "refresh_reference_op must set sum_value=None"
-        );
-        assert!(
-            !plain_nc,
-            "refresh_reference_op must set non_counted=false (use the sum-item constructor to opt in)"
-        );
-        assert_eq!(
-            sum_sum,
-            Some(42),
-            "refresh_reference_with_sum_item_op must set sum_value=Some(..)"
-        );
-        assert!(
-            sum_nc,
-            "refresh_reference_with_sum_item_op must thread non_counted through"
-        );
+        // `is_trusted` helper agrees.
+        assert!(mode_of(&plain_trusted).is_trusted());
+        assert!(!mode_of(&plain_untrusted).is_trusted());
+        assert!(mode_of(&with_sum_trusted).is_trusted());
+        assert!(!mode_of(&with_sum_untrusted).is_trusted());
+        assert!(!mode_of(&keep_sum).is_trusted());
     }
 
     /// The sum-item variant of `RefreshReference` updates the link AND the
@@ -914,11 +952,12 @@ mod tests {
     }
 
     /// Debug formatter for the unified `GroveOp::RefreshReference`
-    /// produces a string containing the path, max_hop, sum, and trust
-    /// flag — exercises the `fmt::Debug` arm for the sum-item shape.
+    /// produces a string containing the path, max_hop, and mode —
+    /// exercises the `fmt::Debug` arm for the trusted sum-item shape.
     /// The op-name label switches between "Refresh Reference" and
-    /// "Refresh Reference With Sum Item" depending on whether
-    /// `sum_value` is `Some` or `None`.
+    /// "Refresh Reference With Sum Item" depending on the
+    /// [`RefreshReferenceMode`]. Trust mode is encoded in the mode
+    /// variant name (no separate `trust_reference` field).
     #[test]
     fn refresh_reference_with_sum_item_debug_format() {
         let op = QualifiedGroveDbOp::refresh_reference_with_sum_item_op(
@@ -938,12 +977,8 @@ mod tests {
         );
         assert!(s.contains("max_hop"), "Debug should mention max_hop: {s}");
         assert!(
-            s.contains("sum Some(42)"),
-            "Debug should include the sum as Option: {s}",
-        );
-        assert!(
-            s.contains("trust_reference true"),
-            "Debug should include trust flag: {s}"
+            s.contains("mode SumItemReferenceTrusted(42)"),
+            "Debug should include the mode + sum: {s}",
         );
     }
 
@@ -1922,6 +1957,75 @@ mod tests {
         assert!(
             issues.is_empty(),
             "verify_grovedb must be clean post-batch; got: {issues:?}"
+        );
+    }
+
+    /// `refresh_reference_with_sum_item_keep_sum_op` (mode =
+    /// `SumItemReferenceNoValueUpdate`) refreshes the on-disk
+    /// `value_hash` of a `ReferenceWithSumItem` without changing the
+    /// carried sum. The parent's running sum stays the same.
+    #[test]
+    fn batch_refresh_keep_sum_preserves_on_disk_sum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"st",
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum tree");
+        insert_target_item(&db, [TEST_LEAF].as_ref(), b"target", b"x", grove_version);
+
+        // Seed a RefWithSumItem with sum=17. Parent aggregate = 17.
+        let ref_path =
+            ReferencePathType::AbsolutePathReference(vec![TEST_LEAF.to_vec(), b"target".to_vec()]);
+        db.insert(
+            [TEST_LEAF, b"st"].as_ref(),
+            b"link",
+            Element::new_reference_with_sum_item(ref_path.clone(), 17),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed link");
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"st"], grove_version),
+            AggregateData::Sum(17),
+        );
+
+        let refresh = QualifiedGroveDbOp::refresh_reference_with_sum_item_keep_sum_op(
+            vec![TEST_LEAF.to_vec(), b"st".to_vec()],
+            b"link".to_vec(),
+            ref_path.clone(),
+            None,
+            None,
+            /* non_counted = */ false,
+        );
+        db.apply_batch(vec![refresh], None, None, grove_version)
+            .unwrap()
+            .expect("keep-sum refresh succeeds");
+
+        // On-disk sum unchanged.
+        let raw = db
+            .get_raw(
+                [TEST_LEAF, b"st"].as_ref().into(),
+                b"link",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get_raw link");
+        assert_eq!(raw, Element::new_reference_with_sum_item(ref_path, 17));
+        assert_eq!(
+            open_merk_aggregate(&db, &[TEST_LEAF, b"st"], grove_version),
+            AggregateData::Sum(17),
+            "parent's sum aggregate must not move under keep-sum refresh",
         );
     }
 
