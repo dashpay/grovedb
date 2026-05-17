@@ -1554,6 +1554,231 @@ mod tests {
     }
 
     #[test]
+    fn prove_count_indexed_count_range_aggregate_on_non_cidx_target_errors() {
+        // Path points at TEST_LEAF (a regular Tree, not a cidx) — the
+        // primary-check guard in the builder must reject.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let result = db
+            .prove_count_indexed_count_range_aggregate(
+                [TEST_LEAF].as_ref(),
+                0,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(crate::Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("CountIndexedTree"),
+                    "expected message to mention CountIndexedTree, got {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn verify_count_indexed_count_range_aggregate_rejects_path_length_mismatch() {
+        // Honest proof for path = [TEST_LEAF, cidx]; verifier called
+        // with a 3-segment path. The layer-count check at the top of
+        // the verifier must reject before any merk-level work.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, c) in [(b"a".as_ref(), 1u64), (b"b", 5)] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let err = GroveDb::verify_count_indexed_count_range_aggregate(
+            &proof,
+            &[TEST_LEAF, b"cidx", b"extra"],
+            0,
+            100,
+        )
+        .expect_err("expected path-length mismatch");
+        match err {
+            crate::Error::CorruptedData(msg) => assert!(
+                msg.contains("layers but path has"),
+                "expected layer-count mismatch message, got {msg}"
+            ),
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn prove_and_verify_count_indexed_count_range_aggregate_through_nested_cidx_ancestor() {
+        // Same shape as
+        // `prove_count_indexed_top_k_round_trips_through_nested_cidx_ancestor`
+        // but for the aggregate-count flow. Covers the
+        // ancestor-cidx-secondary attestation path in
+        // `build_count_indexed_aggregate_count_proof` and the
+        // `combine_hash_three` chain in the verifier.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create inner cidx");
+        // Populate the inner cidx with explicit count_values so the
+        // count-range query has something to aggregate.
+        for (k, c) in [(b"a".as_ref(), 5u64), (b"b", 12), (b"c", 17), (b"d", 25)] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate inner cidx");
+        }
+
+        // Count entries in [10, 20]: b(12), c(17) → 2.
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+                10,
+                20,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove nested-cidx aggregate count");
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(
+            &proof,
+            &[TEST_LEAF, b"outer_cidx", b"inner_cidx"],
+            10,
+            20,
+        )
+        .expect("verify nested-cidx aggregate count");
+        assert_eq!(result.count, 2);
+        let expected_root = db.root_hash(None, grove_version).unwrap().expect("root");
+        assert_eq!(result.root_hash, expected_root);
+    }
+
+    #[test]
+    fn prove_and_verify_count_indexed_top_k_paginated_through_nested_cidx_ancestor() {
+        // Same shape as the existing nested-cidx top_k test, but using
+        // the paginated flow. Exercises the ancestor-cidx-secondary
+        // attestation branch in `build_count_indexed_paginated_proof`
+        // and the `combine_hash_three` chain in the paginated
+        // verifier.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer cidx");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer_cidx"].as_ref(),
+            b"inner_cidx",
+            Element::empty_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create inner cidx");
+        for (k, c) in [
+            (b"a".as_ref(), 5u64),
+            (b"b", 12),
+            (b"c", 17),
+            (b"d", 25),
+            (b"e", 30),
+        ] {
+            let ct = Element::new_count_tree_with_flags_and_count_value(None, c, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+                k,
+                ct,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate inner cidx");
+        }
+
+        // Descending walk: e(30), d(25), c(17), b(12), a(5).
+        // (k=2, offset=2) → skip e+d, return c+b.
+        let proof = db
+            .prove_count_indexed_top_k_paginated(
+                [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+                2,
+                2,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove nested-cidx paginated");
+        let result = GroveDb::verify_count_indexed_top_k_paginated(
+            &proof,
+            &[TEST_LEAF, b"outer_cidx", b"inner_cidx"],
+            2,
+            2,
+            true,
+        )
+        .expect("verify nested-cidx paginated");
+        assert_eq!(
+            result.entries,
+            vec![(17u64, b"c".to_vec()), (12u64, b"b".to_vec())]
+        );
+        assert_eq!(result.skipped, 2);
+        let expected_root = db.root_hash(None, grove_version).unwrap().expect("root");
+        assert_eq!(result.root_hash, expected_root);
+    }
+
+    #[test]
     fn count_indexed_count_range_filters_by_count() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
