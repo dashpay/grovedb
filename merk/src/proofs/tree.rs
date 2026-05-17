@@ -1108,6 +1108,143 @@ mod test {
         ));
     }
 
+    // ---------- Dual-axis (PCPS) Node-variant BST-order coverage ----------
+    //
+    // The execute_with_options BST-order match was extended to include
+    // KVCountSum / KVDigestCountSum / KVRefValueHashCountSum. These tests
+    // pin that extension for both Op::Push (monotonically-increasing
+    // keys) and Op::PushInverted (monotonically-decreasing keys),
+    // mirroring the existing single-axis Count and Sum coverage.
+
+    #[test]
+    fn execute_push_rejects_decreasing_kvcountsum_keys() {
+        // KVCountSum: same shape as KVCount but carries a (count, sum)
+        // pair. Decreasing-key proof must trip the BST-order check now
+        // that the dual-axis arm is in the match.
+        let proof = vec![
+            Op::Push(Node::KVCountSum(vec![3], vec![3], 1, 1)),
+            Op::Push(Node::KVCountSum(vec![2], vec![2], 1, 1)),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering"
+        ));
+    }
+
+    #[test]
+    fn execute_push_rejects_decreasing_kvdigestcountsum_keys() {
+        let proof = vec![
+            Op::Push(Node::KVDigestCountSum(vec![3], [0u8; 32], 1, 1)),
+            Op::Push(Node::KVDigestCountSum(vec![2], [0u8; 32], 1, 1)),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering"
+        ));
+    }
+
+    #[test]
+    fn execute_push_rejects_decreasing_kvrefvaluehashcountsum_keys() {
+        let proof = vec![
+            Op::Push(Node::KVRefValueHashCountSum(
+                vec![3],
+                vec![3],
+                [0u8; 32],
+                1,
+                1,
+            )),
+            Op::Push(Node::KVRefValueHashCountSum(
+                vec![2],
+                vec![2],
+                [0u8; 32],
+                1,
+                1,
+            )),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering"
+        ));
+    }
+
+    #[test]
+    fn execute_push_inverted_rejects_increasing_kvcountsum_keys() {
+        let proof = vec![
+            Op::PushInverted(Node::KVCountSum(vec![2], vec![2], 1, 1)),
+            Op::PushInverted(Node::KVCountSum(vec![3], vec![3], 1, 1)),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering inverted"
+        ));
+    }
+
+    #[test]
+    fn execute_push_inverted_rejects_increasing_kvdigestcountsum_keys() {
+        let proof = vec![
+            Op::PushInverted(Node::KVDigestCountSum(vec![2], [0u8; 32], 1, 1)),
+            Op::PushInverted(Node::KVDigestCountSum(vec![3], [0u8; 32], 1, 1)),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering inverted"
+        ));
+    }
+
+    #[test]
+    fn execute_push_inverted_rejects_increasing_kvrefvaluehashcountsum_keys() {
+        let proof = vec![
+            Op::PushInverted(Node::KVRefValueHashCountSum(
+                vec![2],
+                vec![2],
+                [0u8; 32],
+                1,
+                1,
+            )),
+            Op::PushInverted(Node::KVRefValueHashCountSum(
+                vec![3],
+                vec![3],
+                [0u8; 32],
+                1,
+                1,
+            )),
+        ];
+        let result = execute(proof.into_iter().map(Ok), false, |_| Ok(())).unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::InvalidProofError(s)) if s == "Incorrect key ordering inverted"
+        ));
+    }
+
+    /// Increasing dual-axis keys pass the Push BST-order check (no
+    /// rejection). The "rejects decreasing keys" tests above only
+    /// verify the negative side — this one pins the positive side.
+    #[test]
+    fn execute_push_accepts_increasing_dual_axis_keys() {
+        let proof = vec![
+            Op::Push(Node::KVCountSum(vec![1], vec![1], 1, 1)),
+            Op::Push(Node::KVDigestCountSum(vec![2], [0u8; 32], 1, 1)),
+            Op::Parent,
+            Op::Push(Node::KVRefValueHashCountSum(
+                vec![3],
+                vec![3],
+                [0u8; 32],
+                1,
+                1,
+            )),
+            Op::Child,
+        ];
+        let tree = execute(proof.into_iter().map(Ok), false, |_| Ok(()))
+            .unwrap()
+            .expect("monotonically increasing keys must reconstruct");
+        assert_eq!(tree.key(), Some(vec![2].as_slice()));
+    }
+
     #[test]
     fn execute_parent_inverted_attaches_right_child() {
         let proof = vec![

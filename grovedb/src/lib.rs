@@ -1705,6 +1705,111 @@ mod aggregate_consistency_labels_tests {
             aggregate_consistency_labels(&e, &AggregateData::NoAggregateData).expect("labels");
         assert!(labels.0.contains("element variant"));
     }
+
+    // --- ProvableCountProvableSumTree (dual-axis) -------------------------
+    //
+    // The new PCPS host carries `(count, sum)` recorded values that must
+    // line up with the inner Merk's `AggregateData::ProvableCountAndProvableSum`
+    // variant. The arm we added in `aggregate_consistency_labels` handles
+    // three cases:
+    //   1. Equal recorded vs. actual → returns None (no mismatch).
+    //   2. Equal recorded vs. actual diverging → returns labels.
+    //   3. Recorded == (0, 0) + inner aggregate == NoAggregateData → None
+    //      (empty-merk edge case).
+    //
+    // These tests pin each branch so future refactors of the helper can't
+    // silently break PCPS aggregate-consistency reporting.
+
+    #[test]
+    fn provable_count_provable_sum_tree_equal_recorded_and_actual_is_ok() {
+        let e = Element::ProvableCountProvableSumTree(None, 5, 42, None);
+        assert!(aggregate_consistency_labels(
+            &e,
+            &AggregateData::ProvableCountAndProvableSum(5, 42),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn provable_count_provable_sum_tree_count_mismatch_reports_labels() {
+        let e = Element::ProvableCountProvableSumTree(None, 5, 42, None);
+        let labels =
+            aggregate_consistency_labels(&e, &AggregateData::ProvableCountAndProvableSum(6, 42))
+                .expect("labels");
+        assert!(
+            labels
+                .0
+                .contains("ProvableCountProvableSumTree recorded count 5"),
+            "left label: {}",
+            labels.0
+        );
+        assert!(
+            labels
+                .1
+                .contains("ProvableCountAndProvableSum count 6 sum 42"),
+            "right label: {}",
+            labels.1
+        );
+    }
+
+    #[test]
+    fn provable_count_provable_sum_tree_sum_mismatch_reports_labels() {
+        let e = Element::ProvableCountProvableSumTree(None, 5, 42, None);
+        let labels =
+            aggregate_consistency_labels(&e, &AggregateData::ProvableCountAndProvableSum(5, -100))
+                .expect("labels");
+        assert!(
+            labels.0.contains("sum 42"),
+            "left label should contain recorded sum: {}",
+            labels.0
+        );
+        assert!(
+            labels.1.contains("sum -100"),
+            "right label should contain actual sum: {}",
+            labels.1
+        );
+    }
+
+    #[test]
+    fn provable_count_provable_sum_tree_zero_zero_with_no_aggregate_is_ok() {
+        // Empty-merk edge case: a freshly-inserted PCPS element has
+        // recorded (0, 0) and an inner merk reporting NoAggregateData.
+        // The dedicated arm we added must short-circuit this to None.
+        let e = Element::ProvableCountProvableSumTree(None, 0, 0, None);
+        assert!(aggregate_consistency_labels(&e, &AggregateData::NoAggregateData).is_none());
+    }
+
+    #[test]
+    fn provable_count_provable_sum_tree_nonzero_with_no_aggregate_is_mismatch() {
+        // Non-zero recorded + NoAggregateData is NOT the empty-merk
+        // shape — it should fall into the catch-all and surface a
+        // variant-mismatch label.
+        let e = Element::ProvableCountProvableSumTree(None, 1, 5, None);
+        let labels =
+            aggregate_consistency_labels(&e, &AggregateData::NoAggregateData).expect("labels");
+        assert!(labels.0.contains("element variant"));
+        assert!(labels.1.contains("inner aggregate variant"));
+    }
+
+    #[test]
+    fn provable_count_provable_sum_tree_paired_with_wrong_aggregate_kind_is_mismatch() {
+        // PCPS vs. ProvableCountAndSum (the single-axis sum aggregate)
+        // → catch-all variant-mismatch arm. The inner merk's tree-type
+        // has drifted from what the parent element claims.
+        let e = Element::ProvableCountProvableSumTree(None, 5, 42, None);
+        let labels = aggregate_consistency_labels(&e, &AggregateData::ProvableCountAndSum(5, 42))
+            .expect("labels");
+        assert!(
+            labels.0.contains("element variant"),
+            "expected element-variant catch-all label: {}",
+            labels.0
+        );
+        assert!(
+            labels.1.contains("inner aggregate variant"),
+            "expected aggregate-variant catch-all label: {}",
+            labels.1
+        );
+    }
 }
 
 /// Test-only helpers for verifying internal storage state.
