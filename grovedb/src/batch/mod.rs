@@ -438,11 +438,6 @@ impl GroveOp {
             GroveOp::DenseTreeInsert { .. } => 14,
             GroveOp::ReplaceNonMerkTreeRoot { .. } => 15,
             GroveOp::InsertNonMerkTree { .. } => 16,
-            // 17 was used by `GroveOp::RefreshReferenceWithSumItem`
-            // before it was merged into `GroveOp::RefreshReference`
-            // (see the unified variant's `sum_value: Option<..>`
-            // field). Do not reuse this tag — old persisted batches,
-            // if any, may have referenced it.
         }
     }
 }
