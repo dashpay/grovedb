@@ -185,11 +185,6 @@ where
         })
     }
 
-    // `prove_count_offset_on_range` lives in
-    // `merk/src/merk/prove_count_offset.rs` — it's a version-gated
-    // entry point (`MerkProofVersions::prove_count_offset_on_range`)
-    // and the split keeps that contract immediately visible.
-
     /// Generate a sum-only proof for an `AggregateSumOnRange` query.
     /// Mirror of [`Self::prove_aggregate_count_on_range`] for the
     /// `ProvableSumTree` flavor.
