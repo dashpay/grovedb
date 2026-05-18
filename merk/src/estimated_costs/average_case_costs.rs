@@ -116,11 +116,15 @@ impl EstimatedSumTrees {
                     + *count_sum_trees_weight as u32
                     + *non_sum_trees_weight as u32;
                 if version == 0 {
-                    if total_weight_legacy == 0 {
+                    // v0's divisor is only `sum_trees + non_sum_trees`, not
+                    // the full legacy weight sum, so guard the actual
+                    // denominator (a layer with only big/count weights set
+                    // would otherwise panic on the division below).
+                    let v0_denominator = *sum_trees_weight as u32 + *non_sum_trees_weight as u32;
+                    if v0_denominator == 0 {
                         return Err(Error::DivideByZero("weights add up to 0"));
                     }
-                    Ok((*non_sum_trees_weight as u32 * 9)
-                        / (*sum_trees_weight as u32 + *non_sum_trees_weight as u32))
+                    Ok((*non_sum_trees_weight as u32 * 9) / v0_denominator)
                 } else if version == 1 {
                     if total_weight_legacy == 0 {
                         return Err(Error::DivideByZero("weights add up to 0"));
@@ -2407,6 +2411,28 @@ mod tests {
             provable_count_provable_sum_trees_weight: 0,
         };
         let err = all_zero.estimated_size(v).unwrap_err();
+        assert!(matches!(err, Error::DivideByZero("weights add up to 0")));
+    }
+
+    /// v0's divisor is `sum_trees + non_sum_trees`, not the full legacy
+    /// weight sum. If only `big_sum_trees_weight` (or any count weight)
+    /// is populated, the legacy sum is nonzero but the v0 denominator
+    /// is zero — the guard must surface `DivideByZero` rather than
+    /// panicking on `/ 0`. Regression for the v0 dispatch.
+    #[test]
+    fn test_estimated_sum_trees_v0_only_big_sum_weight_returns_divide_by_zero() {
+        let big_only = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 0,
+            big_sum_trees_weight: 5,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+        };
+        let err = big_only.estimated_size(GroveVersion::first()).unwrap_err();
         assert!(matches!(err, Error::DivideByZero("weights add up to 0")));
     }
 

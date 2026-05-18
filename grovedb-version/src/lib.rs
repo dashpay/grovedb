@@ -82,7 +82,7 @@ macro_rules! check_grovedb_v0_v1_or_v2 {
             && $version != EXPECTED_VERSION_V1
             && $version != EXPECTED_VERSION_V2
         {
-            return Err(GroveVersionError::UnknownVersionMismatch {
+            return Err($crate::error::GroveVersionError::UnknownVersionMismatch {
                 method: $method.to_string(),
                 known_versions: vec![
                     EXPECTED_VERSION_V0,
