@@ -89,7 +89,15 @@ pub fn verify_aggregate_sum_on_range_proof(
     // only `HashWithSum` provides that.
     let tree_result: CostResult<ProofTree, Error> =
         execute_with_options(decoder, false, false, |node| match node {
-            Node::HashWithSum(_, _, _, _) | Node::KVDigestSum(_, _, _) => Ok(()),
+            // For single-axis sum-bearing hosts (ProvableSumTree): emit
+            // `HashWithSum` / `KVDigestSum`. For the dual-axis
+            // ProvableCountProvableSumTree host: emit `HashWithCountAndSum`
+            // / `KVDigestCountSum` — the count is needed so the verifier
+            // can recompute `node_hash_with_count_and_sum`.
+            Node::HashWithSum(_, _, _, _)
+            | Node::KVDigestSum(_, _, _)
+            | Node::HashWithCountAndSum(_, _, _, _, _)
+            | Node::KVDigestCountSum(_, _, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in aggregate sum proof: {}",
                 other
@@ -172,85 +180,105 @@ fn verify_sum_shape(
 ) -> Result<(i128, i128), Error> {
     let class = classify_subtree(lo, hi, range);
     match class {
-        SubtreeClassification::Disjoint => match &tree.node {
-            Node::HashWithSum(_, _, _, sum) => {
-                if tree.left.is_some() || tree.right.is_some() {
-                    return Err(Error::InvalidProofError(
-                        "aggregate-sum proof: HashWithSum node at a Disjoint position \
-                         must be a leaf"
-                            .to_string(),
-                    ));
-                }
-                // Disjoint subtree contributes 0 to the in-range sum but
-                // its full structural sum to the parent's `own_sum`
-                // computation.
-                Ok((0i128, *sum as i128))
-            }
-            other => Err(Error::InvalidProofError(format!(
-                "aggregate-sum proof: expected HashWithSum at Disjoint position, got {}",
-                other
-            ))),
-        },
-        SubtreeClassification::Contained => match &tree.node {
-            Node::HashWithSum(_, _, _, sum) => {
-                if tree.left.is_some() || tree.right.is_some() {
-                    return Err(Error::InvalidProofError(
-                        "aggregate-sum proof: HashWithSum node at a Contained position \
-                         must be a leaf"
-                            .to_string(),
-                    ));
-                }
-                // Contained subtree's structural sum (which excludes
-                // NotSummed entries because their stored aggregate is 0)
-                // is exactly its in-range sum.
-                Ok((*sum as i128, *sum as i128))
-            }
-            other => Err(Error::InvalidProofError(format!(
-                "aggregate-sum proof: expected HashWithSum at Contained position, got {}",
-                other
-            ))),
-        },
-        SubtreeClassification::Boundary => match &tree.node {
-            Node::KVDigestSum(key, _, aggregate) => {
-                if !key_strictly_inside(key.as_slice(), lo, hi) {
+        SubtreeClassification::Disjoint => {
+            // Disjoint subtree contributes 0 to in-range; full structural
+            // sum to parent's `own_sum` derivation. Accept both single- and
+            // dual-axis hash-with-sum variants — they carry the same `sum`
+            // field, with the dual-axis variant additionally binding the
+            // count into the hash.
+            let sum = match &tree.node {
+                Node::HashWithSum(_, _, _, sum) => *sum,
+                Node::HashWithCountAndSum(_, _, _, _, sum) => *sum,
+                other => {
                     return Err(Error::InvalidProofError(format!(
-                        "aggregate-sum proof: KVDigestSum key {} falls outside its \
-                         inherited subtree bounds (lo={:?}, hi={:?})",
-                        hex::encode(key),
-                        lo.map(hex::encode),
-                        hi.map(hex::encode),
+                        "aggregate-sum proof: expected HashWithSum or HashWithCountAndSum at \
+                         Disjoint position, got {}",
+                        other
                     )));
                 }
-                let key_slice = key.as_slice();
-                let (left_in, left_struct) = match &tree.left {
-                    Some(child) => verify_sum_shape(&child.tree, range, lo, Some(key_slice))?,
-                    None => (0i128, 0i128),
-                };
-                let (right_in, right_struct) = match &tree.right {
-                    Some(child) => verify_sum_shape(&child.tree, range, Some(key_slice), hi)?,
-                    None => (0i128, 0i128),
-                };
-                // own_sum = aggregate − left_struct − right_struct, in
-                // i128. There's no "child sum exceeds parent" check that
-                // makes sense for signed sums — any combination of
-                // children's structural sums is plausible (one positive,
-                // one negative, etc.). The hash chain binds the values
-                // regardless, so any wrong arithmetic here would change
-                // the reconstructed root hash.
-                let aggregate_i128 = *aggregate as i128;
-                let own_sum = aggregate_i128 - left_struct - right_struct;
-                let self_contribution = if range.contains(key_slice) {
-                    own_sum
-                } else {
-                    0
-                };
-                let in_range = left_in + right_in + self_contribution;
-                Ok((in_range, aggregate_i128))
+            };
+            if tree.left.is_some() || tree.right.is_some() {
+                return Err(Error::InvalidProofError(
+                    "aggregate-sum proof: leaf hash-with-sum node at a Disjoint position \
+                     must be a leaf"
+                        .to_string(),
+                ));
             }
-            other => Err(Error::InvalidProofError(format!(
-                "aggregate-sum proof: expected KVDigestSum at Boundary position, got {}",
-                other
-            ))),
-        },
+            Ok((0i128, sum as i128))
+        }
+        SubtreeClassification::Contained => {
+            // Contained subtree's structural sum (excluding NotSummed
+            // entries) is exactly its in-range sum.
+            let sum = match &tree.node {
+                Node::HashWithSum(_, _, _, sum) => *sum,
+                Node::HashWithCountAndSum(_, _, _, _, sum) => *sum,
+                other => {
+                    return Err(Error::InvalidProofError(format!(
+                        "aggregate-sum proof: expected HashWithSum or HashWithCountAndSum at \
+                         Contained position, got {}",
+                        other
+                    )));
+                }
+            };
+            if tree.left.is_some() || tree.right.is_some() {
+                return Err(Error::InvalidProofError(
+                    "aggregate-sum proof: leaf hash-with-sum node at a Contained position \
+                     must be a leaf"
+                        .to_string(),
+                ));
+            }
+            Ok((sum as i128, sum as i128))
+        }
+        SubtreeClassification::Boundary => {
+            // Boundary: accept KVDigestSum (single-axis) or KVDigestCountSum
+            // (dual-axis). Both carry the sum we need; the count in the
+            // dual-axis variant is used during hash reconstruction only
+            // (already handled by Phase 1's node-hash recomputation).
+            let (key, aggregate) = match &tree.node {
+                Node::KVDigestSum(key, _, aggregate) => (key, *aggregate),
+                Node::KVDigestCountSum(key, _, _, aggregate) => (key, *aggregate),
+                other => {
+                    return Err(Error::InvalidProofError(format!(
+                        "aggregate-sum proof: expected KVDigestSum or KVDigestCountSum at \
+                         Boundary position, got {}",
+                        other
+                    )));
+                }
+            };
+            if !key_strictly_inside(key.as_slice(), lo, hi) {
+                return Err(Error::InvalidProofError(format!(
+                    "aggregate-sum proof: boundary key {} falls outside its inherited \
+                     subtree bounds (lo={:?}, hi={:?})",
+                    hex::encode(key),
+                    lo.map(hex::encode),
+                    hi.map(hex::encode),
+                )));
+            }
+            let key_slice = key.as_slice();
+            let (left_in, left_struct) = match &tree.left {
+                Some(child) => verify_sum_shape(&child.tree, range, lo, Some(key_slice))?,
+                None => (0i128, 0i128),
+            };
+            let (right_in, right_struct) = match &tree.right {
+                Some(child) => verify_sum_shape(&child.tree, range, Some(key_slice), hi)?,
+                None => (0i128, 0i128),
+            };
+            // own_sum = aggregate − left_struct − right_struct, in
+            // i128. There's no "child sum exceeds parent" check that
+            // makes sense for signed sums — any combination of
+            // children's structural sums is plausible (one positive,
+            // one negative, etc.). The hash chain binds the values
+            // regardless, so any wrong arithmetic here would change
+            // the reconstructed root hash.
+            let aggregate_i128 = aggregate as i128;
+            let own_sum = aggregate_i128 - left_struct - right_struct;
+            let self_contribution = if range.contains(key_slice) {
+                own_sum
+            } else {
+                0
+            };
+            let in_range = left_in + right_in + self_contribution;
+            Ok((in_range, aggregate_i128))
+        }
     }
 }

@@ -1683,6 +1683,7 @@ where
             | Element::ProvableCountTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
+            | Element::ProvableCountProvableSumTree(..)
             | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
@@ -1839,6 +1840,7 @@ where
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableCountProvableSumTree(..)
                         | Element::CommitmentTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
@@ -1889,6 +1891,7 @@ where
                     | Element::ProvableCountTree(..)
                     | Element::ProvableCountSumTree(..)
                     | Element::ProvableSumTree(..)
+                    | Element::ProvableCountProvableSumTree(..)
                     | Element::CommitmentTree(..)
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
@@ -2236,6 +2239,7 @@ where
                         | Element::ProvableCountTree(..)
                         | Element::ProvableCountSumTree(..)
                         | Element::ProvableSumTree(..)
+                        | Element::ProvableCountProvableSumTree(..)
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -2703,6 +2707,14 @@ where
                                 root_key, sum_value, flags,
                             )
                         }
+                        AggregateData::ProvableCountAndProvableSum(count_value, sum_value) => {
+                            Element::new_provable_count_provable_sum_tree_with_flags_and_sum_and_count_value(
+                                root_key,
+                                count_value,
+                                sum_value,
+                                flags,
+                            )
+                        }
                     };
                     // Re-wrap if the original element was wrapped, so the
                     // on-disk bytes preserve the wrapper and the parent's
@@ -2904,6 +2916,7 @@ where
                                     | Element::ProvableCountTree(..)
                                     | Element::ProvableCountSumTree(..)
                                     | Element::ProvableSumTree(..)
+                                    | Element::ProvableCountProvableSumTree(..)
                                     | Element::CommitmentTree(..)
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
@@ -3236,6 +3249,22 @@ impl GroveDb {
                                                         ..,
                                                         flags,
                                                     ) = element
+                                                    {
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertTreeWithRootHash {
+                                                                hash: root_hash,
+                                                                root_key: calculated_root_key,
+                                                                flags: flags.clone(),
+                                                                aggregate_data,
+                                                                non_counted,
+                                                                not_summed,
+                                                                not_counted_or_summed,
+                                                            }
+                                                    } else if let
+                                                        Element::ProvableCountProvableSumTree(
+                                                            ..,
+                                                            flags,
+                                                        ) = element
                                                     {
                                                         *mutable_occupied_entry =
                                                             GroveOp::InsertTreeWithRootHash {

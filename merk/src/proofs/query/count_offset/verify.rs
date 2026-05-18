@@ -153,19 +153,27 @@ pub fn verify_count_offset_on_range_proof(
     // Phase 1: reconstruct the proof tree. Allowlist only the node
     // kinds an honest offset-paginated proof ever emits. Anything else
     // is treated as proof corruption.
+    //
+    // Two flavors coexist in the allowlist:
+    // - **Single-axis** (`ProvableCountTree` / `ProvableCountSumTree`
+    //   hosts): `HashWithCount` (collapsed) / `KVDigestCount`
+    //   (boundary) / `KVCount` (returned Item) /
+    //   `KVValueHashFeatureType` (returned Tree/Reference).
+    // - **Dual-axis** (`ProvableCountProvableSumTree` PCPS hosts):
+    //   `HashWithCountAndSum` (collapsed) / `KVDigestCountSum`
+    //   (boundary) / `KVCountSum` (returned Item). PCPS Tree/Reference
+    //   children still emit via `KVValueHashFeatureType` whose
+    //   feature_type encodes both axes (no separate Node variant).
     let tree_result: CostResult<ProofTree, Error> =
         execute_with_options(decoder, false, false, |node| match node {
-            // `HashWithCount` is the collapsed-subtree op (Disjoint /
-            // offset-skipped / past-limit). `KVDigestCount` is the
-            // key-bearing boundary op (path, NonCounted-in-range,
-            // offset-skipped counted, or past-limit counted). `KVCount`
-            // and `KVValueHashFeatureType` are the value-bearing
-            // returned-item ops (Item-flavored vs Tree/Reference-flavored).
             Node::HashWithCount(_, _, _, _)
             | Node::KVDigestCount(_, _, _)
             | Node::KVCount(_, _, _)
             | Node::KVValueHash(_, _, _)
-            | Node::KVValueHashFeatureType(_, _, _, _) => Ok(()),
+            | Node::KVValueHashFeatureType(_, _, _, _)
+            | Node::HashWithCountAndSum(_, _, _, _, _)
+            | Node::KVDigestCountSum(_, _, _, _)
+            | Node::KVCountSum(_, _, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in count-offset proof: {}",
                 other
@@ -229,12 +237,22 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         Node::HashWithCount(_, _, _, c) => Ok(*c),
         Node::KVDigestCount(_, _, c) => Ok(*c),
         Node::KVCount(_, _, c) => Ok(*c),
+        // Dual-axis (PCPS) variants — count is at the same conceptual
+        // position; the sum field is used during Phase-1 hash
+        // reconstruction (which `execute_with_options` already
+        // performed before this function runs) and plays no role in
+        // offset/limit accounting.
+        Node::HashWithCountAndSum(_, _, _, c, _) => Ok(*c),
+        Node::KVDigestCountSum(_, _, c, _) => Ok(*c),
+        Node::KVCountSum(_, _, c, _) => Ok(*c),
         Node::KVValueHashFeatureType(_, _, _, ft) => match ft {
             TreeFeatureType::ProvableCountedMerkNode(c) => Ok(*c),
             TreeFeatureType::ProvableCountedSummedMerkNode(c, _) => Ok(*c),
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(c, _) => Ok(*c),
             other => Err(Error::InvalidProofError(format!(
                 "count-offset proof: KVValueHashFeatureType carries non-count feature type \
-                 {:?} — expected ProvableCountedMerkNode / ProvableCountedSummedMerkNode",
+                 {:?} — expected ProvableCountedMerkNode / ProvableCountedSummedMerkNode / \
+                 ProvableCountedAndProvableSummedMerkNode",
                 other
             ))),
         },
@@ -246,7 +264,7 @@ fn aggregate_of_proof_tree_node(tree: &ProofTree) -> Result<u64, Error> {
         Node::KVValueHash(..) => Ok(0),
         // Truly unreachable: the `execute_with_options` allowlist
         // earlier in `verify_count_offset_on_range_proof` rejects any
-        // node kind that isn't one of the five matched above before
+        // node kind that isn't one of the eight matched above before
         // this function is ever called. Keeping the arm as
         // `unreachable!()` is both correct (it would only ever fire
         // if the allowlist were widened without updating this
@@ -283,13 +301,24 @@ fn verify_count_offset_shape(
 ) -> Result<u64, Error> {
     let class = classify_subtree(lo, hi, range);
 
-    // ─── Collapsed-subtree leaves (HashWithCount) ─────────────────
-    if let Node::HashWithCount(_, _, _, count) = &tree.node {
+    // ─── Collapsed-subtree leaves (HashWithCount / HashWithCountAndSum) ─
+    //
+    // Both single-axis and dual-axis (PCPS) hosts use a leaf collapsed
+    // op. We treat them identically here — offset accounting cares
+    // only about the count axis; the sum (in the dual-axis variant) is
+    // already consumed by Phase-1 hash reconstruction.
+    if let Some(count) = match &tree.node {
+        Node::HashWithCount(_, _, _, c) => Some(*c),
+        Node::HashWithCountAndSum(_, _, _, c, _) => Some(*c),
+        _ => None,
+    } {
+        let count = &count;
         match class {
             SubtreeClassification::Disjoint => {
                 if tree.left.is_some() || tree.right.is_some() {
                     return Err(Error::InvalidProofError(
-                        "count-offset proof: HashWithCount at Disjoint position must be a leaf"
+                        "count-offset proof: HashWithCount(AndSum) at Disjoint position must \
+                         be a leaf"
                             .to_string(),
                     ));
                 }
@@ -302,7 +331,8 @@ fn verify_count_offset_shape(
             SubtreeClassification::Contained => {
                 if tree.left.is_some() || tree.right.is_some() {
                     return Err(Error::InvalidProofError(
-                        "count-offset proof: HashWithCount at Contained position must be a leaf"
+                        "count-offset proof: HashWithCount(AndSum) at Contained position must \
+                         be a leaf"
                             .to_string(),
                     ));
                 }
@@ -322,9 +352,9 @@ fn verify_count_offset_shape(
                 if state.offset_remaining > 0 {
                     if *count > state.offset_remaining {
                         return Err(Error::InvalidProofError(format!(
-                            "count-offset proof: HashWithCount at Contained position has \
-                             count {} but only {} offset remaining — collapse is only valid \
-                             when count ≤ offset_remaining",
+                            "count-offset proof: HashWithCount(AndSum) at Contained position \
+                             has count {} but only {} offset remaining — collapse is only \
+                             valid when count ≤ offset_remaining",
                             count, state.offset_remaining
                         )));
                     }
@@ -336,9 +366,9 @@ fn verify_count_offset_shape(
                     })?;
                 } else if state.limit_remaining != Some(0) {
                     return Err(Error::InvalidProofError(
-                        "count-offset proof: HashWithCount collapse at Contained position is \
-                         only valid when in the offset window or past the limit; prover \
-                         should have descended"
+                        "count-offset proof: HashWithCount(AndSum) collapse at Contained \
+                         position is only valid when in the offset window or past the limit; \
+                         prover should have descended"
                             .to_string(),
                     ));
                 }
@@ -346,8 +376,9 @@ fn verify_count_offset_shape(
             }
             SubtreeClassification::Boundary => {
                 return Err(Error::InvalidProofError(
-                    "count-offset proof: HashWithCount cannot appear at a Boundary position \
-                     — an honest prover would have descended into the boundary subtree"
+                    "count-offset proof: HashWithCount(AndSum) cannot appear at a Boundary \
+                     position — an honest prover would have descended into the boundary \
+                     subtree"
                         .to_string(),
                 ));
             }
@@ -365,11 +396,14 @@ fn verify_count_offset_shape(
         Node::KVCount(key, _, _) => key.as_slice(),
         Node::KVValueHashFeatureType(key, _, _, _) => key.as_slice(),
         Node::KVValueHash(key, _, _) => key.as_slice(),
+        // Dual-axis (PCPS) per-element variants.
+        Node::KVDigestCountSum(key, _, _, _) => key.as_slice(),
+        Node::KVCountSum(key, _, _, _) => key.as_slice(),
         // Reaching here would require:
         //   - the `execute_with_options` allowlist accepted a node
-        //     that doesn't carry a key (only `HashWithCount` fits),
-        //     and
-        //   - the `HashWithCount` branch above didn't short-circuit
+        //     that doesn't carry a key (only `HashWithCount` /
+        //     `HashWithCountAndSum` fit), and
+        //   - the collapsed-subtree branch above didn't short-circuit
         //     (impossible — it returns from every match arm).
         // So in practice the only way to enter this arm is a code
         // refactor that widens the allowlist without updating this
@@ -479,8 +513,9 @@ fn classify_self<'a>(
     own_count: u64,
 ) -> Result<BoundaryKind<'a>, Error> {
     match node {
-        Node::KVDigestCount(_, _, _) => {
-            // KVDigestCount sits at four allowed positions:
+        Node::KVDigestCount(_, _, _) | Node::KVDigestCountSum(_, _, _, _) => {
+            // KVDigestCount / KVDigestCountSum sit at four allowed
+            // positions:
             //   - Out-of-range path node (own=0 OR own=1 — the value
             //     happens to be out of the range — both fine, no
             //     mutation)
@@ -494,6 +529,11 @@ fn classify_self<'a>(
             //     "digest at offset=0 with limit slots remaining"
             //     check.
             //
+            // The dual-axis `KVDigestCountSum` variant behaves
+            // identically to `KVDigestCount` from the offset-accounting
+            // perspective (the sum field is only used during Phase-1
+            // hash reconstruction of `node_hash_with_count_and_sum`).
+            //
             // **Rejected**: in-range with `own_count == 0` (a
             // NonCounted-wrapped entry inside the range). The
             // count-offset prover refuses to descend through these and
@@ -505,7 +545,7 @@ fn classify_self<'a>(
                 Ok(BoundaryKind::InRangeCountedDigest)
             } else if in_range && own_count == 0 {
                 Err(Error::InvalidProofError(
-                    "count-offset proof: KVDigestCount at in-range position with \
+                    "count-offset proof: KVDigestCount(Sum) at in-range position with \
                      own_count=0 (NonCounted-wrapped entry) — count-offset proofs \
                      don't yet support these; an honest prover refuses to descend \
                      through them"
@@ -516,12 +556,12 @@ fn classify_self<'a>(
             }
         }
         Node::KVCount(key, value, _) => {
-            // Value-bearing for Item-flavored entries. Must be in_range
-            // && own=1; the prover wouldn't emit a value at any other
-            // position. The committed value-hash for Item-flavored
-            // entries is just `H(value)` — `KVCount` doesn't carry an
-            // explicit value-hash because the merk hash chain
-            // recomputes it from the value bytes via
+            // Value-bearing for Item-flavored entries on a single-axis
+            // host. Must be in_range && own=1; the prover wouldn't emit
+            // a value at any other position. The committed value-hash
+            // for Item-flavored entries is just `H(value)` — `KVCount`
+            // doesn't carry an explicit value-hash because the merk
+            // hash chain recomputes it from the value bytes via
             // `kv_digest_to_kv_hash`.
             if !in_range {
                 return Err(Error::InvalidProofError(
@@ -531,6 +571,31 @@ fn classify_self<'a>(
             if own_count != 1 {
                 return Err(Error::InvalidProofError(format!(
                     "count-offset proof: KVCount at own_count={} (expected 1)",
+                    own_count
+                )));
+            }
+            let vh = compute_value_hash(value.as_slice()).unwrap();
+            Ok(BoundaryKind::ValueReturned {
+                key: key.as_slice(),
+                value: value.as_slice(),
+                value_hash: vh,
+            })
+        }
+        Node::KVCountSum(key, value, _, _) => {
+            // Dual-axis (PCPS) Item-flavored value-bearing variant.
+            // Identical contract to `KVCount` except the proof node
+            // also carries the per-node sum so the verifier can
+            // reconstruct `node_hash_with_count_and_sum` in Phase 1.
+            // The sum plays no role in offset/limit accounting; we
+            // simply surface the value bytes for the GroveDB layer.
+            if !in_range {
+                return Err(Error::InvalidProofError(
+                    "count-offset proof: KVCountSum at an out-of-range position".to_string(),
+                ));
+            }
+            if own_count != 1 {
+                return Err(Error::InvalidProofError(format!(
+                    "count-offset proof: KVCountSum at own_count={} (expected 1)",
                     own_count
                 )));
             }

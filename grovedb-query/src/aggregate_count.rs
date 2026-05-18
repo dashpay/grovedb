@@ -13,11 +13,11 @@
 //!   `AggregateCountOnRange`. Produces one `u64` per matched outer
 //!   key — the natural per-outer-key extension of the leaf shape.
 //!
-//! All aggregate-count validation lives in this file so the much larger
-//! `Query` core in `query.rs` stays focused on the general-purpose
-//! query plumbing. Forthcoming aggregate variants (sum, average) will
-//! live in sibling modules (`aggregate_sum`, `aggregate_average`, …)
-//! with parallel naming.
+//! All aggregate-count validation lives in this file so the much
+//! larger `Query` core in `query.rs` stays focused on the
+//! general-purpose query plumbing. The sum and combined axes live in
+//! sibling modules [`crate::aggregate_sum`] and
+//! [`crate::aggregate_count_and_sum`] with parallel naming.
 
 use crate::{error::Error, query::Query, query_item::QueryItem};
 
@@ -178,6 +178,18 @@ impl Query {
                     "AggregateCountOnRange may not wrap another AggregateCountOnRange",
                 ));
             }
+            QueryItem::AggregateSumOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap AggregateSumOnRange — the \
+                     aggregate variants are orthogonal",
+                ));
+            }
+            QueryItem::AggregateCountAndSumOnRange(_) => {
+                return Err(Error::InvalidOperation(
+                    "AggregateCountOnRange may not wrap AggregateCountAndSumOnRange — the \
+                     aggregate variants are orthogonal",
+                ));
+            }
             _ => {}
         }
         if self.default_subquery_branch.subquery.is_some()
@@ -251,6 +263,13 @@ impl Query {
                     return Err(Error::InvalidOperation(
                         "carrier AggregateCountOnRange query may not own an \
                          AggregateSumOnRange item — the two aggregate variants are orthogonal",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidOperation(
+                        "carrier AggregateCountOnRange query may not own an \
+                         AggregateCountAndSumOnRange item — the aggregate variants are \
+                         orthogonal",
                     ));
                 }
             }
@@ -377,6 +396,81 @@ mod tests {
             crate::error::Error::InvalidOperation(msg) => {
                 assert!(msg.contains("AggregateCountOnRange"))
             }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_aggregate_count_rejects_inner_aggregate_sum() {
+        // AggregateCountOnRange wrapping AggregateSumOnRange — orthogonal
+        // aggregate variants are explicitly rejected. Exercises the
+        // `QueryItem::AggregateSumOnRange(_)` arm in
+        // `validate_leaf_aggregate_count_on_range`.
+        let inner_sum = QueryItem::AggregateSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let q = make_aggregate_count_query(inner_sum);
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("inner AggregateSumOnRange must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(
+                    msg.contains("AggregateSumOnRange"),
+                    "unexpected message: {msg}"
+                );
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_aggregate_count_rejects_inner_aggregate_count_and_sum() {
+        // AggregateCountOnRange wrapping AggregateCountAndSumOnRange —
+        // exercises the new
+        // `QueryItem::AggregateCountAndSumOnRange(_)` arm in
+        // `validate_leaf_aggregate_count_on_range`.
+        let inner_combined = QueryItem::AggregateCountAndSumOnRange(Box::new(QueryItem::Range(
+            b"a".to_vec()..b"z".to_vec(),
+        )));
+        let q = make_aggregate_count_query(inner_combined);
+        let err = q
+            .validate_aggregate_count_on_range()
+            .expect_err("inner AggregateCountAndSumOnRange must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => {
+                assert!(
+                    msg.contains("AggregateCountAndSumOnRange"),
+                    "unexpected message: {msg}"
+                );
+            }
+            _ => panic!("expected InvalidOperation"),
+        }
+    }
+
+    #[test]
+    fn validate_carrier_aggregate_count_direct_rejects_aggregate_count_and_sum_outer_item() {
+        // ACASOR in outer items + leaf subquery — exercise the
+        // carrier-validator's new
+        // `QueryItem::AggregateCountAndSumOnRange(_)` arm. Must be
+        // hit via the direct carrier validator since the dispatcher
+        // would route through the leaf path when an aggregate item
+        // appears in `items`.
+        let mut carrier = Query::new();
+        carrier
+            .items
+            .push(QueryItem::AggregateCountAndSumOnRange(Box::new(
+                QueryItem::Range(b"a".to_vec()..b"z".to_vec()),
+            )));
+        carrier.set_subquery(make_leaf_aggregate_count_subquery());
+        let err = carrier
+            .validate_carrier_aggregate_count_on_range()
+            .expect_err("AggregateCountAndSumOnRange outer item must fail");
+        match err {
+            crate::error::Error::InvalidOperation(msg) => assert!(
+                msg.contains("AggregateCountAndSumOnRange"),
+                "unexpected message: {msg}"
+            ),
             _ => panic!("expected InvalidOperation"),
         }
     }

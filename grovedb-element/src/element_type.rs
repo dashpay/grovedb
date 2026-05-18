@@ -155,6 +155,24 @@ pub enum ProofNodeType {
     ///
     /// Used for: Reference (inside ProvableSumTree)
     KvRefValueHashSum,
+
+    /// Use `Node::KVCountSum` - combined analogue of `KvCount` and `KvSum`.
+    /// The verifier recomputes `value_hash = H(value)` and includes BOTH
+    /// the u64 count AND the i64 sum in the node hash via
+    /// `node_hash_with_count_and_sum`.
+    ///
+    /// Used for: Item, SumItem, ItemWithSumItem (inside
+    /// ProvableCountProvableSumTree)
+    KvCountSum,
+
+    /// Use `Node::KVRefValueHashCountSum` - combined analogue of
+    /// `KvRefValueHashCount` and `KvRefValueHashSum`. At the merk layer,
+    /// this generates `KVValueHashFeatureType` (since merk doesn't know
+    /// about references). GroveDB post-processes these nodes to
+    /// `Node::KVRefValueHashCountSum` with the dereferenced value.
+    ///
+    /// Used for: Reference (inside ProvableCountProvableSumTree)
+    KvRefValueHashCountSum,
 }
 
 /// Element type discriminants.
@@ -263,6 +281,12 @@ pub enum ElementType {
     /// develop's `NotCountedOrSummed = 17` / `ReferenceWithSumItem = 18`
     /// wire encoding exactly.
     ProvableSumTree = 19,
+    /// Provable count + provable sum tree - discriminant 20.
+    /// BOTH count and sum baked into node hashes. Mirrors
+    /// `ProvableCountTree` and `ProvableSumTree` simultaneously so
+    /// `AggregateCountOnRange` AND `AggregateSumOnRange` proofs are both
+    /// verifiable against the same tree.
+    ProvableCountProvableSumTree = 20,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -297,6 +321,10 @@ pub enum ElementType {
     NonCountedReferenceWithSumItem = 146,
     /// Non-counted wrapper around `ProvableSumTree` - discriminant 147 (`0x80 | 19`)
     NonCountedProvableSumTree = 147,
+    /// Non-counted wrapper around `ProvableCountProvableSumTree` - discriminant
+    /// 148 (`0x80 | 20`). Computed via the strict `0x80 | base` formula —
+    /// the new base 20 still fits in the low 5 bits.
+    NonCountedProvableCountProvableSumTree = 148,
     /// Not-summed wrapper around `SumTree` - discriminant 180 (`0xB4`)
     NotSummedSumTree = 180,
     /// Not-summed wrapper around `BigSumTree` - discriminant 181 (`0xB5`)
@@ -309,6 +337,11 @@ pub enum ElementType {
     /// assigned explicitly out of the `0xB0..=0xBF` family range. Not derived
     /// from any formula — see the doc comment on `NOT_SUMMED_TWIN_PREFIX`.
     NotSummedProvableSumTree = 177,
+    /// Not-summed wrapper around `ProvableCountProvableSumTree` - discriminant
+    /// 178 (`0xB2`), assigned explicitly out of the `0xB0..=0xBF` family range.
+    /// Hand-assigned because base 20 overflows the low nibble and `0xB4`
+    /// would collide with `NotSummedSumTree`.
+    NotSummedProvableCountProvableSumTree = 178,
     /// Not-counted-or-summed wrapper around `SumTree` - discriminant 196 (`0xc0 | 4`)
     NotCountedOrSummedSumTree = 196,
     /// Not-counted-or-summed wrapper around `BigSumTree` - discriminant 197 (`0xc0 | 5`)
@@ -322,6 +355,12 @@ pub enum ElementType {
     /// range. Like `NotSummedProvableSumTree` it can't use the
     /// `prefix | base` formula because base 19 overflows the low nibble.
     NotCountedOrSummedProvableSumTree = 193,
+    /// Not-counted-or-summed wrapper around `ProvableCountProvableSumTree`
+    /// - discriminant 194 (`0xC2`), hand-assigned out of the `0xC0..=0xCF`
+    ///   family range. Like `NotSummedProvableCountProvableSumTree` (0xB2)
+    ///   it can't use the `prefix | base` formula because base 20 overflows
+    ///   the low nibble.
+    NotCountedOrSummedProvableCountProvableSumTree = 194,
 }
 
 impl ElementType {
@@ -351,11 +390,12 @@ impl ElementType {
                 )
             })?;
             // The inner discriminant must be a legal base type. Today
-            // those are `0..=14`, `18` (ReferenceWithSumItem), and `19`
-            // (ProvableSumTree). Bytes 15, 16, and 17 are the wrapper bytes
-            // themselves (nested wrappers forbidden in either direction);
-            // 20..=127 are unallocated; 128..=147 are the synthetic
-            // NonCountedXxx twins which never appear on disk.
+            // those are `0..=14`, `18` (ReferenceWithSumItem), `19`
+            // (ProvableSumTree), and `20` (ProvableCountProvableSumTree).
+            // Bytes 15, 16, and 17 are the wrapper bytes themselves (nested
+            // wrappers forbidden in either direction); 21..=127 are
+            // unallocated; 128..=148 are the synthetic NonCountedXxx twins
+            // which never appear on disk.
             // Without this check, the bitwise OR below would collapse
             // `0x80 | inner_byte` into `inner_byte` and a payload like
             // `[15, 128, ...]` would silently parse as `NonCountedItem`.
@@ -363,10 +403,10 @@ impl ElementType {
             // Use an explicit allowlist so the next base-variant addition
             // is a one-line edit here and the check stays robust to new
             // variants landing without updating the guard.
-            if !matches!(inner_byte, 0..=14 | 18 | 19) {
+            if !matches!(inner_byte, 0..=14 | 18 | 19 | 20) {
                 return Err(ElementError::CorruptedData(format!(
                     "NonCounted inner discriminant must be a base type \
-                     (0..=14, 18, or 19), got {}",
+                     (0..=14, 18, 19, or 20), got {}",
                     inner_byte
                 )));
             }
@@ -389,10 +429,11 @@ impl ElementType {
                 7 => Ok(ElementType::NotSummedCountSumTree),
                 10 => Ok(ElementType::NotSummedProvableCountSumTree),
                 19 => Ok(ElementType::NotSummedProvableSumTree),
+                20 => Ok(ElementType::NotSummedProvableCountProvableSumTree),
                 _ => Err(ElementError::CorruptedData(format!(
                     "NotSummed inner discriminant must be a sum-bearing tree base type \
                      (4=SumTree, 5=BigSumTree, 7=CountSumTree, 10=ProvableCountSumTree, \
-                     19=ProvableSumTree), got {}",
+                     19=ProvableSumTree, 20=ProvableCountProvableSumTree), got {}",
                     inner_byte
                 ))),
             }
@@ -415,10 +456,12 @@ impl ElementType {
                 7 => Ok(ElementType::NotCountedOrSummedCountSumTree),
                 10 => Ok(ElementType::NotCountedOrSummedProvableCountSumTree),
                 19 => Ok(ElementType::NotCountedOrSummedProvableSumTree),
+                20 => Ok(ElementType::NotCountedOrSummedProvableCountProvableSumTree),
                 _ => Err(ElementError::CorruptedData(format!(
                     "NotCountedOrSummed inner discriminant must be a sum-bearing tree base \
                      type (4=SumTree, 5=BigSumTree, 7=CountSumTree, \
-                     10=ProvableCountSumTree, 19=ProvableSumTree), got {}",
+                     10=ProvableCountSumTree, 19=ProvableSumTree, \
+                     20=ProvableCountProvableSumTree), got {}",
                     inner_byte
                 ))),
             }
@@ -489,6 +532,9 @@ impl ElementType {
                 ElementType::NotSummedCountSumTree => ElementType::CountSumTree,
                 ElementType::NotSummedProvableCountSumTree => ElementType::ProvableCountSumTree,
                 ElementType::NotSummedProvableSumTree => ElementType::ProvableSumTree,
+                ElementType::NotSummedProvableCountProvableSumTree => {
+                    ElementType::ProvableCountProvableSumTree
+                }
                 ElementType::NotCountedOrSummedSumTree => ElementType::SumTree,
                 ElementType::NotCountedOrSummedBigSumTree => ElementType::BigSumTree,
                 ElementType::NotCountedOrSummedCountSumTree => ElementType::CountSumTree,
@@ -496,6 +542,9 @@ impl ElementType {
                     ElementType::ProvableCountSumTree
                 }
                 ElementType::NotCountedOrSummedProvableSumTree => ElementType::ProvableSumTree,
+                ElementType::NotCountedOrSummedProvableCountProvableSumTree => {
+                    ElementType::ProvableCountProvableSumTree
+                }
                 other => other,
             }
         }
@@ -547,52 +596,62 @@ impl ElementType {
     pub fn proof_node_type(&self, parent_tree_type: Option<ElementType>) -> ProofNodeType {
         let parent_base = parent_tree_type.map(|t| t.base());
         // "Provable aggregate parents" are those that bake the per-node
-        // aggregate into the node hash. The count family
-        // (`ProvableCountTree`, `ProvableCountSumTree`) hashes the count;
-        // the sum family (`ProvableSumTree`) hashes the sum.
+        // aggregate into the node hash. The dispatch distinguishes three
+        // mutually-exclusive families:
+        //   - count-only: ProvableCountTree, ProvableCountSumTree
+        //     (only the count is hashed; sum is tracked but unauthenticated)
+        //   - sum-only: ProvableSumTree
+        //   - count-AND-sum: ProvableCountProvableSumTree
         //
-        // The dispatch distinguishes the two families. Item / Reference proof
-        // variants diverge (KvSum / KvRefValueHashSum vs KvCount /
-        // KvRefValueHashCount). Subtrees inside either family still use
-        // `KvValueHashFeatureType` — the feature_type field on that variant
-        // carries both the count and sum in their respective tagged
-        // TreeFeatureType variants, so a single proof-node variant suffices
-        // for the subtree case.
-        let is_provable_count_tree = matches!(
+        // Item / Reference proof variants diverge across families
+        // (`KvCount`/`KvSum`/`KvCountSum` and `KvRefValueHash*` analogues).
+        // Subtrees inside any of the three families still use
+        // `KvValueHashFeatureType` — the embedded `TreeFeatureType` carries
+        // the per-node aggregate(s) so a single proof-node variant suffices
+        // for the subtree case in every family.
+        let is_provable_count_only_tree = matches!(
             parent_base,
             Some(ElementType::ProvableCountTree) | Some(ElementType::ProvableCountSumTree)
         );
-        let is_provable_sum_tree = matches!(parent_base, Some(ElementType::ProvableSumTree));
-        let is_provable_aggregate_tree = is_provable_count_tree || is_provable_sum_tree;
+        let is_provable_sum_only_tree = matches!(parent_base, Some(ElementType::ProvableSumTree));
+        let is_provable_count_and_provable_sum_tree =
+            matches!(parent_base, Some(ElementType::ProvableCountProvableSumTree));
+        let is_provable_aggregate_tree = is_provable_count_only_tree
+            || is_provable_sum_only_tree
+            || is_provable_count_and_provable_sum_tree;
 
         let base = self.base();
         if base.has_simple_value_hash() {
             // Items (Item, SumItem, ItemWithSumItem)
-            if is_provable_count_tree {
+            if is_provable_count_and_provable_sum_tree {
+                ProofNodeType::KvCountSum
+            } else if is_provable_count_only_tree {
                 ProofNodeType::KvCount
-            } else if is_provable_sum_tree {
+            } else if is_provable_sum_only_tree {
                 ProofNodeType::KvSum
             } else {
                 ProofNodeType::Kv
             }
         } else if base.is_reference() {
             // References need combined hash (for reference resolution).
-            // In ProvableCountTree they additionally need the count in
-            // node_hash; in ProvableSumTree they need the sum.
-            // GroveDB post-processes these to KVRefValueHash /
-            // KVRefValueHashCount / KVRefValueHashSum.
-            if is_provable_count_tree {
+            // Inside provable-aggregate parents they additionally need the
+            // hashed aggregate(s) in node_hash. GroveDB post-processes
+            // these to KVRefValueHash / KVRefValueHashCount /
+            // KVRefValueHashSum / KVRefValueHashCountSum.
+            if is_provable_count_and_provable_sum_tree {
+                ProofNodeType::KvRefValueHashCountSum
+            } else if is_provable_count_only_tree {
                 ProofNodeType::KvRefValueHashCount
-            } else if is_provable_sum_tree {
+            } else if is_provable_sum_only_tree {
                 ProofNodeType::KvRefValueHashSum
             } else {
                 ProofNodeType::KvRefValueHash
             }
         } else {
             // Subtrees (Tree, SumTree, BigSumTree, CountTree, CountSumTree,
-            // ProvableCountTree, ProvableSumTree). KvValueHashFeatureType
-            // works for both Count and Sum families because the embedded
-            // `TreeFeatureType` carries the aggregate.
+            // ProvableCountTree, ProvableSumTree, ProvableCountProvableSumTree).
+            // KvValueHashFeatureType works for every family because the
+            // embedded `TreeFeatureType` carries the aggregate(s).
             if is_provable_aggregate_tree {
                 ProofNodeType::KvValueHashFeatureType
             } else {
@@ -643,6 +702,7 @@ impl ElementType {
                 | ElementType::ProvableCountTree
                 | ElementType::ProvableCountSumTree
                 | ElementType::ProvableSumTree
+                | ElementType::ProvableCountProvableSumTree
                 | ElementType::CommitmentTree
                 | ElementType::MmrTree
                 | ElementType::BulkAppendTree
@@ -692,6 +752,7 @@ impl ElementType {
             ElementType::DenseAppendOnlyFixedSizeTree => "dense_tree",
             ElementType::ReferenceWithSumItem => "reference with sum item",
             ElementType::ProvableSumTree => "provable sum tree",
+            ElementType::ProvableCountProvableSumTree => "provable count provable sum tree",
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -709,11 +770,17 @@ impl ElementType {
             ElementType::NonCountedDenseAppendOnlyFixedSizeTree => "non_counted dense_tree",
             ElementType::NonCountedReferenceWithSumItem => "non_counted reference with sum item",
             ElementType::NonCountedProvableSumTree => "non_counted provable sum tree",
+            ElementType::NonCountedProvableCountProvableSumTree => {
+                "non_counted provable count provable sum tree"
+            }
             ElementType::NotSummedSumTree => "not_summed sum tree",
             ElementType::NotSummedBigSumTree => "not_summed big sum tree",
             ElementType::NotSummedCountSumTree => "not_summed count sum tree",
             ElementType::NotSummedProvableCountSumTree => "not_summed provable count sum tree",
             ElementType::NotSummedProvableSumTree => "not_summed provable sum tree",
+            ElementType::NotSummedProvableCountProvableSumTree => {
+                "not_summed provable count provable sum tree"
+            }
             ElementType::NotCountedOrSummedSumTree => "not_counted_or_summed sum tree",
             ElementType::NotCountedOrSummedBigSumTree => "not_counted_or_summed big sum tree",
             ElementType::NotCountedOrSummedCountSumTree => "not_counted_or_summed count sum tree",
@@ -722,6 +789,9 @@ impl ElementType {
             }
             ElementType::NotCountedOrSummedProvableSumTree => {
                 "not_counted_or_summed provable sum tree"
+            }
+            ElementType::NotCountedOrSummedProvableCountProvableSumTree => {
+                "not_counted_or_summed provable count provable sum tree"
             }
         }
     }
@@ -758,6 +828,7 @@ impl TryFrom<u8> for ElementType {
             // 17 is the raw NotCountedOrSummed wrapper byte; same treatment.
             18 => Ok(ElementType::ReferenceWithSumItem),
             19 => Ok(ElementType::ProvableSumTree),
+            20 => Ok(ElementType::ProvableCountProvableSumTree),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -775,19 +846,23 @@ impl TryFrom<u8> for ElementType {
             142 => Ok(ElementType::NonCountedDenseAppendOnlyFixedSizeTree),
             146 => Ok(ElementType::NonCountedReferenceWithSumItem),
             147 => Ok(ElementType::NonCountedProvableSumTree),
+            148 => Ok(ElementType::NonCountedProvableCountProvableSumTree),
             // NotSummed twins occupy the 0xB0..=0xBF family range; slots
             // are assigned explicitly per variant.
             177 => Ok(ElementType::NotSummedProvableSumTree),
+            178 => Ok(ElementType::NotSummedProvableCountProvableSumTree),
             180 => Ok(ElementType::NotSummedSumTree),
             181 => Ok(ElementType::NotSummedBigSumTree),
             183 => Ok(ElementType::NotSummedCountSumTree),
             186 => Ok(ElementType::NotSummedProvableCountSumTree),
             // NotCountedOrSummed twins occupy the 0xC0..=0xCF family range.
-            // Bases 4/5/7/10 use the bitwise `0xC0 | base` formula; base 19
-            // (ProvableSumTree) is hand-assigned to 0xC1 (193) because its
-            // base overflows the low nibble and would collide with
-            // `disc & 0x0F → SumItem` under a uniform mask.
+            // Bases 4/5/7/10 use the bitwise `0xC0 | base` formula; bases 19
+            // (ProvableSumTree) and 20 (ProvableCountProvableSumTree) are
+            // hand-assigned to 0xC1 (193) and 0xC2 (194) because they
+            // overflow the low nibble and would otherwise collide under a
+            // uniform mask.
             193 => Ok(ElementType::NotCountedOrSummedProvableSumTree),
+            194 => Ok(ElementType::NotCountedOrSummedProvableCountProvableSumTree),
             196 => Ok(ElementType::NotCountedOrSummedSumTree),
             197 => Ok(ElementType::NotCountedOrSummedBigSumTree),
             199 => Ok(ElementType::NotCountedOrSummedCountSumTree),
@@ -863,13 +938,18 @@ mod tests {
             ElementType::try_from(19).unwrap(),
             ElementType::ProvableSumTree
         );
-        // 20..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(20).is_err());
+        // Base discriminant 20 is ProvableCountProvableSumTree.
+        assert_eq!(
+            ElementType::try_from(20).unwrap(),
+            ElementType::ProvableCountProvableSumTree
+        );
+        // 21..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(21).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
-        // ReferenceWithSumItem twin) and 147 (= 0x80|19 = ProvableSumTree
-        // twin).
+        // ReferenceWithSumItem twin), 147 (= 0x80|19 = ProvableSumTree
+        // twin), and 148 (= 0x80|20 = ProvableCountProvableSumTree twin).
         assert_eq!(
             ElementType::try_from(128).unwrap(),
             ElementType::NonCountedItem
@@ -890,6 +970,10 @@ mod tests {
             ElementType::try_from(147).unwrap(),
             ElementType::NonCountedProvableSumTree
         );
+        assert_eq!(
+            ElementType::try_from(148).unwrap(),
+            ElementType::NonCountedProvableCountProvableSumTree
+        );
         // Bytes between the base and NonCounted-twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
         // 143 (= 0x80|15), 144 (= 0x80|16), 145 (= 0x80|17): wrapper bytes
@@ -897,18 +981,20 @@ mod tests {
         assert!(ElementType::try_from(143).is_err());
         assert!(ElementType::try_from(144).is_err());
         assert!(ElementType::try_from(145).is_err());
-        // 148..=176 (between NonCounted-twin and NotSummed-twin ranges) are
-        // invalid (with the exception of 177 = NotSummedProvableSumTree).
-        assert!(ElementType::try_from(148).is_err());
+        // 149..=176 (between NonCounted-twin and NotSummed-twin ranges) are
+        // invalid (with the exception of 177 = NotSummedProvableSumTree and
+        // 178 = NotSummedProvableCountProvableSumTree).
+        assert!(ElementType::try_from(149).is_err());
         assert!(ElementType::try_from(176).is_err());
 
         // NotSummed twins live in 0xB0..=0xBF with explicit per-variant
-        // slot assignments — not a formula. Five slots are populated:
-        //   SumTree              -> 180 (0xB4)
-        //   BigSumTree           -> 181 (0xB5)
-        //   CountSumTree         -> 183 (0xB7)
-        //   ProvableCountSumTree -> 186 (0xBA)
-        //   ProvableSumTree      -> 177 (0xB1)
+        // slot assignments — not a formula. Six slots are populated:
+        //   SumTree                       -> 180 (0xB4)
+        //   BigSumTree                    -> 181 (0xB5)
+        //   CountSumTree                  -> 183 (0xB7)
+        //   ProvableCountSumTree          -> 186 (0xBA)
+        //   ProvableSumTree               -> 177 (0xB1)
+        //   ProvableCountProvableSumTree  -> 178 (0xB2)
         assert_eq!(
             ElementType::try_from(180).unwrap(),
             ElementType::NotSummedSumTree
@@ -929,10 +1015,14 @@ mod tests {
             ElementType::try_from(177).unwrap(),
             ElementType::NotSummedProvableSumTree
         );
+        assert_eq!(
+            ElementType::try_from(178).unwrap(),
+            ElementType::NotSummedProvableCountProvableSumTree
+        );
         // All unallocated slots in 0xB0..=0xBF are invalid.
         for bad in [
             0xb0u8, // wrapper byte 16, never a twin
-            0xb2, 0xb3, 0xb6, 0xb8, 0xb9, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+            0xb3, 0xb6, 0xb8, 0xb9, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
         ] {
             assert!(
                 ElementType::try_from(bad).is_err(),
@@ -944,11 +1034,12 @@ mod tests {
         assert!(ElementType::try_from(187).is_err());
         assert!(ElementType::try_from(195).is_err());
 
-        // NotCountedOrSummed twins: the five sum-bearing tree bases
-        // {4, 5, 7, 10, 19} are legal → discriminants {196, 197, 199,
-        // 202, 193}. `0xc0 | base` only works for bases 4/5/7/10;
+        // NotCountedOrSummed twins: the six sum-bearing tree bases
+        // {4, 5, 7, 10, 19, 20} are legal → discriminants {196, 197, 199,
+        // 202, 193, 194}. `0xc0 | base` only works for bases 4/5/7/10;
         // ProvableSumTree (base 19) gets an explicit hand-assigned slot
-        // at 0xC1 (193), same shape as NotSummedProvableSumTree at 0xB1.
+        // at 0xC1 (193), and ProvableCountProvableSumTree (base 20) at
+        // 0xC2 (194), same shape as the corresponding NotSummed twins.
         assert_eq!(
             ElementType::try_from(196).unwrap(),
             ElementType::NotCountedOrSummedSumTree
@@ -969,10 +1060,12 @@ mod tests {
             ElementType::try_from(193).unwrap(),
             ElementType::NotCountedOrSummedProvableSumTree
         );
+        assert_eq!(
+            ElementType::try_from(194).unwrap(),
+            ElementType::NotCountedOrSummedProvableCountProvableSumTree
+        );
         // Other bytes in 0xc0..=0xcf (non-sum-bearing-tree bases) are invalid.
-        for bad in [
-            0xc0u8, 0xc2, 0xc3, 0xc6, 0xc8, 0xc9, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
-        ] {
+        for bad in [0xc0u8, 0xc3, 0xc6, 0xc8, 0xc9, 0xcb, 0xcc, 0xcd, 0xce, 0xcf] {
             assert!(
                 ElementType::try_from(bad).is_err(),
                 "{:#x} should be rejected",
@@ -1391,6 +1484,78 @@ mod tests {
         );
     }
 
+    /// Inside a `ProvableCountProvableSumTree` parent, items map to
+    /// `KvCountSum` (the new dual-axis variant) and references map to
+    /// `KvRefValueHashCountSum`. Subtrees still use
+    /// `KvValueHashFeatureType` — the embedded `TreeFeatureType`
+    /// (`ProvableCountedAndProvableSummedMerkNode`) carries both
+    /// aggregates. Wrappers normalize through `base()` so a
+    /// `NonCounted` / `NotSummed` / `NotCountedOrSummed` wrap of the
+    /// new variant produces the same dispatch.
+    #[test]
+    fn test_proof_node_type_provable_count_provable_sum_tree() {
+        use super::ProofNodeType;
+
+        let pcps = Some(ElementType::ProvableCountProvableSumTree);
+
+        assert_eq!(
+            ElementType::Item.proof_node_type(pcps),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::SumItem.proof_node_type(pcps),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::ItemWithSumItem.proof_node_type(pcps),
+            ProofNodeType::KvCountSum
+        );
+
+        assert_eq!(
+            ElementType::Reference.proof_node_type(pcps),
+            ProofNodeType::KvRefValueHashCountSum
+        );
+        assert_eq!(
+            ElementType::ReferenceWithSumItem.proof_node_type(pcps),
+            ProofNodeType::KvRefValueHashCountSum
+        );
+
+        // Subtrees still go through KvValueHashFeatureType. The embedded
+        // feature_type carries both axes via the
+        // ProvableCountedAndProvableSummedMerkNode variant.
+        assert_eq!(
+            ElementType::Tree.proof_node_type(pcps),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::SumTree.proof_node_type(pcps),
+            ProofNodeType::KvValueHashFeatureType
+        );
+        assert_eq!(
+            ElementType::ProvableCountProvableSumTree.proof_node_type(pcps),
+            ProofNodeType::KvValueHashFeatureType
+        );
+
+        // Wrappers around PCPS parents normalize transparently to the
+        // same dual-axis dispatch.
+        assert_eq!(
+            ElementType::Item
+                .proof_node_type(Some(ElementType::NonCountedProvableCountProvableSumTree)),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::Item
+                .proof_node_type(Some(ElementType::NotSummedProvableCountProvableSumTree)),
+            ProofNodeType::KvCountSum
+        );
+        assert_eq!(
+            ElementType::Item.proof_node_type(Some(
+                ElementType::NotCountedOrSummedProvableCountProvableSumTree
+            )),
+            ProofNodeType::KvCountSum
+        );
+    }
+
     #[test]
     fn test_proof_node_type_through_non_counted_wrapper() {
         use super::ProofNodeType;
@@ -1463,10 +1628,10 @@ mod tests {
         assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
         // Wrapper with an unallocated mid-range inner byte (16, 17,
-        // 20..=127) is also rejected, even though it has no high bit set.
+        // 21..=127) is also rejected, even though it has no high bit set.
         assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 17]).is_err());
-        assert!(ElementType::from_serialized_value(&[15, 20]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 21]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
 
         // Inner byte 18 (ReferenceWithSumItem) IS a legal base; resolves to
@@ -1474,6 +1639,13 @@ mod tests {
         assert_eq!(
             ElementType::from_serialized_value(&[15, 18]).unwrap(),
             ElementType::NonCountedReferenceWithSumItem
+        );
+        // Inner byte 20 (ProvableCountProvableSumTree) IS also a legal
+        // base; resolves to NonCountedProvableCountProvableSumTree
+        // (twin slot 148 = 0x80|20).
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 20]).unwrap(),
+            ElementType::NonCountedProvableCountProvableSumTree
         );
         // Inner byte 19 (ProvableSumTree) IS also a legal base; resolves to
         // NonCountedProvableSumTree (twin slot 147 = 0x80|19).

@@ -1,12 +1,12 @@
 //! Regression tests for `Element::NonCounted` end-to-end behavior.
 //!
-//! These cover the issues found in the Codex review of PR #654:
-//! - Wrapped references resolve via the get path (P2 #5).
-//! - Batch insert rejects NonCounted into non-count-bearing parents (P2 #4).
+//! Covers:
+//! - Wrapped references resolve via the get path.
+//! - Batch insert rejects NonCounted into non-count-bearing parents.
 //! - Batch propagation preserves the wrapper through
 //!   `InsertTreeWithRootHash` / `InsertNonMerkTree` so the on-disk parent
 //!   element keeps its wrapper byte and the count aggregate excludes the
-//!   subtree (P1 #2).
+//!   subtree.
 
 #[cfg(test)]
 mod tests {

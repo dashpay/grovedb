@@ -96,13 +96,24 @@ pub fn verify_aggregate_count_on_range_proof(
     // execute() bails early on garbage input.
     let tree_result: CostResult<ProofTree, Error> =
         execute_with_options(decoder, false, false, |node| match node {
-            // The count proof emits only `HashWithCount` (for collapsed
-            // Disjoint or Contained subtrees) and `KVDigestCount` (for
-            // Boundary nodes). Plain `Hash(_)` is no longer used here
-            // because the structural count it would otherwise stand in
-            // for is needed by the verifier's `own_count` derivation and
-            // would not be hash-bound.
-            Node::HashWithCount(_, _, _, _) | Node::KVDigestCount(_, _, _) => Ok(()),
+            // The count proof emits four node types:
+            // - For single-axis count-bearing host trees (ProvableCountTree,
+            //   ProvableCountSumTree): `HashWithCount` (for collapsed
+            //   Disjoint/Contained subtrees) and `KVDigestCount` (for
+            //   Boundary nodes).
+            // - For the dual-axis ProvableCountProvableSumTree:
+            //   `HashWithCountAndSum` and `KVDigestCountSum`. Both axes are
+            //   needed because the host tree's node hash is
+            //   `node_hash_with_count_and_sum`; without the sum the
+            //   verifier can't reconstruct it.
+            //
+            // Plain `Hash(_)` is never allowed here because the structural
+            // count it would otherwise stand in for is needed by the
+            // verifier's `own_count` derivation and would not be hash-bound.
+            Node::HashWithCount(_, _, _, _)
+            | Node::KVDigestCount(_, _, _)
+            | Node::HashWithCountAndSum(_, _, _, _, _)
+            | Node::KVDigestCountSum(_, _, _, _) => Ok(()),
             other => Err(Error::InvalidProofError(format!(
                 "unexpected node type in aggregate count proof: {}",
                 other
@@ -162,100 +173,124 @@ fn verify_count_shape(
 ) -> Result<(u64, u64), Error> {
     let class = classify_subtree(lo, hi, range);
     match class {
-        SubtreeClassification::Disjoint => match &tree.node {
-            Node::HashWithCount(_, _, _, count) => {
-                if tree.left.is_some() || tree.right.is_some() {
-                    return Err(Error::InvalidProofError(
-                        "aggregate-count proof: HashWithCount node at a Disjoint position \
-                         must be a leaf"
-                            .to_string(),
-                    ));
-                }
-                // Disjoint subtree contributes 0 to the in-range count but
-                // its full structural count to the parent's `own_count`
-                // computation.
-                Ok((0, *count))
-            }
-            other => Err(Error::InvalidProofError(format!(
-                "aggregate-count proof: expected HashWithCount at Disjoint position, got {}",
-                other
-            ))),
-        },
-        SubtreeClassification::Contained => match &tree.node {
-            Node::HashWithCount(_, _, _, count) => {
-                if tree.left.is_some() || tree.right.is_some() {
-                    return Err(Error::InvalidProofError(
-                        "aggregate-count proof: HashWithCount node at a Contained position \
-                         must be a leaf"
-                            .to_string(),
-                    ));
-                }
-                // Contained subtree's structural count (which excludes
-                // NonCounted entries because their stored aggregate is 0)
-                // is exactly its in-range count.
-                Ok((*count, *count))
-            }
-            other => Err(Error::InvalidProofError(format!(
-                "aggregate-count proof: expected HashWithCount at Contained position, got {}",
-                other
-            ))),
-        },
-        SubtreeClassification::Boundary => match &tree.node {
-            Node::KVDigestCount(key, _, aggregate) => {
-                if !key_strictly_inside(key.as_slice(), lo, hi) {
+        SubtreeClassification::Disjoint => {
+            // Disjoint subtree contributes 0 to the in-range count but its
+            // full structural count to the parent's `own_count` computation.
+            // Both single-axis (`HashWithCount`) and dual-axis
+            // (`HashWithCountAndSum`) variants are accepted — they carry
+            // the same count field, just with the sum additionally bound
+            // into the hash for ProvableCountProvableSumTree hosts.
+            let count = match &tree.node {
+                Node::HashWithCount(_, _, _, count) => *count,
+                Node::HashWithCountAndSum(_, _, _, count, _) => *count,
+                other => {
                     return Err(Error::InvalidProofError(format!(
-                        "aggregate-count proof: KVDigestCount key {} falls outside its \
-                         inherited subtree bounds (lo={:?}, hi={:?})",
-                        hex::encode(key),
-                        lo.map(hex::encode),
-                        hi.map(hex::encode),
+                        "aggregate-count proof: expected HashWithCount or HashWithCountAndSum \
+                         at Disjoint position, got {}",
+                        other
                     )));
                 }
-                let key_slice = key.as_slice();
-                let (left_in, left_struct) = match &tree.left {
-                    Some(child) => verify_count_shape(&child.tree, range, lo, Some(key_slice))?,
-                    None => (0, 0),
-                };
-                let (right_in, right_struct) = match &tree.right {
-                    Some(child) => verify_count_shape(&child.tree, range, Some(key_slice), hi)?,
-                    None => (0, 0),
-                };
-                // own_count = aggregate − left_struct − right_struct.
-                // Saturating sub here would silently mask a malformed
-                // proof (children claiming more keys than the parent's
-                // aggregate), so use checked_sub and reject.
-                let own_count = aggregate
-                    .checked_sub(left_struct)
-                    .and_then(|s| s.checked_sub(right_struct))
-                    .ok_or_else(|| {
-                        Error::InvalidProofError(format!(
-                            "aggregate-count proof: child structural counts ({} + {}) exceed \
-                             parent's aggregate count ({}) at key {}",
-                            left_struct,
-                            right_struct,
-                            aggregate,
-                            hex::encode(key)
-                        ))
-                    })?;
-                let self_contribution = if range.contains(key_slice) {
-                    own_count
-                } else {
-                    0
-                };
-                let in_range = left_in
-                    .checked_add(right_in)
-                    .and_then(|s| s.checked_add(self_contribution))
-                    .ok_or_else(|| {
-                        Error::InvalidProofError(
-                            "aggregate-count proof: in-range count overflowed u64".to_string(),
-                        )
-                    })?;
-                Ok((in_range, *aggregate))
+            };
+            if tree.left.is_some() || tree.right.is_some() {
+                return Err(Error::InvalidProofError(
+                    "aggregate-count proof: leaf hash-with-count node at a Disjoint position \
+                     must be a leaf"
+                        .to_string(),
+                ));
             }
-            other => Err(Error::InvalidProofError(format!(
-                "aggregate-count proof: expected KVDigestCount at Boundary position, got {}",
-                other
-            ))),
-        },
+            Ok((0, count))
+        }
+        SubtreeClassification::Contained => {
+            // Contained subtree's structural count (which excludes
+            // NonCounted entries because their stored aggregate is 0) is
+            // exactly its in-range count. Accept both single- and
+            // dual-axis variants.
+            let count = match &tree.node {
+                Node::HashWithCount(_, _, _, count) => *count,
+                Node::HashWithCountAndSum(_, _, _, count, _) => *count,
+                other => {
+                    return Err(Error::InvalidProofError(format!(
+                        "aggregate-count proof: expected HashWithCount or HashWithCountAndSum \
+                         at Contained position, got {}",
+                        other
+                    )));
+                }
+            };
+            if tree.left.is_some() || tree.right.is_some() {
+                return Err(Error::InvalidProofError(
+                    "aggregate-count proof: leaf hash-with-count node at a Contained position \
+                     must be a leaf"
+                        .to_string(),
+                ));
+            }
+            Ok((count, count))
+        }
+        SubtreeClassification::Boundary => {
+            // Boundary nodes: accept KVDigestCount (single-axis) or
+            // KVDigestCountSum (dual-axis). Both carry the count we need;
+            // the sum field in KVDigestCountSum is only used during hash
+            // reconstruction (already done by `execute_with_options`'s
+            // node-hash recomputation in Phase 1).
+            let (key, aggregate) = match &tree.node {
+                Node::KVDigestCount(key, _, aggregate) => (key, *aggregate),
+                Node::KVDigestCountSum(key, _, aggregate, _) => (key, *aggregate),
+                other => {
+                    return Err(Error::InvalidProofError(format!(
+                        "aggregate-count proof: expected KVDigestCount or KVDigestCountSum at \
+                         Boundary position, got {}",
+                        other
+                    )));
+                }
+            };
+            if !key_strictly_inside(key.as_slice(), lo, hi) {
+                return Err(Error::InvalidProofError(format!(
+                    "aggregate-count proof: boundary key {} falls outside its inherited \
+                     subtree bounds (lo={:?}, hi={:?})",
+                    hex::encode(key),
+                    lo.map(hex::encode),
+                    hi.map(hex::encode),
+                )));
+            }
+            let key_slice = key.as_slice();
+            let (left_in, left_struct) = match &tree.left {
+                Some(child) => verify_count_shape(&child.tree, range, lo, Some(key_slice))?,
+                None => (0, 0),
+            };
+            let (right_in, right_struct) = match &tree.right {
+                Some(child) => verify_count_shape(&child.tree, range, Some(key_slice), hi)?,
+                None => (0, 0),
+            };
+            // own_count = aggregate − left_struct − right_struct.
+            // Saturating sub here would silently mask a malformed proof
+            // (children claiming more keys than the parent's aggregate),
+            // so use checked_sub and reject.
+            let own_count = aggregate
+                .checked_sub(left_struct)
+                .and_then(|s| s.checked_sub(right_struct))
+                .ok_or_else(|| {
+                    Error::InvalidProofError(format!(
+                        "aggregate-count proof: child structural counts ({} + {}) exceed \
+                         parent's aggregate count ({}) at key {}",
+                        left_struct,
+                        right_struct,
+                        aggregate,
+                        hex::encode(key)
+                    ))
+                })?;
+            let self_contribution = if range.contains(key_slice) {
+                own_count
+            } else {
+                0
+            };
+            let in_range = left_in
+                .checked_add(right_in)
+                .and_then(|s| s.checked_add(self_contribution))
+                .ok_or_else(|| {
+                    Error::InvalidProofError(
+                        "aggregate-count proof: in-range count overflowed u64".to_string(),
+                    )
+                })?;
+            Ok((in_range, aggregate))
+        }
     }
 }

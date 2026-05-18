@@ -32,9 +32,9 @@
 //!   matched outer key. Surfaced through
 //!   [`GroveDb::verify_aggregate_count_query_per_key`].
 //!
-//! The same leaf/carrier shape will apply to forthcoming aggregate
-//! variants (sum, average) — each will get its own sibling module under
-//! `grovedb/src/operations/proof/` with parallel naming.
+//! The same leaf/carrier shape applies to the sum and combined
+//! axes — see the sibling [`super::aggregate_sum`] and
+//! [`super::aggregate_count_and_sum`] modules.
 //!
 //! ## Module layout
 //!
@@ -58,7 +58,7 @@ use grovedb_merk::CryptoHash;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
-    operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof},
+    operations::proof::{GroveDBProof, LayerProof},
     Error, GroveDb, PathQuery,
 };
 
@@ -205,23 +205,16 @@ impl GroveDb {
     }
 }
 
-/// Extract the V1 root layer from a `GroveDBProof` envelope, or refuse
-/// the proof. `AggregateCountOnRange` (both leaf and carrier) requires
-/// V1 envelopes — the V0 (`MerkOnlyLayerProof`) envelope predates the
-/// aggregate-count feature and is only emitted by grove versions older
-/// than the one used by Dash Platform v12, so it cannot legitimately
-/// contain an aggregate-count proof.
+/// Thin wrapper around
+/// [`super::aggregate_common::require_v1_envelope`] that supplies the
+/// aggregate-count axis labels. `AggregateCountOnRange` (both leaf and
+/// carrier) requires V1 envelopes — the V0 (`MerkOnlyLayerProof`)
+/// envelope predates the aggregate-count feature and is only emitted
+/// by grove versions older than the one used by Dash Platform v12, so
+/// it cannot legitimately contain an aggregate-count proof.
 fn require_v1_envelope<'a>(
     proof: &'a GroveDBProof,
     path_query: &PathQuery,
 ) -> Result<&'a LayerProof, Error> {
-    match proof {
-        GroveDBProof::V1(GroveDBProofV1 { root_layer }) => Ok(root_layer),
-        GroveDBProof::V0(_) => Err(Error::InvalidProof(
-            path_query.clone(),
-            "AggregateCountOnRange proofs require V1 proof envelopes; V0 envelopes predate \
-             this feature and cannot legitimately carry an aggregate-count proof"
-                .to_string(),
-        )),
-    }
+    super::aggregate_common::require_v1_envelope(proof, path_query, "AggregateCountOnRange")
 }

@@ -24,8 +24,17 @@ where
     ///
     /// `inner_range` is the `QueryItem` wrapped by `AggregateCountOnRange`
     /// (already stripped at the caller). `tree_type` must be one of
-    /// `ProvableCountTree` or `ProvableCountSumTree`; any other tree type is
-    /// rejected with `Error::InvalidProofError` before any walking happens.
+    /// `ProvableCountTree`, `ProvableCountSumTree`, or
+    /// `ProvableCountProvableSumTree`; any other tree type is rejected
+    /// with `Error::InvalidProofError` before any walking happens.
+    ///
+    /// The chosen `tree_type` flows down into `emit_count_proof` so the
+    /// emitter can pick between single-axis (`HashWithCount`,
+    /// `KVDigestCount`) and dual-axis (`HashWithCountAndSum`,
+    /// `KVDigestCountSum`) Node variants. The dual-axis variants are
+    /// required for `ProvableCountProvableSumTree` because that tree's
+    /// node hash is `node_hash_with_count_and_sum`, which the verifier
+    /// can only reconstruct given both aggregates.
     ///
     /// The returned tuple is `(proof_ops, count)`:
     /// - `proof_ops` is the linear stream the verifier will replay to
@@ -41,8 +50,8 @@ where
     ) -> CostResult<(LinkedList<Op>, u64), Error> {
         if !is_provable_count_bearing(tree_type) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateCountOnRange is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
+                "AggregateCountOnRange is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(OperationCost::default());
@@ -52,7 +61,15 @@ where
         let mut ops = LinkedList::new();
         let count = cost_return_on_error!(
             &mut cost,
-            emit_count_proof(self, inner_range, None, None, &mut ops, grove_version)
+            emit_count_proof(
+                self,
+                inner_range,
+                None,
+                None,
+                &mut ops,
+                tree_type,
+                grove_version,
+            )
         );
         Ok((ops, count)).wrap_with_cost(cost)
     }

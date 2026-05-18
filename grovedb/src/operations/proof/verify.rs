@@ -708,6 +708,7 @@ impl GroveDb {
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
                             | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableCountProvableSumTree(Some(_), ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -842,6 +843,7 @@ impl GroveDb {
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::SumItem(..)
                             | Element::Item(..)
                             | Element::ItemWithSumItem(..)
@@ -1455,6 +1457,12 @@ impl GroveDb {
                          not on BulkAppendTree",
                     ));
                 }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on BulkAppendTree",
+                    ));
+                }
             }
         }
 
@@ -1583,6 +1591,12 @@ impl GroveDb {
                     return Err(Error::InvalidInput(
                         "AggregateSumOnRange is only supported on provable sum trees, \
                          not on this tree type",
+                    ));
+                }
+                QueryItem::AggregateCountAndSumOnRange(_) => {
+                    return Err(Error::InvalidInput(
+                        "AggregateCountAndSumOnRange is only supported on \
+                         ProvableCountProvableSumTree, not on this tree type",
                     ));
                 }
             }
@@ -1722,7 +1736,8 @@ impl GroveDb {
                             | Element::CountSumTree(Some(_), ..)
                             | Element::ProvableCountTree(Some(_), ..)
                             | Element::ProvableCountSumTree(Some(_), ..)
-                            | Element::ProvableSumTree(Some(_), ..) => {
+                            | Element::ProvableSumTree(Some(_), ..)
+                            | Element::ProvableCountProvableSumTree(Some(_), ..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -1846,6 +1861,7 @@ impl GroveDb {
                             | Element::ProvableCountTree(None, ..)
                             | Element::ProvableCountSumTree(None, ..)
                             | Element::ProvableSumTree(None, ..)
+                            | Element::ProvableCountProvableSumTree(None, ..)
                             | Element::CommitmentTree(..)
                             | Element::MmrTree(..)
                             | Element::BulkAppendTree(..)
@@ -2829,17 +2845,19 @@ impl GroveDb {
             }
             Node::KVRefValueHash(..)
             | Node::KVRefValueHashCount(..)
-            | Node::KVRefValueHashSum(..) => {
-                // KVRefValueHash{,Count,Sum} carries an opaque
+            | Node::KVRefValueHashSum(..)
+            | Node::KVRefValueHashCountSum(..) => {
+                // KVRefValueHash{,Count,Sum,CountSum} carries an opaque
                 // node_value_hash that cannot be recomputed from the value
                 // bytes alone — the hash is `combine_hash(node_value_hash,
                 // value_hash(referenced_value))`, and the verifier never
                 // gets to see the referenced_value at this layer. Without
                 // this rejection, a forged value could ride along in a
-                // KVRefValueHashSum trunk/branch node while the merk-level
-                // hash chain still appears valid, because the embedded
-                // opaque hash is treated as authoritative. These node types
-                // should never appear in trunk/branch chunk proofs.
+                // KVRefValueHashSum / KVRefValueHashCountSum trunk/branch
+                // node while the merk-level hash chain still appears
+                // valid, because the embedded opaque hash is treated as
+                // authoritative. These node types should never appear in
+                // trunk/branch chunk proofs.
                 return Err(Error::InvalidProof(
                     PathQuery::new_unsized(Vec::new(), Query::default()),
                     format!(
@@ -2871,6 +2889,9 @@ impl GroveDb {
                 }
                 Node::KVCount(_, _, count) => Some(*count),
                 Node::KVRefValueHashCount(_, _, _, count) => Some(*count),
+                // Dual-axis (PCPS) variants — count lives at the same
+                // position as the single-axis count.
+                Node::KVCountSum(_, _, count, _) => Some(*count),
                 _ => None,
             };
 
@@ -2923,17 +2944,22 @@ impl GroveDb {
             | Node::KVRefValueHash(key, value, ..)
             | Node::KVRefValueHashCount(key, value, ..)
             | Node::KVSum(key, value, ..)
-            | Node::KVRefValueHashSum(key, value, ..) => Some((key.clone(), value.clone())),
+            | Node::KVRefValueHashSum(key, value, ..)
+            | Node::KVCountSum(key, value, ..)
+            | Node::KVRefValueHashCountSum(key, value, ..) => Some((key.clone(), value.clone())),
             // These nodes don't have values, only key+hash or just hash
             Node::KVDigest(..)
             | Node::KVDigestCount(..)
             | Node::KVDigestSum(..)
+            | Node::KVDigestCountSum(..)
             | Node::Hash(_)
             | Node::KVHash(_)
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
-            | Node::HashWithSum(..) => None,
+            | Node::HashWithSum(..)
+            | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndSum(..) => None,
         }
     }
 
@@ -2946,7 +2972,8 @@ impl GroveDb {
             Element::CountTree(_, count, _)
             | Element::CountSumTree(_, count, ..)
             | Element::ProvableCountTree(_, count, _)
-            | Element::ProvableCountSumTree(_, count, ..) => Some(*count),
+            | Element::ProvableCountSumTree(_, count, ..)
+            | Element::ProvableCountProvableSumTree(_, count, ..) => Some(*count),
             _ => None,
         }
     }

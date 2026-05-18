@@ -122,13 +122,18 @@ impl TrunkQueryResult {
             | Node::KVRefValueHashCount(key, ..)
             | Node::KVSum(key, ..)
             | Node::KVDigestSum(key, ..)
-            | Node::KVRefValueHashSum(key, ..) => Some(key.clone()),
+            | Node::KVRefValueHashSum(key, ..)
+            | Node::KVCountSum(key, ..)
+            | Node::KVDigestCountSum(key, ..)
+            | Node::KVRefValueHashCountSum(key, ..) => Some(key.clone()),
             Node::Hash(_)
             | Node::KVHash(_)
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
-            | Node::HashWithSum(..) => None,
+            | Node::HashWithSum(..)
+            | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndSum(..) => None,
         }
     }
 
@@ -393,13 +398,18 @@ impl BranchQueryResult {
             | Node::KVRefValueHashCount(key, ..)
             | Node::KVSum(key, ..)
             | Node::KVDigestSum(key, ..)
-            | Node::KVRefValueHashSum(key, ..) => Some(key.clone()),
+            | Node::KVRefValueHashSum(key, ..)
+            | Node::KVCountSum(key, ..)
+            | Node::KVDigestCountSum(key, ..)
+            | Node::KVRefValueHashCountSum(key, ..) => Some(key.clone()),
             Node::Hash(_)
             | Node::KVHash(_)
             | Node::KVHashCount(..)
             | Node::HashWithCount(..)
             | Node::KVHashSum(..)
-            | Node::HashWithSum(..) => None,
+            | Node::HashWithSum(..)
+            | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndSum(..) => None,
         }
     }
 }

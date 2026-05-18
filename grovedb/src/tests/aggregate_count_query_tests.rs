@@ -1358,10 +1358,10 @@ mod tests {
             Err(e) => {
                 let msg = format!("{e}");
                 // The forgery is rejected either by:
-                //   (a) the V0-envelope-not-allowed gate added in PR #663
-                //       (fires first under GROVE_V2), or
-                //   (b) the terminal-type gate added in this PR (fires
-                //       under V1 envelopes if we reach it).
+                //   (a) the V0-envelope-not-allowed gate (fires first
+                //       under GROVE_V2), or
+                //   (b) the terminal-type gate (fires under V1 envelopes
+                //       if we reach it).
                 // Either rejection means the forgery doesn't pass — the
                 // security property holds. Accept both error shapes here.
                 assert!(
@@ -2164,11 +2164,13 @@ mod tests {
 
     #[test]
     fn leaf_unchanged_under_per_key_verifier() {
-        // The leaf shape — a single-`AggregateCountOnRange` query — produces exactly the
-        // same proof bytes it did before this feature. Verifying it via
-        // the new per-key entry point returns a one-entry Vec with an
-        // empty key and the same count `verify_aggregate_count_query`
-        // returns. This is the leaf-symmetry contract.
+        // The leaf shape — a single-`AggregateCountOnRange` query —
+        // produces the same proof bytes whether the caller verifies via
+        // `verify_aggregate_count_query` or the per-key entry point.
+        // Verifying it via the per-key entry point returns a one-entry
+        // Vec with an empty key and the same count
+        // `verify_aggregate_count_query` returns. This is the
+        // leaf-symmetry contract.
         let v = GroveVersion::latest();
         let (db, expected_root) = setup_15_key_provable_count_tree(v);
         let path_query = PathQuery::new_aggregate_count_on_range(
@@ -3276,5 +3278,93 @@ mod tests {
             .unwrap()
             .expect("no-proof per-key with oversized limit should succeed");
         assert_eq!(no_proof, results);
+    }
+
+    /// Root-carrier regression: a carrier `AggregateCountOnRange` query
+    /// with an empty `PathQuery::path` must validate and round-trip
+    /// correctly. The shape-aware empty-path fix in the auto-dispatcher
+    /// allows carriers to fan out at the root layer while still
+    /// rejecting leaf-shape count queries at the root.
+    #[test]
+    fn root_carrier_count_with_empty_path_succeeds() {
+        use grovedb_query::Query;
+        let v = GroveVersion::latest();
+        let db = crate::tests::make_test_grovedb(v);
+        for leaf in [TEST_LEAF, b"test_leaf2"] {
+            db.insert(
+                [leaf].as_ref(),
+                b"ct",
+                Element::empty_provable_count_tree(),
+                None,
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert ct");
+            for c in b'a'..=b'e' {
+                db.insert(
+                    [leaf, b"ct"].as_ref(),
+                    &[c],
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    v,
+                )
+                .unwrap()
+                .expect("insert count item");
+            }
+        }
+        let expected_root = db.grove_db.root_hash(None, v).unwrap().expect("root_hash");
+
+        let mut carrier = Query::new();
+        carrier.insert_key(TEST_LEAF.to_vec());
+        carrier.insert_key(b"test_leaf2".to_vec());
+        carrier.set_subquery_path(vec![b"ct".to_vec()]);
+        carrier.set_subquery(Query::new_aggregate_count_on_range(QueryItem::RangeFrom(
+            b"a".to_vec()..,
+        )));
+        let path_query = PathQuery::new(Vec::new(), SizedQuery::new(carrier, None, None));
+
+        path_query
+            .validate_aggregate_count_on_range()
+            .expect("root-carrier ACOR must validate");
+
+        let proof = db
+            .grove_db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove root-carrier ACOR");
+        let (got_root, results) =
+            GroveDb::verify_aggregate_count_query_per_key(&proof, &path_query, v)
+                .expect("verify root-carrier ACOR");
+        assert_eq!(got_root, expected_root, "root must match GroveDB root");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, TEST_LEAF.to_vec());
+        assert_eq!(results[1].0, b"test_leaf2".to_vec());
+        // Each leaf ProvableCountTree holds 5 items.
+        assert_eq!(results[0].1, 5);
+        assert_eq!(results[1].1, 5);
+    }
+
+    /// Leaf `AggregateCountOnRange` at empty path is STILL rejected —
+    /// the shape-aware relaxation only applies to carriers.
+    #[test]
+    fn root_leaf_count_with_empty_path_still_rejected() {
+        let v = GroveVersion::latest();
+        let _db = crate::tests::make_test_grovedb(v);
+        let pq = PathQuery::new_aggregate_count_on_range(
+            Vec::new(),
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = pq
+            .validate_aggregate_count_on_range()
+            .expect_err("leaf at empty path must still be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("leaf") && msg.contains("ProvableCountTree"),
+            "expected leaf-only rejection message, got: {msg}"
+        );
+        let dummy = vec![0u8; 4];
+        assert!(GroveDb::verify_aggregate_count_query(&dummy, &pq, v).is_err());
     }
 }

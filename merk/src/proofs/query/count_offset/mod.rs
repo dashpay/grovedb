@@ -34,10 +34,24 @@
 //! `ProvableCountSumTree`. Offset accounting therefore only commits the
 //! count; the sum (if any) plays no role here.
 //!
+//! ## Dual-axis `ProvableCountProvableSumTree` hosts
+//!
+//! `ProvableCountProvableSumTree` (PCPS) hashes via
+//! `node_hash_with_count_and_sum` — BOTH the count AND the sum are
+//! committed into every node hash. A plain `HashWithCount(count)` would
+//! not recompute the right node hash for a PCPS host (its hash function
+//! takes a sum input the count-only op doesn't carry), so this module
+//! emits the dual-axis `HashWithCountAndSum` / `KVDigestCountSum`
+//! variants for PCPS hosts, parallel to the dispatch in
+//! [`super::aggregate_count::emit`]. Offset accounting itself is still
+//! count-only — the sum is committed alongside purely for hash
+//! reconstruction; it plays no role in offset/limit consumption.
+//!
 //! ## Scope
 //!
-//! - **Tree type**: `ProvableCountTree` or `ProvableCountSumTree` only.
-//!   Other tree types are rejected at the entry point.
+//! - **Tree type**: `ProvableCountTree`, `ProvableCountSumTree`, or
+//!   `ProvableCountProvableSumTree` (PCPS). Other tree types are
+//!   rejected at the entry point.
 //! - **Query shape**: a single `QueryItem` range. Multi-item queries,
 //!   subqueries, and conditional branches are out of scope (callers
 //!   producing those must fall back to the regular proof path, which
@@ -85,29 +99,69 @@ use crate::{
     {Error, TreeType},
 };
 
-/// Returns true if `tree_type` is one of the two tree types that can host an
-/// offset-paginated count-tree proof. The two tree types share the same
-/// `node_hash_with_count` hashing rule, so the same `HashWithCount` skip op
-/// works for both.
+/// Returns true if `tree_type` is one of the three tree types that can host
+/// an offset-paginated count-tree proof. `ProvableCountTree` /
+/// `ProvableCountSumTree` use `node_hash_with_count` and emit the
+/// single-axis `HashWithCount` / `KVDigestCount` skip ops;
+/// `ProvableCountProvableSumTree` uses `node_hash_with_count_and_sum` and
+/// emits the dual-axis `HashWithCountAndSum` / `KVDigestCountSum` variants
+/// so the verifier can reconstruct the right node hash.
 #[cfg(feature = "minimal")]
 pub(super) fn is_provable_count_bearing(tree_type: TreeType) -> bool {
     matches!(
         tree_type,
-        TreeType::ProvableCountTree | TreeType::ProvableCountSumTree
+        TreeType::ProvableCountTree
+            | TreeType::ProvableCountSumTree
+            | TreeType::ProvableCountProvableSumTree
     )
 }
 
-/// Pull the count out of a `ProvableCount` / `ProvableCountAndSum` aggregate.
-/// Returns `Err(InvalidProofError)` for any other variant — the entry point
-/// gates `tree_type` so reaching the error means the tree's in-memory state
-/// disagrees with its declared type.
+/// Returns true when the host tree binds BOTH count and sum into its node
+/// hash (i.e. `ProvableCountProvableSumTree`). When true, the count-offset
+/// emit/verify paths use the dual-axis Node variants
+/// (`HashWithCountAndSum`, `KVDigestCountSum`) so the verifier can
+/// reconstruct `node_hash_with_count_and_sum`. For the single-axis
+/// `ProvableCountTree` / `ProvableCountSumTree` hosts, this returns
+/// false and the count-only `HashWithCount` / `KVDigestCount` ops
+/// suffice.
+#[cfg(feature = "minimal")]
+#[inline]
+pub(super) fn binds_sum_into_hash(tree_type: TreeType) -> bool {
+    matches!(tree_type, TreeType::ProvableCountProvableSumTree)
+}
+
+/// Pull the count out of a `ProvableCount` / `ProvableCountAndSum` /
+/// `ProvableCountAndProvableSum` aggregate. Returns `Err(InvalidProofError)`
+/// for any other variant — the entry point gates `tree_type` so reaching
+/// the error means the tree's in-memory state disagrees with its declared
+/// type.
 #[cfg(feature = "minimal")]
 pub(super) fn provable_count_from_aggregate(data: AggregateData) -> Result<u64, Error> {
     match data {
         AggregateData::ProvableCount(c) => Ok(c),
         AggregateData::ProvableCountAndSum(c, _) => Ok(c),
+        AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
         other => Err(Error::InvalidProofError(format!(
             "expected ProvableCount aggregate data on a provable count tree, got {:?}",
+            other
+        ))),
+    }
+}
+
+/// Pull the sum out of a `ProvableCountAndProvableSum` aggregate. Used by
+/// the PCPS-host emit path to populate the dual-axis Node variants'
+/// sum field, which the verifier needs to reconstruct
+/// `node_hash_with_count_and_sum`. Returns `Err(InvalidProofError)` for
+/// any other aggregate variant — the dual-axis emit path is only
+/// reached when `binds_sum_into_hash(tree_type)` is true, which gates
+/// the aggregate to `ProvableCountAndProvableSum`.
+#[cfg(feature = "minimal")]
+pub(super) fn provable_sum_from_dual_axis_aggregate(data: AggregateData) -> Result<i64, Error> {
+    match data {
+        AggregateData::ProvableCountAndProvableSum(_, s) => Ok(s),
+        other => Err(Error::InvalidProofError(format!(
+            "expected ProvableCountAndProvableSum aggregate data on a ProvableCountProvableSumTree, \
+             got {:?}",
             other
         ))),
     }

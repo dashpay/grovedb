@@ -654,11 +654,39 @@ fn provable_sum_from_aggregate_accepts_provable_sum() {
     );
 }
 
+/// `provable_sum_from_aggregate` also accepts the dual-axis variant —
+/// it extracts the sum from a `ProvableCountAndProvableSum(_, sum)`.
 #[test]
-fn is_provable_sum_bearing_only_for_provable_sum_tree() {
-    // Every TreeType variant must return false except ProvableSumTree.
-    // This pins the matches!(...) gate against accidental loosening.
+fn provable_sum_from_aggregate_accepts_dual_axis_variant() {
+    assert_eq!(
+        provable_sum_from_aggregate(AggregateData::ProvableCountAndProvableSum(7, -42)).unwrap(),
+        -42
+    );
+    assert_eq!(
+        provable_sum_from_aggregate(AggregateData::ProvableCountAndProvableSum(
+            u64::MAX,
+            i64::MAX
+        ))
+        .unwrap(),
+        i64::MAX
+    );
+    assert_eq!(
+        provable_sum_from_aggregate(AggregateData::ProvableCountAndProvableSum(0, i64::MIN))
+            .unwrap(),
+        i64::MIN
+    );
+}
+
+#[test]
+fn is_provable_sum_bearing_for_provable_sum_tree_and_pcps() {
+    // Both ProvableSumTree (sum-only) and ProvableCountProvableSumTree
+    // (dual-axis) bind the sum into their node hash and therefore
+    // accept AggregateSumOnRange proofs.
     assert!(is_provable_sum_bearing(TreeType::ProvableSumTree));
+    assert!(is_provable_sum_bearing(
+        TreeType::ProvableCountProvableSumTree
+    ));
+    // Every other variant is rejected.
     for t in [
         TreeType::NormalTree,
         TreeType::SumTree,
@@ -673,6 +701,106 @@ fn is_provable_sum_bearing_only_for_provable_sum_tree() {
         TreeType::DenseAppendOnlyFixedSizeTree(0),
     ] {
         assert!(!is_provable_sum_bearing(t), "false expected for {:?}", t);
+    }
+}
+
+// ---------- ProvableCountProvableSumTree (dual-axis) tests ----------
+
+/// Build a fresh `ProvableCountProvableSumTree` populated with single-byte
+/// keys "a".."o" (15 keys), each carrying count=1 and sum=(i+1). Returns
+/// the merk and root hash.
+fn make_15_key_provable_count_provable_sum_tree(
+    grove_version: &GroveVersion,
+) -> (TempMerk, [u8; 32]) {
+    use crate::tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode;
+    let mut merk =
+        TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+    let keys: Vec<Vec<u8>> = (b'a'..=b'o').map(|c| vec![c]).collect();
+    let entries: Vec<(Vec<u8>, Op)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let s = (i as i64) + 1;
+            (
+                k.clone(),
+                Op::Put(
+                    vec![i as u8],
+                    ProvableCountedAndProvableSummedMerkNode(1, s),
+                ),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+        .unwrap()
+        .expect("apply ProvableCountProvableSumTree entries");
+    merk.commit(grove_version);
+    let root_hash = merk.root_hash().unwrap();
+    (merk, root_hash)
+}
+
+/// Aggregate-sum proof against `ProvableCountProvableSumTree` round-trips.
+/// Same shape as `single_key_provable_sum_tree_round_trip` for the
+/// sum-only host, but the emitter dispatches dual-axis variants
+/// (`HashWithCountAndSum`, `KVDigestCountSum`) and the verifier
+/// reconstructs `node_hash_with_count_and_sum`.
+#[test]
+fn integration_sum_proof_against_pcps_round_trips() {
+    let v = GroveVersion::latest();
+    let (merk, expected_root) = make_15_key_provable_count_provable_sum_tree(v);
+    // c..=l → sums 3+4+5+6+7+8+9+10+11+12 = 75
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (ops, prover_sum) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove sum on PCPS should succeed");
+    assert_eq!(prover_sum, 75, "c..=l sum should be 75");
+    let bytes = encode_proof(&ops);
+    let (root, verifier_sum) = verify_aggregate_sum_on_range_proof(&bytes, &inner_range)
+        .unwrap()
+        .expect("verify sum proof on PCPS should succeed");
+    assert_eq!(root, expected_root);
+    assert_eq!(verifier_sum, 75);
+}
+
+/// Disjoint-leaf rejection on the dual-axis sum side. Mirrors
+/// `shape_walk_rejects_disjoint_hashwithsum_with_children` for the
+/// sum-only host.
+#[test]
+fn shape_walk_rejects_disjoint_hashwithcountandsum_with_children_pcps() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeAfter(b"o".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithCountAndSum(..))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], 1, 0,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(done, "test setup: need at least one HashWithCountAndSum op");
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result
+        .expect_err("spliced child under Disjoint HashWithCountAndSum (sum side) must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Disjoint position must be a leaf")
+                || msg.contains("at a Disjoint position"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
     }
 }
 
@@ -768,4 +896,357 @@ fn no_proof_sum_with_negative_values_matches_prover() {
         -70,
         v,
     );
+}
+
+// ---------- Additional negative-path coverage for verify_sum_shape ----------
+//
+// These tests target the rejection arms inside `verify_sum_shape`
+// (single-axis HashWithSum/KVDigestSum + dual-axis HashWithCountAndSum/
+// KVDigestCountSum) that aren't otherwise exercised by happy-path
+// round-trips. Each test handcrafts a minimal proof to land cleanly
+// on the targeted Phase-2 arm without tripping Phase 1's
+// reconstruction checks (key ordering, balance, etc.).
+
+/// At a Contained position the sum-side shape walk requires
+/// `HashWithSum` or `HashWithCountAndSum`. A `KVDigestSum` (boundary
+/// node type) there must hit the "expected HashWithSum or
+/// HashWithCountAndSum at Contained position" rejection arm.
+#[test]
+fn shape_walk_rejects_non_hashwithsum_at_contained() {
+    let inner_range = QueryItem::RangeFull(std::ops::RangeFull);
+    let mut ops = LinkedList::<ProofOp>::new();
+    ops.push_back(ProofOp::Push(Node::KVDigestSum(
+        b"d".to_vec(),
+        [0u8; 32],
+        7,
+    )));
+    let bytes = encode_proof(&ops);
+
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("non-HashWithSum at Contained must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("expected HashWithSum") && msg.contains("Contained"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// At a Disjoint position the sum-side shape walk requires
+/// `HashWithSum` or `HashWithCountAndSum`. Build a two-level proof so
+/// the boundary root's left child is classified Disjoint, then place
+/// a `KVDigestSum` (boundary type) at that Disjoint leaf to trigger
+/// the "expected HashWithSum ... at Disjoint position" rejection.
+#[test]
+fn shape_walk_rejects_non_hashwithsum_at_disjoint() {
+    // Range [n, +∞) means: parent boundary at key "m" classifies its
+    // left subtree (bounds (-∞, m)) as Disjoint (everything below
+    // "m" is below "n").
+    let inner_range = QueryItem::RangeFrom(b"n".to_vec()..);
+    let mut ops = LinkedList::<ProofOp>::new();
+    // Op::Parent semantics: the LAST-pushed op becomes parent and the
+    // PREVIOUSLY-pushed op becomes its left child. So to build
+    //         m            (root, bounds (None, None) — Boundary)
+    //        /
+    //       a              (left child, bounds (-∞, m) — Disjoint
+    //                       against range [n, +∞))
+    // we push the LEFT child first, then the root, then `Parent`.
+    //
+    // The left child position is bounds (-∞, m) and range [n, +∞);
+    // (-∞, m) is entirely below n, so Disjoint. Putting a KVDigestSum
+    // there (wrong type for Disjoint) trips the Disjoint arm's
+    // "expected HashWithSum ..." rejection.
+    ops.push_back(ProofOp::Push(Node::KVDigestSum(
+        b"a".to_vec(),
+        [0u8; 32],
+        0,
+    )));
+    ops.push_back(ProofOp::Push(Node::KVDigestSum(
+        b"m".to_vec(),
+        [0u8; 32],
+        0,
+    )));
+    ops.push_back(ProofOp::Parent);
+    let bytes = encode_proof(&ops);
+
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("non-HashWithSum at Disjoint must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("expected HashWithSum") && msg.contains("Disjoint"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Counterpart for the dual-axis (PCPS) Contained arm. Crafting a
+/// single-op proof with a `KVDigestCountSum` at the Contained-root
+/// position lands directly on the dual-axis "expected HashWithSum or
+/// HashWithCountAndSum at Contained position" arm.
+#[test]
+fn shape_walk_rejects_non_hashwithcountandsum_at_contained_pcps() {
+    let inner_range = QueryItem::RangeFull(std::ops::RangeFull);
+    let mut ops = LinkedList::<ProofOp>::new();
+    ops.push_back(ProofOp::Push(Node::KVDigestCountSum(
+        b"d".to_vec(),
+        [0u8; 32],
+        1,
+        7,
+    )));
+    let bytes = encode_proof(&ops);
+
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("KVDigestCountSum at Contained must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("expected HashWithSum") && msg.contains("Contained"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// `verify_sum_shape` requires Contained-classified `HashWithSum` nodes
+/// to be leaves. Splicing a dummy child under the Contained
+/// `HashWithSum` exercises the Contained-side leaf check.
+#[test]
+fn shape_walk_rejects_contained_hashwithsum_with_children() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_sum_tree(v);
+    // Full range → root Contained.
+    let inner_range = QueryItem::RangeFrom(b"a".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithSum(_, _, _, _))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], 0,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(done, "test setup: expected at least one HashWithSum op");
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("Contained HashWithSum with children must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Contained position must be a leaf"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Dual-axis counterpart — splicing children under a Contained-position
+/// `HashWithCountAndSum` exercises the dual-axis Contained leaf check
+/// from the sum-side verifier.
+#[test]
+fn shape_walk_rejects_contained_hashwithcountandsum_with_children_pcps_sum() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeFrom(b"a".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithCountAndSum(..))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], 1, 0,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(done, "test setup: need at least one HashWithCountAndSum op");
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err(
+        "Contained HashWithCountAndSum with children must be rejected (sum side, dual-axis)",
+    );
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Contained position must be a leaf"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// At a Boundary position the sum-side shape walk requires
+/// `KVDigestSum` or `KVDigestCountSum`. A `HashWithSum` there must
+/// trip the "expected KVDigestSum or KVDigestCountSum at Boundary
+/// position" rejection arm.
+#[test]
+fn shape_walk_rejects_non_kvdigestsum_at_boundary() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (mut ops, _) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Swap the first KVDigestSum (a boundary node) with a HashWithSum
+    // (the Contained/Disjoint leaf type). Phase 1's allowlist accepts
+    // both; Phase 2's shape walk must reject the mismatch.
+    let mut swapped = false;
+    for op in ops.iter_mut() {
+        if let ProofOp::Push(Node::KVDigestSum(_, _, sum)) = op {
+            *op = ProofOp::Push(Node::HashWithSum([0u8; 32], [0u8; 32], [0u8; 32], *sum));
+            swapped = true;
+            break;
+        }
+    }
+    assert!(swapped, "test setup: expected a KVDigestSum op to swap");
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("non-KVDigestSum at Boundary must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("expected KVDigestSum") && msg.contains("Boundary"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Sum-side counterpart of
+/// `shape_walk_rejects_kvdigestcount_outside_inherited_bounds`. A
+/// `KVDigestSum` whose key is outside its inherited (lo, hi) bounds
+/// triggers the "boundary key ... falls outside its inherited subtree
+/// bounds" arm.
+#[test]
+fn shape_walk_rejects_kvdigestsum_outside_inherited_bounds() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (mut ops, _) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Rewrite the first KVDigestSum's key to one beyond any in-tree
+    // value. Phase 1's reconstruction passes (single key, no ordering
+    // conflict), but Phase 2's `key_strictly_inside` check fires.
+    let mut rewrote = false;
+    for op in ops.iter_mut() {
+        if let ProofOp::Push(Node::KVDigestSum(key, _, _)) = op {
+            *key = vec![0xff, 0xff];
+            rewrote = true;
+            break;
+        }
+    }
+    assert!(rewrote, "test setup: expected a KVDigestSum to rewrite");
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    // The rewrite can either trip Phase 1's key-ordering check or
+    // Phase 2's inherited-bounds check, depending on where the
+    // KVDigestSum sat in the proof. Either rejection path counts —
+    // the goal is that an out-of-bounds boundary key never produces
+    // a successful verification.
+    let err = result.expect_err("KVDigestSum outside inherited bounds must be rejected");
+    match err {
+        Error::InvalidProofError(_) => {}
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Dual-axis Boundary key violating its inherited bounds. Counterpart
+/// of the count-side `shape_walk_rejects_kvdigestcountsum_outside_inherited_bounds_pcps`
+/// — exercises the same arm from the sum-side verifier.
+#[test]
+fn shape_walk_rejects_kvdigestcountsum_outside_inherited_bounds_pcps_sum() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (mut ops, _) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    let mut rewrote = false;
+    for op in ops.iter_mut() {
+        if let ProofOp::Push(Node::KVDigestCountSum(key, _, _, _)) = op {
+            *key = vec![0xff, 0xff];
+            rewrote = true;
+            break;
+        }
+    }
+    assert!(
+        rewrote,
+        "test setup: expected a KVDigestCountSum op to rewrite"
+    );
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_sum_on_range_proof(&bytes, &inner_range).unwrap();
+    // Either Phase 1's key-ordering check fires (now that
+    // execute_with_options also enforces BST-order on dual-axis
+    // nodes) or Phase 2's inherited-bounds check does. Both are
+    // acceptable rejections.
+    let err =
+        result.expect_err("KVDigestCountSum outside inherited bounds must be rejected (sum side)");
+    match err {
+        Error::InvalidProofError(_) => {}
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// The sum verifier narrows its i128 accumulator to i64 at the very
+/// end. A `verify_aggregate_sum_on_range_proof` call against an
+/// `integration_overflow_at_i64_max_is_rejected`-style adversarial
+/// tree already exercises the narrow on the rejection side; this
+/// test instead exercises the i64 narrow on the SUCCESS side, by
+/// proving against a tree whose total in-range sum is exactly
+/// i64::MAX (no overflow) and confirming the verifier returns
+/// i64::MAX without error.
+#[test]
+fn verify_sum_narrows_i128_to_i64_at_max_boundary() {
+    let v = GroveVersion::latest();
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableSumTree);
+    // Two entries whose net sum is exactly i64::MAX. This forces
+    // the narrow to succeed at the boundary.
+    let entries: [(&[u8], i64); 2] = [(b"a", i64::MAX - 1), (b"b", 1)];
+    let apply_ops: Vec<(Vec<u8>, Op)> = entries
+        .iter()
+        .map(|(k, val)| (k.to_vec(), Op::Put(vec![], ProvableSummedMerkNode(*val))))
+        .collect();
+    merk.apply::<_, Vec<_>>(&apply_ops, &[], None, v)
+        .unwrap()
+        .expect("apply");
+    merk.commit(v);
+    let root = merk.root_hash().unwrap();
+
+    let inner_range = QueryItem::RangeFrom(b"a".to_vec()..);
+    let (ops, prover_sum) = merk
+        .prove_aggregate_sum_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove");
+    assert_eq!(prover_sum, i64::MAX);
+    let bytes = encode_proof(&ops);
+    let (verifier_root, verifier_sum) = verify_aggregate_sum_on_range_proof(&bytes, &inner_range)
+        .unwrap()
+        .expect("verify");
+    assert_eq!(verifier_root, root);
+    assert_eq!(verifier_sum, i64::MAX);
 }

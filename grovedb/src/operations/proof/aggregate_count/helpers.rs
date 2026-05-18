@@ -1,33 +1,28 @@
-//! Shared helpers used by both the leaf-chain walker and the per-key
-//! carrier walker.
-//!
-//! Envelope decoding lives one level up in
-//! [`crate::operations::proof::decode_grovedb_proof_canonical`] so the
-//! canonical-decode contract has exactly one definition shared with
-//! the aggregate-sum side.
+//! Aggregate-count-specific helpers. Items shared with the sum and
+//! combined axes (the multi-key outer walker, the single-key descent,
+//! the merk-bytes unwrapper, the `OuterMatch` row type) live in
+//! [`super::super::aggregate_common`] — this file re-exports them via
+//! thin wrappers that supply the axis-specific diagnostic label and
+//! holds only the genuinely axis-specific helpers below.
 //!
 //! - [`verify_count_leaf`] — delegate to the merk-level count verifier.
-//! - [`expect_merk_bytes`] — unwrap a `ProofBytes::Merk(_)` or reject.
-//! - [`verify_single_key_layer_proof_v0`] — verify a non-leaf merk
-//!   proof for one expected key and recover its value bytes + chain
-//!   commitment hash.
-//! - [`OuterMatch`] + [`execute_carrier_layer_proof`] — verify the
-//!   carrier's multi-key merk proof, collect one `OuterMatch` per
-//!   matched outer key.
 //! - [`enforce_lower_chain`] — `combine_hash(H(value), lower_root) ==
-//!   parent_value_hash`, the binding that ties each layer's count to
-//!   the GroveDB root hash.
+//!   parent_value_hash` plus the terminal-type gate that limits the
+//!   final element to `ProvableCountTree` / `ProvableCountSumTree`. The
+//!   axis-specific terminal-type set is why this helper stays per-axis.
 
 use grovedb_merk::{
-    proofs::{
-        query::{aggregate_count::verify_aggregate_count_on_range_proof, QueryProofVerify},
-        Query as MerkQuery,
-    },
+    proofs::query::aggregate_count::verify_aggregate_count_on_range_proof,
     tree::{combine_hash, value_hash},
     CryptoHash,
 };
 use grovedb_query::QueryItem;
 use grovedb_version::version::GroveVersion;
+
+// Re-export axis-agnostic helpers from the shared module so existing
+// callers in `leaf_chain.rs` / `per_key.rs` keep their `use
+// super::helpers::*` imports unchanged.
+pub(super) use super::super::aggregate_common::{verify_single_key_layer_proof_v0, OuterMatch};
 
 use crate::{operations::proof::ProofBytes, Element, Error, PathQuery};
 
@@ -49,111 +44,22 @@ pub(super) fn verify_count_leaf(
     Ok((root_hash, count))
 }
 
-/// Unwrap a `ProofBytes::Merk(_)` or reject the proof — aggregate-count
-/// envelopes are always merk-flavored at every layer.
+/// Aggregate-count axis label used by the shared diagnostic-prefix
+/// helpers in `aggregate_common`.
+const AXIS_LABEL: &str = "aggregate-count";
+
+/// Thin wrapper around [`super::super::aggregate_common::expect_merk_bytes`]
+/// that supplies the aggregate-count axis label.
 pub(super) fn expect_merk_bytes<'a>(
     proof_bytes: &'a ProofBytes,
     path_query: &PathQuery,
 ) -> Result<&'a [u8], Error> {
-    match proof_bytes {
-        ProofBytes::Merk(b) => Ok(b.as_slice()),
-        other => Err(Error::InvalidProof(
-            path_query.clone(),
-            format!(
-                "aggregate-count proof has unexpected non-merk layer bytes: {:?}",
-                std::mem::discriminant(other)
-            ),
-        )),
-    }
+    super::super::aggregate_common::expect_merk_bytes(proof_bytes, path_query, AXIS_LABEL)
 }
 
-/// Verify a non-leaf layer that should contain a single-key proof for
-/// `target_key`. Returns `(proven_value_bytes, this_layer_root_hash,
-/// proof_hash_recorded_for_target)`.
-///
-/// The "proof_hash" is the value_hash committed by the merk proof for the
-/// target key — this is the hash the verifier will compare against
-/// `combine_hash(H(child_tree_value), lower_layer_root_hash)` to enforce
-/// the chain.
-pub(super) fn verify_single_key_layer_proof_v0(
-    merk_bytes: &[u8],
-    target_key: &[u8],
-    path_query: &PathQuery,
-) -> Result<(Vec<u8>, CryptoHash, CryptoHash), Error> {
-    let level_query = MerkQuery {
-        items: vec![grovedb_merk::proofs::query::QueryItem::Key(
-            target_key.to_vec(),
-        )],
-        left_to_right: true,
-        ..Default::default()
-    };
-
-    let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, None, true, 0)
-        .unwrap()
-        .map_err(|e| {
-            Error::InvalidProof(
-                path_query.clone(),
-                format!(
-                    "non-leaf single-key proof for {} failed to verify: {}",
-                    hex::encode(target_key),
-                    e
-                ),
-            )
-        })?;
-
-    let proved = merk_result
-        .result_set
-        .iter()
-        .find(|p| p.key == target_key)
-        .ok_or_else(|| {
-            Error::InvalidProof(
-                path_query.clone(),
-                format!(
-                    "non-leaf proof did not contain the expected key {}",
-                    hex::encode(target_key)
-                ),
-            )
-        })?;
-
-    let value_bytes = proved.value.clone().ok_or_else(|| {
-        Error::InvalidProof(
-            path_query.clone(),
-            format!(
-                "non-leaf proof for key {} returned no value bytes",
-                hex::encode(target_key)
-            ),
-        )
-    })?;
-
-    Ok((value_bytes, root_hash, proved.proof))
-}
-
-/// One matched outer key in the carrier layer's multi-key merk proof.
-pub(super) struct OuterMatch {
-    /// The matched outer key bytes.
-    pub(super) outer_key: Vec<u8>,
-    /// The serialized tree element bytes for the matched outer key (a
-    /// non-empty tree element of some flavor).
-    pub(super) value_bytes: Vec<u8>,
-    /// The value_hash the parent merk committed for this outer key — the
-    /// hash that must equal `combine_hash(H(value), lower_layer_root)`.
-    pub(super) commitment_hash: CryptoHash,
-}
-
-/// Execute the carrier-layer multi-key merk proof for `outer_items`,
-/// returning `(carrier_merk_root_hash, matched_outer_keys)`. Each
-/// `OuterMatch` carries the value bytes and the parent-recorded value_hash
-/// that the chain check will validate.
-///
-/// `outer_limit` is the `SizedQuery::limit` that bounds the outer walk
-/// (matching what the prover passed to `Merk::prove_unchecked_query_items`
-/// when it generated the carrier-layer merk proof). When the carrier
-/// query carries a non-`None` `SizedQuery::limit`, the prover truncates
-/// the outer walk after that many matched keys and emits structural
-/// Hash nodes for the rest; the verifier must therefore execute the
-/// proof with the same limit so that its merk walker stops at the same
-/// boundary instead of demanding KV data for the un-walked tail.
+/// Thin wrapper around
+/// [`super::super::aggregate_common::execute_carrier_layer_proof`] that
+/// supplies the aggregate-count axis label.
 pub(super) fn execute_carrier_layer_proof(
     merk_bytes: &[u8],
     outer_items: &[QueryItem],
@@ -161,50 +67,14 @@ pub(super) fn execute_carrier_layer_proof(
     outer_limit: Option<u16>,
     path_query: &PathQuery,
 ) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
-    // The grovedb_query::QueryItem and grovedb_merk::proofs::query::QueryItem
-    // types are identical (the merk crate re-exports the grovedb-query one).
-    let level_query = MerkQuery {
-        items: outer_items.to_vec(),
+    super::super::aggregate_common::execute_carrier_layer_proof(
+        merk_bytes,
+        outer_items,
         left_to_right,
-        ..Default::default()
-    };
-
-    // Walk direction must match the prover's; otherwise the merk
-    // walker stops at the first out-of-order boundary and only the
-    // last key in the proof is returned.
-    let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, outer_limit, left_to_right, 0)
-        .unwrap()
-        .map_err(|e| {
-            Error::InvalidProof(
-                path_query.clone(),
-                format!(
-                    "carrier aggregate-count multi-key proof failed to verify: {}",
-                    e
-                ),
-            )
-        })?;
-
-    let mut matched = Vec::with_capacity(merk_result.result_set.len());
-    for proved in &merk_result.result_set {
-        let value = proved.value.clone().ok_or_else(|| {
-            Error::InvalidProof(
-                path_query.clone(),
-                format!(
-                    "carrier aggregate-count proof returned a result row without value bytes \
-                     for key {}",
-                    hex::encode(&proved.key)
-                ),
-            )
-        })?;
-        matched.push(OuterMatch {
-            outer_key: proved.key.clone(),
-            value_bytes: value,
-            commitment_hash: proved.proof,
-        });
-    }
-
-    Ok((root_hash, matched))
+        outer_limit,
+        path_query,
+        AXIS_LABEL,
+    )
 }
 
 /// Enforce the layer-chain hash equality: the parent merk's recorded
@@ -249,14 +119,17 @@ pub(super) fn enforce_lower_chain(
     if is_terminal {
         if !matches!(
             element,
-            Element::ProvableCountTree(..) | Element::ProvableCountSumTree(..)
+            Element::ProvableCountTree(..)
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableCountProvableSumTree(..)
         ) {
             return Err(Error::InvalidProof(
                 path_query.clone(),
                 format!(
                     "aggregate-count proof's terminal path element at key {} must be a \
-                     ProvableCountTree or ProvableCountSumTree (got {}); a count aggregate \
-                     is only meaningful against a tree that binds its count into the node hash",
+                     ProvableCountTree, ProvableCountSumTree, or ProvableCountProvableSumTree \
+                     (got {}); a count aggregate is only meaningful against a tree that binds \
+                     its count into the node hash",
                     hex::encode(target_key),
                     element.type_str()
                 ),

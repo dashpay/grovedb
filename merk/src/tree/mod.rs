@@ -47,7 +47,8 @@ use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
     combine_hash, kv_digest_to_kv_hash, kv_hash, node_hash, node_hash_with_count,
-    node_hash_with_sum, value_hash, CryptoHash, HASH_LENGTH, NULL_HASH,
+    node_hash_with_count_and_sum, node_hash_with_sum, value_hash, CryptoHash, HASH_LENGTH,
+    NULL_HASH,
 };
 #[cfg(feature = "minimal")]
 pub use hash::{HASH_BLOCK_SIZE, HASH_BLOCK_SIZE_U32, HASH_LENGTH_U32, HASH_LENGTH_U32_X2};
@@ -471,6 +472,9 @@ impl TreeNode {
                         s.encode_var_vec().len() as u32 + c.encode_var_vec().len() as u32
                     }
                     AggregateData::ProvableSum(s) => s.encode_var_vec().len() as u32,
+                    AggregateData::ProvableCountAndProvableSum(c, s) => {
+                        c.encode_var_vec().len() as u32 + s.encode_var_vec().len() as u32
+                    }
                 },
             )
         })
@@ -556,6 +560,10 @@ impl TreeNode {
                 // children (Sum or ProvableSum) — this arm is reached when
                 // the tree itself is a ProvableSumTree.
                 AggregateData::ProvableSum(s) => Ok(s),
+                // `ProvableCountAndProvableSum` contributes its sum
+                // component for sum aggregation; the count is collected
+                // by `child_aggregate_count_data_as_u64`.
+                AggregateData::ProvableCountAndProvableSum(_, s) => Ok(s),
             },
             _ => Ok(0),
         }
@@ -587,6 +595,9 @@ impl TreeNode {
                 AggregateData::ProvableCountAndSum(c, _) => Ok(c),
                 // `ProvableSum` carries no count; behaves like `Sum`.
                 AggregateData::ProvableSum(_) => Ok(0),
+                // `ProvableCountAndProvableSum` contributes its count
+                // component for count aggregation.
+                AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
             },
             _ => Ok(0),
         }
@@ -616,6 +627,9 @@ impl TreeNode {
                 AggregateData::ProvableCountAndSum(_, s) => s as i128,
                 // `ProvableSum` widens to i128 the same way `Sum` does.
                 AggregateData::ProvableSum(s) => s as i128,
+                // `ProvableCountAndProvableSum` widens its sum component
+                // to i128 the same way.
+                AggregateData::ProvableCountAndProvableSum(_, s) => s as i128,
             },
             _ => 0,
         }
@@ -718,6 +732,33 @@ impl TreeNode {
                     panic!(
                         "ProvableSumTree::hash_for_link: expected \
                          AggregateData::ProvableSum, got {:?}; the node's \
+                         feature_type is inconsistent with its tree_type",
+                        aggregate_data
+                    );
+                }
+            }
+            TreeType::ProvableCountProvableSumTree => {
+                // For ProvableCountProvableSumTree, include BOTH the
+                // aggregate count AND the aggregate sum in the hash via
+                // `node_hash_with_count_and_sum`. This is what makes the
+                // root hash diverge from a `ProvableCountSumTree`
+                // (count-only) and from a `ProvableSumTree` (sum-only)
+                // containing the same elements.
+                let aggregate_data = self
+                    .aggregate_data()
+                    .expect("ProvableCountProvableSumTree::hash_for_link: aggregate_data() failed");
+                if let AggregateData::ProvableCountAndProvableSum(count, sum) = aggregate_data {
+                    node_hash_with_count_and_sum(
+                        self.inner.kv.hash(),
+                        self.child_hash(true),
+                        self.child_hash(false),
+                        count,
+                        sum,
+                    )
+                } else {
+                    panic!(
+                        "ProvableCountProvableSumTree::hash_for_link: expected \
+                         AggregateData::ProvableCountAndProvableSum, got {:?}; the node's \
                          feature_type is inconsistent with its tree_type",
                         aggregate_data
                     );
@@ -839,6 +880,33 @@ impl TreeNode {
                     .and_then(|a| a.checked_add(right))
                     .ok_or(Overflow("provable sum is overflowing"))
                     .map(AggregateData::ProvableSum)
+            }
+            // `ProvableCountedAndProvableSummedMerkNode` aggregates BOTH
+            // axes arithmetically (like `ProvableCountedSummedMerkNode`)
+            // but yields a distinct `AggregateData::ProvableCountAndProvableSum`
+            // so the hash dispatch routes through
+            // `node_hash_with_count_and_sum` (baking both into the node
+            // hash).
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count_value, sum_value) => {
+                let left_count = self.child_aggregate_count_data_as_u64(true)?;
+                let right_count = self.child_aggregate_count_data_as_u64(false)?;
+                let left_sum = self.child_aggregate_sum_data_as_i64(true)?;
+                let right_sum = self.child_aggregate_sum_data_as_i64(false)?;
+
+                let aggregated_count_value = count_value
+                    .checked_add(left_count)
+                    .and_then(|a| a.checked_add(right_count))
+                    .ok_or(Overflow("count is overflowing"))?;
+
+                let aggregated_sum_value = sum_value
+                    .checked_add(left_sum)
+                    .and_then(|a| a.checked_add(right_sum))
+                    .ok_or(Overflow("provable sum is overflowing"))?;
+
+                Ok(AggregateData::ProvableCountAndProvableSum(
+                    aggregated_count_value,
+                    aggregated_sum_value,
+                ))
             }
         }
     }
@@ -1285,6 +1353,16 @@ impl TreeNode {
                         *sum,
                     )
                     .unwrap_add_cost(&mut cost),
+                    AggregateData::ProvableCountAndProvableSum(count, sum) => {
+                        node_hash_with_count_and_sum(
+                            tree.inner.kv.hash(),
+                            tree.child_hash(true),
+                            tree.child_hash(false),
+                            *count,
+                            *sum,
+                        )
+                        .unwrap_add_cost(&mut cost)
+                    }
                     _ => tree.hash().unwrap_add_cost(&mut cost),
                 };
                 self.inner.left = Some(Link::Loaded {
@@ -1333,6 +1411,16 @@ impl TreeNode {
                         *sum,
                     )
                     .unwrap_add_cost(&mut cost),
+                    AggregateData::ProvableCountAndProvableSum(count, sum) => {
+                        node_hash_with_count_and_sum(
+                            tree.inner.kv.hash(),
+                            tree.child_hash(true),
+                            tree.child_hash(false),
+                            *count,
+                            *sum,
+                        )
+                        .unwrap_add_cost(&mut cost)
+                    }
                     _ => tree.hash().unwrap_add_cost(&mut cost),
                 };
                 self.inner.right = Some(Link::Loaded {
@@ -1818,5 +1906,25 @@ mod test {
             .expect("commit failed");
 
         let _ = tree.hash_for_link(TreeType::ProvableCountSumTree);
+    }
+
+    /// Mirror for `ProvableCountProvableSumTree`: a non-dual-axis
+    /// feature_type must abort the hash dispatch rather than silently
+    /// produce a stripped hash. Without this gate, a corrupted on-disk
+    /// record routing a `BasicMerkNode` through the PCPS dispatch arm
+    /// would fall through to `self.hash()` and produce a hash that omits
+    /// BOTH the count AND sum commitment — confusing root mismatch with
+    /// no indication of the underlying invariant break.
+    #[test]
+    #[should_panic(expected = "ProvableCountProvableSumTree::hash_for_link")]
+    fn provable_count_provable_sum_tree_hash_for_link_panics_on_feature_type_mismatch() {
+        use crate::TreeType;
+
+        let mut tree = TreeNode::new(vec![0], vec![1], None, BasicMerkNode).unwrap();
+        tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .expect("commit failed");
+
+        let _ = tree.hash_for_link(TreeType::ProvableCountProvableSumTree);
     }
 }

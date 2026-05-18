@@ -328,7 +328,8 @@ impl Link {
                 }
                 AggregateData::BigSum(_)
                 | AggregateData::CountAndSum(..)
-                | AggregateData::ProvableCountAndSum(..) => {
+                | AggregateData::ProvableCountAndSum(..)
+                | AggregateData::ProvableCountAndProvableSum(..) => {
                     // 1 for key len
                     // key_len for keys
                     // 32 for hash
@@ -365,7 +366,8 @@ impl Link {
                 }
                 AggregateData::BigSum(_)
                 | AggregateData::CountAndSum(..)
-                | AggregateData::ProvableCountAndSum(..) => {
+                | AggregateData::ProvableCountAndSum(..)
+                | AggregateData::ProvableCountAndProvableSum(..) => {
                     tree.key().len() + 52 // 1 + 32 + 2 + 1 + 16
                 }
             },
@@ -453,6 +455,17 @@ impl Encode for Link {
                 out.write_all(&[7])?;
                 out.write_varint(*sum_value)?;
             }
+            // Tag byte 8 parallels
+            // `TreeFeatureType::ProvableCountedAndProvableSummedMerkNode`.
+            // Both axes are encoded as varints in (count, sum) order so a
+            // reader can tell ProvableCountAndProvableSum apart from
+            // ProvableCountAndSum by the leading tag byte alone (matching
+            // tag-byte semantics on the feature_type wire).
+            AggregateData::ProvableCountAndProvableSum(count_value, sum_value) => {
+                out.write_all(&[8])?;
+                out.write_varint(*count_value)?;
+                out.write_varint(*sum_value)?;
+            }
         }
 
         Ok(())
@@ -522,6 +535,11 @@ impl Encode for Link {
                     let encoded_sum_value = sum_value.encode_var_vec();
                     key.len() + encoded_sum_value.len() + 36
                 }
+                AggregateData::ProvableCountAndProvableSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    key.len() + encoded_sum_value.len() + encoded_count_value.len() + 36
+                }
             },
             Link::Modified { .. } => {
                 return Err(ed::Error::IOError(std::io::Error::new(
@@ -568,6 +586,11 @@ impl Encode for Link {
                 AggregateData::ProvableSum(sum_value) => {
                     let encoded_sum_value = sum_value.encode_var_vec();
                     tree.key().len() + encoded_sum_value.len() + 36
+                }
+                AggregateData::ProvableCountAndProvableSum(count, sum) => {
+                    let encoded_sum_value = sum.encode_var_vec();
+                    let encoded_count_value = count.encode_var_vec();
+                    tree.key().len() + encoded_sum_value.len() + encoded_count_value.len() + 36
                 }
             },
         })
@@ -654,6 +677,12 @@ impl Decode for Link {
                 7 => {
                     let encoded_sum: i64 = input.read_varint()?;
                     AggregateData::ProvableSum(encoded_sum)
+                }
+                // ProvableCountAndProvableSum decode — matches encode tag 8.
+                8 => {
+                    let encoded_count: u64 = input.read_varint()?;
+                    let encoded_sum: i64 = input.read_varint()?;
+                    AggregateData::ProvableCountAndProvableSum(encoded_count, encoded_sum)
                 }
                 byte => return Err(ed::Error::UnexpectedByte(byte)),
             };

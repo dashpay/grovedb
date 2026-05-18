@@ -167,6 +167,7 @@ where
             ProofNodeType::Kv => self.to_kv_node(),
             ProofNodeType::KvCount => self.to_kv_count_node(),
             ProofNodeType::KvSum => self.to_kv_sum_node(),
+            ProofNodeType::KvCountSum => self.to_kv_count_sum_node(),
             ProofNodeType::KvValueHash => self.to_kv_value_hash_node(),
             ProofNodeType::KvValueHashFeatureType => self.to_kv_value_hash_feature_type_node(),
             // References: at merk level, generate same node type as non-ref counterpart
@@ -174,6 +175,7 @@ where
             ProofNodeType::KvRefValueHash => self.to_kv_value_hash_node(),
             ProofNodeType::KvRefValueHashCount => self.to_kv_value_hash_feature_type_node(),
             ProofNodeType::KvRefValueHashSum => self.to_kv_value_hash_feature_type_node(),
+            ProofNodeType::KvRefValueHashCountSum => self.to_kv_value_hash_feature_type_node(),
         }
     }
 

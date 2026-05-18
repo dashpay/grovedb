@@ -219,7 +219,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         let mut hash_count = 0;
 
         // build tree from ops
-        // ensure only made of KV-like nodes and Hash nodes, and count them
+        // ensure only made of KV-like nodes and Hash nodes, and count them.
+        // `KVSum` covers `ProvableSumTree` SumItems; `KVCountSum` covers
+        // the dual-axis `ProvableCountProvableSumTree` Items. Without these
+        // arms a chunk emitter that produces either variant via
+        // `create_proof_node_for_chunk` would have its chunk rejected at
+        // restore time.
         let tree = execute(chunk.clone().into_iter().map(Ok), false, |node| {
             if matches!(
                 node,
@@ -227,6 +232,8 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     | Node::KV(..)
                     | Node::KVValueHash(..)
                     | Node::KVCount(..)
+                    | Node::KVSum(..)
+                    | Node::KVCountSum(..)
             ) {
                 kv_count += 1;
                 Ok(())
@@ -359,6 +366,48 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                             value.clone(),
                             vh,
                             TreeFeatureType::ProvableCountedMerkNode(*count),
+                        )
+                        .unwrap();
+
+                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
+                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+
+                        let bytes = tree.encode();
+                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                    }
+                    Node::KVSum(key, value, sum) => {
+                        // Items in ProvableSumTree: value_hash = H(value),
+                        // feature_type = ProvableSummedMerkNode(sum). Mirror
+                        // of the KVCount arm above for the sum-only host.
+                        let vh = value_hash(value.as_slice()).unwrap();
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            vh,
+                            TreeFeatureType::ProvableSummedMerkNode(*sum),
+                        )
+                        .unwrap();
+
+                        *tree.slot_mut(LEFT) = proof_node.left.as_ref().map(Child::as_link);
+                        *tree.slot_mut(RIGHT) = proof_node.right.as_ref().map(Child::as_link);
+
+                        let bytes = tree.encode();
+                        batch.put(key, &bytes, None, None).map_err(CostsError)
+                    }
+                    Node::KVCountSum(key, value, count, sum) => {
+                        // Items in ProvableCountProvableSumTree:
+                        // value_hash = H(value), feature_type =
+                        // ProvableCountedAndProvableSummedMerkNode(count, sum).
+                        // The dual-axis (count + sum) host writes both
+                        // aggregates into the on-disk feature so the
+                        // restored merk reconstructs the exact node hash
+                        // the prover originally committed.
+                        let vh = value_hash(value.as_slice()).unwrap();
+                        let mut tree = TreeNode::new_with_value_hash(
+                            key.clone(),
+                            value.clone(),
+                            vh,
+                            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(*count, *sum),
                         )
                         .unwrap();
 
@@ -803,6 +852,43 @@ mod tests {
                 )))
             ),
             "KVCount nodes should be accepted by chunk verification"
+        );
+
+        // KVSum should be accepted (items in ProvableSumTree). Before
+        // the fix `verify_chunk`'s allowlist omitted KVSum even though
+        // `create_proof_node_for_chunk` emits it for sum-host Items —
+        // chunking a ProvableSumTree would produce chunks the verifier
+        // refused to restore.
+        let kvs_proof = vec![Op::Push(Node::KVSum(vec![0], vec![0], 7))];
+        let result =
+            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kvs_proof, &[0; 32], &None);
+        assert!(
+            !matches!(
+                result,
+                Err(ChunkRestoringError(InvalidChunkProof(
+                    "expected chunk proof to contain only kv or hash nodes",
+                )))
+            ),
+            "KVSum nodes should be accepted by chunk verification"
+        );
+
+        // KVCountSum should be accepted (items in
+        // ProvableCountProvableSumTree, the new dual-axis host).
+        // Without this arm a PCPS chunk emitted by
+        // `create_proof_node_for_chunk` (which maps PCPS Items to
+        // KVCountSum) would be rejected at restore time.
+        let kvcs_proof = vec![Op::Push(Node::KVCountSum(vec![0], vec![0], 1, 7))];
+        let result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
+            kvcs_proof, &[0; 32], &None,
+        );
+        assert!(
+            !matches!(
+                result,
+                Err(ChunkRestoringError(InvalidChunkProof(
+                    "expected chunk proof to contain only kv or hash nodes",
+                )))
+            ),
+            "KVCountSum nodes should be accepted by chunk verification"
         );
 
         // should not accept kvhash
@@ -1674,5 +1760,102 @@ mod tests {
         // assert equality to old state
         assert_eq!(old_chunk_id_to_root_hash, restorer.chunk_id_to_root_hash);
         assert_eq!(old_parent_keys, restorer.parent_keys);
+    }
+
+    // ---------- write_chunk node dispatch coverage ----------
+    //
+    // Single-leaf chunk round-trips exercise the new `KVSum` and
+    // `KVCountSum` write-chunk arms end-to-end. For a single-leaf
+    // tree (no children) the on-disk feature_type's OWN value equals
+    // the chunk's reported AGGREGATE value, so the restored root
+    // hash matches the source's root hash. (Multi-key chunks on
+    // Provable* trees have a separate pre-existing
+    // OWN-vs-AGGREGATE issue affecting `ProvableCountTree` too;
+    // that's out of scope here.)
+
+    fn single_leaf_chunk_round_trip(tree_type: TreeType, feature_type: TreeFeatureType) {
+        let grove_version = GroveVersion::latest();
+
+        // Source merk: one leaf with the given feature_type.
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let mut source_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            tree_type,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+        let batch: Vec<(Vec<u8>, crate::tree::Op)> = vec![(
+            vec![0x42],
+            crate::tree::Op::Put(vec![1, 2, 3], feature_type),
+        )];
+        source_merk
+            .apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply leaf");
+
+        // Empty restoration merk with the matching tree_type.
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            tree_type,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        // Chunk-produce + chunk-process: should drive write_chunk's
+        // KVSum / KVCountSum arm.
+        let mut chunk_producer =
+            ChunkProducer::new(&source_merk).expect("should create chunk producer");
+        let mut restorer = Restorer::new(restoration_merk, source_merk.root_hash().unwrap(), None);
+        let (chunk, next_chunk_id) = chunk_producer
+            .chunk(&[], grove_version)
+            .expect("first chunk");
+        restorer
+            .process_chunk(&[], chunk, grove_version)
+            .expect("process leaf chunk");
+        assert_eq!(
+            next_chunk_id, None,
+            "single-leaf tree should produce exactly one chunk"
+        );
+
+        let restored_merk = restorer.finalize(grove_version).expect("finalize");
+        assert_eq!(
+            source_merk.root_hash().unwrap(),
+            restored_merk.root_hash().unwrap(),
+            "single-leaf restored root must match source root for {:?}",
+            tree_type
+        );
+    }
+
+    /// Single-leaf `ProvableSumTree` chunk round-trip — exercises the
+    /// new `Node::KVSum` arm in `write_chunk`.
+    #[test]
+    fn restore_single_leaf_kvsum_for_provable_sum_tree() {
+        single_leaf_chunk_round_trip(
+            TreeType::ProvableSumTree,
+            TreeFeatureType::ProvableSummedMerkNode(7),
+        );
+    }
+
+    /// Single-leaf `ProvableCountProvableSumTree` chunk round-trip —
+    /// exercises the new `Node::KVCountSum` arm in `write_chunk`.
+    /// Without the arm the chunk's KVCountSum would fall into
+    /// `write_chunk`'s no-match path and panic via `unreachable!()`.
+    #[test]
+    fn restore_single_leaf_kvcountsum_for_provable_count_provable_sum_tree() {
+        single_leaf_chunk_round_trip(
+            TreeType::ProvableCountProvableSumTree,
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 7),
+        );
     }
 }

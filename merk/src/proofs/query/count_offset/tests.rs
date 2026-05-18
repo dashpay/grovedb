@@ -1102,3 +1102,389 @@ fn rejects_non_provable_count_tree() {
         .unwrap();
     assert!(res.is_err(), "non-provable-count tree must reject");
 }
+
+// ---------- ProvableCountProvableSumTree (PCPS) round-trips ----------
+//
+// PCPS hashes via `node_hash_with_count_and_sum` — both axes are
+// committed into every node hash. The count-offset emit path
+// dispatches the dual-axis `HashWithCountAndSum` / `KVDigestCountSum`
+// / `KVCountSum` variants for PCPS hosts so the verifier can
+// reconstruct the right hash function. Offset accounting itself is
+// still count-only (the sum plays no role in skip/limit semantics);
+// these tests pin the host extension by running the same round-trip
+// shapes as the single-axis tests above against a PCPS source.
+
+/// Build a 15-key PCPS fixture parallel to
+/// `make_15_key_provable_count_tree`. Each entry has count=1 and
+/// sum=i+1 so the structural sum is non-zero (forces the dual-axis
+/// hash to differ from the count-only hash byte-for-byte).
+fn make_15_key_pcps_tree(grove_version: &GroveVersion) -> (TempMerk, [u8; 32]) {
+    use crate::tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode;
+    let mut merk =
+        TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+    let keys: Vec<Vec<u8>> = (b'a'..=b'o').map(|c| vec![c]).collect();
+    let entries: Vec<(Vec<u8>, Op)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let s = (i as i64) + 1;
+            (
+                k.clone(),
+                Op::Put(
+                    vec![i as u8],
+                    ProvableCountedAndProvableSummedMerkNode(1, s),
+                ),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+        .unwrap()
+        .expect("apply pcps");
+    merk.commit(grove_version);
+    let root_hash = merk.root_hash().unwrap();
+    (merk, root_hash)
+}
+
+/// Round-trip on PCPS: offset=0, no limit, full range, ascending —
+/// returns all 15 keys. This is the headline test: it exercises the
+/// dual-axis Node emission + the verifier's dual-axis allowlist +
+/// `aggregate_of_proof_tree_node` reading count out of the dual-axis
+/// variants + `node_hash_with_count_and_sum` reconstruction (so the
+/// root hash matches the source).
+#[test]
+fn pcps_round_trip_offset_0_limit_none_full_range_ascending() {
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_key_pcps_tree(v);
+    round_trip_keys(
+        &merk,
+        root,
+        QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        None,
+        true,
+        0,
+        &[
+            b"a", b"b", b"c", b"d", b"e", b"f", b"g", b"h", b"i", b"j", b"k", b"l", b"m", b"n",
+            b"o",
+        ],
+        v,
+    );
+}
+
+/// PCPS offset + limit composition: skip 5, return next 3, ascending.
+/// Exercises the dual-axis collapse op (`HashWithCountAndSum`) at the
+/// offset-skipped subtree positions + dual-axis boundary nodes at the
+/// returned-items window edge.
+#[test]
+fn pcps_round_trip_offset_5_limit_3_ascending() {
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_key_pcps_tree(v);
+    round_trip_keys(
+        &merk,
+        root,
+        QueryItem::RangeFull(std::ops::RangeFull),
+        5,
+        Some(3),
+        true,
+        5,
+        &[b"f", b"g", b"h"],
+        v,
+    );
+}
+
+/// PCPS descending direction: skip 5 (highest), return next 3 highest.
+/// Inverted-op family is exercised + dual-axis Node variants.
+#[test]
+fn pcps_round_trip_offset_5_limit_3_descending() {
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_key_pcps_tree(v);
+    round_trip_keys(
+        &merk,
+        root,
+        QueryItem::RangeFull(std::ops::RangeFull),
+        5,
+        Some(3),
+        false,
+        5,
+        &[b"j", b"i", b"h"],
+        v,
+    );
+}
+
+/// PCPS partial range with offset in the middle of the range — same
+/// shape as the single-axis `round_trip_offset_in_middle_of_partial_range`
+/// but on a PCPS host. Tests that the Boundary classifications
+/// (subtree partially in range) emit dual-axis variants correctly.
+#[test]
+fn pcps_round_trip_offset_in_middle_of_partial_range() {
+    let v = GroveVersion::latest();
+    let (merk, root) = make_15_key_pcps_tree(v);
+    // Range "c".."l" → 9 keys (c..k inclusive). Offset 4, limit 3 →
+    // skip c,d,e,f; return g,h,i.
+    round_trip_keys(
+        &merk,
+        root,
+        QueryItem::Range(b"c".to_vec()..b"l".to_vec()),
+        4,
+        Some(3),
+        true,
+        4,
+        &[b"g", b"h", b"i"],
+        v,
+    );
+}
+
+/// Verifier accepts a dual-axis collapsed-subtree op
+/// (`HashWithCountAndSum`) at a Contained position with offset
+/// covering the whole subtree. Exercises the dual-axis arm of the
+/// collapse-position match in `verify_count_offset_shape` +
+/// `aggregate_of_proof_tree_node`'s `HashWithCountAndSum` arm.
+#[test]
+fn pcps_accepts_hash_with_count_and_sum_at_contained_with_offset_collapse() {
+    // Single collapsed `HashWithCountAndSum(count=3, sum=42)` with
+    // RangeFull (Contained at root) and offset=5 (subtree count ≤
+    // offset_remaining → SkippedByOffset collapse arm). This is the
+    // legal Contained-collapse shape for this op.
+    let bytes = encode_ops(&[ProofOp::Push(Node::HashWithCountAndSum(
+        [0u8; 32], [0u8; 32], [0u8; 32], 3, 42,
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        5,
+        Some(3),
+        true,
+    )
+    .unwrap()
+    .expect("dual-axis HashWithCountAndSum at Contained-with-offset-collapse must verify");
+    // All 3 keys skipped via the collapse; 2 offset slots remain
+    // unconsumed (skipped == 3, offset_remaining wasn't fully burned).
+    assert_eq!(res.skipped, 3);
+    assert!(res.returned_items.is_empty());
+}
+
+/// Verifier rejects a `HashWithCountAndSum` at a Contained position
+/// when children are spuriously attached — exercises the
+/// "must be a leaf" arm for the dual-axis variant.
+#[test]
+fn pcps_rejects_hash_with_count_and_sum_contained_with_children() {
+    // Two collapsed ops + Parent → the second becomes the parent and
+    // the first becomes its left child. With a Contained-classified
+    // range (RangeFull), the parent (HashWithCountAndSum) gets the
+    // "must be a leaf" check and rejects.
+    let bytes = encode_ops(&[
+        ProofOp::Push(Node::HashWithCountAndSum(
+            [0u8; 32], [0u8; 32], [0u8; 32], 1, 7,
+        )),
+        ProofOp::Push(Node::HashWithCountAndSum(
+            [0u8; 32], [0u8; 32], [0u8; 32], 2, 14,
+        )),
+        ProofOp::Parent,
+    ]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        5,
+        Some(3),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "HashWithCountAndSum with attached child at Contained must be rejected"
+    );
+}
+
+/// Verifier reads `KVValueHashFeatureType` with a
+/// `ProvableCountedAndProvableSummedMerkNode` feature type. Exercises
+/// the dual-axis arm of `aggregate_of_proof_tree_node`'s
+/// KVValueHashFeatureType match.
+#[test]
+fn pcps_accepts_kv_value_hash_feature_type_with_count_and_sum_feature() {
+    use crate::TreeFeatureType;
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVValueHashFeatureType(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        [0u8; 32],
+        TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, 42),
+    ))]);
+    // We don't expect successful verification here — RangeFull on a
+    // tree-with-no-children doesn't form a real Merk shape — but the
+    // verifier should at least *reach* the dual-axis feature-type
+    // arm. Just exercise without panicking.
+    let _ = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+}
+
+/// Verifier rejects a `KVCountSum` at an out-of-range position —
+/// exercises the dual-axis variant's "not in range" rejection arm
+/// in `classify_self`.
+#[test]
+fn pcps_rejects_kv_count_sum_at_out_of_range_position() {
+    // RangeAfter("z") forces the (virtual) Boundary classification —
+    // key "a" is below the range, so the verifier's classify_self
+    // for KVCountSum sees `in_range = false` and rejects.
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVCountSum(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        1,
+        42,
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeAfter(b"z".to_vec()..),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "KVCountSum at out-of-range position must be rejected; got {:?}",
+        res
+    );
+}
+
+/// Verifier rejects a `KVCountSum` with own_count != 1. Mirrors
+/// `rejects_kv_count_with_wrong_own_count` for the dual-axis variant.
+#[test]
+fn pcps_rejects_kv_count_sum_with_wrong_own_count() {
+    // own_count = aggregate − left − right. Single-node tree with
+    // `count = 0` → own_count = 0, but `KVCountSum` requires
+    // own_count = 1.
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVCountSum(
+        b"a".to_vec(),
+        vec![0, 1, 2],
+        0,
+        42,
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "KVCountSum with own_count != 1 must be rejected; got {:?}",
+        res
+    );
+}
+
+/// Verifier rejects a `KVDigestCountSum` at an in-range position with
+/// own_count = 0 (NonCounted-wrapped entry). Mirrors the rejection
+/// path in `classify_self` for the single-axis `KVDigestCount`.
+#[test]
+fn pcps_rejects_kv_digest_count_sum_with_own_count_zero_in_range() {
+    let bytes = encode_ops(&[ProofOp::Push(Node::KVDigestCountSum(
+        b"a".to_vec(),
+        [0u8; 32],
+        0, // own_count = 0 → NonCounted-wrapped entry in range
+        42,
+    ))]);
+    let res = verify_count_offset_on_range_proof(
+        &bytes,
+        &QueryItem::RangeFull(std::ops::RangeFull),
+        0,
+        Some(5),
+        true,
+    )
+    .unwrap();
+    assert!(
+        res.is_err(),
+        "KVDigestCountSum with own_count=0 at in-range position must be rejected — \
+         NonCounted-wrapped entries aren't supported in count-offset proofs; got {:?}",
+        res
+    );
+}
+
+/// PCPS root-hash divergence: prove the same range+offset+limit on
+/// both a `ProvableCountSumTree` and a `ProvableCountProvableSumTree`
+/// over identical content, confirm the reconstructed root hashes
+/// differ. Without dual-axis emission, the PCPS verifier would
+/// reconstruct `node_hash_with_count` (wrong for the host) and
+/// produce a root hash that matched the count-only host — pinning
+/// the divergence here guards against a regression where the dual-axis
+/// dispatch is removed.
+#[test]
+fn pcps_count_offset_root_hash_diverges_from_single_axis() {
+    use crate::tree::TreeFeatureType::{
+        ProvableCountedAndProvableSummedMerkNode, ProvableCountedSummedMerkNode,
+    };
+    let v = GroveVersion::latest();
+
+    fn build_and_prove(
+        tree_type: TreeType,
+        entries: Vec<(Vec<u8>, Op)>,
+        v: &GroveVersion,
+    ) -> [u8; 32] {
+        let mut merk = TempMerk::new_with_tree_type(v, tree_type);
+        merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+            .unwrap()
+            .expect("apply");
+        merk.commit(v);
+        let result = merk
+            .prove_count_offset_on_range(
+                &QueryItem::RangeFull(std::ops::RangeFull),
+                2,
+                Some(3),
+                true,
+                v,
+            )
+            .unwrap()
+            .expect("prove");
+        let bytes = encode_proof(&result.ops);
+        let verified = verify_count_offset_on_range_proof(
+            &bytes,
+            &QueryItem::RangeFull(std::ops::RangeFull),
+            2,
+            Some(3),
+            true,
+        )
+        .unwrap()
+        .expect("verify");
+        verified.root_hash
+    }
+
+    let pcst_entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+        .enumerate()
+        .map(|(i, c)| {
+            let s = (i as i64) + 1;
+            (
+                vec![c],
+                Op::Put(vec![i as u8], ProvableCountedSummedMerkNode(1, s)),
+            )
+        })
+        .collect();
+    let pcst_root = build_and_prove(TreeType::ProvableCountSumTree, pcst_entries, v);
+
+    let pcps_entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+        .enumerate()
+        .map(|(i, c)| {
+            let s = (i as i64) + 1;
+            (
+                vec![c],
+                Op::Put(
+                    vec![i as u8],
+                    ProvableCountedAndProvableSummedMerkNode(1, s),
+                ),
+            )
+        })
+        .collect();
+    let pcps_root = build_and_prove(TreeType::ProvableCountProvableSumTree, pcps_entries, v);
+
+    assert_ne!(
+        pcst_root, pcps_root,
+        "PCPS count-offset proof must reconstruct a different root hash from \
+         ProvableCountSumTree over identical content — PCPS commits the sum into the \
+         node hash, so its hash function differs"
+    );
+}

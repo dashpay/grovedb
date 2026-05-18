@@ -51,11 +51,14 @@ where
     /// first and emits the inverted op family, so "the first N in-range
     /// items" become the N highest in-range keys.
     ///
-    /// `tree_type` must be one of `ProvableCountTree` /
-    /// `ProvableCountSumTree`. Any other tree type is rejected with
-    /// `Error::InvalidProofError` before any walking happens — count
-    /// commitments only make sense against trees that bind their count
-    /// into the node hash.
+    /// `tree_type` must be one of `ProvableCountTree`,
+    /// `ProvableCountSumTree`, or `ProvableCountProvableSumTree`. Any
+    /// other tree type is rejected with `Error::InvalidProofError`
+    /// before any walking happens — count commitments only make sense
+    /// against trees that bind their count into the node hash. For
+    /// PCPS hosts the emit path additionally commits the sum into the
+    /// collapsed-subtree ops so the verifier can reconstruct
+    /// `node_hash_with_count_and_sum`.
     pub fn create_count_offset_on_range_proof(
         &mut self,
         inner_range: &QueryItem,
@@ -67,8 +70,8 @@ where
     ) -> CostResult<ProverCountOffsetResult, Error> {
         if !is_provable_count_bearing(tree_type) {
             return Err(Error::InvalidProofError(format!(
-                "count-offset paginated proof is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
+                "count-offset paginated proof is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(OperationCost::default());
@@ -91,6 +94,7 @@ where
                 None,
                 &mut state,
                 &mut ops,
+                tree_type,
                 grove_version
             )
         );

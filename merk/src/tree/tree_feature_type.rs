@@ -37,6 +37,16 @@ pub enum AggregateData {
     /// semantics are identical to `Sum` (i64, checked-add aggregation);
     /// only the hash treatment differs.
     ProvableSum(i64),
+    /// A provable count AND provable sum, with BOTH baked into the node
+    /// hash via `node_hash_with_count_and_sum`.
+    ///
+    /// Distinct from `ProvableCountAndSum` (which carries the same
+    /// `(u64, i64)` payload but only hashes the count, used by
+    /// `ProvableCountSumTree`). The variant tag is what the hash dispatch
+    /// uses to route this aggregate through the dual-axis hash function,
+    /// so `ProvableCountAndProvableSum` cannot be unified with
+    /// `ProvableCountAndSum` even though the fields are identical.
+    ProvableCountAndProvableSum(u64, i64),
 }
 
 #[cfg(feature = "minimal")]
@@ -52,6 +62,9 @@ impl AggregateData {
             AggregateData::ProvableCount(_) => TreeType::ProvableCountTree,
             AggregateData::ProvableCountAndSum(..) => TreeType::ProvableCountSumTree,
             AggregateData::ProvableSum(_) => TreeType::ProvableSumTree,
+            AggregateData::ProvableCountAndProvableSum(..) => {
+                TreeType::ProvableCountProvableSumTree
+            }
         }
     }
 
@@ -74,6 +87,7 @@ impl AggregateData {
             AggregateData::ProvableCount(_) => 0,
             AggregateData::ProvableCountAndSum(_, s) => *s,
             AggregateData::ProvableSum(s) => *s,
+            AggregateData::ProvableCountAndProvableSum(_, s) => *s,
         }
     }
 
@@ -88,6 +102,7 @@ impl AggregateData {
             AggregateData::ProvableCount(c) => *c,
             AggregateData::ProvableCountAndSum(c, _) => *c,
             AggregateData::ProvableSum(_) => 0,
+            AggregateData::ProvableCountAndProvableSum(c, _) => *c,
         }
     }
 
@@ -102,6 +117,7 @@ impl AggregateData {
             AggregateData::ProvableCount(_) => 0,
             AggregateData::ProvableCountAndSum(_, s) => *s as i128,
             AggregateData::ProvableSum(s) => *s as i128,
+            AggregateData::ProvableCountAndProvableSum(_, s) => *s as i128,
         }
     }
 }
@@ -125,6 +141,14 @@ impl From<TreeFeatureType> for AggregateData {
             // ProvableSumTree through `node_hash_with_sum`. Arithmetic
             // semantics still mirror a plain `Sum` aggregation.
             TreeFeatureType::ProvableSummedMerkNode(val) => AggregateData::ProvableSum(val),
+            // `ProvableCountedAndProvableSummedMerkNode` carries both
+            // axes and the hash dispatch routes it through
+            // `node_hash_with_count_and_sum`. Distinct from
+            // `ProvableCountedSummedMerkNode` (which only hashes the
+            // count) — see `AggregateData::ProvableCountAndProvableSum`.
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, sum) => {
+                AggregateData::ProvableCountAndProvableSum(count, sum)
+            }
         }
     }
 }
@@ -259,5 +283,47 @@ mod tests {
             AggregateData::from(TreeFeatureType::ProvableSummedMerkNode(-1)),
             AggregateData::ProvableSum(-1)
         );
+        // ProvableCountedAndProvableSummedMerkNode maps to the dual-axis
+        // ProvableCountAndProvableSum variant — distinct from
+        // ProvableCountAndSum (which uses the count-only hash dispatch).
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                7, -42
+            )),
+            AggregateData::ProvableCountAndProvableSum(7, -42)
+        );
+        assert_eq!(
+            AggregateData::from(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                u64::MAX,
+                i64::MIN
+            )),
+            AggregateData::ProvableCountAndProvableSum(u64::MAX, i64::MIN)
+        );
+    }
+
+    /// AggregateData::ProvableCountAndProvableSum coverage for the three
+    /// helper accessors and parent_tree_type. Sibling to the existing
+    /// per-variant tests; without these the new arm shows as uncovered.
+    #[test]
+    fn aggregate_data_provable_count_and_provable_sum_helpers() {
+        let agg = AggregateData::ProvableCountAndProvableSum(7, -42);
+        assert_eq!(
+            agg.parent_tree_type(),
+            TreeType::ProvableCountProvableSumTree
+        );
+        assert_eq!(agg.as_sum_i64(), -42);
+        assert_eq!(agg.as_count_u64(), 7);
+        assert_eq!(agg.as_summed_i128(), -42);
+
+        // Extremes — both axes go through the boundary.
+        let agg_max = AggregateData::ProvableCountAndProvableSum(u64::MAX, i64::MAX);
+        assert_eq!(agg_max.as_sum_i64(), i64::MAX);
+        assert_eq!(agg_max.as_count_u64(), u64::MAX);
+        assert_eq!(agg_max.as_summed_i128(), i64::MAX as i128);
+
+        let agg_min = AggregateData::ProvableCountAndProvableSum(0, i64::MIN);
+        assert_eq!(agg_min.as_sum_i64(), i64::MIN);
+        assert_eq!(agg_min.as_count_u64(), 0);
+        assert_eq!(agg_min.as_summed_i128(), i64::MIN as i128);
     }
 }

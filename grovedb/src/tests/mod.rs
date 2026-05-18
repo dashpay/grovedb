@@ -6,7 +6,9 @@ mod query_tests;
 
 mod sum_tree_tests;
 
+mod aggregate_count_and_sum_carrier_query_tests;
 mod aggregate_count_query_tests;
+mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
 mod batch_coverage_tests;
 mod batch_delete_tree_tests;
@@ -38,6 +40,7 @@ mod partial_batch_consistency_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
 mod proof_depth_limit_tests;
+mod provable_count_provable_sum_tree_tests;
 mod provable_count_sum_tree_tests;
 mod provable_count_tree_comprehensive_test;
 mod provable_count_tree_structure_test;

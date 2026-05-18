@@ -51,6 +51,9 @@ impl ElementTreeTypeExtensions for Element {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
             Element::ProvableSumTree(root_key, ..) => Some((root_key, TreeType::ProvableSumTree)),
+            Element::ProvableCountProvableSumTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableCountProvableSumTree))
+            }
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some((None, TreeType::CommitmentTree(chunk_power)))
             }
@@ -86,6 +89,9 @@ impl ElementTreeTypeExtensions for Element {
                 Some((root_key, TreeType::ProvableCountSumTree))
             }
             Element::ProvableSumTree(root_key, ..) => Some((root_key, TreeType::ProvableSumTree)),
+            Element::ProvableCountProvableSumTree(root_key, ..) => {
+                Some((root_key, TreeType::ProvableCountProvableSumTree))
+            }
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some((&NONE_ROOT_KEY, TreeType::CommitmentTree(*chunk_power)))
             }
@@ -118,6 +124,9 @@ impl ElementTreeTypeExtensions for Element {
                 Some((flags, TreeType::ProvableCountSumTree))
             }
             Element::ProvableSumTree(_, _, flags) => Some((flags, TreeType::ProvableSumTree)),
+            Element::ProvableCountProvableSumTree(_, _, _, flags) => {
+                Some((flags, TreeType::ProvableCountProvableSumTree))
+            }
             Element::CommitmentTree(_, chunk_power, flags) => {
                 Some((flags, TreeType::CommitmentTree(*chunk_power)))
             }
@@ -147,6 +156,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(..) => Some(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => Some(TreeType::ProvableCountSumTree),
             Element::ProvableSumTree(..) => Some(TreeType::ProvableSumTree),
+            Element::ProvableCountProvableSumTree(..) => {
+                Some(TreeType::ProvableCountProvableSumTree)
+            }
             Element::CommitmentTree(_, chunk_power, _) => {
                 Some(TreeType::CommitmentTree(*chunk_power))
             }
@@ -182,6 +194,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableSumTree(_, value, _) => {
                 Some(TreeFeatureType::ProvableSummedMerkNode(*value))
             }
+            Element::ProvableCountProvableSumTree(_, count, sum, _) => Some(
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(*count, *sum),
+            ),
             Element::CommitmentTree(..) => Some(BasicMerkNode),
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
@@ -205,6 +220,9 @@ impl ElementTreeTypeExtensions for Element {
             Element::ProvableCountTree(..) => MaybeTree::Tree(TreeType::ProvableCountTree),
             Element::ProvableCountSumTree(..) => MaybeTree::Tree(TreeType::ProvableCountSumTree),
             Element::ProvableSumTree(..) => MaybeTree::Tree(TreeType::ProvableSumTree),
+            Element::ProvableCountProvableSumTree(..) => {
+                MaybeTree::Tree(TreeType::ProvableCountProvableSumTree)
+            }
             Element::CommitmentTree(_, chunk_power, _) => {
                 MaybeTree::Tree(TreeType::CommitmentTree(*chunk_power))
             }
@@ -261,6 +279,18 @@ impl ElementTreeTypeExtensions for Element {
             TreeType::ProvableSumTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
                 self.sum_value_or_default(),
             )),
+            // ProvableCountProvableSumTree aggregates BOTH a u64 count
+            // AND an i64 sum, carried via
+            // `ProvableCountedAndProvableSummedMerkNode`. Both aggregates
+            // are baked into every node's hash via
+            // `node_hash_with_count_and_sum`, enabling both
+            // `AggregateCountOnRange` and `AggregateSumOnRange` proofs.
+            TreeType::ProvableCountProvableSumTree => {
+                let v = self.count_sum_value_or_default();
+                Ok(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                    v.0, v.1,
+                ))
+            }
         }
     }
 }

@@ -45,11 +45,15 @@ where
     /// the offset (`None` means unlimited). `left_to_right` controls
     /// iteration direction.
     ///
-    /// The merk's `tree_type` must be one of `ProvableCountTree` /
-    /// `ProvableCountSumTree`. Any other tree type is rejected with
-    /// `Error::InvalidProofError` before any walking happens — count
-    /// commitments are only meaningful against trees that bind their
-    /// count into the node hash. Empty merk: returns an empty
+    /// The merk's `tree_type` must be one of `ProvableCountTree`,
+    /// `ProvableCountSumTree`, or `ProvableCountProvableSumTree`. Any
+    /// other tree type is rejected with `Error::InvalidProofError`
+    /// before any walking happens — count commitments are only
+    /// meaningful against trees that bind their count into the node
+    /// hash. For PCPS hosts the emit path additionally commits the sum
+    /// into the collapsed-subtree ops (`HashWithCountAndSum`) so the
+    /// verifier reconstructs `node_hash_with_count_and_sum` instead of
+    /// the count-only flavor. Empty merk: returns an empty
     /// `ProverCountOffsetResult` (no ops, 0 returned, full offset
     /// remaining).
     ///
@@ -79,11 +83,13 @@ where
         let tree_type = self.tree_type;
         if !matches!(
             tree_type,
-            crate::TreeType::ProvableCountTree | crate::TreeType::ProvableCountSumTree
+            crate::TreeType::ProvableCountTree
+                | crate::TreeType::ProvableCountSumTree
+                | crate::TreeType::ProvableCountProvableSumTree
         ) {
             return Err(Error::InvalidProofError(format!(
-                "count-offset paginated proof is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
+                "count-offset paginated proof is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());

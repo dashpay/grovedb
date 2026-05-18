@@ -1,30 +1,30 @@
-//! Shared helpers used by the aggregate-sum leaf-chain walker.
-//!
-//! Envelope decoding lives one level up in
-//! [`crate::operations::proof::decode_grovedb_proof_canonical`] so the
-//! canonical-decode contract has exactly one definition shared with
-//! the aggregate-count side.
+//! Aggregate-sum-specific helpers. Items shared with the count and
+//! combined axes (the multi-key outer walker, the single-key descent,
+//! the merk-bytes unwrapper, the `OuterMatch` row type) live in
+//! [`super::super::aggregate_common`] — this file re-exports them via
+//! thin wrappers that supply the axis-specific diagnostic label and
+//! holds only the genuinely axis-specific helpers below.
 //!
 //! - [`verify_sum_leaf`] — delegate to the merk-level sum verifier.
-//! - [`expect_merk_bytes`] — unwrap a `ProofBytes::Merk(_)` or reject.
-//! - [`verify_single_key_layer_proof_v0`] — verify a non-leaf merk
-//!   proof for one expected key and recover its value bytes + chain
-//!   commitment hash.
 //! - [`enforce_lower_chain`] — `combine_hash(H(value), lower_root) ==
 //!   parent_value_hash`, the binding that ties each layer's sum to the
 //!   GroveDB root hash, plus the terminal-type gate that requires the
-//!   leaf-target element to be a `ProvableSumTree`.
+//!   leaf-target element to be a `ProvableSumTree` or
+//!   `ProvableCountProvableSumTree`. The axis-specific terminal-type
+//!   set is why this helper stays per-axis.
 
 use grovedb_merk::{
-    proofs::{
-        query::{aggregate_sum::verify_aggregate_sum_on_range_proof, QueryProofVerify},
-        Query as MerkQuery,
-    },
+    proofs::query::aggregate_sum::verify_aggregate_sum_on_range_proof,
     tree::{combine_hash, value_hash},
     CryptoHash,
 };
 use grovedb_query::QueryItem;
 use grovedb_version::version::GroveVersion;
+
+// Re-export axis-agnostic helpers from the shared module so existing
+// callers in `leaf_chain.rs` / `per_key.rs` keep their `use
+// super::helpers::*` imports unchanged.
+pub(super) use super::super::aggregate_common::{verify_single_key_layer_proof_v0, OuterMatch};
 
 use crate::{operations::proof::ProofBytes, Element, Error, PathQuery};
 
@@ -46,84 +46,37 @@ pub(super) fn verify_sum_leaf(
     Ok((root_hash, sum))
 }
 
-/// Unwrap a `ProofBytes::Merk(_)` or reject the proof — aggregate-sum
-/// envelopes are always merk-flavored at every layer.
+/// Aggregate-sum axis label used by the shared diagnostic-prefix
+/// helpers in `aggregate_common`.
+const AXIS_LABEL: &str = "aggregate-sum";
+
+/// Thin wrapper around [`super::super::aggregate_common::expect_merk_bytes`]
+/// that supplies the aggregate-sum axis label.
 pub(super) fn expect_merk_bytes<'a>(
     proof_bytes: &'a ProofBytes,
     path_query: &PathQuery,
 ) -> Result<&'a [u8], Error> {
-    match proof_bytes {
-        ProofBytes::Merk(b) => Ok(b.as_slice()),
-        other => Err(Error::InvalidProof(
-            path_query.clone(),
-            format!(
-                "aggregate-sum proof has unexpected non-merk layer bytes: {:?}",
-                std::mem::discriminant(other)
-            ),
-        )),
-    }
+    super::super::aggregate_common::expect_merk_bytes(proof_bytes, path_query, AXIS_LABEL)
 }
 
-/// Verify a non-leaf layer that should contain a single-key proof for
-/// `target_key`. Returns `(proven_value_bytes, this_layer_root_hash,
-/// proof_hash_recorded_for_target)`.
-///
-/// The "proof_hash" is the value_hash committed by the merk proof for the
-/// target key — this is the hash the verifier will compare against
-/// `combine_hash(H(child_tree_value), lower_layer_root_hash)` to enforce
-/// the chain.
-pub(super) fn verify_single_key_layer_proof_v0(
+/// Thin wrapper around
+/// [`super::super::aggregate_common::execute_carrier_layer_proof`] that
+/// supplies the aggregate-sum axis label.
+pub(super) fn execute_carrier_layer_proof(
     merk_bytes: &[u8],
-    target_key: &[u8],
+    outer_items: &[QueryItem],
+    left_to_right: bool,
+    outer_limit: Option<u16>,
     path_query: &PathQuery,
-) -> Result<(Vec<u8>, CryptoHash, CryptoHash), Error> {
-    let level_query = MerkQuery {
-        items: vec![grovedb_merk::proofs::query::QueryItem::Key(
-            target_key.to_vec(),
-        )],
-        left_to_right: true,
-        ..Default::default()
-    };
-
-    let (root_hash, merk_result) = level_query
-        .execute_proof(merk_bytes, None, true, 0)
-        .unwrap()
-        .map_err(|e| {
-            Error::InvalidProof(
-                path_query.clone(),
-                format!(
-                    "non-leaf single-key proof for {} failed to verify: {}",
-                    hex::encode(target_key),
-                    e
-                ),
-            )
-        })?;
-
-    let proved = merk_result
-        .result_set
-        .iter()
-        .find(|p| p.key == target_key)
-        .ok_or_else(|| {
-            Error::InvalidProof(
-                path_query.clone(),
-                format!(
-                    "non-leaf proof did not contain the expected key {}",
-                    hex::encode(target_key)
-                ),
-            )
-        })?;
-
-    let value_bytes = proved.value.clone().ok_or_else(|| {
-        Error::InvalidProof(
-            path_query.clone(),
-            format!(
-                "non-leaf proof for key {} returned no value bytes",
-                hex::encode(target_key)
-            ),
-        )
-    })?;
-
-    Ok((value_bytes, root_hash, proved.proof))
+) -> Result<(CryptoHash, Vec<OuterMatch>), Error> {
+    super::super::aggregate_common::execute_carrier_layer_proof(
+        merk_bytes,
+        outer_items,
+        left_to_right,
+        outer_limit,
+        path_query,
+        AXIS_LABEL,
+    )
 }
 
 /// Enforce the layer-chain hash equality plus, at the terminal layer,
@@ -162,13 +115,16 @@ pub(super) fn enforce_lower_chain(
         })?
         .into_underlying();
     if is_terminal {
-        if !matches!(element, Element::ProvableSumTree(..)) {
+        if !matches!(
+            element,
+            Element::ProvableSumTree(..) | Element::ProvableCountProvableSumTree(..)
+        ) {
             return Err(Error::InvalidProof(
                 path_query.clone(),
                 format!(
                     "aggregate-sum proof's terminal path element at key {} must be a \
-                     ProvableSumTree (got {}); a sum aggregate is only meaningful against \
-                     a tree that binds its sum into the node hash",
+                     ProvableSumTree or ProvableCountProvableSumTree (got {}); a sum aggregate \
+                     is only meaningful against a tree that binds its sum into the node hash",
                     hex::encode(target_key),
                     element.type_str()
                 ),

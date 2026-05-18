@@ -28,8 +28,17 @@ where
     ///
     /// `inner_range` is the `QueryItem` wrapped by `AggregateSumOnRange`
     /// (already stripped at the caller). `tree_type` must be
-    /// `ProvableSumTree`; any other tree type is rejected with
-    /// `Error::InvalidProofError` before any walking happens.
+    /// `ProvableSumTree` or `ProvableCountProvableSumTree`; any other tree
+    /// type is rejected with `Error::InvalidProofError` before any
+    /// walking happens.
+    ///
+    /// The chosen `tree_type` flows down into `emit_sum_proof` so the
+    /// emitter can pick between single-axis (`HashWithSum`, `KVDigestSum`)
+    /// and dual-axis (`HashWithCountAndSum`, `KVDigestCountSum`) Node
+    /// variants. The dual-axis variants are required for
+    /// `ProvableCountProvableSumTree` because that tree's node hash is
+    /// `node_hash_with_count_and_sum`, which the verifier can only
+    /// reconstruct given both aggregates.
     ///
     /// The returned tuple is `(proof_ops, sum)`:
     /// - `proof_ops` is the linear stream the verifier will replay to
@@ -46,7 +55,8 @@ where
     ) -> CostResult<(LinkedList<Op>, i64), Error> {
         if !is_provable_sum_bearing(tree_type) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateSumOnRange is only valid against ProvableSumTree, got {:?}",
+                "AggregateSumOnRange is only valid against ProvableSumTree or \
+                 ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(OperationCost::default());
@@ -56,7 +66,15 @@ where
         let mut ops = LinkedList::new();
         let sum_i128 = cost_return_on_error!(
             &mut cost,
-            emit_sum_proof(self, inner_range, None, None, &mut ops, grove_version)
+            emit_sum_proof(
+                self,
+                inner_range,
+                None,
+                None,
+                &mut ops,
+                tree_type,
+                grove_version,
+            )
         );
         // Narrow the prover-side i128 accumulator to i64. The verifier does
         // the same narrowing; if the honest sum doesn't fit in i64 we treat
