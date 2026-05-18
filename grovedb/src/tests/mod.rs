@@ -19,6 +19,7 @@ mod bulk_append_tree_tests;
 mod checkpoint_tests;
 mod chunk_branch_proof_tests;
 mod commitment_tree_tests;
+mod coverage_round7_tests;
 // `count_indexed_tree_tests` is disabled in Phase 1: the file contains
 // ~12.3k LOC of tests originally written against the now-removed
 // non-provable `Element::CountIndexedTree` variant alongside coverage
