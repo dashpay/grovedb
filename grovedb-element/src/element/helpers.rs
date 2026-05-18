@@ -1570,3 +1570,129 @@ mod not_counted_or_summed_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod indexed_tree_aggregate_helpers_tests {
+    //! Pin the `sum_value_or_default` / `count_value_or_default` /
+    //! `count_sum_value_or_default` contracts for the three indexed-tree
+    //! variants. Phase 2 broadened these helpers to know about PSIT,
+    //! PCIT, and PCPSIT — and getting any one of them wrong silently
+    //! corrupts aggregate propagation. Tests below pin the expected
+    //! return for each variant in isolation.
+
+    use crate::Element;
+
+    // -- PSIT ----------------------------------------------------------
+
+    #[test]
+    fn psit_sum_value_matches_field() {
+        let psit = Element::ProvableSumIndexedTree(None, None, 42, None);
+        assert_eq!(psit.sum_value_or_default(), 42);
+        let neg = Element::ProvableSumIndexedTree(None, None, -7, None);
+        assert_eq!(neg.sum_value_or_default(), -7);
+    }
+
+    #[test]
+    fn psit_count_value_defaults_to_one() {
+        // PSIT carries sum but not count. The helper falls back to
+        // the default (1 element) for non-count-bearing variants.
+        let psit = Element::ProvableSumIndexedTree(None, None, 42, None);
+        assert_eq!(psit.count_value_or_default(), 1);
+    }
+
+    #[test]
+    fn psit_count_sum_pair_is_one_and_sum() {
+        let psit = Element::ProvableSumIndexedTree(None, None, 42, None);
+        assert_eq!(psit.count_sum_value_or_default(), (1, 42));
+    }
+
+    // -- PCIT ----------------------------------------------------------
+
+    #[test]
+    fn pcit_count_value_matches_field() {
+        let pcit = Element::ProvableCountIndexedTree(None, None, 99, None);
+        assert_eq!(pcit.count_value_or_default(), 99);
+    }
+
+    #[test]
+    fn pcit_sum_value_defaults_to_zero() {
+        let pcit = Element::ProvableCountIndexedTree(None, None, 99, None);
+        assert_eq!(pcit.sum_value_or_default(), 0);
+    }
+
+    #[test]
+    fn pcit_count_sum_pair_is_count_and_zero() {
+        let pcit = Element::ProvableCountIndexedTree(None, None, 99, None);
+        assert_eq!(pcit.count_sum_value_or_default(), (99, 0));
+    }
+
+    // -- PCPSIT --------------------------------------------------------
+
+    #[test]
+    fn pcpsit_count_and_sum_match_fields() {
+        let pcpsit = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            5,
+            -3,
+            vec![(0, None), (1, None)],
+            None,
+        );
+        assert_eq!(pcpsit.count_value_or_default(), 5);
+        assert_eq!(pcpsit.sum_value_or_default(), -3);
+        assert_eq!(pcpsit.count_sum_value_or_default(), (5, -3));
+    }
+
+    // -- NonCounted wrapper -------------------------------------------
+
+    #[test]
+    fn non_counted_psit_sum_passes_through() {
+        let psit = Element::ProvableSumIndexedTree(None, None, 17, None);
+        let wrapped = Element::new_non_counted(psit).expect("wrap");
+        // sum_value_or_default delegates through NonCounted.
+        assert_eq!(wrapped.sum_value_or_default(), 17);
+        // count is 0 (NonCounted suppresses count contribution).
+        assert_eq!(wrapped.count_value_or_default(), 0);
+        // count-sum is (0, 17): count suppressed, sum preserved.
+        assert_eq!(wrapped.count_sum_value_or_default(), (0, 17));
+    }
+
+    #[test]
+    fn non_counted_pcit_count_is_suppressed() {
+        let pcit = Element::ProvableCountIndexedTree(None, None, 5, None);
+        let wrapped = Element::new_non_counted(pcit).expect("wrap");
+        assert_eq!(wrapped.count_value_or_default(), 0);
+    }
+
+    // -- is_indexed_tree predicate ------------------------------------
+
+    #[test]
+    fn is_indexed_tree_covers_all_three_variants() {
+        assert!(Element::ProvableSumIndexedTree(None, None, 0, None).is_indexed_tree());
+        assert!(Element::ProvableCountIndexedTree(None, None, 0, None).is_indexed_tree());
+        assert!(
+            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![(0, None)], None)
+                .is_indexed_tree()
+        );
+        // And looks through NonCounted wrapper.
+        let psit = Element::ProvableSumIndexedTree(None, None, 0, None);
+        let wrapped = Element::new_non_counted(psit).expect("wrap");
+        assert!(wrapped.is_indexed_tree());
+
+        // Negative: regular trees and items are NOT indexed trees.
+        assert!(!Element::empty_tree().is_indexed_tree());
+        assert!(!Element::new_item(b"x".to_vec()).is_indexed_tree());
+        assert!(!Element::empty_sum_tree().is_indexed_tree());
+    }
+
+    // -- is_any_tree predicate ---------------------------------------
+
+    #[test]
+    fn is_any_tree_covers_all_three_indexed_variants() {
+        assert!(Element::ProvableSumIndexedTree(None, None, 0, None).is_any_tree());
+        assert!(Element::ProvableCountIndexedTree(None, None, 0, None).is_any_tree());
+        assert!(
+            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![(0, None)], None)
+                .is_any_tree()
+        );
+    }
+}

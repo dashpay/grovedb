@@ -270,3 +270,153 @@ fn provable_count_provable_sum_indexed_tree_constructor_accepts_canonical_axes()
         assert!(result.is_ok(), "axes {:?} should be accepted", axes);
     }
 }
+
+// -----------------------------------------------------------------
+// Extended bincode / equality round-trip coverage
+// -----------------------------------------------------------------
+
+/// PCIT bincode round-trip for both empty and populated states.
+#[test]
+fn provable_count_indexed_tree_bincode_round_trip() {
+    let grove_version = GroveVersion::latest();
+    for element in [
+        // Empty.
+        Element::ProvableCountIndexedTree(None, None, 0, None),
+        // Populated.
+        Element::ProvableCountIndexedTree(Some(vec![0x01, 0x02]), Some(vec![0x03, 0x04]), 42, None),
+        // With flags.
+        Element::ProvableCountIndexedTree(None, None, 0, Some(vec![0xAB])),
+        // With max u64 count.
+        Element::ProvableCountIndexedTree(
+            Some(vec![0xFF]),
+            Some(vec![0xFE]),
+            u64::MAX,
+            Some(vec![1, 2, 3]),
+        ),
+    ] {
+        let bytes = element.serialize(grove_version).expect("serialize");
+        // Discriminant byte 22.
+        assert_eq!(
+            bytes[0], 22,
+            "PCIT discriminant must be 22 for {:?}",
+            element
+        );
+        let back = Element::deserialize(&bytes, grove_version).expect("deserialize");
+        assert_eq!(back, element);
+    }
+}
+
+/// PSIT round-trip across edge values.
+#[test]
+fn provable_sum_indexed_tree_bincode_edge_values_round_trip() {
+    let grove_version = GroveVersion::latest();
+    for sum in [i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX - 1, i64::MAX] {
+        let element = Element::ProvableSumIndexedTree(None, None, sum, None);
+        let bytes = element.serialize(grove_version).expect("serialize");
+        assert_eq!(bytes[0], 21);
+        let back = Element::deserialize(&bytes, grove_version).expect("deserialize");
+        assert_eq!(back, element);
+    }
+}
+
+/// PCPSIT round-trip across edge values for count and sum.
+#[test]
+fn provable_count_provable_sum_indexed_tree_edge_values_round_trip() {
+    let grove_version = GroveVersion::latest();
+    for (count, sum) in [
+        (0u64, 0i64),
+        (1, 1),
+        (u64::MAX, i64::MAX),
+        (u64::MAX, i64::MIN),
+        (u64::MAX / 2, -(i64::MAX / 2)),
+    ] {
+        let axes = vec![
+            (0u8, Some(vec![0xaa])),
+            (1u8, None),
+            (2u8, Some(vec![0xbb, 0xcc])),
+        ];
+        let element = Element::ProvableCountProvableSumIndexedTree(
+            Some(vec![0x99]),
+            count,
+            sum,
+            axes,
+            Some(vec![9, 8, 7]),
+        );
+        let bytes = element.serialize(grove_version).expect("serialize");
+        assert_eq!(bytes[0], 23);
+        let back = Element::deserialize(&bytes, grove_version).expect("deserialize");
+        assert_eq!(back, element);
+    }
+}
+
+/// `validate_pcpsit_axes` integration: the canonical-axes invariant
+/// must hold even on the with-flags constructor.
+#[test]
+fn provable_count_provable_sum_indexed_tree_with_flags_rejects_bad_axes() {
+    let result = Element::empty_provable_count_provable_sum_indexed_tree_with_flags(
+        vec![(1, None), (0, None)], // unsorted
+        Some(vec![1, 2]),
+    );
+    assert!(
+        result.is_err(),
+        "unsorted axes must be rejected via flags constructor"
+    );
+}
+
+/// Each IndexAxis tag value must round-trip through `try_from_tag` and
+/// `tag()`.
+#[test]
+fn index_axis_tag_round_trip() {
+    use crate::indexed::IndexAxis;
+    for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+        let back = IndexAxis::try_from_tag(axis.tag()).expect("known tag");
+        assert_eq!(back, axis);
+    }
+}
+
+/// PCPSIT element_type and helpers for the count-only, sum-only and
+/// avg-only single-axis shapes.
+#[test]
+fn provable_count_provable_sum_indexed_tree_single_axis_helpers() {
+    for (tag, _label) in [(0u8, "count"), (1u8, "sum"), (2u8, "avg")] {
+        let elem =
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![(tag, None)]).expect("ok");
+        assert!(elem.is_indexed_tree());
+        assert!(elem.is_any_tree());
+        // PCPSIT is the joint-axis variant; even single-axis
+        // configurations qualify as count-and-sum-bearing children.
+        assert!(elem.is_count_and_sum_bearing_child());
+        assert!(elem.is_sum_bearing_child());
+        // axes() returns Some with the configured tag.
+        let axes = elem.axes().expect("axes");
+        assert_eq!(axes.len(), 1);
+        assert_eq!(axes[0].0, tag);
+        assert!(axes[0].1.is_none());
+    }
+}
+
+/// PSIT must NOT be considered a count-indexed tree (legacy single-axis
+/// "cidx" predicate).
+#[test]
+fn provable_sum_indexed_tree_not_count_indexed_predicate() {
+    let psit = Element::ProvableSumIndexedTree(None, None, 0, None);
+    assert!(!psit.is_count_indexed_tree());
+}
+
+/// PCPSIT must NOT be considered a count-indexed tree (the legacy
+/// single-axis predicate is reserved for PCIT only).
+#[test]
+fn provable_count_provable_sum_indexed_tree_not_count_indexed_predicate() {
+    let pcpsit =
+        Element::empty_provable_count_provable_sum_indexed_tree(vec![(0, None)]).expect("ok");
+    assert!(!pcpsit.is_count_indexed_tree());
+}
+
+/// PCIT `is_sum_bearing_child` must return false: PCIT only contributes
+/// count, not sum.
+#[test]
+fn provable_count_indexed_tree_not_sum_bearing() {
+    let pcit = Element::ProvableCountIndexedTree(None, None, 0, None);
+    assert!(!pcit.is_sum_bearing_child());
+    assert!(!pcit.is_count_and_sum_bearing_child());
+}

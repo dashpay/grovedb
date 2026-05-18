@@ -697,6 +697,80 @@ mod tests {
     // Element-helper coverage on PSIT
     // -----------------------------------------------------------------
 
+    // -----------------------------------------------------------------
+    // Direct-API db.insert: on-disk validated path with non-empty
+    // root keys
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn psit_direct_insert_rejects_partial_root_keys() {
+        // The direct `db.insert` path for PSIT requires that BOTH
+        // primary_root_key and secondary_root_key are set when the
+        // PSIT is non-empty (sum != 0 OR either key is Some(_)).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let bad = Element::new_provable_sum_indexed_tree_with_root_keys_and_sum_value(
+            Some(b"primary".to_vec()),
+            None,
+            10,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                bad,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidInput(msg)) => assert!(
+                msg.contains("BOTH") || msg.contains("partial state"),
+                "expected partial-state rejection, got: {msg}"
+            ),
+            other => panic!("expected InvalidInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn psit_direct_insert_rejects_root_key_mismatch() {
+        // If the PSIT claims a primary_root_key that doesn't match the
+        // existing primary Merk's root_key, the direct insert path
+        // must reject — preventing forged claims via the regular
+        // db.insert API.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        // Try to overwrite with a non-empty claim whose primary key
+        // and secondary key are bogus.
+        let bad = Element::new_provable_sum_indexed_tree_with_root_keys_and_sum_value(
+            Some(b"bogus_primary".to_vec()),
+            Some(b"bogus_secondary".to_vec()),
+            42,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                bad,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        // Even tree-override is on by default so this fails. The
+        // important thing is the operation does not succeed and
+        // therefore doesn't corrupt the state.
+        assert!(
+            result.is_err(),
+            "PSIT with bogus root keys must not succeed, got: {:?}",
+            result
+        );
+    }
+
     #[test]
     fn psit_helpers_report_sum_bearing() {
         // is_sum_bearing_child must return true for PSIT itself
