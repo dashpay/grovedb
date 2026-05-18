@@ -1384,4 +1384,266 @@ mod tests {
         assert_eq!(result.entries[0].0, 29);
         assert_eq!(result.entries[9].0, 20);
     }
+
+    // -----------------------------------------------------------------
+    // Range query edge cases
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcit_proof_aggregate_count_range_with_lo_zero() {
+        // Exercise the RangeTo branch in the builder.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit_with_counts(
+            &db,
+            grove_version,
+            &[(b"a", 1), (b"b", 50), (b"c", 100), (b"d", 200)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(path, 0, 100, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(&proof, path, 0, 100)
+            .expect("verify");
+        // Range [0, 100]: a(1), b(50), c(100) = 3
+        assert_eq!(result.count, 3);
+        assert_eq!(result.root_hash, expected_root(&db, grove_version));
+    }
+
+    #[test]
+    fn pcit_proof_aggregate_count_range_zero_to_zero() {
+        // lo == hi == 0: matches entries with count_value exactly 0.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Inserting with count=0 is allowed by `new_provable_count_tree_with_flags_and_count_value`.
+        build_pcit_with_counts(&db, grove_version, &[(b"a", 0), (b"b", 0), (b"c", 5)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(path, 0, 0, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(&proof, path, 0, 0)
+            .expect("verify");
+        assert_eq!(result.count, 2, "two entries with count=0");
+    }
+
+    #[test]
+    fn pcit_proof_aggregate_count_range_lo_only_at_u64_max() {
+        // Exercise edge case where lo == u64::MAX.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit_with_counts(&db, grove_version, &[(b"a", 1), (b"b", 100)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(
+                path,
+                u64::MAX,
+                u64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let result =
+            GroveDb::verify_count_indexed_count_range_aggregate(&proof, path, u64::MAX, u64::MAX)
+                .expect("verify");
+        assert_eq!(result.count, 0);
+    }
+
+    // -----------------------------------------------------------------
+    // Triple-nested PCIT
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcit_proof_top_k_triple_nested_cidx() {
+        // Layout: TEST_LEAF / outer / mid / inner_cidx (all PCIT).
+        // Insert items into the innermost; prove top-k against the
+        // innermost path. This exercises the chain-verifier at depth 4
+        // (root → TEST_LEAF tree → outer PCIT → mid PCIT → inner PCIT).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"mid",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("mid");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"mid"].as_ref(),
+            b"inner_cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner");
+        // Populate the innermost.
+        for (k, c) in [(b"p".as_ref(), 5u64), (b"q", 3), (b"r", 7), (b"s", 1)] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"outer", b"mid", b"inner_cidx"].as_ref(),
+                k,
+                Element::new_provable_count_tree_with_flags_and_count_value(None, c, None),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert inner");
+        }
+        let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"mid", b"inner_cidx"];
+        let proof = db
+            .prove_count_indexed_top_k(path, 4, true, None, grove_version)
+            .unwrap()
+            .expect("prove triple-nested");
+        let result = GroveDb::verify_count_indexed_top_k(&proof, path, 4, true).expect("verify");
+        assert_eq!(result.entries.len(), 4);
+        assert_eq!(result.entries[0].0, 7);
+        assert_eq!(result.root_hash, expected_root(&db, grove_version));
+    }
+
+    #[test]
+    fn pcit_proof_aggregate_count_triple_nested_cidx() {
+        // Like above but for aggregate count range.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"mid",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("mid");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer", b"mid"].as_ref(),
+            b"inner_cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner");
+        for (k, c) in [(b"a".as_ref(), 10u64), (b"b", 20), (b"c", 30)] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"outer", b"mid", b"inner_cidx"].as_ref(),
+                k,
+                Element::new_provable_count_tree_with_flags_and_count_value(None, c, None),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"mid", b"inner_cidx"];
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(path, 15, 25, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(&proof, path, 15, 25)
+            .expect("verify");
+        assert_eq!(result.count, 1, "only b(20) in [15,25]");
+        assert_eq!(result.root_hash, expected_root(&db, grove_version));
+    }
+
+    // -----------------------------------------------------------------
+    // Aggregate count on PCIT with all-equal count_values
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcit_proof_aggregate_count_all_same_count_exact_match() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit_with_counts(
+            &db,
+            grove_version,
+            &[(b"a", 42), (b"b", 42), (b"c", 42), (b"d", 42)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"cidx"];
+        let proof = db
+            .prove_count_indexed_count_range_aggregate(path, 42, 42, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_count_indexed_count_range_aggregate(&proof, path, 42, 42)
+            .expect("verify");
+        assert_eq!(result.count, 4);
+    }
+
+    // -----------------------------------------------------------------
+    // Query proof on nested PCIT (specific QueryItem path)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcit_proof_query_nested_cidx_specific_key() {
+        // Use a Key query item against the nested cidx's secondary.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("outer");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"inner",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("inner");
+        for (k, c) in [(b"k1".as_ref(), 1u64), (b"k2", 2), (b"k3", 3)] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"outer", b"inner"].as_ref(),
+                k,
+                Element::new_provable_count_tree_with_flags_and_count_value(None, c, None),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"inner"];
+        // Single-key query: secondary key for count=2, item_key="k2".
+        let mut sec_key = Vec::new();
+        sec_key.extend_from_slice(&2u64.to_be_bytes());
+        sec_key.extend_from_slice(b"k2");
+        let mut q = MerkQuery::new();
+        q.insert_item(MerkQueryItem::Key(sec_key));
+        let proof = db
+            .prove_count_indexed_query(path, q.clone(), None, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_count_indexed_query(&proof, q, None, path).expect("verify");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].0, 2);
+    }
 }
