@@ -1307,6 +1307,307 @@ mod tests {
         assert!(!issues.is_empty(), "expected H1-A drift detection");
     }
 
+    // -----------------------------------------------------------------
+    // PCPSIT corruption detection
+    // -----------------------------------------------------------------
+
+    fn pcpsit_count_secondary_key(count: u64, item_key: &[u8]) -> Vec<u8> {
+        let prefix = grovedb_element::indexed::encode_count_sort_key(count);
+        let mut k = Vec::with_capacity(prefix.len() + item_key.len());
+        k.extend_from_slice(&prefix);
+        k.extend_from_slice(item_key);
+        k
+    }
+
+    /// Manually delete an entry from a PCPSIT axis secondary at the
+    /// given key, then commit.
+    fn corrupt_pcpsit_axis_secondary_delete(
+        db: &crate::GroveDb,
+        pcpsit_primary_path: &[&[u8]],
+        axis: IndexAxis,
+        secondary_key: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path_vec: Vec<&[u8]> = pcpsit_primary_path.to_vec();
+        let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+        let (parent_path, pcpsit_key) = path.derive_parent().expect("non-root pcpsit");
+        let sec_root_key_for_axis = {
+            let parent = db
+                .open_transactional_merk_at_path(parent_path, &tx, Some(&batch), grove_version)
+                .unwrap()
+                .expect("parent");
+            let elem = Element::get(&parent, pcpsit_key, true, grove_version)
+                .unwrap()
+                .expect("elem");
+            match elem.underlying() {
+                Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
+                    let target_tag = axis.tag();
+                    axes.iter()
+                        .find(|(t, _)| *t == target_tag)
+                        .and_then(|(_, sk)| sk.clone())
+                }
+                _ => panic!("not PCPSIT"),
+            }
+        };
+        let tree_type = match axis {
+            IndexAxis::Count => TreeType::ProvableCountTree,
+            IndexAxis::Sum => TreeType::ProvableSumTree,
+            IndexAxis::Avg => TreeType::ProvableCountSumTree,
+        };
+        {
+            let mut secondary_merk = db
+                .open_indexed_secondary_at_path(
+                    path,
+                    axis,
+                    sec_root_key_for_axis,
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open sec");
+            Element::delete(
+                &mut secondary_merk,
+                secondary_key,
+                None,
+                false,
+                tree_type,
+                grove_version,
+            )
+            .unwrap()
+            .expect("delete");
+        }
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("tx commit");
+    }
+
+    #[test]
+    fn verify_grovedb_pcpsit_detects_count_axis_drift() {
+        // Build PCPSIT with Count axis, populate, then delete one
+        // entry from the count secondary. The H1-A check at L1889
+        // must detect the inconsistency.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Count.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, v) in [(b"a".as_ref(), 5i64), (b"b", 10)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), v),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+
+        // Each inserted entry contributes count=1 to the count axis
+        // secondary, keyed by (count_be ‖ item_key) = (1u64.be ‖ "a").
+        let sec_key = pcpsit_count_secondary_key(1, b"a");
+        corrupt_pcpsit_axis_secondary_delete(
+            &db,
+            &[TEST_LEAF, b"pcpsit"],
+            IndexAxis::Count,
+            &sec_key,
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(!issues.is_empty(), "expected PCPSIT axis drift detection");
+    }
+
+    #[test]
+    fn verify_grovedb_pcpsit_detects_sum_axis_drift() {
+        // Same shape but Sum axis.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"a".to_vec(), 7),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("a");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"b",
+            Element::new_item_with_sum_item(b"b".to_vec(), 12),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("b");
+        assert_verify_passes(&db, grove_version);
+
+        // Sum secondary uses encode_sum_sort_key(7) ‖ "a".
+        let sec_key = psit_secondary_key(7, b"a");
+        corrupt_pcpsit_axis_secondary_delete(
+            &db,
+            &[TEST_LEAF, b"pcpsit"],
+            IndexAxis::Sum,
+            &sec_key,
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(!issues.is_empty(), "expected PCPSIT sum-axis drift");
+    }
+
+    #[test]
+    fn verify_grovedb_pcit_empty_secondary_detects_orphan_insert() {
+        // Insert a bogus orphan into the PCIT secondary at a key that
+        // doesn't correspond to any primary entry. The cidx
+        // content-consistency check at L1487-1494 should flag the
+        // orphan with the __cidx_secondary_orphan__ sentinel.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed");
+        // Insert orphan at (count=999 ‖ "ghost").
+        let orphan_key = make_secondary_key(999, b"ghost");
+        corrupt_pcit_secondary_insert_orphan(
+            &db,
+            &[TEST_LEAF, b"cidx"],
+            &orphan_key,
+            grove_version,
+        );
+
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(!issues.is_empty(), "expected secondary orphan detection");
+        // The cidx-specific check (L1487-1494) labels orphans under
+        // __cidx_secondary_orphan__. Confirm at least one such issue
+        // exists in the list.
+        let has_orphan_label = issues.keys().any(|p| {
+            p.iter()
+                .any(|seg| seg.as_slice() == b"__cidx_secondary_orphan__")
+        });
+        assert!(
+            has_orphan_label,
+            "expected __cidx_secondary_orphan__ sentinel, got {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // verify_grovedb on extreme cidx structures
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn verify_grovedb_pcit_with_many_distinct_counts_passes() {
+        // Each entry has a distinct count_value; every (count, key)
+        // pair is unique in the secondary index. Stress the
+        // content-consistency walk.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for i in 0..15u64 {
+            let key = format!("k{:02}", i);
+            let elem = Element::new_provable_count_tree_with_flags_and_count_value(None, i, None);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                key.as_bytes(),
+                elem,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+    }
+
+    #[test]
+    fn verify_grovedb_pcit_with_many_same_counts_passes() {
+        // Every entry has the same count_value. Tests the secondary
+        // ordering when prefix is identical (sort by item_key).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for i in 0..10 {
+            let key = format!("k{:02}", i);
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                key.as_bytes(),
+                Element::new_provable_count_tree_with_flags_and_count_value(None, 42, None),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+    }
+
     #[test]
     fn verify_grovedb_pcit_with_mixed_children_passes() {
         // PCIT primary can hold Items, References, empty Tree, empty
