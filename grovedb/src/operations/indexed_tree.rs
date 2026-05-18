@@ -15,7 +15,8 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::indexed::{
-    encode_avg_sort_key, encode_count_sort_key, encode_sum_sort_key, IndexAxis,
+    decode_avg_sort_key, decode_sum_sort_key, encode_avg_sort_key, encode_count_sort_key,
+    encode_sum_sort_key, IndexAxis,
 };
 use grovedb_merk::{
     element::{
@@ -1096,11 +1097,38 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
-    /// Iterate the secondary index in count-order and return the
+    // -----------------------------------------------------------------
+    // Direct (non-proof) per-axis query APIs.
+    //
+    // The three families below — `indexed_count_*`, `indexed_sum_*`,
+    // `indexed_avg_*` — operate uniformly across any indexed-tree
+    // variant that supports the chosen axis. Each function:
+    //
+    //   1. Reads the parent indexed-tree element and validates that the
+    //      requested axis is indexed at this path (PCIT → Count only;
+    //      PSIT → Sum only; PCPSIT → whichever axes are in its TLV).
+    //   2. Opens the per-axis secondary at the derived prefix.
+    //   3. Iterates the secondary in axis-sort order (its bytes are
+    //      already lex-equivalent to the typed axis value).
+    //   4. Decodes each secondary key into the typed `(axis_value,
+    //      original_key)` pair.
+    //
+    // For verifiable variants see the `prove_*_indexed_*` /
+    // `verify_*_indexed_*` families in the proof submodule.
+    // -----------------------------------------------------------------
+
+    // ---- count axis ----
+
+    /// Iterate the count-axis secondary in count-order and return the
     /// **top `k`** entries by `count_value`. When `descending` is `true`
     /// (the typical "highest first" use case) entries are walked
     /// right-to-left through the secondary's keyspace; ties on `count`
     /// are broken in descending lex order of the original key.
+    ///
+    /// Accepts [`Element::ProvableCountIndexedTree`] or
+    /// [`Element::ProvableCountProvableSumIndexedTree`] (only if its TLV
+    /// contains the count axis). Any other variant — or a PCPSIT
+    /// without the count axis — is rejected with `Error::InvalidPath`.
     ///
     /// Each returned entry is `(count, original_key)`. Resolving the
     /// primary value is the caller's responsibility (use
@@ -1108,7 +1136,7 @@ impl GroveDb {
     ///
     /// For a verifiable variant, see [`Self::prove_count_indexed_top_k`]
     /// and [`Self::verify_count_indexed_top_k`].
-    pub fn count_indexed_top_k<'b, B, P>(
+    pub fn indexed_count_top_k<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1120,25 +1148,27 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
+        self.indexed_axis_top_k_count(path.into(), k, descending, transaction, grove_version)
+    }
+
+    fn indexed_axis_top_k_count<'b, B>(
+        &self,
+        path: SubtreePath<'b, B>,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
         let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
-        let secondary_root_key = cost_return_on_error!(
-            &mut cost,
-            self.read_count_indexed_secondary_root_key(path.clone(), tx_ref, None, grove_version)
-        );
-
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_count_indexed_secondary_at_path(
-                path,
-                secondary_root_key,
-                tx_ref,
-                None,
-                grove_version,
-            )
+            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version,)
         );
 
         let mut all_query = Query::new();
@@ -1151,17 +1181,16 @@ impl GroveDb {
         let mut results = Vec::with_capacity(k as usize);
         while results.len() < k as usize {
             match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _value_bytes)) => {
-                    if let Some(decoded) = decode_secondary_key(&secondary_key) {
-                        results.push(decoded);
-                    } else {
-                        return Err(Error::CorruptedData(format!(
-                            "secondary key in count-indexed-tree is shorter than 8 bytes: {:?}",
-                            secondary_key
-                        )))
+                Some((secondary_key, _)) => match decode_secondary_key(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Count,
+                            &secondary_key,
+                        ))
                         .wrap_with_cost(cost);
                     }
-                }
+                },
                 None => break,
             }
         }
@@ -1169,18 +1198,18 @@ impl GroveDb {
         Ok(results).wrap_with_cost(cost)
     }
 
-    /// Same as [`Self::count_indexed_top_k`] but skips the first
-    /// `offset` entries in the directional scan before collecting up to
-    /// `k` results. Used to implement paginated top-K views over the
-    /// cidx secondary (e.g. "show me page 3 of the leaderboard").
+    /// Paginated form of [`Self::indexed_count_top_k`]. Skips `offset`
+    /// entries in the directional scan before collecting up to `k`
+    /// results.
     ///
-    /// `offset = 0` is equivalent to plain `count_indexed_top_k` (no
-    /// skip). The skip is performed at the secondary's storage iterator
-    /// level — this is not a verifiable / proof-bounded skip; for the
-    /// provable variant use [`Self::prove_count_indexed_top_k_paginated`]
-    /// which relies on the merk-level count-offset proof to commit the
-    /// skipped count via `HashWithCount`.
-    pub fn count_indexed_top_k_paginated<'b, B, P>(
+    /// `offset = 0` is equivalent to plain `indexed_count_top_k`. The
+    /// skip is performed at the secondary's storage iterator level —
+    /// this is not a verifiable / proof-bounded skip; for the provable
+    /// variant use
+    /// [`Self::prove_count_indexed_top_k_paginated`] which relies on the
+    /// merk-level count-offset proof to commit the skipped count via
+    /// `HashWithCount`.
+    pub fn indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
         k: u16,
@@ -1198,20 +1227,9 @@ impl GroveDb {
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
-        let secondary_root_key = cost_return_on_error!(
-            &mut cost,
-            self.read_count_indexed_secondary_root_key(path.clone(), tx_ref, None, grove_version)
-        );
-
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_count_indexed_secondary_at_path(
-                path,
-                secondary_root_key,
-                tx_ref,
-                None,
-                grove_version,
-            )
+            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version,)
         );
 
         let mut all_query = Query::new();
@@ -1221,23 +1239,16 @@ impl GroveDb {
         let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
             .unwrap_add_cost(&mut cost);
 
-        // Skip `offset` entries. The iterator burns the same merk-storage
-        // seek count whether we skip or surface, so this is honestly
-        // O(offset) at the merk level — for paginated UIs this is the
-        // expected trade against a full scan + post-slice.
+        // Skip `offset` entries; surface corruption defensively.
         let mut skipped: u64 = 0;
         while skipped < offset {
             match iter.next_kv().unwrap_add_cost(&mut cost) {
                 Some((secondary_key, _)) => {
-                    // Defensive decode: a malformed secondary key here
-                    // (< 8 bytes) is a storage corruption indicator that
-                    // we want to surface even during the skip phase, not
-                    // mask by silently dropping into the limit window.
                     if decode_secondary_key(&secondary_key).is_none() {
-                        return Err(Error::CorruptedData(format!(
-                            "secondary key in count-indexed-tree is shorter than 8 bytes: {:?}",
-                            secondary_key
-                        )))
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Count,
+                            &secondary_key,
+                        ))
                         .wrap_with_cost(cost);
                     }
                     skipped += 1;
@@ -1249,17 +1260,16 @@ impl GroveDb {
         let mut results = Vec::with_capacity(k as usize);
         while results.len() < k as usize {
             match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _value_bytes)) => {
-                    if let Some(decoded) = decode_secondary_key(&secondary_key) {
-                        results.push(decoded);
-                    } else {
-                        return Err(Error::CorruptedData(format!(
-                            "secondary key in count-indexed-tree is shorter than 8 bytes: {:?}",
-                            secondary_key
-                        )))
+                Some((secondary_key, _)) => match decode_secondary_key(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Count,
+                            &secondary_key,
+                        ))
                         .wrap_with_cost(cost);
                     }
-                }
+                },
                 None => break,
             }
         }
@@ -1267,13 +1277,14 @@ impl GroveDb {
         Ok(results).wrap_with_cost(cost)
     }
 
-    /// Iterate the secondary index over a count range `[lo_count,
+    /// Iterate the count-axis secondary over a count range `[lo_count,
     /// hi_count_inclusive]` and return matching `(count, original_key)`
     /// entries up to `limit`. Direction is controlled by `descending`.
     ///
-    /// Bounds are inclusive on both sides; passing `(0, u64::MAX, false,
-    /// limit)` is equivalent to a full scan.
-    pub fn count_indexed_count_range<'b, B, P>(
+    /// Bounds are inclusive on both sides; `(0, u64::MAX, false, limit)`
+    /// is equivalent to a full scan. `lo_count > hi_count` returns an
+    /// empty vector.
+    pub fn indexed_count_range<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1295,42 +1306,22 @@ impl GroveDb {
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
-        let secondary_root_key = cost_return_on_error!(
-            &mut cost,
-            self.read_count_indexed_secondary_root_key(path.clone(), tx_ref, None, grove_version)
-        );
-
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_count_indexed_secondary_at_path(
-                path,
-                secondary_root_key,
-                tx_ref,
-                None,
-                grove_version,
-            )
+            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version,)
         );
 
         // Seek directly to the encoded count bounds in the secondary's
         // keyspace instead of doing a full scan with post-filtering. The
         // secondary keys are `count_be_bytes ‖ original_key`; we build a
-        // `RangeInclusive` query that brackets all encodings whose count
-        // falls in `[lo_count, hi_count]`. The lower bound is
-        // `lo_count_be ‖ <empty>`; the upper bound is
-        // `hi_count_be ‖ 0xFF*` — we use `(hi_count + 1)_be` (or
-        // `RangeFrom`-equivalent at the high end if `hi_count == u64::MAX`)
-        // to make the upper boundary exclusive on the next count, which
-        // is equivalent to inclusive on `hi_count` for any original_key
-        // suffix.
-        let mut lo_bytes = lo_count.to_be_bytes().to_vec();
-        // Lower bound has no original_key suffix → smallest possible key
-        // for `count == lo_count`.
+        // range query that brackets all encodings whose count falls in
+        // `[lo_count, hi_count]`. Exclusive on the next-count upper
+        // boundary is equivalent to inclusive on `hi_count` for any
+        // `original_key` suffix.
+        let lo_bytes = lo_count.to_be_bytes().to_vec();
         let upper_bytes = if hi_count == u64::MAX {
-            // No representable next-count; use unbounded upper end.
             None
         } else {
-            // Exclusive upper bound at (hi_count + 1) ‖ <empty>; this
-            // includes every entry with count <= hi_count (any suffix).
             Some((hi_count + 1).to_be_bytes().to_vec())
         };
 
@@ -1338,10 +1329,7 @@ impl GroveDb {
         q.left_to_right = !descending;
         match upper_bytes {
             Some(upper) => q.insert_range(lo_bytes..upper),
-            None => {
-                lo_bytes.shrink_to_fit();
-                q.insert_range_from(lo_bytes..);
-            }
+            None => q.insert_range_from(lo_bytes..),
         }
 
         let mut iter =
@@ -1350,17 +1338,14 @@ impl GroveDb {
         let mut results = Vec::new();
         while results.len() < limit as usize {
             match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _value_bytes)) => {
+                Some((secondary_key, _)) => {
                     let Some((count, original_key)) = decode_secondary_key(&secondary_key) else {
-                        return Err(Error::CorruptedData(format!(
-                            "secondary key in count-indexed-tree is shorter than 8 bytes: {:?}",
-                            secondary_key
-                        )))
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Count,
+                            &secondary_key,
+                        ))
                         .wrap_with_cost(cost);
                     };
-                    // Range bounds already filter; this is a defensive
-                    // check that catches encoding bugs without affecting
-                    // performance in the happy path.
                     debug_assert!(count >= lo_count && count <= hi_count);
                     results.push((count, original_key));
                 }
@@ -1371,28 +1356,28 @@ impl GroveDb {
         Ok(results).wrap_with_cost(cost)
     }
 
-    /// Count the number of cidx entries whose `count_value` falls in
-    /// `[lo_count, hi_count]`, without returning the entries
-    /// themselves.
+    /// Count the number of indexed entries whose `count_value` falls in
+    /// `[lo_count, hi_count]`, without returning the entries themselves.
     ///
-    /// Wraps `Merk::count_aggregate_on_range` against the cidx
-    /// secondary (which is a `ProvableCountTree`); the merk walks the
-    /// secondary in O(log n + boundary) using each internal node's
-    /// stored count to short-circuit fully-inside / fully-outside
-    /// subtrees. Use this when the caller only needs the *count* of
-    /// matching entries — answering questions like "how many users
-    /// have a score in `[100, 500]`?" — rather than the list of
-    /// matching keys. For the listing form use
-    /// [`Self::count_indexed_count_range`].
+    /// Wraps `Merk::count_aggregate_on_range` against the count-axis
+    /// secondary (which carries an aggregate count at every node — see
+    /// [`axis_secondary_tree_type`]); the merk walks the secondary in
+    /// O(log n + boundary) using each internal node's stored count to
+    /// short-circuit fully-inside / fully-outside subtrees.
     ///
-    /// `lo_count > hi_count` returns `Ok(0)` (degenerate range).
-    /// `lo_count == 0 && hi_count == u64::MAX` is equivalent to "how
-    /// many entries does this cidx have?". This call has no
-    /// cryptographic guarantee — the returned count is whatever the
-    /// merk reports. For a verifiable count, use
+    /// Use this when the caller only needs the *count* of matching
+    /// entries (e.g. "how many users have a score in `[100, 500]`?")
+    /// rather than the list. For the listing form use
+    /// [`Self::indexed_count_range`].
+    ///
+    /// `lo_count > hi_count` returns `Ok(0)`. `lo_count == 0 && hi_count
+    /// == u64::MAX` is equivalent to "how many entries does this
+    /// indexed-tree have?". This call has no cryptographic guarantee —
+    /// the returned count is whatever the merk reports. For a
+    /// verifiable count, use
     /// [`Self::prove_count_indexed_count_range_aggregate`] +
     /// [`Self::verify_count_indexed_count_range_aggregate`].
-    pub fn count_indexed_count_range_aggregate<'b, B, P>(
+    pub fn indexed_count_range_aggregate<'b, B, P>(
         &self,
         path: P,
         lo_count: u64,
@@ -1414,31 +1399,11 @@ impl GroveDb {
         let tx = TxRef::new(&self.db, transaction);
         let tx_ref = tx.as_ref();
 
-        let secondary_root_key = cost_return_on_error!(
-            &mut cost,
-            self.read_count_indexed_secondary_root_key(path.clone(), tx_ref, None, grove_version)
-        );
-
         let secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_count_indexed_secondary_at_path(
-                path,
-                secondary_root_key,
-                tx_ref,
-                None,
-                grove_version,
-            )
+            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version,)
         );
 
-        // Build the secondary inner-range query. Secondary keys are
-        // `count_be ‖ original_key`; an entry is in [lo_count, hi_count]
-        // iff its key falls in `[lo_count_be ‖ <empty>, (hi_count+1)_be ‖
-        // <empty>)` — exclusive on the upper, inclusive on the lower. The
-        // empty key on each side anchors against any original_key suffix.
-        // (Mirrors the bound construction in
-        // [`Self::count_indexed_count_range`]; kept inline rather than
-        // shared because the two callers want different `QueryItem`
-        // shapes.)
         let lo_bytes = lo_count.to_be_bytes().to_vec();
         let inner_range = if hi_count == u64::MAX {
             MerkQueryItemForRange::RangeFrom(lo_bytes..)
@@ -1451,28 +1416,658 @@ impl GroveDb {
             &mut cost,
             secondary_merk
                 .count_aggregate_on_range(&inner_range, grove_version)
-                .map_err(|e| Error::CorruptedData(format!("cidx aggregate count on range: {e}")))
+                .map_err(|e| Error::CorruptedData(format!(
+                    "indexed count aggregate on range: {e}"
+                )))
         );
 
         Ok(count).wrap_with_cost(cost)
     }
 
-    /// Read the `secondary_root_key` field from a CountIndexedTree element
-    /// at the given path. Returns an error if the path's last segment is
-    /// not a count-indexed-tree element.
-    fn read_count_indexed_secondary_root_key<'db, 'b, B: AsRef<[u8]>>(
+    // ---- sum axis ----
+
+    /// Iterate the sum-axis secondary in sum-order and return the
+    /// **top `k`** entries by `sum_value`. `descending = true` returns
+    /// the largest sums first; ties on sum are broken in descending lex
+    /// order of the original key.
+    ///
+    /// Accepts [`Element::ProvableSumIndexedTree`] or
+    /// [`Element::ProvableCountProvableSumIndexedTree`] (only if its TLV
+    /// contains the sum axis). Any other variant — or a PCPSIT without
+    /// the sum axis — is rejected with `Error::InvalidPath`.
+    ///
+    /// Each returned entry is `(sum, original_key)`. The signed `i64`
+    /// sum is decoded from the secondary's sign-flipped big-endian
+    /// prefix (see [`grovedb_element::indexed::encode_sum_sort_key`]).
+    pub fn indexed_sum_top_k<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => match decode_sum_secondary_key(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Sum,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                },
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// Paginated form of [`Self::indexed_sum_top_k`]. Skips `offset`
+    /// entries in the directional scan before collecting up to `k`
+    /// results. `offset = 0` is equivalent to plain
+    /// `indexed_sum_top_k`; the skip is iterator-level only (not
+    /// proof-bounded).
+    pub fn indexed_sum_top_k_paginated<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        let mut skipped: u64 = 0;
+        while skipped < offset {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    if decode_sum_secondary_key(&secondary_key).is_none() {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Sum,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    skipped += 1;
+                }
+                None => return Ok(Vec::new()).wrap_with_cost(cost),
+            }
+        }
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => match decode_sum_secondary_key(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Sum,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                },
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// Iterate the sum-axis secondary over a sum range `[lo_sum,
+    /// hi_sum_inclusive]` and return matching `(sum, original_key)`
+    /// entries up to `limit`. Direction is controlled by `descending`.
+    ///
+    /// Bounds are inclusive on both sides. `lo_sum > hi_sum` returns
+    /// an empty vector. `lo_sum == i64::MIN && hi_sum == i64::MAX` is
+    /// equivalent to a full scan.
+    pub fn indexed_sum_range<'b, B, P>(
+        &self,
+        path: P,
+        lo_sum: i64,
+        hi_sum: i64,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
+        );
+
+        // Encoded sum bounds: secondary keys are
+        // `encode_sum_sort_key(sum) ‖ original_key`. The encoding is
+        // lex-equivalent to signed numeric order, so an inclusive
+        // numeric range `[lo, hi]` maps to a byte range
+        // `[encode(lo), encode(hi+1))` — exclusive on the upper. When
+        // `hi == i64::MAX` no representable next-sum exists, so we use
+        // an unbounded `RangeFrom`.
+        let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
+        let mut q = Query::new();
+        q.left_to_right = !descending;
+        if hi_sum == i64::MAX {
+            q.insert_range_from(lo_bytes..);
+        } else {
+            let upper_bytes = encode_sum_sort_key(hi_sum + 1).to_vec();
+            q.insert_range(lo_bytes..upper_bytes);
+        }
+
+        let mut iter =
+            KVIterator::new(secondary_merk.storage.raw_iter(), &q).unwrap_add_cost(&mut cost);
+
+        let mut results = Vec::new();
+        while results.len() < limit as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    let Some((sum, original_key)) = decode_sum_secondary_key(&secondary_key) else {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Sum,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    };
+                    debug_assert!(sum >= lo_sum && sum <= hi_sum);
+                    results.push((sum, original_key));
+                }
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// Sum the `sum_value`s of indexed entries whose sum falls in
+    /// `[lo_sum, hi_sum]`, without returning the entries themselves.
+    ///
+    /// Wraps `Merk::sum_aggregate_on_range` against the sum-axis
+    /// secondary; the merk walks in O(log n + boundary) using each
+    /// internal node's stored aggregate sum to short-circuit subtrees
+    /// fully inside or fully outside the range.
+    ///
+    /// `lo_sum > hi_sum` returns `Ok(0)`. `lo_sum == i64::MIN && hi_sum
+    /// == i64::MAX` is equivalent to "the total sum of this
+    /// indexed-tree". Like the count counterpart, this call has no
+    /// cryptographic guarantee; for a verifiable sum use the
+    /// proof-bound variant in the proof submodule.
+    pub fn indexed_sum_range_aggregate<'b, B, P>(
+        &self,
+        path: P,
+        lo_sum: i64,
+        hi_sum: i64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<i64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
+
+        let mut cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(0i64).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
+        );
+
+        let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
+        let inner_range = if hi_sum == i64::MAX {
+            MerkQueryItemForRange::RangeFrom(lo_bytes..)
+        } else {
+            let upper_bytes = encode_sum_sort_key(hi_sum + 1).to_vec();
+            MerkQueryItemForRange::Range(lo_bytes..upper_bytes)
+        };
+
+        let sum = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .sum_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!("indexed sum aggregate on range: {e}")))
+        );
+
+        Ok(sum).wrap_with_cost(cost)
+    }
+
+    // ---- avg axis (PCPSIT-only) ----
+
+    /// Iterate the avg-axis secondary in avg-order and return the
+    /// **top `k`** entries by fixed-point average `floor(sum * SCALE /
+    /// count)` (`SCALE = 10^15`). `descending = true` returns the
+    /// largest averages first; ties on avg are broken in descending
+    /// lex order of the original key.
+    ///
+    /// Only accepts [`Element::ProvableCountProvableSumIndexedTree`]
+    /// with the avg axis present in its TLV; any other variant — or a
+    /// PCPSIT without the avg axis — is rejected with
+    /// `Error::InvalidPath`.
+    ///
+    /// Each returned entry is `(avg_fixed_point_i128, original_key)`.
+    /// Divide by `AVG_FIXED_POINT_SCALE` (`10^15`) to recover the
+    /// floating-point average if you need a `f64` view; the
+    /// `i128`-backed encoding round-trips through that scale exactly
+    /// across the practical i64 sum / u64 count domain.
+    pub fn indexed_avg_top_k<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Avg, tx_ref, grove_version)
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => match decode_avg_secondary_key(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Avg,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                },
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// Paginated form of [`Self::indexed_avg_top_k`]. Skips `offset`
+    /// entries in the directional scan before collecting up to `k`
+    /// results.
+    pub fn indexed_avg_top_k_paginated<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Avg, tx_ref, grove_version)
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        let mut skipped: u64 = 0;
+        while skipped < offset {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    if decode_avg_secondary_key(&secondary_key).is_none() {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Avg,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    skipped += 1;
+                }
+                None => return Ok(Vec::new()).wrap_with_cost(cost),
+            }
+        }
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => match decode_avg_secondary_key(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Avg,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                },
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// Iterate the avg-axis secondary over an avg range `[lo_avg,
+    /// hi_avg_inclusive]` and return matching `(avg_fixed_point,
+    /// original_key)` entries up to `limit`. Direction is controlled
+    /// by `descending`.
+    ///
+    /// The `lo_avg` / `hi_avg` bounds are i128 fixed-point values at
+    /// `SCALE = 10^15`. To filter by a floating-point threshold `t`,
+    /// pass `(t * SCALE) as i128`. `lo_avg > hi_avg` returns an empty
+    /// vector. `lo_avg == i128::MIN && hi_avg == i128::MAX` is
+    /// equivalent to a full scan.
+    ///
+    /// No `indexed_avg_range_aggregate` exists — averaging an average
+    /// over a range is not a closed-form aggregate. Callers that need
+    /// "aggregate avg in range" should compute it client-side from
+    /// `indexed_count_range_aggregate` + `indexed_sum_range_aggregate`
+    /// against the same path's count and sum secondaries.
+    pub fn indexed_avg_range<'b, B, P>(
+        &self,
+        path: P,
+        lo_avg: i128,
+        hi_avg: i128,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        if lo_avg > hi_avg {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::Avg, tx_ref, grove_version)
+        );
+
+        let lo_bytes = encode_avg_sort_key(lo_avg).to_vec();
+        let mut q = Query::new();
+        q.left_to_right = !descending;
+        if hi_avg == i128::MAX {
+            q.insert_range_from(lo_bytes..);
+        } else {
+            // `hi_avg + 1` is the exclusive upper boundary at the next
+            // representable avg; safe because we already returned for
+            // `hi_avg == i128::MAX` above.
+            let upper_bytes = encode_avg_sort_key(hi_avg + 1).to_vec();
+            q.insert_range(lo_bytes..upper_bytes);
+        }
+
+        let mut iter =
+            KVIterator::new(secondary_merk.storage.raw_iter(), &q).unwrap_add_cost(&mut cost);
+
+        let mut results = Vec::new();
+        while results.len() < limit as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    let Some((avg, original_key)) = decode_avg_secondary_key(&secondary_key) else {
+                        return Err(corrupted_secondary_key_error(
+                            IndexAxis::Avg,
+                            &secondary_key,
+                        ))
+                        .wrap_with_cost(cost);
+                    };
+                    debug_assert!(avg >= lo_avg && avg <= hi_avg);
+                    results.push((avg, original_key));
+                }
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// Shared scaffolding for the per-axis direct query APIs: validate
+    /// that the indexed-tree at `path` carries the requested `axis`,
+    /// read that axis's secondary root key, and open the secondary
+    /// merk at the derived prefix.
+    ///
+    /// Used by every `indexed_count_*`, `indexed_sum_*`, and
+    /// `indexed_avg_*` function. Returns `Error::InvalidPath` if the
+    /// axis is not indexed at this path (e.g. an avg query against a
+    /// PCIT, or a sum query against a PCPSIT without the sum axis).
+    fn open_validated_axis_secondary<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        tx_ref: &'db Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let secondary_root_key = cost_return_on_error!(
+            &mut cost,
+            self.read_indexed_secondary_root_key_for_axis(
+                path.clone(),
+                axis,
+                tx_ref,
+                None,
+                grove_version,
+            )
+        );
+        self.open_indexed_secondary_at_path(
+            path,
+            axis,
+            secondary_root_key,
+            tx_ref,
+            None,
+            grove_version,
+        )
+        .add_cost(cost)
+    }
+
+    // -----------------------------------------------------------------
+    // Legacy `count_indexed_*` aliases — kept as deprecated wrappers
+    // delegating to the axis-agnostic `indexed_count_*` family.
+    // -----------------------------------------------------------------
+
+    /// Deprecated alias for [`Self::indexed_count_top_k`]. Identical
+    /// behavior; callers should migrate to the new name.
+    #[deprecated(note = "use indexed_count_top_k instead")]
+    pub fn count_indexed_top_k<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_count_top_k(path, k, descending, transaction, grove_version)
+    }
+
+    /// Deprecated alias for [`Self::indexed_count_top_k_paginated`].
+    #[deprecated(note = "use indexed_count_top_k_paginated instead")]
+    pub fn count_indexed_top_k_paginated<'b, B, P>(
+        &self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_count_top_k_paginated(path, k, offset, descending, transaction, grove_version)
+    }
+
+    /// Deprecated alias for [`Self::indexed_count_range`].
+    #[deprecated(note = "use indexed_count_range instead")]
+    pub fn count_indexed_count_range<'b, B, P>(
+        &self,
+        path: P,
+        lo_count: u64,
+        hi_count: u64,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_count_range(
+            path,
+            lo_count,
+            hi_count,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// Deprecated alias for [`Self::indexed_count_range_aggregate`].
+    #[deprecated(note = "use indexed_count_range_aggregate instead")]
+    pub fn count_indexed_count_range_aggregate<'b, B, P>(
+        &self,
+        path: P,
+        lo_count: u64,
+        hi_count: u64,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_count_range_aggregate(path, lo_count, hi_count, transaction, grove_version)
+    }
+
+    /// Read the per-axis `secondary_root_key` from the indexed-tree
+    /// element at the given `path`, validating that the requested `axis`
+    /// is supported by the variant at the path's last segment.
+    ///
+    /// Axis-compatibility rules:
+    /// - [`IndexAxis::Count`] accepts
+    ///   [`Element::ProvableCountIndexedTree`] (single-axis, always count)
+    ///   or [`Element::ProvableCountProvableSumIndexedTree`] (PCPSIT) iff
+    ///   its TLV contains the count axis.
+    /// - [`IndexAxis::Sum`] accepts
+    ///   [`Element::ProvableSumIndexedTree`] (single-axis, always sum) or
+    ///   PCPSIT iff its TLV contains the sum axis.
+    /// - [`IndexAxis::Avg`] only accepts PCPSIT, and only if its TLV
+    ///   contains the avg axis.
+    ///
+    /// Any other variant — or a PCPSIT whose TLV does not carry the
+    /// requested axis — is rejected with
+    /// `Error::InvalidPath("<axis> axis not indexed at this path")`.
+    fn read_indexed_secondary_root_key_for_axis<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
         transaction: &'db Transaction,
         batch: Option<&'db StorageBatch>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Vec<u8>>, Error> {
         let mut cost = OperationCost::default();
-        let (parent_path, count_indexed_key) = match path.derive_parent() {
+        let (parent_path, indexed_key) = match path.derive_parent() {
             Some(p) => p,
             None => {
                 return Err(Error::InvalidPath(
-                    "cannot query a count-indexed tree at the root path".to_string(),
+                    "cannot query an indexed tree at the root path".to_string(),
                 ))
                 .wrap_with_cost(cost);
             }
@@ -1483,16 +2078,34 @@ impl GroveDb {
         );
         let element = cost_return_on_error!(
             &mut cost,
-            Element::get(&parent_merk, count_indexed_key, true, grove_version)
-                .map_err(Error::MerkError)
+            Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
         );
-        match element.underlying() {
-            Element::ProvableCountIndexedTree(_, secondary, ..) => {
+        match (axis, element.underlying()) {
+            // PCIT carries a single secondary; only Count axis is valid.
+            (IndexAxis::Count, Element::ProvableCountIndexedTree(_, secondary, ..)) => {
                 Ok(secondary.clone()).wrap_with_cost(cost)
             }
-            _ => Err(Error::InvalidPath(
-                "path's last segment is not a ProvableCountIndexedTree element".to_string(),
-            ))
+            // PSIT carries a single secondary; only Sum axis is valid.
+            (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..)) => {
+                Ok(secondary.clone()).wrap_with_cost(cost)
+            }
+            // PCPSIT carries a TLV of 1..=3 axis-tagged secondaries; the
+            // requested axis must appear in the TLV.
+            (_, Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)) => {
+                let want_tag = axis.tag();
+                match axes.iter().find(|(t, _)| *t == want_tag) {
+                    Some((_, sec)) => Ok(sec.clone()).wrap_with_cost(cost),
+                    None => Err(Error::InvalidPath(format!(
+                        "{:?} axis not indexed at this path",
+                        axis
+                    )))
+                    .wrap_with_cost(cost),
+                }
+            }
+            _ => Err(Error::InvalidPath(format!(
+                "{:?} axis not indexed at this path",
+                axis
+            )))
             .wrap_with_cost(cost),
         }
     }
@@ -3207,4 +3820,64 @@ fn decode_secondary_key(secondary_key: &[u8]) -> Option<(u64, Vec<u8>)> {
     count_bytes.copy_from_slice(&secondary_key[..8]);
     let count = u64::from_be_bytes(count_bytes);
     Some((count, secondary_key[8..].to_vec()))
+}
+
+/// Inverse of `make_axis_secondary_key(IndexAxis::Sum, ..)`: split a
+/// sum-secondary key into `(sum, original_key)`. Returns `None` if the key
+/// is shorter than the 8-byte sum-sort prefix.
+///
+/// The 8-byte prefix is the sign-flipped big-endian encoding of an `i64`
+/// (see [`grovedb_element::indexed::encode_sum_sort_key`]); the suffix is
+/// the entry's original primary key.
+#[inline]
+fn decode_sum_secondary_key(secondary_key: &[u8]) -> Option<(i64, Vec<u8>)> {
+    if secondary_key.len() < 8 {
+        return None;
+    }
+    let mut sum_bytes = [0u8; 8];
+    sum_bytes.copy_from_slice(&secondary_key[..8]);
+    let sum = decode_sum_sort_key(&sum_bytes);
+    Some((sum, secondary_key[8..].to_vec()))
+}
+
+/// Inverse of `make_axis_secondary_key(IndexAxis::Avg, ..)`: split an
+/// avg-secondary key into `(avg_fixed_point_i128, original_key)`. Returns
+/// `None` if the key is shorter than the 16-byte avg-sort prefix.
+///
+/// The 16-byte prefix is the sign-flipped big-endian encoding of an `i128`
+/// fixed-point average with `SCALE = 10^15` (see
+/// [`grovedb_element::indexed::encode_avg_sort_key`]); the suffix is the
+/// entry's original primary key.
+#[inline]
+fn decode_avg_secondary_key(secondary_key: &[u8]) -> Option<(i128, Vec<u8>)> {
+    if secondary_key.len() < 16 {
+        return None;
+    }
+    let mut avg_bytes = [0u8; 16];
+    avg_bytes.copy_from_slice(&secondary_key[..16]);
+    let avg = decode_avg_sort_key(&avg_bytes);
+    Some((avg, secondary_key[16..].to_vec()))
+}
+
+/// Width (in bytes) of the per-axis sort-key prefix in a secondary key.
+#[inline]
+fn axis_sort_prefix_len(axis: IndexAxis) -> usize {
+    match axis {
+        IndexAxis::Count | IndexAxis::Sum => 8,
+        IndexAxis::Avg => 16,
+    }
+}
+
+/// Build a corruption error for a secondary key that's shorter than its
+/// axis's sort-key prefix. Used by every per-axis direct query API to
+/// surface storage corruption (rather than silently dropping the entry)
+/// when the secondary's keyspace contains a malformed entry.
+#[inline]
+fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error {
+    Error::CorruptedData(format!(
+        "secondary key in indexed-tree (axis {:?}) is shorter than {} bytes: {:?}",
+        axis,
+        axis_sort_prefix_len(axis),
+        secondary_key
+    ))
 }
