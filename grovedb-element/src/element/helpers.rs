@@ -1695,4 +1695,190 @@ mod indexed_tree_aggregate_helpers_tests {
                 .is_any_tree()
         );
     }
+
+    // -- axes() and axes_canonical_check ------------------------------
+
+    #[test]
+    fn axes_returns_some_for_pcpsit() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            0,
+            0,
+            vec![(0, None), (1, None)],
+            None,
+        );
+        let axes = elem.axes();
+        assert_eq!(axes.map(|a| a.len()), Some(2));
+    }
+
+    #[test]
+    fn axes_returns_none_for_non_pcpsit_indexed_trees() {
+        // PCIT has no axes() entry.
+        assert!(Element::ProvableCountIndexedTree(None, None, 0, None)
+            .axes()
+            .is_none());
+        assert!(Element::ProvableSumIndexedTree(None, None, 0, None)
+            .axes()
+            .is_none());
+        // Regular tree.
+        assert!(Element::empty_tree().axes().is_none());
+        assert!(Element::new_item(b"x".to_vec()).axes().is_none());
+    }
+
+    #[test]
+    fn axes_looks_through_non_counted_wrapper() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![(0, None)], None);
+        let wrapped = Element::new_non_counted(elem).expect("wrap ok");
+        let axes = wrapped.axes();
+        assert_eq!(axes.map(|a| a.len()), Some(1));
+    }
+
+    // -- count_value_or_default for PCPSIT ----------------------------
+
+    #[test]
+    fn count_value_or_default_for_pcpsit() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(None, 42, 0, vec![(0, None)], None);
+        assert_eq!(elem.count_value_or_default(), 42);
+        let wrapped = Element::new_non_counted(elem).expect("wrap ok");
+        // NonCounted suppresses count contribution.
+        assert_eq!(wrapped.count_value_or_default(), 0);
+    }
+
+    #[test]
+    fn count_value_or_default_for_psit_falls_through_to_one() {
+        // PSIT has no count axis — default = 1 like a regular leaf.
+        let elem = Element::ProvableSumIndexedTree(None, None, 100, None);
+        assert_eq!(elem.count_value_or_default(), 1);
+    }
+
+    // -- count_sum_value_or_default for indexed variants --------------
+
+    #[test]
+    fn count_sum_value_or_default_for_psit_contributes_sum_and_count_one() {
+        let elem = Element::ProvableSumIndexedTree(None, None, 77, None);
+        assert_eq!(elem.count_sum_value_or_default(), (1, 77));
+    }
+
+    #[test]
+    fn count_sum_value_or_default_for_pcpsit_returns_both_aggregates() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            5,
+            123,
+            vec![(0, None), (1, None)],
+            None,
+        );
+        assert_eq!(elem.count_sum_value_or_default(), (5, 123));
+    }
+
+    // -- constructor validation paths ---------------------------------
+
+    #[test]
+    fn empty_pcpsit_constructor_rejects_empty_axes() {
+        let result = Element::empty_provable_count_provable_sum_indexed_tree(vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_rejects_unknown_tag() {
+        let result = Element::empty_provable_count_provable_sum_indexed_tree(vec![(99, None)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_rejects_duplicate_tags() {
+        let result =
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![(0, None), (0, None)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_rejects_unsorted_tags() {
+        // 1, 0 is not strictly ascending.
+        let result =
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![(1, None), (0, None)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_rejects_too_many_entries() {
+        // > 3 entries.
+        let result = Element::empty_provable_count_provable_sum_indexed_tree(vec![
+            (0, None),
+            (1, None),
+            (2, None),
+            (3, None),
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_accepts_canonical_one_axis() {
+        let elem = Element::empty_provable_count_provable_sum_indexed_tree(vec![(0, None)])
+            .expect("valid 1-axis");
+        assert!(elem.is_indexed_tree());
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_accepts_three_axes() {
+        let elem = Element::empty_provable_count_provable_sum_indexed_tree(vec![
+            (0, None),
+            (1, None),
+            (2, None),
+        ])
+        .expect("valid 3-axis");
+        assert!(elem.is_indexed_tree());
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_with_flags() {
+        let elem = Element::empty_provable_count_provable_sum_indexed_tree_with_flags(
+            vec![(0, None)],
+            Some(vec![0xAA]),
+        )
+        .expect("valid 1-axis with flags");
+        assert_eq!(elem.get_flags(), &Some(vec![0xAA]));
+    }
+
+    #[test]
+    fn empty_pcpsit_constructor_with_flags_rejects_bad_axes() {
+        let result = Element::empty_provable_count_provable_sum_indexed_tree_with_flags(
+            vec![],
+            Some(vec![0xAA]),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_pcpsit_constructor_with_root_keys_and_values() {
+        let elem = Element::new_provable_count_provable_sum_indexed_tree(
+            Some(vec![1, 2, 3]),
+            5,
+            10,
+            vec![(0, Some(vec![4, 5]))],
+            None,
+        )
+        .expect("valid");
+        match elem {
+            Element::ProvableCountProvableSumIndexedTree(pk, c, s, axes, _) => {
+                assert_eq!(pk, Some(vec![1, 2, 3]));
+                assert_eq!(c, 5);
+                assert_eq!(s, 10);
+                assert_eq!(axes.len(), 1);
+            }
+            _ => panic!("expected PCPSIT"),
+        }
+    }
+
+    #[test]
+    fn new_pcpsit_constructor_rejects_bad_axes() {
+        let result = Element::new_provable_count_provable_sum_indexed_tree(
+            None,
+            0,
+            0,
+            vec![(0, None), (0, None)],
+            None,
+        );
+        assert!(result.is_err());
+    }
 }
