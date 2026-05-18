@@ -1072,6 +1072,122 @@ mod tests {
     // populated PCIT
     // -----------------------------------------------------------------
 
+    // -----------------------------------------------------------------
+    // Round 8: indexed-tree empty-validation rejection on batch insert.
+    // batch/mod.rs L2540 (PSIT) and L2607-2622 (PCPSIT) require the
+    // element to be empty at batch insertion time. Non-empty inputs
+    // (root keys set, sum/count != 0, or any axis secondary_root_key
+    // populated for PCPSIT) must return InvalidBatchOperation.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn batch_insert_non_empty_psit_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Brand-new key with non-empty PSIT (claims root keys + sum).
+        let non_empty = Element::new_provable_sum_indexed_tree_with_root_keys_and_sum_value(
+            Some(b"primary".to_vec()),
+            Some(b"secondary".to_vec()),
+            42,
+            None,
+        );
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"psit_bad".to_vec(),
+            non_empty,
+        )];
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        match result {
+            Err(Error::InvalidBatchOperation(msg)) => {
+                assert!(
+                    msg.contains("ProvableSumIndexedTree must be empty"),
+                    "expected PSIT empty-validation msg, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn batch_insert_non_empty_pcpsit_rejected_count_not_zero() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        // count != 0 violates the empty invariant.
+        let non_empty =
+            Element::new_provable_count_provable_sum_indexed_tree(None, 7, 0, axes, None).unwrap();
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"pcpsit_bad".to_vec(),
+            non_empty,
+        )];
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        match result {
+            Err(Error::InvalidBatchOperation(msg)) => {
+                assert!(
+                    msg.contains("ProvableCountProvableSumIndexedTree must be empty"),
+                    "expected PCPSIT empty-validation msg, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn batch_insert_non_empty_pcpsit_rejected_axis_secondary_set() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // An axis secondary_root_key Some(_) violates the empty invariant
+        // (axes_all_empty is false).
+        let axes = vec![
+            (IndexAxis::Count.tag(), Some(b"sec".to_vec())),
+            (IndexAxis::Sum.tag(), None),
+        ];
+        let non_empty = Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, None);
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"pcpsit_axis_bad".to_vec(),
+            non_empty,
+        )];
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        match result {
+            Err(Error::InvalidBatchOperation(msg)) => {
+                assert!(
+                    msg.contains("ProvableCountProvableSumIndexedTree must be empty"),
+                    "expected PCPSIT empty-validation msg, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
+        }
+    }
+
+    /// Reject a PCPSIT with an empty axes list at batch insert (axes
+    /// validation post the empty check). The axes-empty branch is at
+    /// the explicit `axes.is_empty() || axes.len() > 3` rejection.
+    #[test]
+    fn batch_insert_pcpsit_with_empty_axes_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Bypass constructor validation by building the variant directly
+        // (empty axes is invalid; batch path must reject regardless).
+        let bad = Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![], None);
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"pcpsit_no_axes".to_vec(),
+            bad,
+        )];
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        match result {
+            Err(Error::InvalidBatchOperation(msg)) => {
+                assert!(
+                    msg.contains("1..=3 axes") || msg.contains("must be empty"),
+                    "expected axes-count or empty-validation msg, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidBatchOperation, got {:?}", other),
+        }
+    }
+
     #[test]
     fn batch_delete_only_existing_entry_drops_count_to_zero() {
         let grove_version = GroveVersion::latest();

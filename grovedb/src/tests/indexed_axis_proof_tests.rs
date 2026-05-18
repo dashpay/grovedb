@@ -1837,4 +1837,162 @@ mod tests {
         let a = AxisEntries::Avg(vec![(1i128, b"a".to_vec())]);
         assert_eq!(a.len(), 1);
     }
+
+    // -----------------------------------------------------------------
+    // Round 8: layer-count vs path-length mismatch — exercises the
+    // "indexed-axis <shape> proof has N layers but path has M segments"
+    // error in verify_indexed_axis_{range,paginated,aggregate}_inner.
+    // The envelope is valid; we just lie about the path at verify time.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn verify_indexed_count_top_k_rejects_path_length_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 1, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Lie about path: extend by one extra segment.
+        let bad: &[&[u8]] = &[TEST_LEAF, b"pcit", b"extra"];
+        let r = GroveDb::verify_indexed_count_top_k(&proof, bad, 1, true);
+        assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
+    }
+
+    #[test]
+    fn verify_indexed_sum_top_k_rejects_path_length_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_top_k(path, 1, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Drop a path segment.
+        let bad: &[&[u8]] = &[TEST_LEAF];
+        let r = GroveDb::verify_indexed_sum_top_k(&proof, bad, 1, true);
+        assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
+    }
+
+    #[test]
+    fn verify_indexed_count_paginated_rejects_path_length_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k_paginated(path, 1, 0, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let bad: &[&[u8]] = &[TEST_LEAF];
+        let r = GroveDb::verify_indexed_count_top_k_paginated(&proof, bad, 1, 0, true);
+        assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
+    }
+
+    #[test]
+    fn verify_indexed_sum_paginated_rejects_path_length_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_top_k_paginated(path, 1, 0, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let bad: &[&[u8]] = &[TEST_LEAF];
+        let r = GroveDb::verify_indexed_sum_top_k_paginated(&proof, bad, 1, 0, true);
+        assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
+    }
+
+    #[test]
+    fn verify_indexed_count_aggregate_rejects_path_length_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let bad: &[&[u8]] = &[TEST_LEAF];
+        let r = GroveDb::verify_indexed_count_range_aggregate(&proof, bad, 0, 10);
+        assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
+    }
+
+    #[test]
+    fn verify_indexed_sum_aggregate_rejects_path_length_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_range_aggregate(path, -10, 10, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let bad: &[&[u8]] = &[TEST_LEAF, b"psit", b"extra"];
+        let r = GroveDb::verify_indexed_sum_range_aggregate(&proof, bad, -10, 10);
+        assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("layers")));
+    }
+
+    /// verify_indexed_axis_query (non-top_k arbitrary query) also has
+    /// limit_for_verify routing. Exercise limit=None acceptance and
+    /// limit=Some-not-matching rejection (axis_mismatch path).
+    #[test]
+    fn verify_indexed_count_query_rejects_axis_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let mut q = MerkQuery::new();
+        q.insert_all();
+        let proof = db
+            .prove_indexed_count_query(path, q.clone(), None, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Verify under sum axis — axis tag mismatch should be reported.
+        let result = GroveDb::verify_indexed_axis_query(&proof, path, IndexAxis::Sum, q, None);
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    /// verify_indexed_axis_top_k for the unified entry under axis=Avg
+    /// against a Count-axis proof exercises the axis_tag mismatch arm
+    /// inside `verify_indexed_axis_top_k`.
+    #[test]
+    fn verify_indexed_axis_top_k_rejects_axis_tag_mismatch_avg_vs_count() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 1, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let r = GroveDb::verify_indexed_axis_top_k(&proof, path, IndexAxis::Avg, 1, true);
+        assert!(matches!(r, Err(Error::CorruptedData(s)) if s.contains("axis mismatch")));
+    }
+
+    /// PSIT paginated with empty primary (only top of subtree) and
+    /// post-skip exceeding total: exercises the `min(total_returned)`
+    /// branch in `verify_indexed_axis_paginated_inner` for the Sum
+    /// axis.
+    #[test]
+    fn psit_paginated_sum_skip_exceeds_total_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_top_k_paginated(path, 1, 1000, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 1, 1000, true)
+            .expect("verify");
+        assert!(result.entries.is_empty());
+        // skipped is clamped to total_returned which is 2 (whole secondary)
+        // when combined_limit = offset+k = 1001 covers everything.
+        assert!(result.skipped <= 2);
+    }
 }
