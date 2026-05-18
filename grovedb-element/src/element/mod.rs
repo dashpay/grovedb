@@ -1267,6 +1267,174 @@ mod tests {
         let bad = Element::NotCountedOrSummed(Box::new(Element::Item(b"x".to_vec(), None)));
         assert!(bad.validate_wrapper_invariants().is_err());
     }
+
+    // -----------------------------------------------------------------
+    // Display tests for the indexed-tree variants (PSIT/PCIT/PCPSIT)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn display_psit_with_none_root_keys() {
+        let elem = Element::ProvableSumIndexedTree(None, None, 0, None);
+        let s = format!("{}", elem);
+        assert!(s.starts_with("ProvableSumIndexedTree("), "got: {}", s);
+        assert!(s.contains("primary=None"), "got: {}", s);
+        assert!(s.contains("secondary=None"), "got: {}", s);
+        assert!(s.contains("sum=0"), "got: {}", s);
+        // No flags arm.
+        assert!(!s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_psit_with_some_root_keys_and_flags() {
+        let elem = Element::ProvableSumIndexedTree(
+            Some(vec![0xAA, 0xBB]),
+            Some(vec![0xCC, 0xDD]),
+            42,
+            Some(vec![1, 2, 3]),
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("primary=aabb"), "got: {}", s);
+        assert!(s.contains("secondary=ccdd"), "got: {}", s);
+        assert!(s.contains("sum=42"), "got: {}", s);
+        assert!(s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcit_with_none_root_keys() {
+        let elem = Element::ProvableCountIndexedTree(None, None, 0, None);
+        let s = format!("{}", elem);
+        assert!(s.starts_with("ProvableCountIndexedTree("), "got: {}", s);
+        assert!(s.contains("primary=None"), "got: {}", s);
+        assert!(s.contains("secondary=None"), "got: {}", s);
+        assert!(s.contains("count=0"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcit_with_some_root_keys_and_flags() {
+        let elem = Element::ProvableCountIndexedTree(
+            Some(vec![0x11]),
+            Some(vec![0x22]),
+            7,
+            Some(vec![0xFF]),
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("primary=11"), "got: {}", s);
+        assert!(s.contains("secondary=22"), "got: {}", s);
+        assert!(s.contains("count=7"), "got: {}", s);
+        assert!(s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_empty_axes() {
+        // Manually construct (validate_pcpsit_axes would reject empty,
+        // but Display arm doesn't care about that).
+        let elem = Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![], None);
+        let s = format!("{}", elem);
+        assert!(
+            s.starts_with("ProvableCountProvableSumIndexedTree("),
+            "got: {}",
+            s
+        );
+        assert!(s.contains("primary=None"), "got: {}", s);
+        assert!(s.contains("count=0"), "got: {}", s);
+        assert!(s.contains("sum=0"), "got: {}", s);
+        assert!(s.contains("axes=[]"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_one_axis_with_root_key() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            Some(vec![0xDE, 0xAD]),
+            5,
+            10,
+            vec![(0, Some(vec![0xBE, 0xEF]))],
+            None,
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("primary=dead"), "got: {}", s);
+        assert!(s.contains("count=5"), "got: {}", s);
+        assert!(s.contains("sum=10"), "got: {}", s);
+        assert!(s.contains("(0, beef)"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_multiple_axes_with_mixed_keys() {
+        // Mix Some/None root keys to exercise the inner map_or arm.
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            0,
+            0,
+            vec![(0, Some(vec![0xAB])), (1, None), (2, Some(vec![0xCD]))],
+            Some(vec![0x42]),
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("(0, ab)"), "got: {}", s);
+        assert!(s.contains("(1, None)"), "got: {}", s);
+        assert!(s.contains("(2, cd)"), "got: {}", s);
+        // Comma separation between entries.
+        assert!(s.matches(", ").count() >= 2, "got: {}", s);
+        assert!(s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_pcpsit_three_axes_no_flags() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            1,
+            2,
+            vec![(0, None), (1, None), (2, None)],
+            None,
+        );
+        let s = format!("{}", elem);
+        assert!(s.contains("axes=["), "got: {}", s);
+        // Three (tag, None) entries should all show up.
+        assert_eq!(s.matches("(0, None)").count(), 1);
+        assert_eq!(s.matches("(1, None)").count(), 1);
+        assert_eq!(s.matches("(2, None)").count(), 1);
+        // No flags arm.
+        assert!(!s.contains("flags:"), "got: {}", s);
+    }
+
+    #[test]
+    fn debug_renders_psit_with_negative_sum() {
+        let elem = Element::ProvableSumIndexedTree(None, None, -1234, None);
+        let s = format!("{:?}", elem);
+        assert!(s.contains("ProvableSumIndexedTree"), "got: {}", s);
+        assert!(s.contains("-1234"), "got: {}", s);
+    }
+
+    #[test]
+    fn debug_renders_pcpsit_with_axes_and_flags() {
+        let elem = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            3,
+            -5,
+            vec![(0, None), (1, None)],
+            Some(vec![1, 2, 3]),
+        );
+        let s = format!("{:?}", elem);
+        assert!(
+            s.contains("ProvableCountProvableSumIndexedTree"),
+            "got: {}",
+            s
+        );
+        assert!(s.contains("-5"), "got: {}", s);
+    }
+
+    #[test]
+    fn display_indexed_tree_variants_show_sums_and_counts() {
+        // Check that signed sums render correctly for PSIT.
+        let elem = Element::ProvableSumIndexedTree(None, None, -7, None);
+        let s = format!("{}", elem);
+        assert!(s.contains("sum=-7"), "got: {}", s);
+
+        // Negative sum in PCPSIT.
+        let elem =
+            Element::ProvableCountProvableSumIndexedTree(None, 10, -100, vec![(0, None)], None);
+        let s = format!("{}", elem);
+        assert!(s.contains("count=10"), "got: {}", s);
+        assert!(s.contains("sum=-100"), "got: {}", s);
+    }
 }
 
 #[cfg(test)]

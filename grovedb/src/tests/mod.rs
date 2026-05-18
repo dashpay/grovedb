@@ -42,6 +42,7 @@ mod count_offset_paginated_tests;
 mod count_sum_tree_tests;
 mod count_tree_tests;
 mod delete_cost_estimation_tests;
+mod delete_indexed_tree_tests;
 mod delete_up_tree_tests;
 mod dense_tree_tests;
 mod direct_insert_indexed_tests;
