@@ -1608,4 +1608,211 @@ mod tests {
         // avg = floor(17 * SCALE / 1) = 17 * SCALE.
         assert_eq!(by_avg, vec![(17 * AVG_SCALE, b"row".to_vec())]);
     }
+
+    // -----------------------------------------------------------------
+    // Depth > 1 propagation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcpsit_depth_2_under_tree_propagates_count_and_sum() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("parent");
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("pcpsit");
+        for (k, v) in [(b"a".as_ref(), 5i64), (b"b", 15), (b"c", -3)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"parent", b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), v),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"parent"].as_ref(),
+                b"pcpsit",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(_, c, s, _, _) => {
+                assert_eq!(*c, 3);
+                assert_eq!(*s, 17);
+            }
+            other => panic!("expected PCPSIT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pcpsit_depth_3_propagates_aggregates() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"l1",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("l1");
+        db.insert(
+            [TEST_LEAF, b"l1"].as_ref(),
+            b"l2",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("l2");
+        let axes = vec![
+            (IndexAxis::Count.tag(), None),
+            (IndexAxis::Sum.tag(), None),
+            (IndexAxis::Avg.tag(), None),
+        ];
+        db.insert(
+            [TEST_LEAF, b"l1", b"l2"].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("pcpsit");
+        for (k, v) in [(b"a".as_ref(), 4i64), (b"b", 8)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"l1", b"l2", b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), v),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"l1", b"l2"].as_ref(),
+                b"pcpsit",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(_, c, s, _, _) => {
+                assert_eq!(*c, 2);
+                assert_eq!(*s, 12);
+            }
+            other => panic!("expected PCPSIT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pcpsit_delete_then_reinsert_at_depth_2() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("parent");
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("pcpsit");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"parent", b"pcpsit"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"a".to_vec(), 10),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("a");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"parent", b"pcpsit"].as_ref(),
+            b"b",
+            Element::new_item_with_sum_item(b"b".to_vec(), 20),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("b");
+        db.delete_from_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"parent", b"pcpsit"].as_ref(),
+            b"a",
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"parent", b"pcpsit"].as_ref(),
+            b"c",
+            Element::new_item_with_sum_item(b"c".to_vec(), 5),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("c");
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"parent"].as_ref(),
+                b"pcpsit",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(_, c, s, _, _) => {
+                assert_eq!(*c, 2);
+                assert_eq!(*s, 25);
+            }
+            other => panic!("expected PCPSIT, got {:?}", other),
+        }
+    }
 }

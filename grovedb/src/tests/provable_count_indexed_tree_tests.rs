@@ -1356,4 +1356,188 @@ mod tests {
             .expect("legacy");
         assert_eq!(new_api, legacy);
     }
+
+    // -----------------------------------------------------------------
+    // Depth > 1 propagation paths
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcit_depth_2_under_tree_propagates_count_and_verifies() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("parent");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx");
+        for k in [b"a".as_slice(), b"b", b"c", b"d"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"parent", b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"parent"].as_ref(),
+                b"cidx",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableCountIndexedTree(_, _, c, _) => assert_eq!(*c, 4),
+            other => panic!("expected PCIT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pcit_depth_3_propagates_count() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"l1",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("l1");
+        db.insert(
+            [TEST_LEAF, b"l1"].as_ref(),
+            b"l2",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("l2");
+        db.insert(
+            [TEST_LEAF, b"l1", b"l2"].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx");
+        for k in [b"x".as_slice(), b"y", b"z"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"l1", b"l2", b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"l1", b"l2"].as_ref(),
+                b"cidx",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableCountIndexedTree(_, _, c, _) => assert_eq!(*c, 3),
+            other => panic!("expected PCIT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pcit_delete_then_reinsert_at_depth_2_consistent() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("parent");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cidx");
+        for k in [b"a".as_slice(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"parent", b"cidx"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        db.delete_from_count_indexed_tree(
+            [TEST_LEAF, b"parent", b"cidx"].as_ref(),
+            b"a",
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"parent", b"cidx"].as_ref(),
+            b"c",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("c");
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"parent"].as_ref(),
+                b"cidx",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableCountIndexedTree(_, _, c, _) => assert_eq!(*c, 2),
+            other => panic!("expected PCIT, got {:?}", other),
+        }
+    }
 }

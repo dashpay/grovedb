@@ -1214,4 +1214,192 @@ mod tests {
             other => panic!("expected InvalidPath, got {:?}", other),
         }
     }
+
+    // -----------------------------------------------------------------
+    // Depth > 1 propagation
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn psit_depth_2_under_tree_propagates_sum_and_verifies() {
+        // PSIT under a regular Tree at depth=2.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("parent");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("psit");
+        for (k, v) in [(b"a".as_ref(), 10i64), (b"b", -20), (b"c", 30)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"parent", b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(v),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        let elem = db
+            .get(
+                [TEST_LEAF, b"parent"].as_ref(),
+                b"psit",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableSumIndexedTree(_, _, s, _) => assert_eq!(*s, 20),
+            other => panic!("expected PSIT, got {:?}", other),
+        }
+        assert_verify_passes(&db, grove_version);
+    }
+
+    #[test]
+    fn psit_depth_3_propagates_sum_and_verifies() {
+        // PSIT under two Trees (depth=3): TEST_LEAF/p1/p2/psit
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"p1",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("p1");
+        db.insert(
+            [TEST_LEAF, b"p1"].as_ref(),
+            b"p2",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("p2");
+        db.insert(
+            [TEST_LEAF, b"p1", b"p2"].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("psit");
+        for (k, v) in [(b"x".as_ref(), 50i64), (b"y", 30)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"p1", b"p2", b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(v),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"p1", b"p2"].as_ref(),
+                b"psit",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableSumIndexedTree(_, _, s, _) => assert_eq!(*s, 80),
+            other => panic!("expected PSIT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn psit_delete_then_reinsert_at_depth_2_consistent() {
+        // PSIT at depth 2 with delete + re-insert; verify_grovedb still
+        // passes and sum is correct.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"parent",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("parent");
+        db.insert(
+            [TEST_LEAF, b"parent"].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("psit");
+        for (k, v) in [(b"a".as_ref(), 10i64), (b"b", 20)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"parent", b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(v),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        db.delete_from_provable_sum_indexed_tree(
+            [TEST_LEAF, b"parent", b"psit"].as_ref(),
+            b"a",
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete");
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"parent", b"psit"].as_ref(),
+            b"c",
+            Element::new_sum_item(15),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("c");
+        assert_verify_passes(&db, grove_version);
+        let elem = db
+            .get(
+                [TEST_LEAF, b"parent"].as_ref(),
+                b"psit",
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("get");
+        match elem.underlying() {
+            Element::ProvableSumIndexedTree(_, _, s, _) => assert_eq!(*s, 35),
+            other => panic!("expected PSIT, got {:?}", other),
+        }
+    }
 }
