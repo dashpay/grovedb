@@ -956,4 +956,656 @@ mod tests {
         .expect("two empty PCPSITs in one batch ok");
         assert_verify_passes(&db, grove_version);
     }
+
+    // -----------------------------------------------------------------
+    // Phase 3: indexed_count_*/indexed_sum_*/indexed_avg_* direct
+    // queries over PCPSIT with various axis subsets.
+    // -----------------------------------------------------------------
+
+    /// Insert an empty PCPSIT under `[TEST_LEAF, key]` carrying all
+    /// three axes (count, sum, avg). Used by per-axis direct-query
+    /// tests that need every axis available.
+    fn insert_empty_pcpsit_all_axes(db: &crate::GroveDb, key: &[u8], grove_version: &GroveVersion) {
+        insert_empty_pcpsit(
+            db,
+            key,
+            &[
+                IndexAxis::Count.tag(),
+                IndexAxis::Sum.tag(),
+                IndexAxis::Avg.tag(),
+            ],
+            grove_version,
+        );
+    }
+
+    /// Populate `[TEST_LEAF, "pcpsit"]` with CountSumTree children
+    /// carrying explicit (count, sum) values that give distinct
+    /// secondary keys across all three axes. Each tuple is
+    /// `(item_key, count, sum, expected_avg)`. The expected avg is
+    /// `floor(sum * 10^15 / count)`.
+    fn pcpsit_populate_count_sum_dataset(
+        db: &crate::GroveDb,
+        grove_version: &GroveVersion,
+    ) -> Vec<(Vec<u8>, u64, i64)> {
+        let dataset = vec![
+            (b"alice".to_vec(), 2u64, 10i64),  // avg = 5
+            (b"bob".to_vec(), 4u64, 100i64),   // avg = 25
+            (b"carol".to_vec(), 5u64, -25i64), // avg = -5
+            (b"dave".to_vec(), 1u64, 0i64),    // avg = 0
+            (b"eve".to_vec(), 3u64, 9i64),     // avg = 3
+        ];
+        for (k, c, s) in &dataset {
+            let child =
+                Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, *c, *s, None);
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                child,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert count-sum-tree child");
+        }
+        dataset
+    }
+
+    /// SCALE used by the avg-axis encoding (10^15).
+    const AVG_SCALE: i128 = grovedb_element::indexed::AVG_FIXED_POINT_SCALE;
+
+    // ---- indexed_count_* over PCPSIT (count axis in TLV) ----
+
+    #[test]
+    fn pcpsit_indexed_count_top_k_returns_highest_count_first() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // Counts: alice=2, bob=4, carol=5, dave=1, eve=3.
+        // Descending: carol(5), bob(4), eve(3).
+        let top3 = db
+            .indexed_count_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                3,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("top-k count");
+        assert_eq!(
+            top3,
+            vec![
+                (5u64, b"carol".to_vec()),
+                (4, b"bob".to_vec()),
+                (3, b"eve".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pcpsit_indexed_count_range_and_aggregate() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // Range [2, 4]: alice(2), eve(3), bob(4).
+        let in_range = db
+            .indexed_count_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                2,
+                4,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range");
+        assert_eq!(
+            in_range,
+            vec![
+                (2u64, b"alice".to_vec()),
+                (3, b"eve".to_vec()),
+                (4, b"bob".to_vec()),
+            ]
+        );
+
+        // Aggregate count [2, 4]: 3 entries.
+        let agg = db
+            .indexed_count_range_aggregate(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                2,
+                4,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("agg");
+        assert_eq!(agg, 3);
+
+        // Aggregate full scan = 5.
+        let total = db
+            .indexed_count_range_aggregate(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                0,
+                u64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("total");
+        assert_eq!(total, 5);
+    }
+
+    // ---- indexed_sum_* over PCPSIT (sum axis in TLV) ----
+
+    #[test]
+    fn pcpsit_indexed_sum_top_k_returns_highest_sum_first() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // Sums: alice=10, bob=100, carol=-25, dave=0, eve=9.
+        // Descending: bob(100), alice(10), eve(9).
+        let top3 = db
+            .indexed_sum_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                3,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("top-k sum");
+        assert_eq!(
+            top3,
+            vec![
+                (100i64, b"bob".to_vec()),
+                (10, b"alice".to_vec()),
+                (9, b"eve".to_vec()),
+            ]
+        );
+
+        // Ascending: carol(-25), dave(0), eve(9).
+        let asc3 = db
+            .indexed_sum_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                3,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("asc");
+        assert_eq!(
+            asc3,
+            vec![
+                (-25i64, b"carol".to_vec()),
+                (0, b"dave".to_vec()),
+                (9, b"eve".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pcpsit_indexed_sum_range_and_aggregate() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // Range [0, 10] ascending: dave(0), eve(9), alice(10).
+        let in_range = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                0,
+                10,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("sum range");
+        assert_eq!(
+            in_range,
+            vec![
+                (0i64, b"dave".to_vec()),
+                (9, b"eve".to_vec()),
+                (10, b"alice".to_vec()),
+            ]
+        );
+
+        // Aggregate sum in [0, 10]: 0 + 9 + 10 = 19.
+        let agg = db
+            .indexed_sum_range_aggregate(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                0,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("agg");
+        assert_eq!(agg, 19);
+
+        // Aggregate full sum: -25 + 0 + 9 + 10 + 100 = 94.
+        let total = db
+            .indexed_sum_range_aggregate(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                i64::MIN,
+                i64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("total");
+        assert_eq!(total, 94);
+    }
+
+    // ---- indexed_avg_* over PCPSIT (avg axis in TLV) ----
+
+    #[test]
+    fn pcpsit_indexed_avg_top_k_orders_by_floor_sum_div_count() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // Avg fixed-point (× 10^15):
+        //   alice  (2, 10)   →  5 * SCALE
+        //   bob    (4, 100)  → 25 * SCALE
+        //   carol  (5, -25)  → -5 * SCALE
+        //   dave   (1,   0)  →  0 * SCALE
+        //   eve    (3,   9)  →  3 * SCALE
+        // Descending: bob(25), alice(5), eve(3).
+        let top3 = db
+            .indexed_avg_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                3,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("top-k avg");
+        assert_eq!(
+            top3,
+            vec![
+                (25 * AVG_SCALE, b"bob".to_vec()),
+                (5 * AVG_SCALE, b"alice".to_vec()),
+                (3 * AVG_SCALE, b"eve".to_vec()),
+            ]
+        );
+
+        // Ascending: carol(-5), dave(0), eve(3).
+        let asc3 = db
+            .indexed_avg_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                3,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("asc avg");
+        assert_eq!(
+            asc3,
+            vec![
+                (-5 * AVG_SCALE, b"carol".to_vec()),
+                (0, b"dave".to_vec()),
+                (3 * AVG_SCALE, b"eve".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pcpsit_indexed_avg_range_filters_inclusive_bounds() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // Range [0, 5*SCALE] ascending: dave(0), eve(3), alice(5).
+        let in_range = db
+            .indexed_avg_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                0,
+                5 * AVG_SCALE,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("avg range");
+        assert_eq!(
+            in_range,
+            vec![
+                (0i128, b"dave".to_vec()),
+                (3 * AVG_SCALE, b"eve".to_vec()),
+                (5 * AVG_SCALE, b"alice".to_vec()),
+            ]
+        );
+
+        // Exact-match: [3*SCALE, 3*SCALE] → eve.
+        let exact = db
+            .indexed_avg_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                3 * AVG_SCALE,
+                3 * AVG_SCALE,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("exact");
+        assert_eq!(exact, vec![(3 * AVG_SCALE, b"eve".to_vec())]);
+
+        // lo > hi: empty.
+        let empty = db
+            .indexed_avg_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                100 * AVG_SCALE,
+                10 * AVG_SCALE,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("lo>hi");
+        assert!(empty.is_empty());
+
+        // Full scan: 5 entries.
+        let full = db
+            .indexed_avg_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                i128::MIN,
+                i128::MAX,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("full");
+        assert_eq!(full.len(), 5);
+    }
+
+    #[test]
+    fn pcpsit_indexed_avg_top_k_paginated_pages_through_dataset() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // Descending avg order: bob(25), alice(5), eve(3), dave(0),
+        // carol(-5).
+        // Page 1 (offset=0, k=2): bob, alice.
+        let page1 = db
+            .indexed_avg_top_k_paginated(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                2,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 1");
+        assert_eq!(
+            page1,
+            vec![
+                (25 * AVG_SCALE, b"bob".to_vec()),
+                (5 * AVG_SCALE, b"alice".to_vec()),
+            ]
+        );
+
+        // Page 2 (offset=2, k=2): eve, dave.
+        let page2 = db
+            .indexed_avg_top_k_paginated(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                2,
+                2,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 2");
+        assert_eq!(
+            page2,
+            vec![(3 * AVG_SCALE, b"eve".to_vec()), (0, b"dave".to_vec())]
+        );
+
+        // Offset beyond end.
+        let beyond = db
+            .indexed_avg_top_k_paginated(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                5,
+                100,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("beyond");
+        assert!(beyond.is_empty());
+    }
+
+    #[test]
+    fn pcpsit_indexed_avg_zero_over_zero_invariant() {
+        // 0/0 must produce avg=0 (matches compute_avg_fixed_point's
+        // documented behavior). With our dataset, dave (1, 0) directly
+        // tests the 0 sum case; for an actual 0/0 we'd need a child
+        // contributing (0, 0) — not constructible at the PCPSIT entry
+        // level, since the parent count goes up by the child's count
+        // contribution. So we settle for verifying that a 0-sum entry
+        // (dave) maps to avg 0 in the encoded secondary.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        pcpsit_populate_count_sum_dataset(&db, grove_version);
+
+        // dave has (1, 0) → avg=0.
+        let zero_only = db
+            .indexed_avg_range(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                0,
+                0,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("zero only");
+        assert_eq!(zero_only, vec![(0i128, b"dave".to_vec())]);
+    }
+
+    #[test]
+    fn pcpsit_indexed_avg_same_avg_different_keys_breaks_tie_by_key() {
+        // Two entries with identical avg sort by original_key
+        // ascending in the secondary's key space.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+
+        // Both (1, 7) and (2, 14) yield avg = 7 * SCALE.
+        for (k, c, s) in [(b"aaa".as_ref(), 1u64, 7i64), (b"zzz", 2, 14)] {
+            let child =
+                Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, c, s, None);
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                child,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        let asc = db
+            .indexed_avg_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                10,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("asc");
+        // Both share avg = 7*SCALE; tie-break by original_key ascending.
+        assert_eq!(
+            asc,
+            vec![
+                (7 * AVG_SCALE, b"aaa".to_vec()),
+                (7 * AVG_SCALE, b"zzz".to_vec()),
+            ]
+        );
+    }
+
+    // ---- axis-compatibility rejection on PCPSIT subsets ----
+
+    #[test]
+    fn pcpsit_indexed_count_top_k_on_sum_only_pcpsit_rejects() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit(&db, b"pcpsit", &[IndexAxis::Sum.tag()], grove_version);
+        let result = db
+            .indexed_count_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("Count") && msg.contains("not indexed"),
+                    "expected count-axis rejection on sum-only PCPSIT, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pcpsit_indexed_sum_top_k_on_count_only_pcpsit_rejects() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit(&db, b"pcpsit", &[IndexAxis::Count.tag()], grove_version);
+        let result = db
+            .indexed_sum_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("Sum") && msg.contains("not indexed"),
+                    "expected sum-axis rejection on count-only PCPSIT, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pcpsit_indexed_avg_top_k_on_count_sum_pcpsit_rejects() {
+        // PCPSIT with {Count, Sum} but NO avg → indexed_avg_* rejects.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit(
+            &db,
+            b"pcpsit",
+            &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+            grove_version,
+        );
+        let result = db
+            .indexed_avg_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("Avg") && msg.contains("not indexed"),
+                    "expected avg-axis rejection on count+sum PCPSIT, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pcpsit_indexed_count_top_k_on_all_axes_succeeds_after_insert() {
+        // Sanity smoke test: with all three axes configured, every
+        // family must succeed (no rejection).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"row",
+            Element::new_item_with_sum_item(b"v".to_vec(), 17),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+
+        // All three families produce results.
+        let by_count = db
+            .indexed_count_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                1,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("count");
+        assert_eq!(by_count, vec![(1u64, b"row".to_vec())]);
+        let by_sum = db
+            .indexed_sum_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                1,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("sum");
+        assert_eq!(by_sum, vec![(17i64, b"row".to_vec())]);
+        let by_avg = db
+            .indexed_avg_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                1,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("avg");
+        // avg = floor(17 * SCALE / 1) = 17 * SCALE.
+        assert_eq!(by_avg, vec![(17 * AVG_SCALE, b"row".to_vec())]);
+    }
 }
