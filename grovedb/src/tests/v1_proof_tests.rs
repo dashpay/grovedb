@@ -1311,8 +1311,6 @@ fn test_v0_proof_rejects_dense_tree_subquery() {
 /// PCIT lives in `tests/count_indexed_tree_tests.rs` (currently
 /// gated off for Phase 1; Phase 2 will restore the split suite).
 #[test]
-#[ignore = "Phase 1: latent PCIT V1-subquery hash-mismatch unrelated to this refactor; \
-             tracked alongside the count_indexed_tree_tests rewrite"]
 fn test_v1_proof_supports_count_indexed_tree_subquery() {
     let grove_version = GroveVersion::latest();
     let db = make_empty_grovedb();

@@ -768,6 +768,20 @@ impl TreeNode {
                     );
                 }
             }
+            // The three indexed-tree primaries mirror their non-indexed
+            // Provable* counterparts at the Merk-node level: their nodes
+            // carry the corresponding `Provable*MerkNode` feature_type and
+            // the proof emitter keys off that feature_type. Delegate to the
+            // matching Provable* arm so `root_hash_key_and_aggregate_data()`
+            // returns the same `node_hash_with_*` the proof reconstructs.
+            // (Pre-existing bug: before this delegation the indexed-tree
+            // primaries fell through to plain `self.hash()` and produced
+            // root hashes the proof verifier could not reconstruct.)
+            TreeType::ProvableSumIndexedTree => self.hash_for_link(TreeType::ProvableSumTree),
+            TreeType::ProvableCountIndexedTree => self.hash_for_link(TreeType::ProvableCountTree),
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                self.hash_for_link(TreeType::ProvableCountProvableSumTree)
+            }
             TreeType::ProvableCountProvableSumTree => {
                 // For ProvableCountProvableSumTree, include BOTH the
                 // aggregate count AND the aggregate sum in the hash via
