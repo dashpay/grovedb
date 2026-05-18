@@ -2126,14 +2126,13 @@ mod tests {
     // ====================================================================
     // Crossover: Element::ReferenceWithSumItem × Element::ProvableSumTree
     // --------------------------------------------------------------------
-    // `ReferenceWithSumItem` (added in PR #667) and `ProvableSumTree`
-    // (added in this PR) were developed in parallel. They interact at one
+    // `ReferenceWithSumItem` and `ProvableSumTree` interact at one
     // critical surface: a `ReferenceWithSumItem` inserted into a
     // `ProvableSumTree` parent must propagate its explicit `sum_value`
     // into the parent's CRYPTOGRAPHICALLY-BOUND aggregate sum (the sum
     // that `node_hash_with_sum` bakes into every node hash, which makes
     // `AggregateSumOnRange` proofs verifiable). Plain `SumTree` already
-    // had this exercised in `insert_in_sum_tree_aggregates_sum`; the
+    // has this exercised in `insert_in_sum_tree_aggregates_sum`; the
     // tests below verify the same contract for the provable flavor and
     // for the full proof round-trip.
     // ====================================================================
@@ -2427,10 +2426,8 @@ mod tests {
     /// `NotCountedOrSummed` may only wrap sum-BEARING tree variants
     /// (SumTree/BigSumTree/CountSumTree/ProvableCountSumTree/
     /// ProvableSumTree). `ReferenceWithSumItem` is a reference — not a
-    /// tree — so the constructor must reject it. PR #667 already covers
-    /// the `NotSummed` rejection in `new_not_summed_rejects_reference_with_sum_item`;
-    /// this is the matching `NotCountedOrSummed` parity test that
-    /// landed alongside our `NotCountedOrSummed` wrapper rule.
+    /// tree — so the constructor must reject it. Matching parity test
+    /// to `new_not_summed_rejects_reference_with_sum_item`.
     #[test]
     fn new_not_counted_or_summed_rejects_reference_with_sum_item() {
         let rwsi = Element::new_reference_with_sum_item(

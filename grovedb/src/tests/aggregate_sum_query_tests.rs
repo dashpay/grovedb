@@ -1362,8 +1362,8 @@ mod tests {
     // -------------------------------------------------------------------
     // Tests for the no-proof variant: GroveDb::query_aggregate_sum.
     //
-    // Mirrors PR #662's no-proof query_aggregate_count for the signed-sum
-    // side. The no-proof variant must return the same sum as the proof
+    // Sum-side mirror of the no-proof `query_aggregate_count` tests.
+    // The no-proof variant must return the same sum as the proof
     // variant for every valid PathQuery shape but should not need to
     // produce or verify any proof bytes.
     // -------------------------------------------------------------------

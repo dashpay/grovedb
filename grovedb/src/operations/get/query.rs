@@ -652,7 +652,8 @@ where {
     /// `PathNotFound` / `PathParentLayerNotFound` errors as other
     /// path-based reads.
     ///
-    /// Mirrors PR #662's `query_aggregate_count` for the signed-sum side.
+    /// Sum-side mirror of [`Self::query_aggregate_count`] for the
+    /// signed-sum axis.
     ///
     /// The returned sum is **not** independently verifiable — callers are
     /// trusting their own merk read path. For a verifiable sum, use

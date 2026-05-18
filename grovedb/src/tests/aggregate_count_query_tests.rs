@@ -1358,10 +1358,10 @@ mod tests {
             Err(e) => {
                 let msg = format!("{e}");
                 // The forgery is rejected either by:
-                //   (a) the V0-envelope-not-allowed gate added in PR #663
-                //       (fires first under GROVE_V2), or
-                //   (b) the terminal-type gate added in this PR (fires
-                //       under V1 envelopes if we reach it).
+                //   (a) the V0-envelope-not-allowed gate (fires first
+                //       under GROVE_V2), or
+                //   (b) the terminal-type gate (fires under V1 envelopes
+                //       if we reach it).
                 // Either rejection means the forgery doesn't pass — the
                 // security property holds. Accept both error shapes here.
                 assert!(
@@ -2164,11 +2164,13 @@ mod tests {
 
     #[test]
     fn leaf_unchanged_under_per_key_verifier() {
-        // The leaf shape — a single-`AggregateCountOnRange` query — produces exactly the
-        // same proof bytes it did before this feature. Verifying it via
-        // the new per-key entry point returns a one-entry Vec with an
-        // empty key and the same count `verify_aggregate_count_query`
-        // returns. This is the leaf-symmetry contract.
+        // The leaf shape — a single-`AggregateCountOnRange` query —
+        // produces the same proof bytes whether the caller verifies via
+        // `verify_aggregate_count_query` or the per-key entry point.
+        // Verifying it via the per-key entry point returns a one-entry
+        // Vec with an empty key and the same count
+        // `verify_aggregate_count_query` returns. This is the
+        // leaf-symmetry contract.
         let v = GroveVersion::latest();
         let (db, expected_root) = setup_15_key_provable_count_tree(v);
         let path_query = PathQuery::new_aggregate_count_on_range(

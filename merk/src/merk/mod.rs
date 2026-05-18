@@ -845,9 +845,9 @@ where
         let mut cost = OperationCost::default();
 
         // Verify tree type supports count. Delegate to the canonical
-        // `is_count_bearing()` predicate so any future count-bearing tree
-        // type (e.g. PCPS, which was previously omitted from this manual
-        // match) is automatically supported here.
+        // `is_count_bearing()` predicate so any future count-bearing
+        // tree type is automatically supported here without a manual
+        // match that risks drifting.
         if !self.tree_type.is_count_bearing() {
             return Err(Error::InvalidOperation(
                 "trunk_query requires a count-bearing tree (CountTree, CountSumTree, \
@@ -1840,10 +1840,10 @@ mod test {
     }
 
     /// `trunk_query` must accept `ProvableCountProvableSumTree` as a
-    /// count-bearing host. Before this fix the supports_count match
-    /// hard-coded `ProvableCountTree | ProvableCountSumTree` and
-    /// rejected PCPS with `InvalidOperation`, even though
-    /// `TreeType::is_count_bearing()` reports PCPS as count-bearing.
+    /// count-bearing host — the support check delegates to
+    /// `TreeType::is_count_bearing()` (which reports PCPS as
+    /// count-bearing), so any hand-rolled match here would be a
+    /// drift-risk regression.
     #[test]
     fn test_trunk_query_on_provable_count_provable_sum_tree() {
         use crate::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode;
@@ -1881,17 +1881,16 @@ mod test {
     }
 
     /// `trunk_query` with `min_depth` set must engage the privacy path
-    /// (`calculate_chunk_depths_with_minimum`) for PCPS too. Before this
-    /// fix the `is_provable_count_tree` branch only matched
-    /// `ProvableCountTree | ProvableCountSumTree`, so PCPS with
-    /// `min_depth` would silently fall into the non-privacy path and
-    /// leak small-subtree information.
+    /// (`calculate_chunk_depths_with_minimum`) for PCPS too. A
+    /// regression where the `is_provable_count_tree` branch only
+    /// matches `ProvableCountTree | ProvableCountSumTree` would let
+    /// PCPS with `min_depth` silently fall into the non-privacy path
+    /// and leak small-subtree information.
     ///
-    /// Tightened (per CodeRabbit review): the test now asserts the
-    /// returned `chunk_depths` matches the privacy function's output
-    /// AND that this differs from the non-privacy function's output,
-    /// so a regression that silently falls back to the non-privacy
-    /// path would fail this assertion.
+    /// The test asserts the returned `chunk_depths` matches the
+    /// privacy function's output AND that this differs from the
+    /// non-privacy function's output, so a regression that silently
+    /// falls back to the non-privacy path would fail this assertion.
     #[test]
     fn test_trunk_query_with_min_depth_engages_privacy_path_for_pcps() {
         use crate::{

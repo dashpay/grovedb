@@ -22,10 +22,10 @@
 //!      parent — PCPS commits its count (and sum) into every node
 //!      hash, so a suppressed-child wrapper would create a
 //!      cryptographically-committed count/sum that disagrees with the
-//!      actual element contents. Parallels the rejection rule from
-//!      PR #672 for `ProvableCountTree` / `ProvableCountSumTree`.
-//!    - `NotSummed` still ACCEPTED in a PCPS parent (consistent with
-//!      PR #672 deferring the NotSummed-in-Provable* question).
+//!      actual element contents. Same rejection rule that applies to
+//!      `ProvableCountTree` / `ProvableCountSumTree`.
+//!    - `NotSummed` ACCEPTED in a PCPS parent (NotSummed-in-Provable*
+//!      is deferred to a future review).
 
 #[cfg(test)]
 mod tests {
@@ -309,9 +309,9 @@ mod tests {
     /// commits its aggregate count into every node hash via
     /// `node_hash_with_count_and_sum`, so a `NonCounted` child would
     /// commit a cryptographic count that diverges from the actual
-    /// number of stored elements — the same footgun PR #672 closed
-    /// for `ProvableCountTree` / `ProvableCountSumTree`. This test
-    /// pins the rejection at the GroveDB insert surface.
+    /// number of stored elements — the same footgun the insert path
+    /// closes for `ProvableCountTree` / `ProvableCountSumTree`. This
+    /// test pins the rejection at the GroveDB insert surface.
     #[test]
     fn non_counted_rejected_under_provable_count_provable_sum_tree_parent() {
         let grove_version = GroveVersion::latest();
@@ -437,7 +437,7 @@ mod tests {
     /// into every node hash via `node_hash_with_count_and_sum`; a
     /// `NotCountedOrSummed` child would commit cryptographic
     /// aggregates on both axes that diverge from the actual element
-    /// contents. Parallels PR #672's rejection rule for
+    /// contents. Same rejection rule that applies to
     /// `ProvableCountSumTree`.
     #[test]
     fn not_counted_or_summed_rejected_under_provable_count_provable_sum_tree_parent() {
@@ -481,10 +481,10 @@ mod tests {
     /// Shared body of the PCPS reference proof round-trip tests
     /// below. Parametrized on grove version so we exercise both the
     /// v1 ref-rewrite loop (`GroveVersion::latest()`) and the v0
-    /// ref-rewrite loop (`GROVE_V2`). Both loops have the same defect
-    /// fixed in this PR — without the `KVRefValueHashCountSum`
-    /// dispatch arm, a PCPS Reference proof would surface a
-    /// "lower layer hash" mismatch at the verifier.
+    /// ref-rewrite loop (`GROVE_V2`). Both loops rely on the
+    /// `KVRefValueHashCountSum` dispatch arm — without it, a PCPS
+    /// Reference proof would surface a "lower layer hash" mismatch at
+    /// the verifier.
     fn pcps_reference_proof_round_trip_with(grove_version: &GroveVersion) {
         let db = make_test_grovedb(grove_version);
 
@@ -607,11 +607,11 @@ mod tests {
     /// Batch operation exercising the PCPS arms in
     /// `grovedb/src/batch/mod.rs`: the `LayeredValueDefinedCost`
     /// flag-update closure and the `InsertTreeWithRootHash` propagation
-    /// branch both gained `Element::ProvableCountProvableSumTree` arms
-    /// in this PR. This test inserts a PCPS subtree + child items in
-    /// a single batch — the propagation step converts the original
-    /// PCPS insert op into an `InsertTreeWithRootHash`, which triggers
-    /// the new arm at `batch/mod.rs:3264`.
+    /// branch both carry `Element::ProvableCountProvableSumTree` arms.
+    /// This test inserts a PCPS subtree + child items in a single
+    /// batch — the propagation step converts the original PCPS insert
+    /// op into an `InsertTreeWithRootHash`, which exercises the PCPS
+    /// arm in the `InsertTreeWithRootHash` branch.
     ///
     /// Asserts the batch applies cleanly and the resulting PCPS
     /// aggregate reflects the children's count and sum.

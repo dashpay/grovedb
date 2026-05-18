@@ -178,10 +178,10 @@ impl GroveDb {
             .wrap_with_cost(OperationCost::default());
         }
 
-        // Combined-aggregate proofs are a PR #670 / grove v3+ feature; V0
-        // envelopes predate them and cannot legitimately carry one. Same
-        // contract as the ACOR / ASOR V0 gates above. V0 proofs are
-        // **LOCKED** — we add the new feature to V1 only.
+        // Combined-aggregate proofs are a grove v3+ feature; V0 envelopes
+        // predate them and cannot legitimately carry one. Same contract
+        // as the ACOR / ASOR V0 gates above. V0 proofs are **LOCKED** —
+        // combined aggregates live on V1 only.
         if is_acasor_query && prove_version == 0 {
             return Err(Error::NotSupported(
                 "AggregateCountAndSumOnRange proofs require V1 proof envelopes; upgrade the \

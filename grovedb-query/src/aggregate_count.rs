@@ -13,11 +13,11 @@
 //!   `AggregateCountOnRange`. Produces one `u64` per matched outer
 //!   key — the natural per-outer-key extension of the leaf shape.
 //!
-//! All aggregate-count validation lives in this file so the much larger
-//! `Query` core in `query.rs` stays focused on the general-purpose
-//! query plumbing. Forthcoming aggregate variants (sum, average) will
-//! live in sibling modules (`aggregate_sum`, `aggregate_average`, …)
-//! with parallel naming.
+//! All aggregate-count validation lives in this file so the much
+//! larger `Query` core in `query.rs` stays focused on the
+//! general-purpose query plumbing. The sum and combined axes live in
+//! sibling modules [`crate::aggregate_sum`] and
+//! [`crate::aggregate_count_and_sum`] with parallel naming.
 
 use crate::{error::Error, query::Query, query_item::QueryItem};
 

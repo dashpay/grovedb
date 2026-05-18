@@ -2,11 +2,10 @@
 //! subtrees: [`super::aggregate_count`], [`super::aggregate_sum`], and
 //! [`super::aggregate_count_and_sum`].
 //!
-//! Before this module existed each axis carried its own private copy of
-//! these (byte-identical except for an axis-label substring in the
-//! error messages). Centralizing them keeps the three axes from
-//! drifting and means future per-axis additions only have to be wired
-//! once.
+//! These items would otherwise be byte-identical copies across each
+//! axis (except for an axis-label substring in the error messages).
+//! Centralizing them here keeps the three axes from drifting and
+//! means future per-axis additions only have to be wired once.
 //!
 //! - [`OuterMatch`] — a single matched outer-key row from a carrier's
 //!   multi-key merk proof. Pure type — axis-agnostic.

@@ -32,9 +32,9 @@
 //!   matched outer key. Surfaced through
 //!   [`GroveDb::verify_aggregate_count_query_per_key`].
 //!
-//! The same leaf/carrier shape will apply to forthcoming aggregate
-//! variants (sum, average) — each will get its own sibling module under
-//! `grovedb/src/operations/proof/` with parallel naming.
+//! The same leaf/carrier shape applies to the sum and combined
+//! axes — see the sibling [`super::aggregate_sum`] and
+//! [`super::aggregate_count_and_sum`] modules.
 //!
 //! ## Module layout
 //!

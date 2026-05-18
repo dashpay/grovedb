@@ -293,9 +293,10 @@ mod tests {
     #[test]
     fn leaf_aggregate_sum_round_trip_via_per_key_returns_one_entry() {
         // The leaf shape — a single-`AggregateSumOnRange` query — produces
-        // exactly the same proof bytes it did before this feature.
-        // Verifying it via the new per-key entry point returns a
-        // one-entry Vec with an empty key and the same sum
+        // the same proof bytes whether the caller verifies via
+        // `verify_aggregate_sum_query` or the per-key entry point.
+        // Verifying it via the per-key entry point returns a one-entry
+        // Vec with an empty key and the same sum
         // `verify_aggregate_sum_query` returns.
         let v = GroveVersion::latest();
         let (db, expected_root) = setup_brand_value_carrier_tree(v, &[b"brand_000"], 10);
@@ -396,11 +397,12 @@ mod tests {
 
     /// Root-carrier regression: a carrier `AggregateSumOnRange` query
     /// with an empty `PathQuery::path` must validate and round-trip
-    /// correctly. The auto-dispatcher's empty-path rejection was
-    /// previously blanket — it blocked legitimate root-carrier queries
-    /// where each root-level outer match descends via `subquery_path`
-    /// to a leaf sum merk. After the shape-aware fix, only **leaf**
-    /// queries get rejected at empty path; carriers proceed.
+    /// correctly. The auto-dispatcher's empty-path rejection is
+    /// shape-aware — root-carrier queries (where each root-level outer
+    /// match descends via `subquery_path` to a leaf sum merk) are
+    /// permitted, while leaf-shape queries at empty path are still
+    /// rejected (the GroveDB root is always a `NormalTree`, never a
+    /// `ProvableSumTree`).
     #[test]
     fn root_carrier_sum_with_empty_path_succeeds() {
         let v = GroveVersion::latest();

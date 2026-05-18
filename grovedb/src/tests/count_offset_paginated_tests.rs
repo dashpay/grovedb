@@ -676,11 +676,11 @@ mod tests {
     // ──────── lower_layers / non-empty-tree return rejections ────────
 
     /// Soundness regression test for the
-    /// `layer_proof.lower_layers.is_empty()` check (CodeRabbit
-    /// review on grovedb#669). An honest count-offset prover always
-    /// emits empty `lower_layers` (the validator rejects subqueries),
-    /// so we forge a proof envelope with a stray child layer attached
-    /// and confirm the verifier rejects.
+    /// `layer_proof.lower_layers.is_empty()` check. An honest
+    /// count-offset prover always emits empty `lower_layers` (the
+    /// validator rejects subqueries), so we forge a proof envelope
+    /// with a stray child layer attached and confirm the verifier
+    /// rejects.
     ///
     /// The forging is done by decoding a legitimate proof envelope,
     /// injecting a `lower_layers` entry, re-encoding, and feeding the
@@ -745,8 +745,7 @@ mod tests {
     }
 
     /// Soundness regression test for the non-empty-tree return
-    /// rejection (CodeRabbit review on grovedb#669). The current
-    /// count-offset prover doesn't emit
+    /// rejection. The count-offset prover doesn't emit
     /// `KVValueHashFeatureTypeWithChildHash`, so a non-empty tree
     /// returned via this path would silently bypass the V1 strict-mode
     /// child-hash invariant. The verifier explicitly rejects such
@@ -944,18 +943,18 @@ mod tests {
         );
     }
 
-    /// Verifies the P1 finding's root cause is closed at the insert
-    /// path by PR [#672](https://github.com/dashpay/grovedb/pull/672)
-    /// — `NonCounted` into a `ProvableCountTree` is now rejected
-    /// before any proof can be generated. Without this rejection, a
-    /// fixture of [counted-a, NonCounted-b, counted-c] with `RangeFull`
+    /// `NonCounted` inserts into a `ProvableCountTree` are rejected at
+    /// the insert path — the only structural guarantee that
+    /// `subtree_count` equals entry count, which the count-offset
+    /// collapse path relies on. Without this rejection a fixture of
+    /// `[counted-a, NonCounted-b, counted-c]` with `RangeFull`
     /// `offset=2`, `limit=1` would let the prover collapse the whole
     /// subtree via `HashWithCount(count=2)` and produce a verified
     /// proof with `returned=[]`, while regular GroveDB pagination
     /// would return `[c]`. With the insert-time rejection in place,
     /// the unsafe state is unreachable.
     #[test]
-    fn p1_noncounted_in_provable_count_tree_rejected_at_insert() {
+    fn noncounted_in_provable_count_tree_rejected_at_insert() {
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
         db.insert(
@@ -979,9 +978,9 @@ mod tests {
         .unwrap()
         .expect("insert counted-a");
 
-        // The insert-time check from #672 must reject this — it's the
-        // only structural guarantee that `subtree_count` always equals
-        // entry count for a ProvableCountTree, which the count-offset
+        // The insert-time check must reject this — it's the only
+        // structural guarantee that `subtree_count` always equals entry
+        // count for a ProvableCountTree, which the count-offset
         // collapse path relies on.
         let attempt = db
             .insert(
@@ -996,10 +995,10 @@ mod tests {
             .unwrap();
         assert!(
             attempt.is_err(),
-            "PR #672 closes the P1 finding by rejecting NonCounted inserts into a \
-             ProvableCountTree; this insert must fail. If it succeeds, the \
-             count-offset collapse path can hide NonCounted entries behind \
-             HashWithCount and silently diverge from regular pagination."
+            "NonCounted inserts into a ProvableCountTree must be rejected; this \
+             insert must fail. If it succeeds, the count-offset collapse path \
+             can hide NonCounted entries behind HashWithCount and silently \
+             diverge from regular pagination."
         );
     }
 
