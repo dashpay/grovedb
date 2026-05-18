@@ -10,6 +10,13 @@
 //!
 //! - [`OuterMatch`] — a single matched outer-key row from a carrier's
 //!   multi-key merk proof. Pure type — axis-agnostic.
+//! - [`AggregateClassification`] — leaf-vs-carrier classification
+//!   descriptor produced by each axis's classify function. Pure type —
+//!   axis-agnostic (every axis classifies into the same four
+//!   fields, only the carried inner range's type varies cosmetically).
+//! - [`classify_aggregate_path_query`] — generic classification driver,
+//!   parameterized by closures supplying the axis-specific validator
+//!   and "owns an aggregate-X item at top level" predicate.
 //! - [`verify_single_key_layer_proof_v0`] — verify a non-leaf merk
 //!   proof for one expected key and recover its value bytes + chain
 //!   commitment hash. Axis-agnostic.
@@ -17,20 +24,27 @@
 //!   with an axis-labelled error.
 //! - [`execute_carrier_layer_proof`] — verify the carrier's multi-key
 //!   merk proof and collect one [`OuterMatch`] per matched outer key.
+//! - [`require_v1_envelope`] — extract the V1 root layer from a
+//!   `GroveDBProof` or reject the proof. All aggregate axes require
+//!   V1 envelopes; V0 predates the feature.
 //!
-//! The two functions that produce diagnostic strings (`expect_merk_bytes`,
-//! `execute_carrier_layer_proof`) take an `axis_label: &'static str` so
-//! each axis's per-axis `helpers.rs` can supply its own prefix
-//! ("aggregate-count", "aggregate-sum", "combined-aggregate") through a
+//! The functions that produce diagnostic strings take an
+//! `axis_label: &'static str` (and `query_type_name: &'static str` for
+//! `require_v1_envelope`) so each axis's per-axis module can supply
+//! its own prefix ("aggregate-count" / "aggregate-sum" /
+//! "combined-aggregate", and "AggregateCountOnRange" / etc.) through a
 //! thin wrapper, preserving the original error text.
 
 use grovedb_merk::{
     proofs::{query::QueryProofVerify, Query as MerkQuery},
     CryptoHash,
 };
-use grovedb_query::QueryItem;
+use grovedb_query::{Query, QueryItem};
 
-use crate::{operations::proof::ProofBytes, Error, PathQuery};
+use crate::{
+    operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof, ProofBytes},
+    Error, PathQuery,
+};
 
 /// Unwrap a `ProofBytes::Merk(_)` or reject the proof. All three
 /// aggregate-axis envelopes are merk-flavored at every layer; a
@@ -211,4 +225,111 @@ pub(in crate::operations::proof) fn execute_carrier_layer_proof(
     }
 
     Ok((root_hash, matched))
+}
+
+/// Classification of any aggregate-on-range `PathQuery`. Encodes
+/// either the leaf-only inner range (no carrier descent) or the
+/// carrier outer items + leaf inner range + optional `subquery_path`
+/// that the verifier must follow per outer key.
+///
+/// Axis-agnostic: every aggregate axis classifies into these same four
+/// fields. Per-axis behaviour (which leaf verifier to call, which
+/// terminal-type set to accept) lives downstream in each axis's
+/// `per_key` walker — the classification descriptor only carries
+/// structural information.
+pub(in crate::operations::proof) struct AggregateClassification {
+    /// The inner range that the leaf merk aggregate proof must
+    /// satisfy.
+    pub(in crate::operations::proof) leaf_inner_range: QueryItem,
+    /// Carrier outer items. `None` for leaf-only queries.
+    pub(in crate::operations::proof) carrier_outer_items: Option<Vec<QueryItem>>,
+    /// Carrier subquery_path (the keys between each outer match and the
+    /// leaf merk). Empty `Vec` if no subquery_path was set. `None` for
+    /// leaf-only queries.
+    pub(in crate::operations::proof) carrier_subquery_path: Option<Vec<Vec<u8>>>,
+    /// Whether the outer query is left-to-right. Affects which results
+    /// the merk_proof returns when the outer items are ranges. Always
+    /// `true` for leaf-only.
+    pub(in crate::operations::proof) carrier_left_to_right: bool,
+}
+
+/// Classify an aggregate-on-range path query and validate it at the
+/// PathQuery level. The shape-specific pagination rules are enforced
+/// through the axis's `validate` callback (leaf queries reject both
+/// `SizedQuery::limit` and `SizedQuery::offset`; carrier queries
+/// accept `SizedQuery::limit` but still reject `SizedQuery::offset`).
+///
+/// `validate` runs the axis's PathQuery-level validator and returns
+/// the inner range (the same one for both leaf and carrier shapes —
+/// for carriers it's the *subquery's* inner range).
+///
+/// `is_leaf` reports whether the top-level `Query` owns an aggregate-X
+/// item directly (leaf shape) or only nested through subqueries
+/// (carrier shape). Each axis supplies its own predicate so the shared
+/// driver doesn't need to know which `QueryItem` variants count as the
+/// axis's aggregate marker.
+pub(in crate::operations::proof) fn classify_aggregate_path_query<F, G>(
+    path_query: &PathQuery,
+    validate: F,
+    is_leaf: G,
+) -> Result<AggregateClassification, Error>
+where
+    F: FnOnce(&PathQuery) -> Result<&QueryItem, Error>,
+    G: Fn(&Query) -> bool,
+{
+    let leaf_inner = validate(path_query)?.clone();
+    let q = &path_query.query.query;
+    if is_leaf(q) {
+        // Leaf shape: top-level aggregate item.
+        return Ok(AggregateClassification {
+            leaf_inner_range: leaf_inner,
+            carrier_outer_items: None,
+            carrier_subquery_path: None,
+            carrier_left_to_right: true,
+        });
+    }
+    // Carrier shape: validation above routed through the carrier
+    // validator, so `leaf_inner` is the *subquery's* inner range. We
+    // just need to extract the outer items and the optional
+    // subquery_path.
+    let outer_items = q.items.clone();
+    let subquery_path = q
+        .default_subquery_branch
+        .subquery_path
+        .clone()
+        .unwrap_or_default();
+    Ok(AggregateClassification {
+        leaf_inner_range: leaf_inner,
+        carrier_outer_items: Some(outer_items),
+        carrier_subquery_path: Some(subquery_path),
+        carrier_left_to_right: q.left_to_right,
+    })
+}
+
+/// Extract the V1 root layer from a `GroveDBProof` envelope, or refuse
+/// the proof. All three aggregate axes require V1 envelopes — V0
+/// (`MerkOnlyLayerProof`) predates each aggregate feature and cannot
+/// legitimately carry such a proof.
+///
+/// `query_type_name` is the user-facing aggregate type name (e.g.
+/// `"AggregateCountOnRange"`, `"AggregateSumOnRange"`,
+/// `"AggregateCountAndSumOnRange"`) and is interpolated into the
+/// rejection message so callers can identify which axis rejected
+/// their proof.
+pub(in crate::operations::proof) fn require_v1_envelope<'a>(
+    proof: &'a GroveDBProof,
+    path_query: &PathQuery,
+    query_type_name: &'static str,
+) -> Result<&'a LayerProof, Error> {
+    match proof {
+        GroveDBProof::V1(GroveDBProofV1 { root_layer }) => Ok(root_layer),
+        GroveDBProof::V0(_) => Err(Error::InvalidProof(
+            path_query.clone(),
+            format!(
+                "{} proofs require V1 proof envelopes; V0 envelopes predate this feature and \
+                 cannot legitimately carry such a proof",
+                query_type_name
+            ),
+        )),
+    }
 }

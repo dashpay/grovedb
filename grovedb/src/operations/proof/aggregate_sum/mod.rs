@@ -53,7 +53,7 @@ use grovedb_merk::CryptoHash;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 
 use crate::{
-    operations::proof::{GroveDBProof, GroveDBProofV1, LayerProof},
+    operations::proof::{GroveDBProof, LayerProof},
     Error, GroveDb, PathQuery,
 };
 
@@ -201,22 +201,14 @@ impl GroveDb {
     }
 }
 
-/// Extract the V1 root layer from a `GroveDBProof` envelope, or refuse
-/// the proof. `AggregateSumOnRange` requires V1 envelopes — the V0
-/// (`MerkOnlyLayerProof`) envelope predates the aggregate-sum feature and
-/// is only emitted by grove versions older than the one used by Dash
-/// Platform v12, so it cannot legitimately contain an aggregate-sum proof.
+/// Thin wrapper around
+/// [`super::aggregate_common::require_v1_envelope`] that supplies the
+/// aggregate-sum axis labels. `AggregateSumOnRange` requires V1
+/// envelopes — V0 (`MerkOnlyLayerProof`) predates the aggregate-sum
+/// feature and cannot legitimately carry one.
 fn require_v1_envelope<'a>(
     proof: &'a GroveDBProof,
     path_query: &PathQuery,
 ) -> Result<&'a LayerProof, Error> {
-    match proof {
-        GroveDBProof::V1(GroveDBProofV1 { root_layer }) => Ok(root_layer),
-        GroveDBProof::V0(_) => Err(Error::InvalidProof(
-            path_query.clone(),
-            "AggregateSumOnRange proofs require V1 proof envelopes; V0 envelopes predate \
-             this feature and cannot legitimately carry an aggregate-sum proof"
-                .to_string(),
-        )),
-    }
+    super::aggregate_common::require_v1_envelope(proof, path_query, "AggregateSumOnRange")
 }
