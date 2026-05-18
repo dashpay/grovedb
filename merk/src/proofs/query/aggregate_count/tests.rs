@@ -11,7 +11,9 @@ use std::collections::LinkedList;
 use grovedb_costs::CostsExt;
 use grovedb_version::version::GroveVersion;
 
-use super::verify_aggregate_count_on_range_proof;
+use super::{
+    is_provable_count_bearing, provable_count_from_aggregate, verify_aggregate_count_on_range_proof,
+};
 use crate::{
     proofs::{
         encode_into,
@@ -22,7 +24,7 @@ use crate::{
         Node, Op as ProofOp,
     },
     test_utils::TempMerk,
-    tree::{Op, TreeFeatureType::ProvableCountedMerkNode},
+    tree::{AggregateData, Op, TreeFeatureType::ProvableCountedMerkNode},
     Error, Merk, TreeType,
 };
 
@@ -631,6 +633,160 @@ fn no_proof_provable_count_sum_tree() {
     assert_eq!(count, 10, "c..=l should be 10 keys");
 }
 
+/// Build a fresh `ProvableCountProvableSumTree` populated with single-byte
+/// keys "a".."o" (15 keys), each carrying count=1 and sum=(i+1). Sums
+/// 1+..+15 = 120.
+fn make_15_key_provable_count_provable_sum_tree(
+    grove_version: &GroveVersion,
+) -> (TempMerk, [u8; 32]) {
+    let mut merk =
+        TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+    let keys: Vec<Vec<u8>> = (b'a'..=b'o').map(|c| vec![c]).collect();
+    let entries: Vec<(Vec<u8>, Op)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let sum = (i as i64) + 1;
+            (
+                k.clone(),
+                Op::Put(
+                    vec![i as u8],
+                    crate::tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(1, sum),
+                ),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+        .unwrap()
+        .expect("apply ProvableCountProvableSumTree entries");
+    merk.commit(grove_version);
+    let root_hash = merk.root_hash().unwrap();
+    (merk, root_hash)
+}
+
+/// Aggregate-count proof against `ProvableCountProvableSumTree`
+/// round-trips. Same shape as `integration_open_range_from`, but the
+/// emitter dispatches dual-axis variants (`HashWithCountAndSum`,
+/// `KVDigestCountSum`) and the verifier reconstructs
+/// `node_hash_with_count_and_sum`.
+#[test]
+fn integration_count_proof_against_pcps_round_trips() {
+    let v = GroveVersion::latest();
+    let (merk, expected_root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (ops, prover_count) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove count on PCPS should succeed");
+    assert_eq!(prover_count, 10, "c..=l is 10 keys");
+    let bytes = encode_proof(&ops);
+    let (root, verifier_count) = verify_aggregate_count_on_range_proof(&bytes, &inner_range)
+        .unwrap()
+        .expect("verify count proof on PCPS should succeed");
+    assert_eq!(root, expected_root);
+    assert_eq!(verifier_count, 10);
+}
+
+/// Disjoint-leaf rejection on the dual-axis side: forging
+/// `HashWithCountAndSum` children under a leaf-classification node must
+/// be rejected by the shape walk. Mirrors
+/// `shape_walk_rejects_disjoint_hashwithcount_with_children` for the
+/// count-only side.
+#[test]
+fn shape_walk_rejects_disjoint_hashwithcountandsum_with_children_pcps() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    // Range above all keys → Disjoint at root.
+    let inner_range = QueryItem::RangeAfter(b"o".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Splice in a child under the first HashWithCountAndSum to force the
+    // "leaf at Disjoint position must be a leaf" rejection.
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithCountAndSum(..))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], 1, 0,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(done, "test setup: need at least one HashWithCountAndSum op");
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err(
+        "spliced child under Disjoint HashWithCountAndSum must be rejected by shape walk",
+    );
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Disjoint position must be a leaf")
+                || msg.contains("at a Disjoint position"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Forged-count rejection: replacing the dual-axis HashWithCountAndSum
+/// count with a wrong value forces the verifier's hash reconstruction
+/// to diverge — and the caller's root-hash check would catch it.
+/// We verify the proof returns a successful in-range count (the shape
+/// walk itself doesn't check the count value, only structure), then
+/// assert the returned root hash is NOT the honest root.
+#[test]
+fn integration_pcps_count_forgery_changes_root_hash() {
+    let v = GroveVersion::latest();
+    let (merk, honest_root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeFrom(b"o".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Tamper the first HashWithCountAndSum count field.
+    let mut tampered = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        if !done && let ProofOp::Push(Node::HashWithCountAndSum(kv, l, r, count, sum)) = op {
+            // Forge: bump count by 1 to claim an extra key.
+            tampered.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                *kv,
+                *l,
+                *r,
+                count + 1,
+                *sum,
+            )));
+            done = true;
+        } else {
+            tampered.push_back(op.clone());
+        }
+    }
+    assert!(done, "test setup: need at least one HashWithCountAndSum op");
+    ops = tampered;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    if let Ok((forged_root, _)) = result {
+        // If shape walk accepted the tampered proof (it might, since the
+        // count field isn't shape-validated), the reconstructed root MUST
+        // diverge from the honest one — that's the cryptographic binding.
+        assert_ne!(
+            forged_root, honest_root,
+            "forging the count on a HashWithCountAndSum must change the reconstructed root hash"
+        );
+    }
+    // If the shape walk rejected outright, that's also fine — the proof
+    // is invalid either way.
+}
+
 // ---------- attack tests for the shape-walk verifier ----------
 //
 // These three tests exercise attacks the old allowlist-only verifier let
@@ -830,6 +986,225 @@ fn regular_query_verifier_rejects_hash_with_count_node() {
     assert!(
         msg.contains("HashWithCount") || msg.contains("aggregate-count"),
         "expected HashWithCount-rejection message, got: {msg}"
+    );
+}
+
+/// Parallel guard for the dual-axis variant: the regular query verifier
+/// must reject `HashWithCountAndSum` on sight, since it's only valid in
+/// aggregate proofs against `ProvableCountProvableSumTree`.
+#[test]
+fn regular_query_verifier_rejects_hash_with_count_and_sum_node() {
+    use crate::proofs::query::QueryProofVerify;
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new(v);
+    for i in 0u8..5 {
+        merk.apply::<_, Vec<_>>(
+            &[(
+                vec![i],
+                Op::Put(vec![i], crate::TreeFeatureType::BasicMerkNode),
+            )],
+            &[],
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("apply");
+    }
+    merk.commit(v);
+    let q =
+        crate::proofs::query::Query::new_single_query_item(QueryItem::Range(vec![0u8]..vec![5u8]));
+
+    let (mut ops, _) = merk
+        .prove_unchecked_query_items(&[QueryItem::Range(vec![0u8]..vec![5u8])], None, true, v)
+        .unwrap()
+        .expect("prove");
+    // Splice in HashWithCountAndSum — only valid in aggregate proofs
+    // against PCPS; the regular verifier must refuse it.
+    ops.push_front(ProofOp::Push(Node::HashWithCountAndSum(
+        [0u8; 32], [0u8; 32], [0u8; 32], 0, 0,
+    )));
+    let bytes = encode_proof(&ops);
+
+    let result = q.execute_proof(&bytes, None, true, 0).unwrap();
+    let err = result.expect_err(
+        "regular query verifier must reject HashWithCountAndSum on sight (aggregate proofs only)",
+    );
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("HashWithCountAndSum")
+            || msg.contains("aggregate-count")
+            || msg.contains("aggregate-sum"),
+        "expected HashWithCountAndSum-rejection message, got: {msg}"
+    );
+}
+
+/// Regular `Merk::prove` on a `ProvableCountProvableSumTree` must emit
+/// the dual-axis proof node variants. Queried items yield `KVCountSum`
+/// (via `to_kv_count_sum_node`); non-queried path nodes use
+/// `KVHashCountSum` (via `to_kvhash_count_sum_node`). This exercises
+/// the dual-axis-node helper functions whose only callers are inside
+/// `create_proof_internal`. Mirrors the sum-side
+/// `regular_prove_on_provable_sum_tree_emits_kv_sum_and_kvhash_sum`.
+#[test]
+fn regular_prove_on_pcps_emits_dual_axis_helpers() {
+    use crate::{
+        proofs::{query::Query, Decoder, Node, Op as ProofOp},
+        tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode,
+    };
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountProvableSumTree);
+    // 15 entries; the value byte stored is 0 which deserializes as
+    // ElementType::Item, so proof_node_type dispatches to KvCountSum.
+    for c in b'a'..=b'o' {
+        merk.apply::<_, Vec<_>>(
+            &[(
+                vec![c],
+                Op::Put(vec![0u8], ProvableCountedAndProvableSummedMerkNode(1, 1)),
+            )],
+            &[],
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("apply");
+    }
+    merk.commit(v);
+
+    // Query a few keys, leaving most unqueried so we get both queried
+    // (KVCountSum) and path (KVHashCountSum) nodes.
+    let mut q = Query::new();
+    q.insert_key(b"a".to_vec());
+    q.insert_key(b"h".to_vec());
+    q.insert_key(b"o".to_vec());
+    let proof_result = merk.prove(q, None, v).unwrap().expect("regular prove");
+    let ops: Vec<ProofOp> = Decoder::new(&proof_result.proof)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decode");
+
+    let saw_kv_cs = ops.iter().any(|op| {
+        matches!(
+            op,
+            ProofOp::Push(Node::KVCountSum(..)) | ProofOp::PushInverted(Node::KVCountSum(..))
+        )
+    });
+    let saw_kv_hash_cs = ops.iter().any(|op| {
+        matches!(
+            op,
+            ProofOp::Push(Node::KVHashCountSum(..))
+                | ProofOp::PushInverted(Node::KVHashCountSum(..))
+        )
+    });
+    assert!(
+        saw_kv_cs,
+        "expected at least one KVCountSum op — to_kv_count_sum_node helper coverage"
+    );
+    assert!(
+        saw_kv_hash_cs,
+        "expected at least one KVHashCountSum op — to_kvhash_count_sum_node helper coverage"
+    );
+}
+
+/// Regular `Merk::prove` on a `ProvableCountProvableSumTree` produces
+/// `KVDigestCountSum` at the boundary when the query key is **absent**.
+/// This is the only path that calls `to_kvdigest_count_sum_node`.
+/// Mirrors the sum-side `regular_prove_on_provable_sum_tree_emits_kvdigest_sum`.
+#[test]
+fn regular_prove_on_pcps_absent_key_emits_kvdigestcountsum() {
+    use crate::{
+        proofs::{query::Query, Decoder, Node, Op as ProofOp},
+        tree::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode,
+    };
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountProvableSumTree);
+    // Single-key tree: querying any absent key forces a boundary emission.
+    merk.apply::<_, Vec<_>>(
+        &[(
+            b"m".to_vec(),
+            Op::Put(vec![0u8], ProvableCountedAndProvableSummedMerkNode(1, 7)),
+        )],
+        &[],
+        None,
+        v,
+    )
+    .unwrap()
+    .expect("apply");
+    merk.commit(v);
+
+    let mut q = Query::new();
+    q.insert_key(b"zz".to_vec()); // absent, above the single key
+    let proof_result = merk.prove(q, None, v).unwrap().expect("regular prove");
+    let ops: Vec<ProofOp> = Decoder::new(&proof_result.proof)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decode");
+
+    let saw_digest = ops.iter().any(|op| {
+        matches!(
+            op,
+            ProofOp::Push(Node::KVDigestCountSum(..))
+                | ProofOp::PushInverted(Node::KVDigestCountSum(..))
+        )
+    });
+    assert!(
+        saw_digest,
+        "expected KVDigestCountSum at the boundary for an absent-key proof on a PCPS tree — \
+         to_kvdigest_count_sum_node helper coverage; got ops: {:?}",
+        ops
+    );
+}
+
+/// `KVHashCountSum` (non-queried-path dual-axis kv-hash) must be
+/// rejected by the regular query verifier — it carries an aggregate that
+/// is meaningful only inside an aggregate proof.
+#[test]
+fn regular_query_verifier_rejects_kv_hash_count_sum_node() {
+    use crate::proofs::query::QueryProofVerify;
+    let v = GroveVersion::latest();
+
+    let mut merk = TempMerk::new(v);
+    for i in 0u8..5 {
+        merk.apply::<_, Vec<_>>(
+            &[(
+                vec![i],
+                Op::Put(vec![i], crate::TreeFeatureType::BasicMerkNode),
+            )],
+            &[],
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("apply");
+    }
+    merk.commit(v);
+    let q =
+        crate::proofs::query::Query::new_single_query_item(QueryItem::Range(vec![0u8]..vec![5u8]));
+
+    let (mut ops, _) = merk
+        .prove_unchecked_query_items(&[QueryItem::Range(vec![0u8]..vec![5u8])], None, true, v)
+        .unwrap()
+        .expect("prove");
+    ops.push_front(ProofOp::Push(Node::KVHashCountSum([0u8; 32], 0, 0)));
+    let bytes = encode_proof(&ops);
+
+    let result = q.execute_proof(&bytes, None, true, 0).unwrap();
+    // KVHashCountSum is a path-hash node (no key, no value), so it
+    // doesn't trigger an "unexpected node type" path — instead, splicing
+    // it into a valid proof leaves the proof tree malformed (the extra
+    // op produces more than one stack item at the end), which the
+    // verifier also rejects. Either rejection path counts: the goal is
+    // that the regular query verifier doesn't accept the dual-axis
+    // path-hash variant as a substitute for a normal kv-hash node.
+    let err = result.expect_err("regular query verifier must reject KVHashCountSum-bearing proofs");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("unexpected")
+            || msg.contains("KVHash")
+            || msg.contains("missing data")
+            || msg.contains("stack")
+            || msg.contains("proof"),
+        "expected proof-level rejection, got: {msg}"
     );
 }
 
@@ -1160,5 +1535,362 @@ fn shape_walk_rejects_kvdigestcount_outside_inherited_bounds() {
     match err {
         Error::InvalidProofError(_) => {}
         other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+// ---------- Additional negative-path coverage for verify_count_shape ----------
+//
+// These tests target the exact rejection arms inside
+// `verify_count_shape` that aren't otherwise hit by the
+// happy-path round-trip tests above:
+//
+//   * "expected HashWithCount ... at Contained position, got ..."
+//   * "leaf hash-with-count node at a Contained position must be a leaf"
+//   * "boundary key ... falls outside its inherited subtree bounds" for
+//     the dual-axis `KVDigestCountSum` Boundary node (PCPS host)
+//   * "child structural counts ... exceed parent's aggregate count"
+//     (the `checked_sub` arm; a malicious prover can claim more keys in
+//     children than the parent's aggregate allows)
+
+/// At a `Contained` position the shape walk requires a `HashWithCount`
+/// (single-axis) or `HashWithCountAndSum` (dual-axis) leaf. Crafting a
+/// minimal single-op proof with a `KVDigestCount` at the Contained-root
+/// position surfaces the "expected HashWithCount ..." rejection arm.
+#[test]
+fn shape_walk_rejects_non_hashwithcount_at_contained() {
+    // Bypass Phase 1 prover mutation pitfalls by handcrafting a
+    // minimal one-op proof. Verifying against a Contained-from-root
+    // range (RangeFull) sends the single op straight into Phase 2's
+    // Contained arm.
+    let inner_range = QueryItem::RangeFull(std::ops::RangeFull);
+    let mut ops = LinkedList::<ProofOp>::new();
+    ops.push_back(ProofOp::Push(Node::KVDigestCount(
+        b"d".to_vec(),
+        [0u8; 32],
+        1,
+    )));
+    let bytes = encode_proof(&ops);
+
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("non-HashWithCount at Contained must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("expected HashWithCount") && msg.contains("Contained"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Like `shape_walk_rejects_disjoint_hashwithcount_with_children`, but
+/// at a Contained position. The shape walk rejects attached children
+/// because a malicious prover could otherwise smuggle in extra
+/// `KVDigestCount` keys whose pushes a naive verifier would count.
+#[test]
+fn shape_walk_rejects_contained_hashwithcount_with_children() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_tree(v);
+    let inner_range = QueryItem::RangeFrom(b"a".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Splice a dummy keyless child under the HashWithCount leaf so the
+    // shape walk's `tree.left.is_some() || tree.right.is_some()` check
+    // trips at the Contained leaf position.
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithCount(_, _, _, _))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithCount(
+                [0u8; 32], [0u8; 32], [0u8; 32], 1,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(done, "test setup: expected at least one HashWithCount op");
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("Contained HashWithCount with children must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Contained position must be a leaf"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Dual-axis (PCPS) counterpart to `shape_walk_rejects_contained_hashwithcount_with_children`.
+/// Splices children under the Contained-position `HashWithCountAndSum` leaf to
+/// trip the same "must be a leaf" assertion through the dual-axis arm.
+#[test]
+fn shape_walk_rejects_contained_hashwithcountandsum_with_children_pcps() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeFrom(b"a".to_vec()..);
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    let mut spliced = LinkedList::<ProofOp>::new();
+    let mut done = false;
+    for op in ops.iter() {
+        spliced.push_back(op.clone());
+        if !done && matches!(op, ProofOp::Push(Node::HashWithCountAndSum(..))) {
+            spliced.push_back(ProofOp::Push(Node::HashWithCountAndSum(
+                [0u8; 32], [0u8; 32], [0u8; 32], 1, 0,
+            )));
+            spliced.push_back(ProofOp::Parent);
+            done = true;
+        }
+    }
+    assert!(
+        done,
+        "test setup: expected at least one HashWithCountAndSum op"
+    );
+    ops = spliced;
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result
+        .expect_err("Contained HashWithCountAndSum with children must be rejected (dual-axis)");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("Contained position must be a leaf"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// Dual-axis Boundary key violating its inherited bounds. Counterpart to
+/// `shape_walk_rejects_kvdigestcount_outside_inherited_bounds`, this time
+/// rewriting a `KVDigestCountSum` (PCPS host).
+#[test]
+fn shape_walk_rejects_kvdigestcountsum_outside_inherited_bounds_pcps() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_provable_sum_tree(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    let mut rewrote = false;
+    for op in ops.iter_mut() {
+        if let ProofOp::Push(Node::KVDigestCountSum(key, _, _, _)) = op {
+            *key = vec![0xff, 0xff];
+            rewrote = true;
+            break;
+        }
+    }
+    assert!(
+        rewrote,
+        "test setup: expected a KVDigestCountSum op to rewrite"
+    );
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    // Either Phase 1's key-ordering check trips (now that the
+    // execute_with_options BST-order match covers dual-axis nodes) or
+    // Phase 2's "falls outside its inherited subtree bounds" check
+    // does. Either rejection is acceptable: the goal is that an
+    // out-of-bounds boundary key never produces a successful verify.
+    let err = result.expect_err("KVDigestCountSum outside inherited bounds must be rejected");
+    match err {
+        Error::InvalidProofError(_) => {}
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// At a Boundary position the shape walk requires `KVDigestCount` or
+/// `KVDigestCountSum`. Replacing the boundary node with a
+/// `HashWithCount` (the leaf variant) forces the "expected
+/// KVDigestCount ... at Boundary position" rejection arm.
+#[test]
+fn shape_walk_rejects_non_kvdigestcount_at_boundary() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_tree(v);
+    // Bounded inner range so the root is classified Boundary.
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Replace the first KVDigestCount with a HashWithCount (both are
+    // Phase-1 allowlisted, so Phase 2 has to do the rejection).
+    let mut swapped = false;
+    for op in ops.iter_mut() {
+        if let ProofOp::Push(Node::KVDigestCount(_, _, c)) = op {
+            *op = ProofOp::Push(Node::HashWithCount([0u8; 32], [0u8; 32], [0u8; 32], *c));
+            swapped = true;
+            break;
+        }
+    }
+    assert!(swapped, "test setup: expected a KVDigestCount to swap");
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err("non-KVDigestCount at Boundary must be rejected");
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("expected KVDigestCount") && msg.contains("Boundary"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+/// `own_count = aggregate - left_struct - right_struct` uses
+/// `checked_sub` so children claiming more keys than the parent's
+/// aggregate is rejected, not silently saturating. Force this arm by
+/// rewriting the parent boundary's aggregate to a value smaller than
+/// its left subtree's structural count.
+#[test]
+fn shape_walk_rejects_own_count_underflow() {
+    let v = GroveVersion::latest();
+    let (merk, _root) = make_15_key_provable_count_tree(v);
+    let inner_range = QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec());
+    let (mut ops, _) = merk
+        .prove_aggregate_count_on_range(&inner_range, v)
+        .unwrap()
+        .expect("prove succeeds");
+
+    // Mutate ONLY the last KVDigestCount op — that's the parent
+    // boundary node whose children are already on the proof stack, so
+    // zeroing it specifically triggers the `checked_sub` underflow when
+    // the verifier computes `own_count = aggregate - left_struct -
+    // right_struct`. Mutating every KVDigestCount in the stream could
+    // trip an earlier, unrelated shape error before the verifier ever
+    // reaches this arm — making the test non-deterministic.
+    let mut rewrote = false;
+    for op in ops.iter_mut().rev() {
+        if let ProofOp::Push(Node::KVDigestCount(_, _, c)) = op {
+            *c = 0;
+            rewrote = true;
+            break;
+        }
+    }
+    assert!(
+        rewrote,
+        "test setup: expected at least one KVDigestCount op"
+    );
+
+    let bytes = encode_proof(&ops);
+    let result = verify_aggregate_count_on_range_proof(&bytes, &inner_range).unwrap();
+    let err = result.expect_err(
+        "child structural counts exceeding parent's aggregate must be rejected (checked_sub)",
+    );
+    match err {
+        Error::InvalidProofError(msg) => assert!(
+            msg.contains("exceed parent's aggregate count")
+                || msg.contains("expected HashWithCount") // shape walk may catch a sibling issue first
+                || msg.contains("Disjoint position must be a leaf"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected InvalidProofError, got {:?}", other),
+    }
+}
+
+// ---------- direct unit tests for the count predicates ----------
+//
+// Mirror the sum-side tests at `aggregate_sum/tests.rs`:
+//   * `provable_sum_from_aggregate_rejects_non_provable_sum_variants`
+//   * `provable_sum_from_aggregate_accepts_dual_axis_variant`
+//   * `is_provable_sum_bearing_for_provable_sum_tree_and_pcps`
+//
+// These tests bypass the prover/verifier paths and exercise the
+// predicates directly, hitting their accept/reject arms (including
+// the new dual-axis ProvableCountAndProvableSum aggregate variant).
+
+#[test]
+fn provable_count_from_aggregate_accepts_all_count_bearing_variants() {
+    // Single-axis ProvableCount → Ok(count).
+    assert_eq!(
+        provable_count_from_aggregate(AggregateData::ProvableCount(5)).unwrap(),
+        5
+    );
+    // Two-axis (count + non-provable sum) → Ok(count). Sum is dropped
+    // because this aggregate type doesn't hash-bind the sum.
+    assert_eq!(
+        provable_count_from_aggregate(AggregateData::ProvableCountAndSum(11, 99)).unwrap(),
+        11
+    );
+    // Dual-axis (count + provable sum) → Ok(count). Sum is read
+    // through the dedicated sum extractor; this extractor returns
+    // the count axis.
+    assert_eq!(
+        provable_count_from_aggregate(AggregateData::ProvableCountAndProvableSum(17, -42)).unwrap(),
+        17
+    );
+    // Extreme values pass through unchanged.
+    assert_eq!(
+        provable_count_from_aggregate(AggregateData::ProvableCount(u64::MAX)).unwrap(),
+        u64::MAX
+    );
+    assert_eq!(
+        provable_count_from_aggregate(AggregateData::ProvableCountAndProvableSum(
+            u64::MAX,
+            i64::MIN
+        ))
+        .unwrap(),
+        u64::MAX
+    );
+}
+
+#[test]
+fn provable_count_from_aggregate_rejects_non_count_variants() {
+    // Reject every aggregate variant that doesn't carry a count.
+    // Each rejection surfaces a `CorruptedData` error because reaching
+    // this predicate with a non-count aggregate means the host tree's
+    // type-tag disagrees with its in-memory state — a local
+    // corruption condition that callers must propagate (per the
+    // repo error-handling convention).
+    for case in [
+        AggregateData::NoAggregateData,
+        AggregateData::Sum(7),
+        AggregateData::BigSum(7),
+        AggregateData::ProvableSum(-3),
+    ] {
+        let result = provable_count_from_aggregate(case);
+        match result {
+            Err(Error::CorruptedData(msg)) => assert!(
+                msg.contains("expected ProvableCount aggregate data"),
+                "unexpected message: {msg}"
+            ),
+            other => panic!("expected CorruptedData, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn is_provable_count_bearing_for_count_trees_and_pcps() {
+    // True for every count-bearing tree type, including the new
+    // dual-axis PCPS host.
+    assert!(is_provable_count_bearing(TreeType::ProvableCountTree));
+    assert!(is_provable_count_bearing(TreeType::ProvableCountSumTree));
+    assert!(is_provable_count_bearing(
+        TreeType::ProvableCountProvableSumTree
+    ));
+    // False for every non-count-bearing tree type.
+    for t in [
+        TreeType::NormalTree,
+        TreeType::SumTree,
+        TreeType::BigSumTree,
+        TreeType::CountTree,
+        TreeType::CountSumTree,
+        TreeType::ProvableSumTree,
+        TreeType::BulkAppendTree(0),
+        TreeType::DenseAppendOnlyFixedSizeTree(0),
+    ] {
+        assert!(!is_provable_count_bearing(t), "false expected for {:?}", t);
     }
 }

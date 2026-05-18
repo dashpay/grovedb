@@ -497,6 +497,13 @@ mod test {
                 Node::KVDigestSum(..) => counts.kv_digest += 1,
                 Node::KVRefValueHashSum(..) => counts.kv_ref_value_hash += 1,
                 Node::HashWithSum(..) => counts.hash += 1,
+                // ProvableCountProvableSumTree proof variants count under
+                // the same buckets as their structural counterparts.
+                Node::KVCountSum(..) => counts.kv += 1,
+                Node::KVHashCountSum(..) => counts.kv_hash += 1,
+                Node::KVDigestCountSum(..) => counts.kv_digest += 1,
+                Node::KVRefValueHashCountSum(..) => counts.kv_ref_value_hash += 1,
+                Node::HashWithCountAndSum(..) => counts.hash += 1,
             };
         });
 

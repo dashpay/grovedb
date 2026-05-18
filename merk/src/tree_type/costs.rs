@@ -72,6 +72,9 @@ impl CostSize for TreeType {
             TreeType::DenseAppendOnlyFixedSizeTree(_) => DENSE_TREE_COST_SIZE,
             // ProvableSumTree mirrors SumTree's cost.
             TreeType::ProvableSumTree => SUM_TREE_COST_SIZE,
+            // ProvableCountProvableSumTree carries both a count and a sum
+            // like ProvableCountSumTree, so reuse its cost size.
+            TreeType::ProvableCountProvableSumTree => COUNT_SUM_TREE_COST_SIZE,
             TreeType::CountIndexedTree | TreeType::ProvableCountIndexedTree => {
                 COUNT_INDEXED_TREE_COST_SIZE
             }

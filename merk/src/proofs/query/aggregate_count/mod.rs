@@ -48,27 +48,33 @@ use crate::{
     {Error, TreeType},
 };
 
-/// Returns true if `tree_type` is one of the four tree types that can host an
+/// Returns true if `tree_type` is one of the tree types that can host an
 /// `AggregateCountOnRange` proof. Wrapper types are accepted by stripping
 /// down to the inner tree type via `is_provable_count_bearing`.
 #[cfg(feature = "minimal")]
 pub(super) fn is_provable_count_bearing(tree_type: TreeType) -> bool {
     matches!(
         tree_type,
-        TreeType::ProvableCountTree | TreeType::ProvableCountSumTree
+        TreeType::ProvableCountTree
+            | TreeType::ProvableCountSumTree
+            | TreeType::ProvableCountProvableSumTree
     )
 }
 
-/// Pull the count out of a `ProvableCount` / `ProvableCountAndSum` aggregate.
-/// Returns `Err(InvalidProofError)` for any other variant — the entry point
-/// has already gated `tree_type`, so reaching the error means the tree's
-/// in-memory state disagrees with its declared type.
+/// Pull the count out of a `ProvableCount` / `ProvableCountAndSum` /
+/// `ProvableCountAndProvableSum` aggregate. Returns `Err(CorruptedData)`
+/// for any other variant — the entry point has already gated `tree_type`,
+/// so reaching the error means the tree's in-memory state disagrees with
+/// its declared type. This is a local invariant failure on the prover
+/// side (we are walking *our own* merk), so `CorruptedData` is the
+/// appropriate classification per the repo error-handling convention.
 #[cfg(feature = "minimal")]
 pub(super) fn provable_count_from_aggregate(data: AggregateData) -> Result<u64, Error> {
     match data {
         AggregateData::ProvableCount(c) => Ok(c),
         AggregateData::ProvableCountAndSum(c, _) => Ok(c),
-        other => Err(Error::InvalidProofError(format!(
+        AggregateData::ProvableCountAndProvableSum(c, _) => Ok(c),
+        other => Err(Error::CorruptedData(format!(
             "expected ProvableCount aggregate data on a provable count tree, got {:?}",
             other
         ))),

@@ -14,6 +14,16 @@ pub mod error;
 /// generation and verification live in the `grovedb` crate.
 mod aggregate_count;
 
+/// `AggregateCountAndSumOnRange` (ACASOR) construction and validation
+/// for `ProvableCountProvableSumTree` hosts. Mirror of
+/// [`aggregate_count`] / [`aggregate_sum`] for the dual-axis variant
+/// that returns both count and sum from a single proof.
+mod aggregate_count_and_sum;
+
+/// `AggregateSumOnRange` (ASOR) construction and validation. Sum-side
+/// mirror of [`aggregate_count`] for `ProvableSumTree` hosts.
+mod aggregate_sum;
+
 /// Aggregate sum query for sum-up-to style queries.
 pub mod aggregate_sum_query;
 

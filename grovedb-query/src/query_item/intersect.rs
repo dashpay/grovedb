@@ -614,6 +614,7 @@ impl QueryItem {
             },
             QueryItem::AggregateCountOnRange(inner) => inner.to_range_set(),
             QueryItem::AggregateSumOnRange(inner) => inner.to_range_set(),
+            QueryItem::AggregateCountAndSumOnRange(inner) => inner.to_range_set(),
         }
     }
 
@@ -664,6 +665,7 @@ impl QueryItem {
             }),
             QueryItem::AggregateCountOnRange(inner) => inner.to_range_set_borrowed(),
             QueryItem::AggregateSumOnRange(inner) => inner.to_range_set_borrowed(),
+            QueryItem::AggregateCountAndSumOnRange(inner) => inner.to_range_set_borrowed(),
         }
     }
 

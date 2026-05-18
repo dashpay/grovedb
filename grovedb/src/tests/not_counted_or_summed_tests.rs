@@ -275,9 +275,8 @@ mod tests {
         // A bare ProvableSumTree inserted into a CountSumTree contributes
         // (1, internal_sum) to the parent's (count, sum). Wrapped in
         // NotCountedOrSummed it must contribute (0, 0). This exercises the
-        // ProvableSumTree branch of the NotCountedOrSummed inner allow-list
-        // (added when the wrapper inherited PR #666's contract on top of
-        // the ProvableSumTree feature).
+        // ProvableSumTree branch of the NotCountedOrSummed inner
+        // allow-list.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 

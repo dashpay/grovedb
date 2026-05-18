@@ -147,10 +147,11 @@ where
     /// wrapper at the `Query` level via
     /// `Query::validate_aggregate_count_on_range`).
     ///
-    /// The merk's `tree_type` must be one of `ProvableCountTree` or
-    /// `ProvableCountSumTree` (regardless of whether the merk is empty).
-    /// Any other tree type is rejected with `Error::InvalidProofError`
-    /// before any walking happens.
+    /// The merk's `tree_type` must be one of `ProvableCountTree`,
+    /// `ProvableCountSumTree`, or `ProvableCountProvableSumTree`
+    /// (regardless of whether the merk is empty). Any other tree type
+    /// is rejected with `Error::InvalidProofError` before any walking
+    /// happens.
     ///
     /// On a tree-type-valid but empty Merk this returns
     /// `(empty proof, count = 0)` — an empty subtree is a valid input for a
@@ -163,11 +164,13 @@ where
         let tree_type = self.tree_type;
         if !matches!(
             tree_type,
-            crate::TreeType::ProvableCountTree | crate::TreeType::ProvableCountSumTree
+            crate::TreeType::ProvableCountTree
+                | crate::TreeType::ProvableCountSumTree
+                | crate::TreeType::ProvableCountProvableSumTree
         ) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateCountOnRange is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
+                "AggregateCountOnRange is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());
@@ -185,22 +188,71 @@ where
         })
     }
 
+    /// Generate a combined count+sum proof for an
+    /// `AggregateCountAndSumOnRange` query.
+    ///
+    /// `inner_range` is the `QueryItem` wrapped by
+    /// `AggregateCountAndSumOnRange` (the caller is expected to have
+    /// already validated and stripped the wrapper at the `Query` level
+    /// via `Query::validate_aggregate_count_and_sum_on_range`).
+    ///
+    /// The merk's `tree_type` must be `ProvableCountProvableSumTree`;
+    /// any other tree type is rejected with `Error::InvalidProofError`
+    /// before any walking happens. Single-axis hosts can't host this
+    /// query because their node hashes don't bind both aggregates.
+    ///
+    /// On a tree-type-valid but empty Merk this returns
+    /// `(empty proof, count = 0, sum = 0)` — an empty subtree is a
+    /// valid input for a combined aggregate query and the answer is
+    /// unambiguously zero on both axes.
+    pub fn prove_aggregate_count_and_sum_on_range(
+        &self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(LinkedList<ProofOp>, u64, i64), Error> {
+        let tree_type = self.tree_type;
+        if !matches!(tree_type, crate::TreeType::ProvableCountProvableSumTree) {
+            return Err(Error::InvalidProofError(format!(
+                "AggregateCountAndSumOnRange is only valid against \
+                 ProvableCountProvableSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok((LinkedList::new(), 0u64, 0i64)).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.create_aggregate_count_and_sum_on_range_proof(
+                    inner_range,
+                    tree_type,
+                    grove_version,
+                )
+            }
+        })
+    }
+
     /// Generate a sum-only proof for an `AggregateSumOnRange` query.
     /// Mirror of [`Self::prove_aggregate_count_on_range`] for the
     /// `ProvableSumTree` flavor.
     ///
-    /// The merk's `tree_type` must be `ProvableSumTree`; any other tree type
-    /// is rejected with `Error::InvalidProofError` before any walking
-    /// happens. Empty merk: returns `(empty proof, sum = 0)`.
+    /// The merk's `tree_type` must be `ProvableSumTree` or
+    /// `ProvableCountProvableSumTree`; any other tree type is rejected
+    /// with `Error::InvalidProofError` before any walking happens.
+    /// Empty merk: returns `(empty proof, sum = 0)`.
     pub fn prove_aggregate_sum_on_range(
         &self,
         inner_range: &QueryItem,
         grove_version: &GroveVersion,
     ) -> CostResult<(LinkedList<ProofOp>, i64), Error> {
         let tree_type = self.tree_type;
-        if !matches!(tree_type, crate::TreeType::ProvableSumTree) {
+        if !matches!(
+            tree_type,
+            crate::TreeType::ProvableSumTree | crate::TreeType::ProvableCountProvableSumTree
+        ) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateSumOnRange is only valid against ProvableSumTree, got {:?}",
+                "AggregateSumOnRange is only valid against ProvableSumTree or \
+                 ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());

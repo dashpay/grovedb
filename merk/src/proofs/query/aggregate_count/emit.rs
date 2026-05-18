@@ -31,21 +31,42 @@ use crate::{
         },
         Node, Op,
     },
-    tree::{kv::ValueDefinedCostType, Fetch, RefWalker},
-    CryptoHash, Error,
+    tree::{kv::ValueDefinedCostType, AggregateData, Fetch, RefWalker},
+    CryptoHash, Error, TreeType,
 };
+
+/// Returns `true` when the host tree binds **both** count and sum into
+/// its node hash (i.e. `ProvableCountProvableSumTree`). In that case the
+/// count proof must emit dual-axis Node variants so the verifier can
+/// reconstruct the right hash function. For single-axis trees
+/// (`ProvableCountTree`, `ProvableCountSumTree`) we keep the existing
+/// `HashWithCount` / `KVDigestCount` shape — those trees use
+/// `node_hash_with_count(kv, l, r, count)`, which is fully determined by
+/// the count alone.
+#[inline]
+fn binds_sum_into_hash(tree_type: TreeType) -> bool {
+    matches!(tree_type, TreeType::ProvableCountProvableSumTree)
+}
 
 /// Recursive proof emitter. Always called on a non-empty subtree.
 ///
 /// At entry, `subtree_lo_excl` / `subtree_hi_excl` are the inherited
 /// exclusive key bounds for the subtree this walker points at (both `None`
 /// at the root call).
+///
+/// `tree_type` is the **host tree's** type. It controls the proof-node
+/// variant chosen at each emit site: a host tree that hashes both count
+/// and sum (`ProvableCountProvableSumTree`) requires dual-axis variants
+/// (`HashWithCountAndSum`, `KVDigestCountSum`) so the verifier can
+/// reconstruct `node_hash_with_count_and_sum`. Other count-bearing
+/// trees use the count-only variants.
 pub(super) fn emit_count_proof<S>(
     walker: &mut RefWalker<'_, S>,
     range: &QueryItem,
     subtree_lo_excl: Option<&[u8]>,
     subtree_hi_excl: Option<&[u8]>,
     ops: &mut LinkedList<Op>,
+    tree_type: TreeType,
     grove_version: &GroveVersion,
 ) -> CostResult<u64, Error>
 where
@@ -82,7 +103,11 @@ where
         let aggregate = match walker.tree().aggregate_data() {
             Ok(a) => a,
             Err(e) => {
-                return Err(Error::InvalidProofError(format!("aggregate_data: {}", e)))
+                // Local prover-side walk over our own merk — if the
+                // node refuses to surface aggregate_data, that is a
+                // storage/state corruption, not a peer-supplied
+                // invalid proof.
+                return Err(Error::CorruptedData(format!("aggregate_data: {}", e)))
                     .wrap_with_cost(cost);
             }
         };
@@ -101,12 +126,44 @@ where
             .link(false)
             .map(|l| *l.hash())
             .unwrap_or(NULL_HASH);
-        ops.push_back(Op::Push(Node::HashWithCount(
-            kv_hash,
-            left_child_hash,
-            right_child_hash,
-            subtree_count,
-        )));
+        // ProvableCountProvableSumTree binds BOTH count and sum into the
+        // node hash via `node_hash_with_count_and_sum`. To let the
+        // verifier reconstruct that hash, we must emit the dual-axis
+        // variant carrying both aggregates. Pull the sum from the
+        // ProvableCountAndProvableSum variant — `provable_count_from_aggregate`
+        // already accepted this aggregate above, so its variant tag is
+        // known to be one we can read both fields from.
+        if binds_sum_into_hash(tree_type) {
+            let subtree_sum = match aggregate {
+                AggregateData::ProvableCountAndProvableSum(_, s) => s,
+                other => {
+                    // Prover-side: a host tree declared as
+                    // ProvableCountProvableSumTree must carry a
+                    // ProvableCountAndProvableSum aggregate. Anything
+                    // else is local state corruption.
+                    return Err(Error::CorruptedData(format!(
+                        "expected ProvableCountAndProvableSum for \
+                         ProvableCountProvableSumTree, got {:?}",
+                        other
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+            ops.push_back(Op::Push(Node::HashWithCountAndSum(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                subtree_count,
+                subtree_sum,
+            )));
+        } else {
+            ops.push_back(Op::Push(Node::HashWithCount(
+                kv_hash,
+                left_child_hash,
+                right_child_hash,
+                subtree_count,
+            )));
+        }
         // For the prover-side in-range total: Contained contributes its
         // entire subtree count (which already excludes NonCounted entries
         // because their stored aggregate is 0); Disjoint contributes 0.
@@ -124,15 +181,20 @@ where
     // borrows on walker.tree() before calling it.
     let node_key: Vec<u8> = walker.tree().key().to_vec();
     let node_value_hash: CryptoHash = *walker.tree().value_hash();
-    let node_count: u64 = match walker
+    // Read the full aggregate so a dual-axis host tree can pick up both
+    // count and sum below; the single-axis path only needs count.
+    let node_aggregate = match walker
         .tree()
         .aggregate_data()
-        .map_err(|e| Error::InvalidProofError(format!("aggregate_data: {}", e)))
+        // Local prover-side walk — failure to read aggregate_data is
+        // local state corruption, not a peer-supplied invalid proof.
+        .map_err(|e| Error::CorruptedData(format!("aggregate_data: {}", e)))
     {
-        Ok(data) => match provable_count_from_aggregate(data) {
-            Ok(c) => c,
-            Err(e) => return Err(e).wrap_with_cost(cost),
-        },
+        Ok(a) => a,
+        Err(e) => return Err(e).wrap_with_cost(cost),
+    };
+    let node_count: u64 = match provable_count_from_aggregate(node_aggregate) {
+        Ok(c) => c,
         Err(e) => return Err(e).wrap_with_cost(cost),
     };
 
@@ -187,6 +249,7 @@ where
                 left_lo,
                 left_hi,
                 ops,
+                tree_type,
                 grove_version,
             )
         );
@@ -196,17 +259,42 @@ where
         false
     };
 
-    // Step 4: emit the current node as a boundary KVDigestCount + attach left
-    // as its left child. The node's own contribution to the in-range count
-    // is `own_count` (0 for `NonCounted`-wrapped, 1 for normal), derived as
-    // `node_count − left_struct − right_struct`. This is what makes
-    // NonCounted entries fall out of the count: a NonCounted leaf has
-    // node_count = 0 and no children, so own_count = 0.
-    ops.push_back(Op::Push(Node::KVDigestCount(
-        node_key.clone(),
-        node_value_hash,
-        node_count,
-    )));
+    // Step 4: emit the current node as a boundary KVDigestCount /
+    // KVDigestCountSum + attach left as its left child. The node's own
+    // contribution to the in-range count is `own_count` (0 for
+    // `NonCounted`-wrapped, 1 for normal), derived as `node_count −
+    // left_struct − right_struct`. This is what makes NonCounted entries
+    // fall out of the count: a NonCounted leaf has node_count = 0 and
+    // no children, so own_count = 0.
+    if binds_sum_into_hash(tree_type) {
+        let node_sum = match node_aggregate {
+            AggregateData::ProvableCountAndProvableSum(_, s) => s,
+            other => {
+                // Prover-side invariant: a host tree declared as
+                // ProvableCountProvableSumTree must carry the dual-axis
+                // aggregate at every node. Anything else is local
+                // state corruption.
+                return Err(Error::CorruptedData(format!(
+                    "expected ProvableCountAndProvableSum for \
+                     ProvableCountProvableSumTree, got {:?}",
+                    other
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        ops.push_back(Op::Push(Node::KVDigestCountSum(
+            node_key.clone(),
+            node_value_hash,
+            node_count,
+            node_sum,
+        )));
+    } else {
+        ops.push_back(Op::Push(Node::KVDigestCount(
+            node_key.clone(),
+            node_value_hash,
+            node_count,
+        )));
+    }
     if left_emitted {
         ops.push_back(Op::Parent);
     }
@@ -246,6 +334,7 @@ where
                 right_lo,
                 right_hi,
                 ops,
+                tree_type,
                 grove_version,
             )
         );

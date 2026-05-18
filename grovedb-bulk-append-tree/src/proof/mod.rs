@@ -149,6 +149,13 @@ fn query_to_ranges(query: &Query, total_count: u64) -> Result<Vec<(u64, u64)>, B
                         .into(),
                 ));
             }
+            QueryItem::AggregateCountAndSumOnRange(_) => {
+                return Err(BulkAppendError::InvalidInput(
+                    "AggregateCountAndSumOnRange is only supported on \
+                     ProvableCountProvableSumTree, not on BulkAppendTree"
+                        .into(),
+                ));
+            }
         };
         ranges.push((start, end));
     }

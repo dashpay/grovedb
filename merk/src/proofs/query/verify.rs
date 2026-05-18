@@ -215,6 +215,12 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHashSum(..)) => {}
                                 Some(Node::KVCount(..)) => {}
                                 Some(Node::KVSum(..)) => {}
+                                // ProvableCountProvableSumTree (dual-axis)
+                                // key-bearing nodes are also acceptable
+                                // bound-proving boundaries.
+                                Some(Node::KVCountSum(..)) => {}
+                                Some(Node::KVDigestCountSum(..)) => {}
+                                Some(Node::KVRefValueHashCountSum(..)) => {}
 
                                 // cannot verify lower bound - we have an abridged
                                 // tree, so we cannot tell what the preceding key was
@@ -251,6 +257,12 @@ impl QueryProofVerify for Query {
                                 Some(Node::KVRefValueHashSum(..)) => {}
                                 Some(Node::KVCount(..)) => {}
                                 Some(Node::KVSum(..)) => {}
+                                // ProvableCountProvableSumTree (dual-axis)
+                                // key-bearing nodes are also acceptable
+                                // upper-bound-proving boundaries.
+                                Some(Node::KVCountSum(..)) => {}
+                                Some(Node::KVDigestCountSum(..)) => {}
+                                Some(Node::KVRefValueHashCountSum(..)) => {}
 
                                 // cannot verify upper bound - we have an abridged
                                 // tree so we cannot tell what the previous key was
@@ -482,7 +494,11 @@ impl QueryProofVerify for Query {
                     }
                     execute_node(key, Some(value), *node_value_hash, true)?;
                 }
-                Node::Hash(_) | Node::KVHash(_) | Node::KVHashCount(..) | Node::KVHashSum(..) => {
+                Node::Hash(_)
+                | Node::KVHash(_)
+                | Node::KVHashCount(..)
+                | Node::KVHashSum(..)
+                | Node::KVHashCountSum(..) => {
                     if in_range {
                         return Err(Error::InvalidProofError(format!(
                             "Proof is missing data for query range. Encountered unexpected node \
@@ -521,6 +537,18 @@ impl QueryProofVerify for Query {
                             .to_string(),
                     ));
                 }
+                Node::HashWithCountAndSum(..) => {
+                    // Same fail-fast rationale as `HashWithCount` /
+                    // `HashWithSum`. The combined variant is reserved for
+                    // the dedicated aggregate-count and aggregate-sum
+                    // verifiers against `ProvableCountProvableSumTree`;
+                    // it must never reach the regular query verifier.
+                    return Err(Error::InvalidProofError(
+                        "HashWithCountAndSum node is only valid in aggregate-count / \
+                         aggregate-sum proofs; encountered in regular query verification"
+                            .to_string(),
+                    ));
+                }
                 Node::KVSum(key, value, _sum) => {
                     #[cfg(feature = "proof_debug")]
                     {
@@ -539,6 +567,27 @@ impl QueryProofVerify for Query {
                     #[cfg(feature = "proof_debug")]
                     {
                         println!("Processing KVRefValueHashSum node");
+                    }
+                    execute_node(key, Some(value), *value_hash, false)?;
+                }
+                Node::KVCountSum(key, value, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVCountSum node");
+                    }
+                    execute_node(key, Some(value), value_hash(value).unwrap(), false)?;
+                }
+                Node::KVDigestCountSum(key, value_hash, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVDigestCountSum node");
+                    }
+                    execute_node(key, None, *value_hash, false)?;
+                }
+                Node::KVRefValueHashCountSum(key, value, value_hash, _count, _sum) => {
+                    #[cfg(feature = "proof_debug")]
+                    {
+                        println!("Processing KVRefValueHashCountSum node");
                     }
                     execute_node(key, Some(value), *value_hash, false)?;
                 }
@@ -580,6 +629,11 @@ impl QueryProofVerify for Query {
                     Some(Node::KVSum(..)) => {}
                     Some(Node::KVDigestSum(..)) => {}
                     Some(Node::KVRefValueHashSum(..)) => {}
+                    // ProvableCountProvableSumTree (dual-axis) key-bearing
+                    // nodes are also acceptable absence-proof boundaries.
+                    Some(Node::KVCountSum(..)) => {}
+                    Some(Node::KVDigestCountSum(..)) => {}
+                    Some(Node::KVRefValueHashCountSum(..)) => {}
 
                     // proof contains abridged data so we cannot verify absence of
                     // remaining query items
@@ -737,10 +791,11 @@ impl fmt::Display for ProofVerificationResult {
 }
 
 /// Checks whether a key exists as a boundary element in the given merk proof
-/// bytes. A boundary element is a `KVDigest`, `KVDigestCount`, or
-/// `KVDigestSum` node — it proves the key exists in the tree without
-/// revealing the value. (Same node-type coverage as
-/// [`boundaries_in_proof`]; the two helpers must agree.)
+/// bytes. A boundary element is a `KVDigest`, `KVDigestCount`,
+/// `KVDigestSum`, or `KVDigestCountSum` (dual-axis PCPS) node — it proves
+/// the key exists in the tree without revealing the value. (Same
+/// node-type coverage as [`boundaries_in_proof`]; the two helpers must
+/// agree.)
 ///
 /// This is useful for exclusive range queries (e.g. `RangeAfter(10)`) where
 /// the boundary key (10) is included in the proof as a digest node to anchor
@@ -756,6 +811,8 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
             | Op::PushInverted(Node::KVDigestCount(k, _, _))
             | Op::Push(Node::KVDigestSum(k, _, _))
             | Op::PushInverted(Node::KVDigestSum(k, _, _))
+            | Op::Push(Node::KVDigestCountSum(k, _, _, _))
+            | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _))
                 if k.as_slice() == key =>
             {
                 return Ok(true);
@@ -900,12 +957,171 @@ mod provable_sum_tree_bound_regression_tests {
     }
 }
 
+#[cfg(test)]
+mod provable_count_provable_sum_tree_bound_regression_tests {
+    //! Dual-axis parallel of `provable_sum_tree_bound_regression_tests`.
+    //!
+    //! The `execute_proof` lower/upper-bound `last_push` matches, the
+    //! absence-proof last-push match, and the `boundaries_in_proof` +
+    //! `key_exists_as_boundary_in_proof` helpers all gained
+    //! dual-axis Node variant arms (`KVCountSum`, `KVDigestCountSum`,
+    //! `KVRefValueHashCountSum`). Without those arms a multi-item
+    //! query like `Key(...)` + `Range(...)` against a
+    //! `ProvableCountProvableSumTree` would reject a valid proof with
+    //! "Cannot verify lower bound of queried range" whenever the
+    //! preceding boundary happened to be a `KVDigestCountSum`. These
+    //! tests exercise exactly that shape.
+    //!
+    //! Together with the parallel sum-only tests above, this pins the
+    //! verifier's dual-axis coverage end-to-end (prove → verify
+    //! round-trip on a PCPS merk).
+
+    use grovedb_version::version::GroveVersion;
+
+    use crate::{
+        proofs::{
+            query::{
+                verify::{
+                    boundaries_in_proof, key_exists_as_boundary_in_proof, QueryProofVerify,
+                    PROOF_VERSION_LATEST,
+                },
+                QueryItem,
+            },
+            Query,
+        },
+        test_utils::TempMerk,
+        tree::Op,
+        TreeFeatureType::ProvableCountedAndProvableSummedMerkNode,
+        TreeType,
+    };
+
+    /// Build a `ProvableCountProvableSumTree` populated with single-byte
+    /// keys "a", "b", ..., "o" (15 keys), each carrying
+    /// `(count=1, sum=i+1)`.
+    fn make_15_key_pcps(grove_version: &GroveVersion) -> TempMerk {
+        let mut merk =
+            TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+        let entries: Vec<(Vec<u8>, Op)> = (b'a'..=b'o')
+            .enumerate()
+            .map(|(i, c)| {
+                let s = (i as i64) + 1;
+                (
+                    vec![c],
+                    Op::Put(
+                        vec![i as u8],
+                        ProvableCountedAndProvableSummedMerkNode(1, s),
+                    ),
+                )
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&entries, &[], None, grove_version)
+            .unwrap()
+            .expect("apply should succeed");
+        merk.commit(grove_version);
+        merk
+    }
+
+    fn run_pcps_multi_item_query_verifies(left_to_right: bool, grove_version: &GroveVersion) {
+        let merk = make_15_key_pcps(grove_version);
+        let mut query = Query::new();
+        // Absent key between "a" and "b" — proves absence via a
+        // `KVDigestCountSum` boundary.
+        query.insert_item(QueryItem::Key(b"aa".to_vec()));
+        // Range that doesn't touch "aa". The verifier must accept the
+        // sequence regardless of which boundary node preceded it.
+        query.insert_item(QueryItem::Range(b"g".to_vec()..b"j".to_vec()));
+        query.left_to_right = left_to_right;
+
+        let proof = merk
+            .prove(query.clone(), None, grove_version)
+            .unwrap()
+            .expect("prove should succeed");
+
+        let (_root_hash, _result) = query
+            .execute_proof(&proof.proof, None, left_to_right, PROOF_VERSION_LATEST)
+            .unwrap()
+            .expect(
+                "Key+Range verify on PCPS must succeed; failure here means the \
+                 KVDigestCountSum boundary still isn't accepted by the bound checks",
+            );
+    }
+
+    #[test]
+    fn key_plus_range_on_pcps_left_to_right_verifies() {
+        let v = GroveVersion::latest();
+        run_pcps_multi_item_query_verifies(true, v);
+    }
+
+    #[test]
+    fn key_plus_range_on_pcps_right_to_left_verifies() {
+        let v = GroveVersion::latest();
+        run_pcps_multi_item_query_verifies(false, v);
+    }
+
+    /// A regular range query against a PCPS that includes every key in
+    /// the tree — exercises every dual-axis Node variant that the
+    /// verifier's `execute_node` callback dispatches on (KVCountSum
+    /// for queried Items, KVHashCountSum for path nodes,
+    /// KVDigestCountSum for boundary nodes). Without the dual-axis
+    /// arms in `execute_proof`'s match the proof would fail to verify.
+    #[test]
+    fn full_range_round_trips_through_dual_axis_verify_arms() {
+        let v = GroveVersion::latest();
+        let merk = make_15_key_pcps(v);
+        let query =
+            Query::new_single_query_item(QueryItem::RangeInclusive(b"a".to_vec()..=b"o".to_vec()));
+        let proof = merk
+            .prove(query.clone(), None, v)
+            .unwrap()
+            .expect("prove succeeds");
+
+        let (root, result) = query
+            .execute_proof(&proof.proof, None, true, PROOF_VERSION_LATEST)
+            .unwrap()
+            .expect("verify succeeds — dual-axis nodes must all be processed");
+
+        // Sanity: root matches the merk's root, and we got all 15 keys.
+        assert_eq!(root, merk.root_hash().unwrap());
+        assert_eq!(result.result_set.len(), 15);
+    }
+
+    /// `KVDigestCountSum` produced by a PCPS proof must surface in
+    /// `boundaries_in_proof` AND `key_exists_as_boundary_in_proof` — the
+    /// two helpers are documented to agree on node-type coverage.
+    #[test]
+    fn kv_digest_count_sum_appears_in_both_boundary_helpers() {
+        let v = GroveVersion::latest();
+        let merk = make_15_key_pcps(v);
+        let mut query = Query::new();
+        query.insert_item(QueryItem::Key(b"aa".to_vec()));
+
+        let proof = merk.prove(query, None, v).unwrap().expect("prove succeeds");
+
+        let boundaries = boundaries_in_proof(&proof.proof).expect("boundaries");
+        assert!(
+            !boundaries.is_empty(),
+            "boundaries_in_proof must report KVDigestCountSum nodes from PCPS proofs"
+        );
+
+        for boundary in &boundaries {
+            let found = key_exists_as_boundary_in_proof(&proof.proof, boundary)
+                .expect("key_exists_as_boundary_in_proof");
+            assert!(
+                found,
+                "key_exists_as_boundary_in_proof disagreed with boundaries_in_proof on {:?}",
+                boundary
+            );
+        }
+    }
+}
+
 /// Returns all boundary keys found in the given merk proof bytes.
-/// Boundary keys appear as `KVDigest`, `KVDigestCount`, or `KVDigestSum`
-/// nodes — they prove a key exists in the tree without revealing the
-/// value. (The Sum variant is the `ProvableSumTree` analogue of the
-/// Count variant; both behave identically for boundary-detection
-/// purposes.)
+/// Boundary keys appear as `KVDigest`, `KVDigestCount`, `KVDigestSum`,
+/// or `KVDigestCountSum` (dual-axis PCPS) nodes — they prove a key
+/// exists in the tree without revealing the value. (The Sum/CountSum
+/// variants are the `ProvableSumTree` / `ProvableCountProvableSumTree`
+/// analogues of the Count variant; all behave identically for
+/// boundary-detection purposes.)
 pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     let decoder = Decoder::new(proof_bytes);
     let mut keys = Vec::new();
@@ -917,7 +1133,9 @@ pub fn boundaries_in_proof(proof_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
             | Op::Push(Node::KVDigestCount(k, _, _))
             | Op::PushInverted(Node::KVDigestCount(k, _, _))
             | Op::Push(Node::KVDigestSum(k, _, _))
-            | Op::PushInverted(Node::KVDigestSum(k, _, _)) => {
+            | Op::PushInverted(Node::KVDigestSum(k, _, _))
+            | Op::Push(Node::KVDigestCountSum(k, _, _, _))
+            | Op::PushInverted(Node::KVDigestCountSum(k, _, _, _)) => {
                 keys.push(k);
             }
             _ => {}

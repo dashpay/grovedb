@@ -819,9 +819,11 @@ where
     /// # Arguments
     /// * `max_depth` - Maximum depth per chunk for splitting
     /// * `min_depth` - Optional minimum depth per chunk (for privacy control).
-    ///   When provided for ProvableCountTree or ProvableCountSumTree, the first
-    ///   chunk depth will be clamped to at least this value, preventing
-    ///   information leakage about small subtrees.
+    ///   When provided for any of the `Provable*` count-bearing trees
+    ///   (ProvableCountTree, ProvableCountSumTree,
+    ///   ProvableCountProvableSumTree), the first chunk depth will be
+    ///   clamped to at least this value, preventing information leakage
+    ///   about small subtrees.
     /// * `grove_version` - The grove version for compatibility
     ///
     /// # Returns
@@ -831,7 +833,8 @@ where
     /// # Errors
     /// Returns an error if:
     /// - The tree type doesn't support count (not CountTree, CountSumTree,
-    ///   ProvableCountTree, or ProvableCountSumTree)
+    ///   ProvableCountTree, ProvableCountSumTree, or
+    ///   ProvableCountProvableSumTree)
     /// - The tree is empty
     pub fn trunk_query(
         &self,
@@ -841,18 +844,14 @@ where
     ) -> CostResult<TrunkQueryResult, Error> {
         let mut cost = OperationCost::default();
 
-        // Verify tree type supports count
-        let supports_count = matches!(
-            self.tree_type,
-            TreeType::CountTree
-                | TreeType::CountSumTree
-                | TreeType::ProvableCountTree
-                | TreeType::ProvableCountSumTree
-        );
-        if !supports_count {
+        // Verify tree type supports count. Delegate to the canonical
+        // `is_count_bearing()` predicate so any future count-bearing
+        // tree type is automatically supported here without a manual
+        // match that risks drifting.
+        if !self.tree_type.is_count_bearing() {
             return Err(Error::InvalidOperation(
-                "trunk_query requires a count tree (CountTree, CountSumTree, ProvableCountTree, \
-                 or ProvableCountSumTree)",
+                "trunk_query requires a count-bearing tree (CountTree, CountSumTree, \
+                 ProvableCountTree, ProvableCountSumTree, or ProvableCountProvableSumTree)",
             ))
             .wrap_with_cost(cost);
         }
@@ -881,10 +880,15 @@ where
 
         // For provable count trees with min_depth, use
         // calculate_chunk_depths_with_minimum to ensure privacy by using a
-        // minimum depth even for small subtrees
+        // minimum depth even for small subtrees. Every count-bearing tree
+        // type with "Provable" in its name needs this privacy guarantee;
+        // PCPS (the dual-axis host) is one such tree and must be
+        // included here too.
         let is_provable_count_tree = matches!(
             self.tree_type,
-            TreeType::ProvableCountTree | TreeType::ProvableCountSumTree
+            TreeType::ProvableCountTree
+                | TreeType::ProvableCountSumTree
+                | TreeType::ProvableCountProvableSumTree
         );
         let chunk_depths = if let Some(min) = min_depth {
             if is_provable_count_tree {
@@ -1832,6 +1836,125 @@ mod test {
         assert!(
             parent_keys.is_empty(),
             "parent_keys should be empty for empty tree"
+        );
+    }
+
+    /// `trunk_query` must accept `ProvableCountProvableSumTree` as a
+    /// count-bearing host — the support check delegates to
+    /// `TreeType::is_count_bearing()` (which reports PCPS as
+    /// count-bearing), so any hand-rolled match here would be a
+    /// drift-risk regression.
+    #[test]
+    fn test_trunk_query_on_provable_count_provable_sum_tree() {
+        use crate::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode;
+        let grove_version = GroveVersion::latest();
+        let mut merk =
+            TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+        // 15 entries with own (count=1, sum=1) each. Aggregate at root
+        // is (count=15, sum=15).
+        let batch: Vec<(Vec<u8>, crate::Op)> = (0u64..15)
+            .map(|n| {
+                (
+                    n.to_be_bytes().to_vec(),
+                    crate::Op::Put(
+                        vec![123; 60],
+                        ProvableCountedAndProvableSummedMerkNode(1, 1),
+                    ),
+                )
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+
+        let result = merk
+            .trunk_query(8, None, grove_version)
+            .unwrap()
+            .expect("trunk_query should succeed on PCPS — is_count_bearing() includes it");
+        assert!(!result.proof.is_empty(), "proof should not be empty");
+        assert!(result.tree_depth > 0, "tree depth should be > 0");
+        let sum: u8 = result.chunk_depths.iter().sum();
+        assert_eq!(
+            sum, result.tree_depth,
+            "chunk depths should sum to tree depth"
+        );
+    }
+
+    /// `trunk_query` with `min_depth` set must engage the privacy path
+    /// (`calculate_chunk_depths_with_minimum`) for PCPS too. A
+    /// regression where the `is_provable_count_tree` branch only
+    /// matches `ProvableCountTree | ProvableCountSumTree` would let
+    /// PCPS with `min_depth` silently fall into the non-privacy path
+    /// and leak small-subtree information.
+    ///
+    /// The test asserts the returned `chunk_depths` matches the
+    /// privacy function's output AND that this differs from the
+    /// non-privacy function's output, so a regression that silently
+    /// falls back to the non-privacy path would fail this assertion.
+    #[test]
+    fn test_trunk_query_with_min_depth_engages_privacy_path_for_pcps() {
+        use crate::{
+            proofs::branch::depth::{calculate_chunk_depths, calculate_chunk_depths_with_minimum},
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode,
+        };
+        let grove_version = GroveVersion::latest();
+        let mut merk =
+            TempMerk::new_with_tree_type(grove_version, TreeType::ProvableCountProvableSumTree);
+        // 25 keys → AVL tree depth ≥ 6 (Fibonacci-minimum
+        // 20=N(6) ≤ 25 < N(7)=33). At depth 6 with max_depth=4 and
+        // min_depth=4, the two depth-split functions return
+        // **different** vectors: non-privacy produces [3, 3] (the
+        // natural even split) while privacy produces [4, 2] (front
+        // chunk clamped up to min_depth). So a non-engaged privacy
+        // path is observable in the output.
+        let batch: Vec<(Vec<u8>, crate::Op)> = (0u64..25)
+            .map(|n| {
+                (
+                    n.to_be_bytes().to_vec(),
+                    crate::Op::Put(
+                        vec![123; 60],
+                        ProvableCountedAndProvableSummedMerkNode(1, 1),
+                    ),
+                )
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply");
+
+        let max_depth = 4u8;
+        let min_depth = 4u8;
+        let result = merk
+            .trunk_query(max_depth, Some(min_depth), grove_version)
+            .unwrap()
+            .expect("trunk_query with min_depth on PCPS must succeed");
+        assert!(!result.proof.is_empty());
+
+        // The returned chunk_depths must equal the privacy function's
+        // output for (tree_depth, max_depth, min_depth) — this is the
+        // headline assertion: the PCPS arm in `is_provable_count_tree`
+        // routes to the privacy depth calculator.
+        let expected_privacy =
+            calculate_chunk_depths_with_minimum(result.tree_depth, max_depth, min_depth)
+                .expect("expected privacy chunk-depth calculation to succeed");
+        assert_eq!(
+            result.chunk_depths, expected_privacy,
+            "trunk_query on PCPS with min_depth must use the privacy depth split"
+        );
+
+        // Sanity: confirm the two depth functions actually return
+        // **different** vectors for these inputs so the equality
+        // assertion above isn't a coincidence — i.e. if we'd silently
+        // fallen into the non-privacy branch, the assertion above
+        // would have failed.
+        let non_privacy = calculate_chunk_depths(result.tree_depth, max_depth)
+            .expect("non-privacy chunk-depth calculation");
+        assert_ne!(
+            non_privacy, expected_privacy,
+            "test setup invariant: at tree_depth={}, max_depth={}, min_depth={}, the two depth \
+             functions must produce different vectors — otherwise the privacy-engaged assertion \
+             above is vacuous",
+            result.tree_depth, max_depth, min_depth,
         );
     }
 }

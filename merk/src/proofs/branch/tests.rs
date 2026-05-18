@@ -515,4 +515,123 @@ mod branch_tests {
         };
         assert_eq!(result.trace_key_to_terminal(&[3]), Some(vec![5]));
     }
+
+    // ---------- dual-axis (PCPS) Node-variant coverage for
+    // get_key_from_node + collect_terminal_keys ----------
+    //
+    // These tests exercise the `KVDigestCountSum`, `KVCountSum`, and
+    // `KVRefValueHashCountSum` arms of `get_key_from_node` — the only
+    // places the trunk/branch traversal recognizes dual-axis kv-typed
+    // nodes as having a key. Their `..` patterns aren't otherwise hit
+    // by the existing test suite, which predates the dual-axis
+    // ProvableCountProvableSumTree variant.
+
+    #[test]
+    fn terminal_keys_with_kv_digest_count_sum_node() {
+        // KVDigestCountSum(key, value_hash, count, sum) — the dual-axis
+        // boundary-node analogue of KVDigestCount. Its key arm in
+        // get_key_from_node returns Some(key).
+        let proof = vec![
+            Op::Push(Node::Hash(dummy_hash(1))),
+            Op::Push(Node::KVDigestCountSum(vec![7], dummy_hash(2), 3, 21)),
+            Op::Parent,
+            Op::Push(Node::Hash(dummy_hash(3))),
+            Op::Child,
+        ];
+        let result = TrunkQueryResult {
+            proof,
+            chunk_depths: vec![1],
+            tree_depth: 1,
+        };
+        assert_eq!(result.terminal_node_keys(), vec![vec![7]]);
+    }
+
+    #[test]
+    fn terminal_keys_with_kv_count_sum_node() {
+        // KVCountSum(key, value, count, sum) — the dual-axis queried-Item
+        // analogue of KVCount. Hits the `KVCountSum(key, ..)` arm.
+        let proof = vec![
+            Op::Push(Node::Hash(dummy_hash(1))),
+            Op::Push(Node::KVCountSum(vec![11], vec![99], 5, -7)),
+            Op::Parent,
+            Op::Push(Node::Hash(dummy_hash(2))),
+            Op::Child,
+        ];
+        let result = TrunkQueryResult {
+            proof,
+            chunk_depths: vec![1],
+            tree_depth: 1,
+        };
+        assert_eq!(result.terminal_node_keys(), vec![vec![11]]);
+    }
+
+    #[test]
+    fn terminal_keys_with_kv_ref_value_hash_count_sum_node() {
+        // KVRefValueHashCountSum(key, value, ref_hash, count, sum) — the
+        // dual-axis reference-bearing variant. Hits the
+        // `KVRefValueHashCountSum(key, ..)` arm of get_key_from_node.
+        let proof = vec![
+            Op::Push(Node::Hash(dummy_hash(1))),
+            Op::Push(Node::KVRefValueHashCountSum(
+                vec![13],
+                vec![42],
+                dummy_hash(9),
+                1,
+                100,
+            )),
+            Op::Parent,
+            Op::Push(Node::Hash(dummy_hash(2))),
+            Op::Child,
+        ];
+        let result = TrunkQueryResult {
+            proof,
+            chunk_depths: vec![1],
+            tree_depth: 1,
+        };
+        assert_eq!(result.terminal_node_keys(), vec![vec![13]]);
+    }
+
+    #[test]
+    fn terminal_keys_skip_kv_hash_count_sum_and_hash_with_count_and_sum() {
+        // Negative-side coverage: `KVHashCountSum` (path-hash) and
+        // `HashWithCountAndSum` (count+sum hash-summary leaf) are
+        // returned as `None` from get_key_from_node — they have no
+        // user-visible key. Verify that a trunk containing them yields
+        // an EMPTY terminal-keys list rather than reporting a phantom
+        // key.
+        let proof = vec![Op::Push(Node::HashWithCountAndSum(
+            dummy_hash(1),
+            dummy_hash(2),
+            dummy_hash(3),
+            7,
+            42,
+        ))];
+        let result = TrunkQueryResult {
+            proof,
+            chunk_depths: vec![],
+            tree_depth: 0,
+        };
+        // HashWithCountAndSum is a leaf without a key (no Hash children)
+        // so it doesn't qualify as terminal — empty terminal-keys list.
+        assert!(result.terminal_node_keys().is_empty());
+
+        // Same for KVHashCountSum (path-hash variant): get_key_from_node
+        // returns None, so terminal-keys ignores it even if it had
+        // Hash children.
+        let proof2 = vec![
+            Op::Push(Node::Hash(dummy_hash(1))),
+            Op::Push(Node::KVHashCountSum(dummy_hash(7), 4, -3)),
+            Op::Parent,
+            Op::Push(Node::Hash(dummy_hash(2))),
+            Op::Child,
+        ];
+        let result2 = TrunkQueryResult {
+            proof: proof2,
+            chunk_depths: vec![1],
+            tree_depth: 1,
+        };
+        // Node has Hash children but get_key_from_node returns None →
+        // no terminal key emitted.
+        assert!(result2.terminal_node_keys().is_empty());
+    }
 }

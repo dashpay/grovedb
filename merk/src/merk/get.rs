@@ -365,10 +365,11 @@ where
     /// merk-level cost is O(log n) in the number of distinct keys, the same
     /// as the proof variant.
     ///
-    /// The merk's `tree_type` must be one of `ProvableCountTree` or
-    /// `ProvableCountSumTree`; any other tree type is rejected with
-    /// `Error::InvalidProofError` before any walking happens. On an empty
-    /// merk this returns `count = 0`.
+    /// The merk's `tree_type` must be one of `ProvableCountTree`,
+    /// `ProvableCountSumTree`, or `ProvableCountProvableSumTree`; any
+    /// other tree type is rejected with `Error::InvalidProofError`
+    /// before any walking happens. On an empty merk this returns
+    /// `count = 0`.
     ///
     /// The returned count is **not** independently verifiable — callers
     /// trust the merk's reads. Use `prove_aggregate_count_on_range` +
@@ -381,11 +382,13 @@ where
         let tree_type = self.tree_type;
         if !matches!(
             tree_type,
-            crate::TreeType::ProvableCountTree | crate::TreeType::ProvableCountSumTree
+            crate::TreeType::ProvableCountTree
+                | crate::TreeType::ProvableCountSumTree
+                | crate::TreeType::ProvableCountProvableSumTree
         ) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateCountOnRange is only valid against ProvableCountTree or \
-                 ProvableCountSumTree, got {:?}",
+                "AggregateCountOnRange is only valid against ProvableCountTree, \
+                 ProvableCountSumTree, or ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());
@@ -410,9 +413,10 @@ where
     /// merk-level cost is O(log n) in the number of distinct keys, the
     /// same as the proof variant.
     ///
-    /// The merk's `tree_type` must be `ProvableSumTree`; any other tree
-    /// type is rejected with `Error::InvalidProofError` before any
-    /// walking happens. On an empty merk this returns `sum = 0`.
+    /// The merk's `tree_type` must be `ProvableSumTree` or
+    /// `ProvableCountProvableSumTree`; any other tree type is rejected
+    /// with `Error::InvalidProofError` before any walking happens. On
+    /// an empty merk this returns `sum = 0`.
     ///
     /// The accumulator carries `i128` end-to-end and narrows to `i64` at
     /// the very last step (parallel to the prover and verifier). An
@@ -430,9 +434,13 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<i64, Error> {
         let tree_type = self.tree_type;
-        if !matches!(tree_type, crate::TreeType::ProvableSumTree) {
+        if !matches!(
+            tree_type,
+            crate::TreeType::ProvableSumTree | crate::TreeType::ProvableCountProvableSumTree
+        ) {
             return Err(Error::InvalidProofError(format!(
-                "AggregateSumOnRange is only valid against ProvableSumTree, got {:?}",
+                "AggregateSumOnRange is only valid against ProvableSumTree or \
+                 ProvableCountProvableSumTree, got {:?}",
                 tree_type
             )))
             .wrap_with_cost(Default::default());

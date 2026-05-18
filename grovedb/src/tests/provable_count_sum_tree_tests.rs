@@ -31,6 +31,12 @@ mod tests {
         match node {
             Node::KVCount(_, _, count) => Some(*count),
             Node::KVDigestCount(_, _, count) => Some(*count),
+            // Dual-axis PCPS counterparts of the count-only variants
+            // above. Without these arms, the rotation-stress tests
+            // silently skip PCPS-host nodes when verifying counts.
+            Node::KVCountSum(_, _, count, _) => Some(*count),
+            Node::KVDigestCountSum(_, _, count, _) => Some(*count),
+            Node::KVRefValueHashCountSum(_, _, _, count, _) => Some(*count),
             Node::KVValueHashFeatureType(
                 _,
                 _,
@@ -55,6 +61,19 @@ mod tests {
                 _,
                 _,
                 TreeFeatureType::ProvableCountedSummedMerkNode(count, _),
+                _,
+            ) => Some(*count),
+            Node::KVValueHashFeatureType(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, _),
+            )
+            | Node::KVValueHashFeatureTypeWithChildHash(
+                _,
+                _,
+                _,
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(count, _),
                 _,
             ) => Some(*count),
             _ => None,
@@ -81,12 +100,16 @@ mod tests {
                 Node::KVSum(k, ..) => k.clone(),
                 Node::KVDigestSum(k, ..) => k.clone(),
                 Node::KVRefValueHashSum(k, ..) => k.clone(),
+                Node::KVCountSum(k, ..) => k.clone(),
+                Node::KVDigestCountSum(k, ..) => k.clone(),
+                Node::KVRefValueHashCountSum(k, ..) => k.clone(),
                 Node::KVHashCount(..) => vec![],
                 Node::Hash(_) | Node::KVHash(_) => vec![],
                 // HashWithCount is keyless (collapsed subtree representation
                 // for AggregateCountOnRange proofs).
                 Node::HashWithCount(..) => vec![],
                 Node::KVHashSum(..) | Node::HashWithSum(..) => vec![],
+                Node::KVHashCountSum(..) | Node::HashWithCountAndSum(..) => vec![],
             };
             results.push((key, count));
         }

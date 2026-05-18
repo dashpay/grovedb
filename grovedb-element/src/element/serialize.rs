@@ -20,8 +20,9 @@ impl Element {
     /// - Any wrapper nesting in any combination — `NonCounted`, `NotSummed`,
     ///   and `NotCountedOrSummed` are mutually exclusive.
     /// - `NotSummed(x)` / `NotCountedOrSummed(x)` where `x` is not one of
-    ///   the four sum-tree variants (`SumTree`, `BigSumTree`, `CountSumTree`,
-    ///   `ProvableCountSumTree`).
+    ///   the six sum-bearing tree variants (`SumTree`, `BigSumTree`,
+    ///   `CountSumTree`, `ProvableCountSumTree`, `ProvableSumTree`,
+    ///   `ProvableCountProvableSumTree`).
     ///
     /// Constructed via the `new_non_counted` / `new_not_summed` /
     /// `new_not_counted_or_summed` constructors these are impossible, but a
@@ -47,7 +48,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "NotSummed inner must be a sum-tree variant".to_string(),
@@ -61,7 +63,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "NotCountedOrSummed inner must be a sum-bearing tree variant".to_string(),
@@ -147,7 +150,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "deserialized NotSummed with non-sum-tree inner".to_string(),
@@ -161,7 +165,8 @@ impl Element {
                 | Element::BigSumTree(..)
                 | Element::CountSumTree(..)
                 | Element::ProvableCountSumTree(..)
-                | Element::ProvableSumTree(..) => {}
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..) => {}
                 _ => {
                     return Err(ElementError::CorruptedData(
                         "deserialized NotCountedOrSummed with non-sum-bearing-tree inner"
