@@ -12,6 +12,8 @@ mod aggregate_sum;
 pub mod count_indexed;
 #[cfg(feature = "minimal")]
 mod generate;
+#[cfg(feature = "minimal")]
+pub mod indexed_axis;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
