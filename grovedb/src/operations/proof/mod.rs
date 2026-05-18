@@ -1,6 +1,8 @@
 //! Proof operations
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
+mod aggregate_common;
+#[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_count;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_count_and_sum;
