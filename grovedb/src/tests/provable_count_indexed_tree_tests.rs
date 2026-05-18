@@ -900,4 +900,460 @@ mod tests {
             "PCIT insert must reject keys exceeding the secondary-key ceiling"
         );
     }
+
+    // -----------------------------------------------------------------
+    // Phase 3: indexed_count_* direct query APIs over PCIT
+    // -----------------------------------------------------------------
+
+    /// Insert a CountTree child with explicit count_value under
+    /// `[TEST_LEAF, "cidx"]`. The PCIT's secondary key is
+    /// `count_be ‖ item_key` so different count_values produce
+    /// distinct, ordered secondary entries.
+    fn pcit_insert_count_child(
+        db: &crate::GroveDb,
+        item_key: &[u8],
+        count_value: u64,
+        grove_version: &GroveVersion,
+    ) {
+        let count_tree =
+            Element::new_count_tree_with_flags_and_count_value(None, count_value, None);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            item_key,
+            count_tree,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert count-tree child");
+    }
+
+    /// Populate the PCIT under `[TEST_LEAF, "cidx"]` with a known set
+    /// of `(key, count)` pairs:
+    ///   alice=5, bob=12, carol=1, dave=7, eve=20.
+    fn pcit_populate_known_set(db: &crate::GroveDb, grove_version: &GroveVersion) {
+        for (k, c) in [
+            (b"alice".as_ref(), 5u64),
+            (b"bob", 12),
+            (b"carol", 1),
+            (b"dave", 7),
+            (b"eve", 20),
+        ] {
+            pcit_insert_count_child(db, k, c, grove_version);
+        }
+    }
+
+    #[test]
+    fn indexed_count_top_k_on_pcit_descending_returns_highest_first() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        pcit_populate_known_set(&db, grove_version);
+
+        // Top 3 descending: eve(20), bob(12), dave(7).
+        let top3 = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("top-k descending");
+        assert_eq!(
+            top3,
+            vec![
+                (20u64, b"eve".to_vec()),
+                (12u64, b"bob".to_vec()),
+                (7u64, b"dave".to_vec()),
+            ]
+        );
+
+        // Top 2 ascending: carol(1), alice(5).
+        let bottom2 = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 2, false, None, grove_version)
+            .unwrap()
+            .expect("top-k ascending");
+        assert_eq!(
+            bottom2,
+            vec![(1u64, b"carol".to_vec()), (5u64, b"alice".to_vec())]
+        );
+    }
+
+    #[test]
+    fn indexed_count_top_k_on_empty_pcit_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        let top = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("top-k empty");
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn indexed_count_top_k_k_zero_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        pcit_populate_known_set(&db, grove_version);
+        let top = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 0, true, None, grove_version)
+            .unwrap()
+            .expect("k=0");
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn indexed_count_top_k_paginated_pages_through_dataset() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        pcit_populate_known_set(&db, grove_version);
+
+        // Descending full scan: eve(20), bob(12), dave(7), alice(5), carol(1).
+        // Page 1 (offset=0, k=2): eve, bob.
+        let page1 = db
+            .indexed_count_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 1");
+        assert_eq!(
+            page1,
+            vec![(20u64, b"eve".to_vec()), (12u64, b"bob".to_vec())]
+        );
+
+        // Page 2 (offset=2, k=2): dave, alice.
+        let page2 = db
+            .indexed_count_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                2,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 2");
+        assert_eq!(
+            page2,
+            vec![(7u64, b"dave".to_vec()), (5u64, b"alice".to_vec())]
+        );
+
+        // Page 3 (offset=4, k=2): just carol; second slot unfilled.
+        let page3 = db
+            .indexed_count_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                2,
+                4,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 3");
+        assert_eq!(page3, vec![(1u64, b"carol".to_vec())]);
+
+        // Offset beyond total → empty.
+        let beyond = db
+            .indexed_count_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                10,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("offset beyond");
+        assert!(beyond.is_empty());
+
+        // offset=0 ≡ plain top_k.
+        let plain = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("plain");
+        let paginated = db
+            .indexed_count_top_k_paginated(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                3,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("paginated offset 0");
+        assert_eq!(plain, paginated);
+    }
+
+    #[test]
+    fn indexed_count_range_inclusive_bounds_match_plain_filter() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        pcit_populate_known_set(&db, grove_version);
+
+        // [5, 12] ascending should include alice(5), dave(7), bob(12).
+        let in_range = db
+            .indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                12,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range");
+        assert_eq!(
+            in_range,
+            vec![
+                (5u64, b"alice".to_vec()),
+                (7u64, b"dave".to_vec()),
+                (12u64, b"bob".to_vec()),
+            ]
+        );
+
+        // Same range descending: reversed.
+        let in_range_desc = db
+            .indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                12,
+                true,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range desc");
+        assert_eq!(
+            in_range_desc,
+            vec![
+                (12u64, b"bob".to_vec()),
+                (7u64, b"dave".to_vec()),
+                (5u64, b"alice".to_vec()),
+            ]
+        );
+
+        // Exact match (lo == hi): only bob(12).
+        let exact = db
+            .indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                12,
+                12,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("exact");
+        assert_eq!(exact, vec![(12u64, b"bob".to_vec())]);
+
+        // lo > hi: empty.
+        let empty = db
+            .indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                10,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("lo>hi");
+        assert!(empty.is_empty());
+
+        // Full scan [0, u64::MAX].
+        let full = db
+            .indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("full");
+        assert_eq!(full.len(), 5);
+
+        // limit=0 returns empty.
+        let zero_limit = db
+            .indexed_count_range(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                false,
+                0,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("limit 0");
+        assert!(zero_limit.is_empty());
+    }
+
+    #[test]
+    fn indexed_count_range_aggregate_counts_in_range() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        pcit_populate_known_set(&db, grove_version);
+
+        // [5, 12]: alice + dave + bob = 3 entries.
+        let count = db
+            .indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                12,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("agg");
+        assert_eq!(count, 3);
+
+        // [0, u64::MAX]: total count of entries (5).
+        let total = db
+            .indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                0,
+                u64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("total");
+        assert_eq!(total, 5);
+
+        // [100, 200]: nothing in this range → 0.
+        let none = db
+            .indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                200,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("none");
+        assert_eq!(none, 0);
+
+        // lo > hi: 0 (degenerate).
+        let degenerate = db
+            .indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                100,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("degenerate");
+        assert_eq!(degenerate, 0);
+    }
+
+    // ---- axis-compatibility rejection on PCIT ----
+
+    #[test]
+    fn indexed_sum_top_k_on_pcit_returns_invalid_path() {
+        // The sum axis is NOT indexed on a PCIT; the API must reject
+        // with InvalidPath rather than producing nonsense results from
+        // the count secondary.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        let result = db
+            .indexed_sum_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap();
+        match result {
+            Err(Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("Sum") && msg.contains("not indexed"),
+                    "expected axis-compat rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn indexed_avg_top_k_on_pcit_returns_invalid_path() {
+        // The avg axis is only available on PCPSIT; PCIT rejects.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        let result = db
+            .indexed_avg_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+            .unwrap();
+        match result {
+            Err(Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("Avg") && msg.contains("not indexed"),
+                    "expected axis-compat rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    // ---- legacy alias: count_indexed_top_k delegates to indexed_count_top_k ----
+
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_count_indexed_top_k_alias_matches_new_indexed_count_top_k() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        pcit_populate_known_set(&db, grove_version);
+
+        let new_api = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("new");
+        let legacy = db
+            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("legacy");
+        assert_eq!(new_api, legacy);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_count_indexed_range_aggregate_alias_matches_new() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        pcit_populate_known_set(&db, grove_version);
+
+        let new_api = db
+            .indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                12,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("new");
+        let legacy = db
+            .count_indexed_count_range_aggregate(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                5,
+                12,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("legacy");
+        assert_eq!(new_api, legacy);
+    }
 }

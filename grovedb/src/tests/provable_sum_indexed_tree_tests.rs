@@ -781,4 +781,437 @@ mod tests {
         // contributes sum, not the joint count/sum role.
         assert!(!psit.is_count_and_sum_bearing_child());
     }
+
+    // -----------------------------------------------------------------
+    // Phase 3: indexed_sum_* direct query APIs over PSIT
+    // -----------------------------------------------------------------
+
+    /// Populate the PSIT under `[TEST_LEAF, "psit"]` with a known set
+    /// of `(key, sum)` pairs spanning negative / zero / positive.
+    fn psit_populate_known_set(db: &crate::GroveDb, grove_version: &GroveVersion) {
+        for (k, s) in [
+            (b"alice".as_ref(), 5i64),
+            (b"bob", 12),
+            (b"carol", -7),
+            (b"dave", 0),
+            (b"eve", -1),
+            (b"frank", 100),
+        ] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(s),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert sum item");
+        }
+    }
+
+    #[test]
+    fn indexed_sum_top_k_on_psit_descending_returns_highest_first() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        psit_populate_known_set(&db, grove_version);
+
+        // Sorted ascending by sum: carol(-7), eve(-1), dave(0), alice(5),
+        // bob(12), frank(100).
+
+        // Top 3 descending: frank(100), bob(12), alice(5).
+        let top3 = db
+            .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("top-k desc");
+        assert_eq!(
+            top3,
+            vec![
+                (100i64, b"frank".to_vec()),
+                (12, b"bob".to_vec()),
+                (5, b"alice".to_vec()),
+            ]
+        );
+
+        // Top 2 ascending: carol(-7), eve(-1).
+        let bottom2 = db
+            .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 2, false, None, grove_version)
+            .unwrap()
+            .expect("bottom-2");
+        assert_eq!(
+            bottom2,
+            vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]
+        );
+    }
+
+    #[test]
+    fn indexed_sum_top_k_on_empty_psit_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        let top = db
+            .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 10, true, None, grove_version)
+            .unwrap()
+            .expect("empty");
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn indexed_sum_top_k_negative_lt_zero_lt_positive_ordering() {
+        // The sign-flipped sum-sort-key encoding must put negatives
+        // before zero and zero before positives in ascending lex order.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+
+        // Three entries: one negative, one zero, one positive.
+        for (k, s) in [(b"neg".as_ref(), -42i64), (b"zero", 0), (b"pos", 17)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(s),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+
+        let asc = db
+            .indexed_sum_top_k(
+                [TEST_LEAF, b"psit"].as_ref(),
+                10,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("asc");
+        assert_eq!(
+            asc,
+            vec![
+                (-42i64, b"neg".to_vec()),
+                (0, b"zero".to_vec()),
+                (17, b"pos".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn indexed_sum_top_k_paginated_pages_through_dataset() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        psit_populate_known_set(&db, grove_version);
+
+        // Descending full scan: frank(100), bob(12), alice(5),
+        // dave(0), eve(-1), carol(-7).
+        let page1 = db
+            .indexed_sum_top_k_paginated(
+                [TEST_LEAF, b"psit"].as_ref(),
+                2,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 1");
+        assert_eq!(
+            page1,
+            vec![(100i64, b"frank".to_vec()), (12, b"bob".to_vec())]
+        );
+
+        let page2 = db
+            .indexed_sum_top_k_paginated(
+                [TEST_LEAF, b"psit"].as_ref(),
+                2,
+                2,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("page 2");
+        assert_eq!(
+            page2,
+            vec![(5i64, b"alice".to_vec()), (0, b"dave".to_vec())]
+        );
+
+        // Offset beyond end → empty.
+        let beyond = db
+            .indexed_sum_top_k_paginated(
+                [TEST_LEAF, b"psit"].as_ref(),
+                5,
+                100,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("beyond");
+        assert!(beyond.is_empty());
+
+        // offset=0 ≡ plain top_k.
+        let plain = db
+            .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 3, true, None, grove_version)
+            .unwrap()
+            .expect("plain");
+        let pag = db
+            .indexed_sum_top_k_paginated(
+                [TEST_LEAF, b"psit"].as_ref(),
+                3,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("pag offset 0");
+        assert_eq!(plain, pag);
+    }
+
+    #[test]
+    fn indexed_sum_range_inclusive_bounds_match_plain_filter() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        psit_populate_known_set(&db, grove_version);
+
+        // Range [-1, 12] ascending: eve(-1), dave(0), alice(5), bob(12).
+        let in_range = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                -1,
+                12,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("range");
+        assert_eq!(
+            in_range,
+            vec![
+                (-1i64, b"eve".to_vec()),
+                (0, b"dave".to_vec()),
+                (5, b"alice".to_vec()),
+                (12, b"bob".to_vec()),
+            ]
+        );
+
+        // Descending same range.
+        let desc = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                -1,
+                12,
+                true,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("desc");
+        assert_eq!(
+            desc,
+            vec![
+                (12i64, b"bob".to_vec()),
+                (5, b"alice".to_vec()),
+                (0, b"dave".to_vec()),
+                (-1, b"eve".to_vec()),
+            ]
+        );
+
+        // Exact match: [12, 12] → bob.
+        let exact = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                12,
+                12,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("exact");
+        assert_eq!(exact, vec![(12i64, b"bob".to_vec())]);
+
+        // lo > hi: empty.
+        let empty = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                100,
+                10,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("lo>hi");
+        assert!(empty.is_empty());
+
+        // Full scan [i64::MIN, i64::MAX].
+        let full = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                i64::MIN,
+                i64::MAX,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("full");
+        assert_eq!(full.len(), 6);
+
+        // limit=0 returns empty.
+        let zero_limit = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                i64::MIN,
+                i64::MAX,
+                false,
+                0,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("limit 0");
+        assert!(zero_limit.is_empty());
+    }
+
+    #[test]
+    fn indexed_sum_range_negative_bounds() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        psit_populate_known_set(&db, grove_version);
+
+        // Negative-only range [-7, -1]: carol(-7), eve(-1).
+        let neg = db
+            .indexed_sum_range(
+                [TEST_LEAF, b"psit"].as_ref(),
+                -7,
+                -1,
+                false,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("neg range");
+        assert_eq!(neg, vec![(-7i64, b"carol".to_vec()), (-1, b"eve".to_vec())]);
+    }
+
+    #[test]
+    fn indexed_sum_range_aggregate_sums_in_range() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        psit_populate_known_set(&db, grove_version);
+
+        // Sum in [-1, 12]: -1 + 0 + 5 + 12 = 16.
+        let agg = db
+            .indexed_sum_range_aggregate([TEST_LEAF, b"psit"].as_ref(), -1, 12, None, grove_version)
+            .unwrap()
+            .expect("agg");
+        assert_eq!(agg, 16);
+
+        // Total sum [i64::MIN, i64::MAX]: -7 + -1 + 0 + 5 + 12 + 100 = 109.
+        let total = db
+            .indexed_sum_range_aggregate(
+                [TEST_LEAF, b"psit"].as_ref(),
+                i64::MIN,
+                i64::MAX,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("total");
+        assert_eq!(total, 109);
+
+        // Empty range [200, 300]: 0.
+        let none = db
+            .indexed_sum_range_aggregate(
+                [TEST_LEAF, b"psit"].as_ref(),
+                200,
+                300,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("none");
+        assert_eq!(none, 0);
+
+        // lo > hi: 0.
+        let degenerate = db
+            .indexed_sum_range_aggregate(
+                [TEST_LEAF, b"psit"].as_ref(),
+                100,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("degen");
+        assert_eq!(degenerate, 0);
+
+        // Negative-only [-100, 0]: -7 + -1 + 0 = -8.
+        let neg = db
+            .indexed_sum_range_aggregate(
+                [TEST_LEAF, b"psit"].as_ref(),
+                -100,
+                0,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("neg");
+        assert_eq!(neg, -8);
+    }
+
+    // ---- axis-compatibility rejection on PSIT ----
+
+    #[test]
+    fn indexed_count_top_k_on_psit_returns_invalid_path() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        let result = db
+            .indexed_count_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, grove_version)
+            .unwrap();
+        match result {
+            Err(Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("Count") && msg.contains("not indexed"),
+                    "expected axis-compat rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn indexed_avg_top_k_on_psit_returns_invalid_path() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        let result = db
+            .indexed_avg_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, grove_version)
+            .unwrap();
+        match result {
+            Err(Error::InvalidPath(msg)) => {
+                assert!(
+                    msg.contains("Avg") && msg.contains("not indexed"),
+                    "expected axis-compat rejection, got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPath, got {:?}", other),
+        }
+    }
 }
