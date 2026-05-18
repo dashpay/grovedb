@@ -20,7 +20,13 @@ coverage:
         threshold: 2%
     patch:
       default:
-        target: 88%
+        # Default 85% — gives healthy buffer above the project's typical
+        # coverage drift while accommodating refactors that add large
+        # amounts of cryptographically-defensive proof code (Provable*
+        # tree families have a high ratio of `CorruptedData` /
+        # `InvalidProof` branches that are not practical to exercise
+        # via integration tests without contrived storage corruption).
+        target: 85%
 
 comment:
   layout: "condensed_header, diff, components, condensed_files"
