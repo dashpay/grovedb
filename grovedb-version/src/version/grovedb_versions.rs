@@ -227,6 +227,8 @@ pub struct GroveDBElementMethodVersions {
     pub value_defined_cost_for_serialized_value: FeatureVersion,
     pub specialized_costs_for_key_value: FeatureVersion,
     pub required_item_space: FeatureVersion,
+    pub required_item_with_sum_item_space: FeatureVersion,
+    pub required_reference_with_sum_item_space: FeatureVersion,
     pub insert: FeatureVersion,
     pub insert_into_batch_operations: FeatureVersion,
     pub insert_if_not_exists: FeatureVersion,

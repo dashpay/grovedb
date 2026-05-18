@@ -480,6 +480,151 @@ fn required_item_space_matches_manual_formula() {
 }
 
 #[test]
+fn required_item_with_sum_item_space_matches_manual_formula() {
+    let grove_version = GroveVersion::latest();
+    let len: u32 = 127;
+    let flag_len: u32 = 511;
+
+    let required =
+        Element::required_item_with_sum_item_space(len, flag_len, grove_version).unwrap();
+    let expected =
+        len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 10 + 1;
+
+    assert_eq!(required, expected);
+}
+
+/// The load-bearing contract for fee estimation: the helper must return
+/// at least the actual serialized size of every `ItemWithSumItem`. Exact
+/// equality is not required — undercounting is what would break dry-run
+/// fees. We test boundary sum values (small / large positive / large
+/// negative) because bincode varint encoding has different lengths at
+/// each step.
+#[test]
+fn required_item_with_sum_item_space_is_upper_bound() {
+    let grove_version = GroveVersion::latest();
+
+    let payloads: &[&[u8]] = &[&[], b"a", &[0xAB; 250], &[0xCD; 65_500]];
+    let flag_variants: &[Option<Vec<u8>>] =
+        &[None, Some(vec![]), Some(vec![1]), Some(vec![9; 250])];
+    let sum_values: &[i64] = &[0, 1, -1, 250, -250, i64::MAX, i64::MIN, i32::MAX as i64];
+
+    for payload in payloads {
+        for flags in flag_variants {
+            for &sum in sum_values {
+                let element = Element::new_item_with_sum_item_with_flags(
+                    payload.to_vec(),
+                    sum,
+                    flags.clone(),
+                );
+                let serialized_len = element.serialize(grove_version).unwrap().len() as u32;
+                let flag_len = flags.as_ref().map(|f| f.len()).unwrap_or(0) as u32;
+                let required = Element::required_item_with_sum_item_space(
+                    payload.len() as u32,
+                    flag_len,
+                    grove_version,
+                )
+                .unwrap();
+
+                assert!(
+                    required >= serialized_len,
+                    "required={} must be >= serialized={} for payload_len={} flag_len={} sum={}",
+                    required,
+                    serialized_len,
+                    payload.len(),
+                    flag_len,
+                    sum,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn required_reference_with_sum_item_space_matches_manual_formula() {
+    let grove_version = GroveVersion::latest();
+    let path_len: u32 = 64;
+    let flag_len: u32 = 32;
+
+    let required =
+        Element::required_reference_with_sum_item_space(path_len, flag_len, grove_version).unwrap();
+    let expected = path_len
+        + path_len.required_space() as u32
+        + flag_len
+        + flag_len.required_space() as u32
+        + 10
+        + 1;
+
+    assert_eq!(required, expected);
+}
+
+/// Upper-bound contract for `ReferenceWithSumItem`. Builds a reference
+/// from a known absolute path and asserts the helper returns at least
+/// the actual serialized length once the caller has folded `max_hop`
+/// into `path_len`. We serialize the reference path separately to
+/// compute the worst-case path payload size the way real callers do
+/// (e.g. dash-platform's `add_document_to_primary_storage`).
+#[test]
+fn required_reference_with_sum_item_space_is_upper_bound() {
+    use bincode::config;
+
+    let grove_version = GroveVersion::latest();
+
+    let path_variants: &[Vec<Vec<u8>>] = &[
+        vec![vec![0]],
+        vec![vec![0], b"contracts".to_vec(), b"documents".to_vec()],
+        vec![vec![0xFF; 32], vec![0xAB; 32], vec![0xCD; 32]],
+    ];
+    let max_hops: &[Option<u8>] = &[None, Some(0), Some(255)];
+    let flag_variants: &[Option<Vec<u8>>] = &[None, Some(vec![]), Some(vec![1, 2, 3])];
+    let sum_values: &[i64] = &[0, 1, -1, i64::MAX, i64::MIN];
+
+    let bincode_cfg = config::standard().with_big_endian().with_no_limit();
+
+    for raw_path in path_variants {
+        let reference_path = ReferencePathType::AbsolutePathReference(raw_path.clone());
+        // Caller-side worst-case for the variable-length payload: the
+        // serialized size of the ReferencePathType plus the max_hop
+        // (`Option<u8>` ≤ 2 bytes) that the helper expects folded in.
+        let path_payload_len = bincode::encode_to_vec(&reference_path, bincode_cfg)
+            .unwrap()
+            .len() as u32
+            + 2;
+
+        for &max_hop in max_hops {
+            for flags in flag_variants {
+                for &sum in sum_values {
+                    let element = Element::new_reference_with_sum_item_with_max_hops_and_flags(
+                        reference_path.clone(),
+                        max_hop,
+                        sum,
+                        flags.clone(),
+                    );
+                    let serialized_len = element.serialize(grove_version).unwrap().len() as u32;
+                    let flag_len = flags.as_ref().map(|f| f.len()).unwrap_or(0) as u32;
+                    let required = Element::required_reference_with_sum_item_space(
+                        path_payload_len,
+                        flag_len,
+                        grove_version,
+                    )
+                    .unwrap();
+
+                    assert!(
+                        required >= serialized_len,
+                        "required={} must be >= serialized={} for path_payload_len={} flag_len={} max_hop={:?} sum={}",
+                        required,
+                        serialized_len,
+                        path_payload_len,
+                        flag_len,
+                        max_hop,
+                        sum,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn convert_if_reference_to_absolute_reference_converts_and_preserves_other_types() {
     let path = [b"root".as_ref(), b"branch".as_ref()];
     let key = Some(b"leaf".as_ref());

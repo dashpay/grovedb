@@ -622,6 +622,70 @@ impl Element {
         Ok(len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1)
     }
 
+    /// Worst-case serialized-storage cost of an
+    /// [`Element::ItemWithSumItem`]. Same shape as
+    /// [`Self::required_item_space`] with an extra worst-case allowance
+    /// for the `i64` sum_value field.
+    ///
+    /// The sum_value is bincode varint-encoded (with zigzag for negative
+    /// values) inside `Element::serialize`. The bincode 2.x varint encoding
+    /// for a u64 is at most 9 bytes (1 marker + 8 bytes). We use 10 here
+    /// as a deliberate upper-bound margin so callers using this for
+    /// stateless-cost / dry-run fee estimation never undercharge.
+    pub fn required_item_with_sum_item_space(
+        len: u32,
+        flag_len: u32,
+        grove_version: &GroveVersion,
+    ) -> Result<u32, ElementError> {
+        check_grovedb_v0!(
+            "required_item_with_sum_item_space",
+            grove_version
+                .grovedb_versions
+                .element
+                .required_item_with_sum_item_space
+        );
+        Ok(
+            len + len.required_space() as u32
+                + flag_len
+                + flag_len.required_space() as u32
+                + 10
+                + 1,
+        )
+    }
+
+    /// Worst-case serialized-storage cost of an
+    /// [`Element::ReferenceWithSumItem`]. Parallels
+    /// [`Self::required_item_with_sum_item_space`] with the reference path
+    /// as the variable-length payload.
+    ///
+    /// `path_len` is the worst-case serialized size of the
+    /// `ReferencePathType` payload (mirroring how callers compute the
+    /// `reference_path` upper bound for plain references). The `+10`
+    /// covers the worst-case `i64` sum_value bincode varint; the `+1`
+    /// covers the element variant discriminant byte. The `max_hop`
+    /// (`Option<u8>`, ≤ 2 bytes) is small and should be folded into
+    /// `path_len` by the caller if exact upper-bound accounting matters
+    /// for their dry-run.
+    pub fn required_reference_with_sum_item_space(
+        path_len: u32,
+        flag_len: u32,
+        grove_version: &GroveVersion,
+    ) -> Result<u32, ElementError> {
+        check_grovedb_v0!(
+            "required_reference_with_sum_item_space",
+            grove_version
+                .grovedb_versions
+                .element
+                .required_reference_with_sum_item_space
+        );
+        Ok(path_len
+            + path_len.required_space() as u32
+            + flag_len
+            + flag_len.required_space() as u32
+            + 10
+            + 1)
+    }
+
     /// Convert the reference to an absolute reference. Looks through a
     /// `NonCounted` wrapper, converting the inner reference and re-wrapping.
     pub fn convert_if_reference_to_absolute_reference(
