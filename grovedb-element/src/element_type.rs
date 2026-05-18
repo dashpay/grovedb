@@ -282,12 +282,17 @@ pub enum ElementType {
     /// `AggregateCountOnRange` AND `AggregateSumOnRange` proofs are both
     /// verifiable against the same tree.
     ProvableCountProvableSumTree = 20,
-    /// Count-indexed tree (primary count tree + secondary count-ordered
-    /// index) - discriminant 21
-    CountIndexedTree = 21,
+    /// Provable sum-indexed tree (primary `ProvableSumTree` + secondary
+    /// sum-ordered index) - discriminant 21. Takes the slot previously
+    /// held by the now-removed non-provable `CountIndexedTree`.
+    ProvableSumIndexedTree = 21,
     /// Provable count-indexed tree (primary `ProvableCountTree` + secondary
     /// count-ordered index) - discriminant 22
     ProvableCountIndexedTree = 22,
+    /// Provable count + provable sum indexed tree (primary
+    /// `ProvableCountProvableSumTree` + 1..=3 secondaries keyed by axis
+    /// sort-prefix) - discriminant 23. The new dual/triple-axis variant.
+    ProvableCountProvableSumIndexedTree = 23,
     /// Non-counted wrapper around `Item` - discriminant 128
     NonCountedItem = 128,
     /// Non-counted wrapper around `Reference` - discriminant 129
@@ -325,12 +330,15 @@ pub enum ElementType {
     /// Non-counted wrapper around `ProvableCountProvableSumTree` - discriminant
     /// 148 (`0x80 | 20`).
     NonCountedProvableCountProvableSumTree = 148,
-    /// Non-counted wrapper around `CountIndexedTree` - discriminant 149
+    /// Non-counted wrapper around `ProvableSumIndexedTree` - discriminant 149
     /// (`0x80 | 21`)
-    NonCountedCountIndexedTree = 149,
+    NonCountedProvableSumIndexedTree = 149,
     /// Non-counted wrapper around `ProvableCountIndexedTree` - discriminant
     /// 150 (`0x80 | 22`)
     NonCountedProvableCountIndexedTree = 150,
+    /// Non-counted wrapper around `ProvableCountProvableSumIndexedTree` -
+    /// discriminant 151 (`0x80 | 23`)
+    NonCountedProvableCountProvableSumIndexedTree = 151,
     /// Not-summed wrapper around `SumTree` - discriminant 180 (`0xB4`)
     NotSummedSumTree = 180,
     /// Not-summed wrapper around `BigSumTree` - discriminant 181 (`0xB5`)
@@ -398,10 +406,11 @@ impl ElementType {
             // The inner discriminant must be a legal base type. Today
             // those are `0..=14`, `18` (ReferenceWithSumItem), `19`
             // (ProvableSumTree), `20` (ProvableCountProvableSumTree),
-            // `21` (CountIndexedTree), and `22` (ProvableCountIndexedTree).
+            // `21` (ProvableSumIndexedTree), `22` (ProvableCountIndexedTree),
+            // and `23` (ProvableCountProvableSumIndexedTree).
             // Bytes 15, 16, and 17 are the wrapper bytes themselves
-            // (nested wrappers forbidden in either direction); 23..=127
-            // are unallocated; 128..=150 are the synthetic NonCountedXxx
+            // (nested wrappers forbidden in either direction); 24..=127
+            // are unallocated; 128..=151 are the synthetic NonCountedXxx
             // twins which never appear on disk.
             // Without this check, the bitwise OR below would collapse
             // `0x80 | inner_byte` into `inner_byte` and a payload like
@@ -410,10 +419,10 @@ impl ElementType {
             // Use an explicit allowlist so the next base-variant addition
             // is a one-line edit here and the check stays robust to new
             // variants landing without updating the guard.
-            if !matches!(inner_byte, 0..=14 | 18 | 19 | 20 | 21 | 22) {
+            if !matches!(inner_byte, 0..=14 | 18 | 19 | 20 | 21 | 22 | 23) {
                 return Err(ElementError::CorruptedData(format!(
                     "NonCounted inner discriminant must be a base type \
-                     (0..=14, 18, 19, 20, 21, or 22), got {}",
+                     (0..=14, 18, 19, 20, 21, 22, or 23), got {}",
                     inner_byte
                 )));
             }
@@ -716,19 +725,34 @@ impl ElementType {
                 | ElementType::MmrTree
                 | ElementType::BulkAppendTree
                 | ElementType::DenseAppendOnlyFixedSizeTree
-                | ElementType::CountIndexedTree
+                | ElementType::ProvableSumIndexedTree
                 | ElementType::ProvableCountIndexedTree
+                | ElementType::ProvableCountProvableSumIndexedTree
         )
     }
 
-    /// Returns true if this element type is a count-indexed tree (carries
-    /// both a primary count tree and a count-ordered secondary index).
-    /// Looks through the `NonCounted` wrapper.
+    /// Returns true if this element type is a count-indexed tree (the
+    /// single-axis provable count case). Kept for callers that
+    /// specifically need the count-only case; new code that needs to
+    /// detect any indexed-tree primary should prefer
+    /// [`is_indexed_tree`]. Looks through the `NonCounted` wrapper.
     #[inline]
     pub fn is_count_indexed_tree(&self) -> bool {
+        matches!(self.base(), ElementType::ProvableCountIndexedTree)
+    }
+
+    /// Returns true if this element type is any of the three indexed-tree
+    /// variants (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`,
+    /// `ProvableCountProvableSumIndexedTree`). Looks through the
+    /// `NonCounted` wrapper. This is the broad predicate that callers
+    /// touching "indexed-tree primaries" generically should use.
+    #[inline]
+    pub fn is_indexed_tree(&self) -> bool {
         matches!(
             self.base(),
-            ElementType::CountIndexedTree | ElementType::ProvableCountIndexedTree
+            ElementType::ProvableSumIndexedTree
+                | ElementType::ProvableCountIndexedTree
+                | ElementType::ProvableCountProvableSumIndexedTree
         )
     }
 
@@ -775,8 +799,11 @@ impl ElementType {
             ElementType::ReferenceWithSumItem => "reference with sum item",
             ElementType::ProvableSumTree => "provable sum tree",
             ElementType::ProvableCountProvableSumTree => "provable count provable sum tree",
-            ElementType::CountIndexedTree => "count indexed tree",
+            ElementType::ProvableSumIndexedTree => "provable sum indexed tree",
             ElementType::ProvableCountIndexedTree => "provable count indexed tree",
+            ElementType::ProvableCountProvableSumIndexedTree => {
+                "provable count provable sum indexed tree"
+            }
             ElementType::NonCountedItem => "non_counted item",
             ElementType::NonCountedReference => "non_counted reference",
             ElementType::NonCountedTree => "non_counted tree",
@@ -797,9 +824,14 @@ impl ElementType {
             ElementType::NonCountedProvableCountProvableSumTree => {
                 "non_counted provable count provable sum tree"
             }
-            ElementType::NonCountedCountIndexedTree => "non_counted count indexed tree",
+            ElementType::NonCountedProvableSumIndexedTree => {
+                "non_counted provable sum indexed tree"
+            }
             ElementType::NonCountedProvableCountIndexedTree => {
                 "non_counted provable count indexed tree"
+            }
+            ElementType::NonCountedProvableCountProvableSumIndexedTree => {
+                "non_counted provable count provable sum indexed tree"
             }
             ElementType::NotSummedSumTree => "not_summed sum tree",
             ElementType::NotSummedBigSumTree => "not_summed big sum tree",
@@ -857,8 +889,9 @@ impl TryFrom<u8> for ElementType {
             18 => Ok(ElementType::ReferenceWithSumItem),
             19 => Ok(ElementType::ProvableSumTree),
             20 => Ok(ElementType::ProvableCountProvableSumTree),
-            21 => Ok(ElementType::CountIndexedTree),
+            21 => Ok(ElementType::ProvableSumIndexedTree),
             22 => Ok(ElementType::ProvableCountIndexedTree),
+            23 => Ok(ElementType::ProvableCountProvableSumIndexedTree),
             128 => Ok(ElementType::NonCountedItem),
             129 => Ok(ElementType::NonCountedReference),
             130 => Ok(ElementType::NonCountedTree),
@@ -877,8 +910,9 @@ impl TryFrom<u8> for ElementType {
             146 => Ok(ElementType::NonCountedReferenceWithSumItem),
             147 => Ok(ElementType::NonCountedProvableSumTree),
             148 => Ok(ElementType::NonCountedProvableCountProvableSumTree),
-            149 => Ok(ElementType::NonCountedCountIndexedTree),
+            149 => Ok(ElementType::NonCountedProvableSumIndexedTree),
             150 => Ok(ElementType::NonCountedProvableCountIndexedTree),
+            151 => Ok(ElementType::NonCountedProvableCountProvableSumIndexedTree),
             // NotSummed twins occupy the 0xB0..=0xBF family range; slots
             // are assigned explicitly per variant.
             177 => Ok(ElementType::NotSummedProvableSumTree),
@@ -961,9 +995,9 @@ mod tests {
         // 17 is the raw NotCountedOrSummed wrapper byte; same treatment.
         assert!(ElementType::try_from(17).is_err());
 
-        // Base discriminants 18..=22: ReferenceWithSumItem, ProvableSumTree,
-        // ProvableCountProvableSumTree, CountIndexedTree,
-        // ProvableCountIndexedTree.
+        // Base discriminants 18..=23: ReferenceWithSumItem, ProvableSumTree,
+        // ProvableCountProvableSumTree, ProvableSumIndexedTree,
+        // ProvableCountIndexedTree, ProvableCountProvableSumIndexedTree.
         assert_eq!(
             ElementType::try_from(18).unwrap(),
             ElementType::ReferenceWithSumItem
@@ -978,14 +1012,18 @@ mod tests {
         );
         assert_eq!(
             ElementType::try_from(21).unwrap(),
-            ElementType::CountIndexedTree
+            ElementType::ProvableSumIndexedTree
         );
         assert_eq!(
             ElementType::try_from(22).unwrap(),
             ElementType::ProvableCountIndexedTree
         );
-        // 23..=127 are unallocated and invalid.
-        assert!(ElementType::try_from(23).is_err());
+        assert_eq!(
+            ElementType::try_from(23).unwrap(),
+            ElementType::ProvableCountProvableSumIndexedTree
+        );
+        // 24..=127 are unallocated and invalid.
+        assert!(ElementType::try_from(24).is_err());
         assert!(ElementType::try_from(100).is_err());
 
         // NonCounted twins (0x80 | base): 128..142, plus 146 (= 0x80|18 =
@@ -1017,11 +1055,15 @@ mod tests {
         );
         assert_eq!(
             ElementType::try_from(149).unwrap(),
-            ElementType::NonCountedCountIndexedTree
+            ElementType::NonCountedProvableSumIndexedTree
         );
         assert_eq!(
             ElementType::try_from(150).unwrap(),
             ElementType::NonCountedProvableCountIndexedTree
+        );
+        assert_eq!(
+            ElementType::try_from(151).unwrap(),
+            ElementType::NonCountedProvableCountProvableSumIndexedTree
         );
         // Bytes between the base and NonCounted-twin ranges are invalid.
         assert!(ElementType::try_from(127).is_err());
@@ -1030,10 +1072,10 @@ mod tests {
         assert!(ElementType::try_from(143).is_err());
         assert!(ElementType::try_from(144).is_err());
         assert!(ElementType::try_from(145).is_err());
-        // 151..=176 (between NonCounted-twin and NotSummed-twin ranges) are
+        // 152..=176 (between NonCounted-twin and NotSummed-twin ranges) are
         // invalid (with the exception of 177 = NotSummedProvableSumTree and
         // 178 = NotSummedProvableCountProvableSumTree).
-        assert!(ElementType::try_from(151).is_err());
+        assert!(ElementType::try_from(152).is_err());
         assert!(ElementType::try_from(176).is_err());
 
         // NotSummed twins live in 0xB0..=0xBF with explicit per-variant
@@ -1674,16 +1716,16 @@ mod tests {
         assert!(ElementType::from_serialized_value(&[15, 200]).is_err());
         // Wrapper whose inner byte is itself a synthetic twin discriminant
         // (high bit set) is rejected — only base discriminants 0..=14, 18,
-        // 19, 20, 21, 22 are legal on-disk inner bytes. Without this guard,
-        // `0x80 | 128 == 128` would silently parse as `NonCountedItem`.
+        // 19, 20, 21, 22, 23 are legal on-disk inner bytes. Without this
+        // guard, `0x80 | 128 == 128` would silently parse as `NonCountedItem`.
         assert!(ElementType::from_serialized_value(&[15, 128]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 142]).is_err());
         // Wrapper with an unallocated mid-range inner byte (16, 17,
-        // 23..=127) is also rejected, even though it has no high bit
+        // 24..=127) is also rejected, even though it has no high bit
         // set.
         assert!(ElementType::from_serialized_value(&[15, 16]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 17]).is_err());
-        assert!(ElementType::from_serialized_value(&[15, 23]).is_err());
+        assert!(ElementType::from_serialized_value(&[15, 24]).is_err());
         assert!(ElementType::from_serialized_value(&[15, 100]).is_err());
 
         // Inner byte 18 (ReferenceWithSumItem) IS a legal base; resolves to
@@ -1705,16 +1747,20 @@ mod tests {
             ElementType::from_serialized_value(&[15, 19]).unwrap(),
             ElementType::NonCountedProvableSumTree
         );
-        // Inner bytes 21 and 22 (CountIndexedTree,
-        // ProvableCountIndexedTree) resolve to their NonCounted twins
-        // at slots 149 and 150.
+        // Inner bytes 21, 22, and 23 (ProvableSumIndexedTree,
+        // ProvableCountIndexedTree, ProvableCountProvableSumIndexedTree)
+        // resolve to their NonCounted twins at slots 149, 150, 151.
         assert_eq!(
             ElementType::from_serialized_value(&[15, 21]).unwrap(),
-            ElementType::NonCountedCountIndexedTree
+            ElementType::NonCountedProvableSumIndexedTree
         );
         assert_eq!(
             ElementType::from_serialized_value(&[15, 22]).unwrap(),
             ElementType::NonCountedProvableCountIndexedTree
+        );
+        assert_eq!(
+            ElementType::from_serialized_value(&[15, 23]).unwrap(),
+            ElementType::NonCountedProvableCountProvableSumIndexedTree
         );
     }
 
@@ -1737,8 +1783,9 @@ mod tests {
         assert!(ElementType::DenseAppendOnlyFixedSizeTree.is_tree());
         assert!(ElementType::ProvableSumTree.is_tree());
         assert!(ElementType::NonCountedProvableSumTree.is_tree());
-        assert!(ElementType::CountIndexedTree.is_tree());
+        assert!(ElementType::ProvableSumIndexedTree.is_tree());
         assert!(ElementType::ProvableCountIndexedTree.is_tree());
+        assert!(ElementType::ProvableCountProvableSumIndexedTree.is_tree());
         // ReferenceWithSumItem is a reference, not a tree and not an item.
         assert!(!ElementType::ReferenceWithSumItem.is_tree());
         assert!(ElementType::ReferenceWithSumItem.is_reference());
@@ -1751,17 +1798,32 @@ mod tests {
         assert!(ElementType::NonCountedSumTree.is_tree());
         assert!(ElementType::NonCountedProvableCountTree.is_tree());
         assert!(ElementType::NonCountedDenseAppendOnlyFixedSizeTree.is_tree());
-        assert!(ElementType::NonCountedCountIndexedTree.is_tree());
+        assert!(ElementType::NonCountedProvableSumIndexedTree.is_tree());
         assert!(ElementType::NonCountedProvableCountIndexedTree.is_tree());
+        assert!(ElementType::NonCountedProvableCountProvableSumIndexedTree.is_tree());
 
-        // is_count_indexed_tree only matches the two cidx variants (and their
-        // NonCounted twins via base()).
-        assert!(ElementType::CountIndexedTree.is_count_indexed_tree());
+        // is_count_indexed_tree only matches the (provable) count-indexed
+        // variant. PSIT and PCPSIT are NOT count-indexed in the
+        // legacy sense, so they must fall outside this predicate.
         assert!(ElementType::ProvableCountIndexedTree.is_count_indexed_tree());
-        assert!(ElementType::NonCountedCountIndexedTree.is_count_indexed_tree());
         assert!(ElementType::NonCountedProvableCountIndexedTree.is_count_indexed_tree());
+        assert!(!ElementType::ProvableSumIndexedTree.is_count_indexed_tree());
+        assert!(!ElementType::NonCountedProvableSumIndexedTree.is_count_indexed_tree());
+        assert!(!ElementType::ProvableCountProvableSumIndexedTree.is_count_indexed_tree());
+        assert!(!ElementType::NonCountedProvableCountProvableSumIndexedTree.is_count_indexed_tree());
         assert!(!ElementType::Tree.is_count_indexed_tree());
         assert!(!ElementType::ProvableCountTree.is_count_indexed_tree());
+
+        // is_indexed_tree is the broad predicate: all three indexed-tree
+        // variants (and their NonCounted twins) match.
+        assert!(ElementType::ProvableSumIndexedTree.is_indexed_tree());
+        assert!(ElementType::ProvableCountIndexedTree.is_indexed_tree());
+        assert!(ElementType::ProvableCountProvableSumIndexedTree.is_indexed_tree());
+        assert!(ElementType::NonCountedProvableSumIndexedTree.is_indexed_tree());
+        assert!(ElementType::NonCountedProvableCountIndexedTree.is_indexed_tree());
+        assert!(ElementType::NonCountedProvableCountProvableSumIndexedTree.is_indexed_tree());
+        assert!(!ElementType::Tree.is_indexed_tree());
+        assert!(!ElementType::ProvableCountTree.is_indexed_tree());
 
         // is_item / is_reference also see through the wrapper.
         assert!(ElementType::NonCountedItem.is_item());
@@ -1894,9 +1956,9 @@ mod tests {
             ),
             // discriminant 21
             (
-                Element::CountIndexedTree(None, None, 0, None),
-                ElementType::CountIndexedTree,
-                "CountIndexedTree",
+                Element::ProvableSumIndexedTree(None, None, 0, None),
+                ElementType::ProvableSumIndexedTree,
+                "ProvableSumIndexedTree",
             ),
             // discriminant 22
             (
@@ -1904,16 +1966,22 @@ mod tests {
                 ElementType::ProvableCountIndexedTree,
                 "ProvableCountIndexedTree",
             ),
+            // discriminant 23
+            (
+                Element::ProvableCountProvableSumIndexedTree(None, 0, 0, vec![(0, None)], None),
+                ElementType::ProvableCountProvableSumIndexedTree,
+                "ProvableCountProvableSumIndexedTree",
+            ),
         ];
 
-        // Verify we're testing all 20 base discriminants: 0..=14, 18, 19,
-        // 20, 21, 22. (15 = NonCounted wrapper byte, 16 = NotSummed
+        // Verify we're testing all 21 base discriminants: 0..=14, 18, 19,
+        // 20, 21, 22, 23. (15 = NonCounted wrapper byte, 16 = NotSummed
         // wrapper byte, 17 = NotCountedOrSummed wrapper byte — none has
         // a base ElementType variant.)
         assert_eq!(
             test_cases.len(),
-            20,
-            "Expected 20 base Element variants in test, got {}",
+            21,
+            "Expected 21 base Element variants in test, got {}",
             test_cases.len()
         );
 

@@ -249,10 +249,8 @@ pub(crate) fn reject_freshly_inserted_cidx_with_descendants(
             | GroveOp::Patch { element, .. } => element,
             _ => continue,
         };
-        if matches!(
-            elem.underlying(),
-            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
-        ) && let Some(key) = &op.key
+        if matches!(elem.underlying(), Element::ProvableCountIndexedTree(..))
+            && let Some(key) = &op.key
         {
             let mut cidx_path = op.path.to_path();
             cidx_path.push(key.get_key_clone());
@@ -359,7 +357,7 @@ pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
 
     let existing_is_cidx = matches!(
         existing_element.underlying(),
-        Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+        Element::ProvableCountIndexedTree(..)
     );
     if !existing_is_cidx {
         return Ok(None).wrap_with_cost(cost);
@@ -367,7 +365,7 @@ pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
 
     // Classify the new element.
     let (new_is_cidx, new_is_empty_cidx) = match new_element.underlying() {
-        Element::CountIndexedTree(p, s, c, _) | Element::ProvableCountIndexedTree(p, s, c, _) => {
+        Element::ProvableCountIndexedTree(p, s, c, _) => {
             (true, p.is_none() && s.is_none() && *c == 0)
         }
         _ => (false, false),

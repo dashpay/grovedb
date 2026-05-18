@@ -768,12 +768,11 @@ impl GroveDb {
                 } else {
                     // Read secondary's current state from on-disk root.
                     let secondary_root_key_before = match cidx_element.underlying() {
-                        Element::CountIndexedTree(_, secondary, ..)
-                        | Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+                        Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
                         _ => {
                             return Err(Error::CorruptedData(
-                                "expected CountIndexedTree element when child_tree is a \
-                                 CountIndexedTree primary"
+                                "expected ProvableCountIndexedTree element when child_tree is a \
+                                 count-indexed primary"
                                     .to_string(),
                             ))
                             .wrap_with_cost(cost);
@@ -867,12 +866,11 @@ impl GroveDb {
                         .map_err(Error::MerkError)
                 );
                 let secondary_root_key_before = match cidx_element.underlying() {
-                    Element::CountIndexedTree(_, secondary, ..)
-                    | Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+                    Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
                     _ => {
                         return Err(Error::CorruptedData(
-                            "expected CountIndexedTree element in grandparent during cascading \
-                             aggregation"
+                            "expected ProvableCountIndexedTree element in grandparent during \
+                             cascading aggregation"
                                 .to_string(),
                         ))
                         .wrap_with_cost(cost);
@@ -1285,7 +1283,7 @@ impl GroveDb {
                 // secondary's contents are auto-mirrored from the
                 // primary, so we only check its root-hash contribution
                 // here.
-                Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                Element::ProvableCountIndexedTree(..) => {
                     let (kv_value, element_value_hash) = merk
                         .get_value_and_value_hash(
                             &key,
@@ -1314,8 +1312,7 @@ impl GroveDb {
                     let primary_root_hash = primary_merk.root_hash().unwrap();
 
                     let secondary_root_key = match element {
-                        Element::CountIndexedTree(_, ref s, ..)
-                        | Element::ProvableCountIndexedTree(_, ref s, ..) => s.clone(),
+                        Element::ProvableCountIndexedTree(_, ref s, ..) => s.clone(),
                         _ => unreachable!("matched cidx variant above"),
                     };
                     let secondary_merk = self
@@ -1624,8 +1621,7 @@ impl GroveDb {
                     // collide across children with the same Element variant
                     // (the labels only mention the variant, not the value),
                     // making the surfaced "issues" indistinguishable.
-                    if !element.uses_non_merk_data_storage()
-                        && !merk.tree_type.is_count_indexed_primary()
+                    if !element.uses_non_merk_data_storage() && !merk.tree_type.is_indexed_primary()
                     {
                         let actual_aggregate = inner_merk.aggregate_data().map_err(MerkError)?;
                         if let Some((recorded_label, actual_label)) =
@@ -1743,6 +1739,20 @@ impl GroveDb {
                             (combined_value_hash, element_value_hash, combined_value_hash),
                         );
                     }
+                }
+                // Phase 1: PSIT and PCPSIT consistency verification is
+                // not yet wired through `verify_grovedb`. Their primary
+                // Merks would need PSIT- and PCPSIT-specific hash
+                // composition (`combine_hash_three` with the secondary
+                // root hash for PSIT, `axes_digest` for PCPSIT) which
+                // the current verify path doesn't synthesize. Phase 2
+                // adds the per-variant verification.
+                Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..) => {
+                    // Skip silently for Phase 1: returning an issue here
+                    // would mark a legitimate empty indexed-tree as
+                    // corrupt. A follow-up Phase 2 patch must replace
+                    // this no-op with the matching verification arms.
                 }
                 Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                     unreachable!("unwrapped above")

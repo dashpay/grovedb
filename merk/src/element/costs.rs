@@ -81,8 +81,17 @@ impl ElementCostPrivateExtensions for Element {
             // ProvableCountSumTree: (Option<Vec<u8>>, u64, i64,
             // Option<Vec<u8>>) and reuses COUNT_SUM_TREE_COST_SIZE.
             Element::ProvableCountProvableSumTree(..) => Ok(COUNT_SUM_TREE_COST_SIZE),
-            Element::CountIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
+            // ProvableSumIndexedTree shares the indexed-tree two-root-key
+            // layout (primary + secondary root keys + scalar aggregate +
+            // flags), so the cost is the same as the legacy cidx slot.
+            Element::ProvableSumIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
             Element::ProvableCountIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
+            // ProvableCountProvableSumIndexedTree: variable size due to the
+            // TLV axes list. For Phase 1, we conservatively bound it by
+            // the legacy cidx cost (no production code paths cost it yet —
+            // direct/batch insert is stubbed for PCPSIT). Phase 2 must
+            // wire a precise cost model.
+            Element::ProvableCountProvableSumIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => {
@@ -268,11 +277,25 @@ impl ElementCostExtensions for Element {
                     key_len, value_len, node_type,
                 )
             }
-            Element::CountIndexedTree(.., flags) | Element::ProvableCountIndexedTree(.., flags) => {
+            Element::ProvableSumIndexedTree(.., flags)
+            | Element::ProvableCountIndexedTree(.., flags) => {
                 let flags_len = flags.map_or(0, |flags| {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
+                let value_len = COUNT_INDEXED_TREE_COST_SIZE + flags_len + wrapper_overhead;
+                let key_len = key.len() as u32;
+                KV::layered_value_byte_cost_size_for_key_and_value_lengths(
+                    key_len, value_len, node_type,
+                )
+            }
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => {
+                let flags_len = flags.map_or(0, |flags| {
+                    let flags_len = flags.len() as u32;
+                    flags_len + flags_len.required_space() as u32
+                });
+                // Phase 1 stub: use the legacy cidx cost size as a placeholder.
+                // Phase 2 must model the TLV axes payload precisely.
                 let value_len = COUNT_INDEXED_TREE_COST_SIZE + flags_len + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
@@ -355,8 +378,9 @@ impl ElementCostExtensions for Element {
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
-            | Element::CountIndexedTree(..)
-            | Element::ProvableCountIndexedTree(..) => Some(cost),
+            | Element::ProvableSumIndexedTree(..)
+            | Element::ProvableCountIndexedTree(..)
+            | Element::ProvableCountProvableSumIndexedTree(..) => Some(cost),
             _ => None,
         }
     }
@@ -385,8 +409,9 @@ impl ElementCostExtensions for Element {
             Element::ProvableCountSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableSumTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountProvableSumTree(..) => Some(LayeredValueDefinedCost(cost)),
-            Element::CountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::ProvableCountIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
+            Element::ProvableCountProvableSumIndexedTree(..) => Some(LayeredValueDefinedCost(cost)),
             Element::SumItem(..) => Some(SpecializedValueDefinedCost(cost)),
             Element::ItemWithSumItem(item, ..) => {
                 let item_len = item.len() as u32;

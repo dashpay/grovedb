@@ -74,7 +74,8 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::MmrTree, true)
             | (TreeType::BulkAppendTree(_), true)
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
-            | (TreeType::CountIndexedTree, true)
+            | (TreeType::ProvableSumIndexedTree, true)
+            | (TreeType::ProvableCountProvableSumIndexedTree, true)
             | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
@@ -88,7 +89,8 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::MmrTree, false)
             | (TreeType::BulkAppendTree(_), false)
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
-            | (TreeType::CountIndexedTree, false)
+            | (TreeType::ProvableSumIndexedTree, false)
+            | (TreeType::ProvableCountProvableSumIndexedTree, false)
             | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
@@ -150,7 +152,8 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::MmrTree, true)
             | (TreeType::BulkAppendTree(_), true)
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
-            | (TreeType::CountIndexedTree, true)
+            | (TreeType::ProvableSumIndexedTree, true)
+            | (TreeType::ProvableCountProvableSumIndexedTree, true)
             | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
@@ -164,7 +167,8 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::MmrTree, false)
             | (TreeType::BulkAppendTree(_), false)
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
-            | (TreeType::CountIndexedTree, false)
+            | (TreeType::ProvableSumIndexedTree, false)
+            | (TreeType::ProvableCountProvableSumIndexedTree, false)
             | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let batch = [(key, op)];
@@ -222,7 +226,8 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::MmrTree, true)
             | (TreeType::BulkAppendTree(_), true)
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), true)
-            | (TreeType::CountIndexedTree, true)
+            | (TreeType::ProvableSumIndexedTree, true)
+            | (TreeType::ProvableCountProvableSumIndexedTree, true)
             | (TreeType::ProvableCountIndexedTree, true) => Op::DeleteLayeredMaybeSpecialized,
             (TreeType::SumTree, false)
             | (TreeType::BigSumTree, false)
@@ -236,7 +241,8 @@ impl ElementDeleteFromStorageExtensions for Element {
             | (TreeType::MmrTree, false)
             | (TreeType::BulkAppendTree(_), false)
             | (TreeType::DenseAppendOnlyFixedSizeTree(_), false)
-            | (TreeType::CountIndexedTree, false)
+            | (TreeType::ProvableSumIndexedTree, false)
+            | (TreeType::ProvableCountProvableSumIndexedTree, false)
             | (TreeType::ProvableCountIndexedTree, false) => Op::DeleteMaybeSpecialized,
         };
         let entry = (key, op);

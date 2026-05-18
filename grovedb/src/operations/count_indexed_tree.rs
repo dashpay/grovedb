@@ -126,13 +126,11 @@ impl GroveDb {
             Element::get(&parent_merk, cidx_key, true, grove_version).map_err(Error::MerkError)
         );
         let secondary_root_key = match element.underlying() {
-            Element::CountIndexedTree(_, s, ..) | Element::ProvableCountIndexedTree(_, s, ..) => {
-                s.clone()
-            }
+            Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
             _ => {
                 return Err(Error::CorruptedData(
                     "open_count_indexed_secondary_for_batch: parent element is not a \
-                     CountIndexedTree"
+                     ProvableCountIndexedTree"
                         .to_string(),
                 ))
                 .wrap_with_cost(cost);
@@ -265,11 +263,11 @@ impl GroveDb {
                 .map_err(Error::MerkError)
         );
         let secondary_root_key_before = match count_indexed_element.underlying() {
-            Element::CountIndexedTree(_, secondary, ..)
-            | Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+            Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
             _ => {
                 return Err(Error::CorruptedData(
-                    "parent element at count-indexed key is not a CountIndexedTree".to_string(),
+                    "parent element at count-indexed key is not a ProvableCountIndexedTree"
+                        .to_string(),
                 ))
                 .wrap_with_cost(cost);
             }
@@ -329,8 +327,7 @@ impl GroveDb {
         // Applies to BRAND-NEW keys, replacements of non-tree keys
         // (e.g., Item → Tree(Some)), and overwrites of trees alike.
         match item.underlying() {
-            Element::CountIndexedTree(p, s, c, _)
-            | Element::ProvableCountIndexedTree(p, s, c, _)
+            Element::ProvableCountIndexedTree(p, s, c, _)
                 if p.is_some() || s.is_some() || *c != 0 =>
             {
                 return Err(Error::NotSupported(
@@ -371,7 +368,7 @@ impl GroveDb {
         if existing_is_tree {
             let existing_is_cidx = matches!(
                 existing_item.as_ref().map(|e| e.underlying()),
-                Some(Element::CountIndexedTree(..)) | Some(Element::ProvableCountIndexedTree(..))
+                Some(Element::ProvableCountIndexedTree(..))
             );
 
             // The unconditional check above already guarantees the new
@@ -513,7 +510,7 @@ impl GroveDb {
                     .map_err(Error::MerkError)
                 );
             }
-            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+            Element::ProvableCountIndexedTree(..) => {
                 // Nested cidx creation: must use the dedicated cidx
                 // subtree insert (Op::PutLayeredCountIndexedReference)
                 // so the parent's merk node uses H1-A
@@ -532,6 +529,25 @@ impl GroveDb {
                     )
                     .map_err(Error::MerkError)
                 );
+            }
+            // Phase 1 stub: PSIT / PCPSIT nested under a PCIT primary
+            // are deliberately not supported yet — the insertion path
+            // for those variants is a Phase 2 concern.
+            Element::ProvableSumIndexedTree(..) => {
+                return Err(Error::NotSupported(
+                    "inserting a ProvableSumIndexedTree element via \
+                     insert_into_count_indexed_tree is not yet supported (Phase 2)"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                return Err(Error::NotSupported(
+                    "inserting a ProvableCountProvableSumIndexedTree element via \
+                     insert_into_count_indexed_tree is not yet supported (Phase 2)"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
             }
             Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                 unreachable!("underlying() unwraps wrappers")
@@ -589,8 +605,7 @@ impl GroveDb {
                 ))
         );
         match (is_provable_primary, reconstructed.underlying()) {
-            (true, Element::ProvableCountIndexedTree(..))
-            | (false, Element::CountIndexedTree(..)) => {}
+            (true, Element::ProvableCountIndexedTree(..)) => {}
             _ => {
                 return Err(Error::CorruptedCodeExecution(
                     "reconstructed element kind does not match primary tree type",
@@ -649,11 +664,11 @@ impl GroveDb {
                     .map_err(Error::MerkError)
             );
             let parent_secondary_root_key_before = match gp_element.underlying() {
-                Element::CountIndexedTree(_, sec, ..)
-                | Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
+                Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
                 _ => {
                     return Err(Error::CorruptedData(
-                        "expected CountIndexedTree element in grandparent for nested mirror"
+                        "expected ProvableCountIndexedTree element in grandparent for nested \
+                         mirror"
                             .to_string(),
                     ))
                     .wrap_with_cost(cost);
@@ -867,11 +882,11 @@ impl GroveDb {
                 .map_err(Error::MerkError)
         );
         let secondary_root_key_before = match count_indexed_element.underlying() {
-            Element::CountIndexedTree(_, secondary, ..)
-            | Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+            Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
             _ => {
                 return Err(Error::CorruptedData(
-                    "parent element at count-indexed key is not a CountIndexedTree".to_string(),
+                    "parent element at count-indexed key is not a ProvableCountIndexedTree"
+                        .to_string(),
                 ))
                 .wrap_with_cost(cost);
             }
@@ -1393,12 +1408,11 @@ impl GroveDb {
                 .map_err(Error::MerkError)
         );
         match element.underlying() {
-            Element::CountIndexedTree(_, secondary, ..)
-            | Element::ProvableCountIndexedTree(_, secondary, ..) => {
+            Element::ProvableCountIndexedTree(_, secondary, ..) => {
                 Ok(secondary.clone()).wrap_with_cost(cost)
             }
             _ => Err(Error::InvalidPath(
-                "path's last segment is not a CountIndexedTree element".to_string(),
+                "path's last segment is not a ProvableCountIndexedTree element".to_string(),
             ))
             .wrap_with_cost(cost),
         }
@@ -1517,11 +1531,11 @@ impl GroveDb {
                 .map_err(Error::MerkError)
         );
         let secondary_root_key_before = match count_indexed_element.underlying() {
-            Element::CountIndexedTree(_, secondary, ..)
-            | Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+            Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
             _ => {
                 return Err(Error::CorruptedData(
-                    "parent element at count-indexed key is not a CountIndexedTree".to_string(),
+                    "parent element at count-indexed key is not a ProvableCountIndexedTree"
+                        .to_string(),
                 ))
                 .wrap_with_cost(cost);
             }
@@ -1571,10 +1585,8 @@ impl GroveDb {
 
             // Detect whether the deleted entry was itself a cidx
             // primary (nested cidx). Use the existing element snapshot.
-            let deleted_was_cidx_primary = matches!(
-                existing.underlying(),
-                Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
-            );
+            let deleted_was_cidx_primary =
+                matches!(existing.underlying(), Element::ProvableCountIndexedTree(..));
 
             // Recursively clear all primary subtree storage under
             // `entry_path` via the same find_subtrees walk used by
@@ -1731,11 +1743,11 @@ impl GroveDb {
                     .map_err(Error::MerkError)
             );
             let parent_secondary_root_key_before = match gp_element.underlying() {
-                Element::CountIndexedTree(_, sec, ..)
-                | Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
+                Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
                 _ => {
                     return Err(Error::CorruptedData(
-                        "expected CountIndexedTree element in grandparent for nested mirror"
+                        "expected ProvableCountIndexedTree element in grandparent for nested \
+                         mirror"
                             .to_string(),
                     ))
                     .wrap_with_cost(cost);

@@ -746,8 +746,9 @@ impl GroveDb {
                             // so V0 will not learn cidx subqueries. Use
                             // V1 (or the dedicated `prove_count_indexed_*`
                             // entry points) for cidx queries.
-                            Ok(Element::CountIndexedTree(..))
-                            | Ok(Element::ProvableCountIndexedTree(..))
+                            Ok(Element::ProvableCountIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -843,8 +844,9 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::CountIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..))
                             | Ok(Element::ProvableCountIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
                                 if !done_with_results =>
                             {
                                 #[cfg(feature = "proof_debug")]
@@ -886,8 +888,9 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::CountIndexedTree(..))
-                            | Ok(Element::ProvableCountIndexedTree(..)) => continue,
+                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableCountIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
                             | Ok(Element::NotSummed(_))
@@ -1879,8 +1882,7 @@ impl GroveDb {
                             // (zero-secondary-hash + empty merk proof)
                             // payload that the verifier handles via
                             // the matching empty-cidx terminal arm.
-                            Ok(ref cidx_elem @ Element::CountIndexedTree(Some(_), ..))
-                            | Ok(ref cidx_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
+                            Ok(ref cidx_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
@@ -1905,8 +1907,7 @@ impl GroveDb {
                                 // root hash for the verifier's
                                 // combine_hash_three attestation.
                                 let secondary_root_key = match cidx_elem {
-                                    Element::CountIndexedTree(_, s, ..)
-                                    | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                                    Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
                                     _ => unreachable!(),
                                 };
                                 let lower_path_owned: Vec<Vec<u8>> =
@@ -2173,8 +2174,13 @@ impl GroveDb {
                             | Ok(Element::ProvableCountSumTree(None, ..))
                             | Ok(Element::ProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
-                            | Ok(Element::CountIndexedTree(None, ..))
+                            | Ok(Element::ProvableSumIndexedTree(None, ..))
                             | Ok(Element::ProvableCountIndexedTree(None, ..))
+                            // PCPSIT empty form: primary root key is None AND the axes TLV is
+                            // empty of secondary keys. We still treat any None-primary PCPSIT
+                            // as "empty" for the purposes of the limit decrement — even if
+                            // some axes have populated secondaries, we don't recurse here.
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
@@ -2203,8 +2209,9 @@ impl GroveDb {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::CountIndexedTree(..))
-                            | Ok(Element::ProvableCountIndexedTree(..)) => continue,
+                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableCountIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
                             | Ok(Element::NotSummed(_))

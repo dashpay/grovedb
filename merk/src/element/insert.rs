@@ -145,11 +145,15 @@ pub trait ElementInsertToStorageExtensions {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
 
-    /// Insert a `CountIndexedTree` / `ProvableCountIndexedTree` element
-    /// directly into Merk under a key.
+    /// Insert a two-secondary indexed-tree element
+    /// (`ProvableSumIndexedTree` or `ProvableCountIndexedTree`) directly
+    /// into Merk under a key.
     ///
     /// Carries BOTH child Merk root hashes (primary + secondary) and uses
-    /// the H1-A three-input hash composition.
+    /// the H1-A three-input hash composition. The
+    /// `ProvableCountProvableSumIndexedTree` variant uses a different
+    /// hash composition (`axes_digest`) and is handled in Phase 2 by a
+    /// separate API.
     fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
@@ -160,8 +164,10 @@ pub trait ElementInsertToStorageExtensions {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
 
-    /// Adds a "Put" op to batch operations for a `CountIndexedTree` /
-    /// `ProvableCountIndexedTree` element and key.
+    /// Adds a "Put" op to batch operations for a `ProvableSumIndexedTree`
+    /// or `ProvableCountIndexedTree` element and key. The
+    /// `ProvableCountProvableSumIndexedTree` variant is handled
+    /// separately in Phase 2.
     fn insert_count_indexed_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -723,11 +729,12 @@ impl ElementInsertToStorageExtensions for Element {
 
         if !matches!(
             self.underlying(),
-            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+            Element::ProvableSumIndexedTree(..) | Element::ProvableCountIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
-                "insert_count_indexed_subtree only accepts CountIndexedTree or \
-                 ProvableCountIndexedTree elements",
+                "insert_count_indexed_subtree only accepts ProvableSumIndexedTree or \
+                 ProvableCountIndexedTree elements; ProvableCountProvableSumIndexedTree \
+                 uses a separate dual/triple-axis insert path (Phase 2)",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -806,11 +813,13 @@ impl ElementInsertToStorageExtensions for Element {
 
         if !matches!(
             self.underlying(),
-            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+            Element::ProvableSumIndexedTree(..) | Element::ProvableCountIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree_into_batch_operations only accepts \
-                 CountIndexedTree or ProvableCountIndexedTree elements",
+                 ProvableSumIndexedTree or ProvableCountIndexedTree elements; \
+                 ProvableCountProvableSumIndexedTree uses a separate dual/triple-axis \
+                 insert path (Phase 2)",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -1408,8 +1417,8 @@ mod tests {
         match result {
             Err(Error::InvalidInputError(msg)) => {
                 assert!(
-                    msg.contains("only accepts CountIndexedTree"),
-                    "expected non-cidx error, got: {msg}"
+                    msg.contains("only accepts ProvableSumIndexedTree"),
+                    "expected non-indexed-tree error, got: {msg}"
                 );
             }
             other => panic!(
@@ -1418,7 +1427,7 @@ mod tests {
             ),
         }
 
-        // A regular tree element is also not a cidx element.
+        // A regular tree element is also not an indexed-tree element.
         let plain_tree = Element::empty_tree();
         let result = plain_tree
             .insert_count_indexed_subtree(
@@ -1447,10 +1456,11 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut merk = TempMerk::new_with_tree_type(grove_version, TreeType::NormalTree);
 
-        // Wrap a cidx in NonCounted, then attempt to insert into a
-        // NormalTree (not count-bearing).
-        let cidx_inner = Element::empty_count_indexed_tree();
-        let wrapped = Element::new_non_counted(cidx_inner).expect("wrap");
+        // Wrap a PCIT in NonCounted, then attempt to insert into a
+        // NormalTree (not count-bearing). PCIT is the count-axis case
+        // for which the non-counted destination guard is meaningful.
+        let pcit_inner = Element::empty_provable_count_indexed_tree();
+        let wrapped = Element::new_non_counted(pcit_inner).expect("wrap");
         let result = wrapped
             .insert_count_indexed_subtree(
                 &mut merk,
@@ -1506,12 +1516,12 @@ mod tests {
         match result {
             Err(Error::InvalidInputError(msg)) => {
                 assert!(
-                    msg.contains("only accepts CountIndexedTree"),
-                    "expected non-cidx error, got: {msg}"
+                    msg.contains("only accepts ProvableSumIndexedTree"),
+                    "expected non-indexed-tree error, got: {msg}"
                 );
             }
             other => panic!(
-                "expected InvalidInputError(non-cidx element in batch), got: {:?}",
+                "expected InvalidInputError(non-indexed-tree element in batch), got: {:?}",
                 other
             ),
         }

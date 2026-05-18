@@ -75,9 +75,14 @@ impl CostSize for TreeType {
             // ProvableCountProvableSumTree carries both a count and a sum
             // like ProvableCountSumTree, so reuse its cost size.
             TreeType::ProvableCountProvableSumTree => COUNT_SUM_TREE_COST_SIZE,
-            TreeType::CountIndexedTree | TreeType::ProvableCountIndexedTree => {
+            TreeType::ProvableSumIndexedTree | TreeType::ProvableCountIndexedTree => {
                 COUNT_INDEXED_TREE_COST_SIZE
             }
+            // PCPSIT: the on-disk shape carries an axes TLV (variable
+            // length, 1..=3 entries). Phase 1 uses the legacy indexed-tree
+            // cost as a conservative placeholder; Phase 2 needs a
+            // precise model that accounts for the TLV size.
+            TreeType::ProvableCountProvableSumIndexedTree => COUNT_INDEXED_TREE_COST_SIZE,
         }
     }
 }

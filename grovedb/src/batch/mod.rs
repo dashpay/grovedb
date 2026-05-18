@@ -1841,10 +1841,11 @@ where
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..)
-            | Element::CountIndexedTree(..)
-            | Element::ProvableCountIndexedTree(..) => Err(Error::InvalidBatchOperation(
-                "references can not point to trees being updated",
-            ))
+            | Element::ProvableSumIndexedTree(..)
+            | Element::ProvableCountIndexedTree(..)
+            | Element::ProvableCountProvableSumIndexedTree(..) => Err(
+                Error::InvalidBatchOperation("references can not point to trees being updated"),
+            )
             .wrap_with_cost(cost),
             // underlying() unwraps a single level; the constructor and
             // (de)serializer reject nested wrappers, so these are
@@ -2001,8 +2002,9 @@ where
                         | Element::MmrTree(..)
                         | Element::BulkAppendTree(..)
                         | Element::DenseAppendOnlyFixedSizeTree(..)
-                        | Element::CountIndexedTree(..)
-                        | Element::ProvableCountIndexedTree(..) => {
+                        | Element::ProvableSumIndexedTree(..)
+                        | Element::ProvableCountIndexedTree(..)
+                        | Element::ProvableCountProvableSumIndexedTree(..) => {
                             Err(Error::InvalidBatchOperation(
                                 "references can not point to trees being updated",
                             ))
@@ -2054,11 +2056,14 @@ where
                     | Element::MmrTree(..)
                     | Element::BulkAppendTree(..)
                     | Element::DenseAppendOnlyFixedSizeTree(..)
-                    | Element::CountIndexedTree(..)
-                    | Element::ProvableCountIndexedTree(..) => Err(Error::InvalidBatchOperation(
-                        "references can not point to trees being updated",
-                    ))
-                    .wrap_with_cost(cost),
+                    | Element::ProvableSumIndexedTree(..)
+                    | Element::ProvableCountIndexedTree(..)
+                    | Element::ProvableCountProvableSumIndexedTree(..) => {
+                        Err(Error::InvalidBatchOperation(
+                            "references can not point to trees being updated",
+                        ))
+                        .wrap_with_cost(cost)
+                    }
                     // Wrappers are unwrapped via underlying() above.
                     Element::NonCounted(_)
                     | Element::NotSummed(_)
@@ -2466,8 +2471,7 @@ where
                         // `delete_from_count_indexed_tree` APIs because
                         // the batch propagation pass does not yet cascade
                         // through the secondary.
-                        Element::CountIndexedTree(primary, secondary, count_value, _)
-                        | Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
+                        Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
                             if primary.is_some() || secondary.is_some() || *count_value != 0 {
                                 return Err(Error::InvalidBatchOperation(
                                     "a CountIndexedTree must be empty at the moment of batch \
@@ -2522,6 +2526,27 @@ where
                                     grove_version,
                                 )
                             );
+                        }
+                        // Phase 1 stubs: the new ProvableSumIndexedTree
+                        // (PSIT) and ProvableCountProvableSumIndexedTree
+                        // (PCPSIT) variants are not yet wired into the
+                        // batch insert path. Phase 2 will add their
+                        // dedicated batch ops.
+                        Element::ProvableSumIndexedTree(..) => {
+                            return Err(Error::NotSupported(
+                                "ProvableSumIndexedTree batch insertion is not yet supported \
+                                 (Phase 2)"
+                                    .to_string(),
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        Element::ProvableCountProvableSumIndexedTree(..) => {
+                            return Err(Error::NotSupported(
+                                "ProvableCountProvableSumIndexedTree batch insertion is not \
+                                 yet supported (Phase 2)"
+                                    .to_string(),
+                            ))
+                            .wrap_with_cost(cost);
                         }
                         Element::Tree(..)
                         | Element::SumTree(..)
@@ -3253,8 +3278,9 @@ where
                                     | Element::MmrTree(..)
                                     | Element::BulkAppendTree(..)
                                     | Element::DenseAppendOnlyFixedSizeTree(..)
-                                    | Element::CountIndexedTree(..)
-                                    | Element::ProvableCountIndexedTree(..) => {
+                                    | Element::ProvableSumIndexedTree(..)
+                                    | Element::ProvableCountIndexedTree(..)
+                                    | Element::ProvableCountProvableSumIndexedTree(..) => {
                                         let tree_type = new_element
                                             .tree_type()
                                             .expect("tree_type guaranteed by match arm");
@@ -3783,21 +3809,22 @@ impl GroveDb {
                                                     // message).
                                                     } else if matches!(
                                                         element,
-                                                        Element::CountIndexedTree(..)
+                                                        Element::ProvableSumIndexedTree(..)
                                                             | Element::ProvableCountIndexedTree(..)
+                                                            | Element::ProvableCountProvableSumIndexedTree(..)
                                                     ) {
                                                         return Err(Error::NotSupported(
                                                             "populating a freshly-inserted \
-                                                             CountIndexedTree / \
-                                                             ProvableCountIndexedTree in the same \
+                                                             indexed-tree element in the same \
                                                              batch as its creation is not \
                                                              supported (no Insert variant for \
                                                              aggregate-indexed two-Merk \
                                                              propagation). Split into two \
-                                                             batches: insert the empty cidx \
-                                                             first, then populate it via \
+                                                             batches: insert the empty \
+                                                             indexed tree first, then populate \
+                                                             it via the dedicated \
                                                              `db.insert_into_count_indexed_tree` \
-                                                             or a follow-up batch."
+                                                             API or a follow-up batch."
                                                                 .to_string(),
                                                         ))
                                                         .wrap_with_cost(cost);

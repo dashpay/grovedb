@@ -316,8 +316,7 @@ impl GroveDb {
             // otherwise we open the existing child Merks and read their
             // current root hashes so the parent's value_hash is consistent
             // with on-disk state (migration / restore-from-backup path).
-            Element::CountIndexedTree(primary, secondary, count_value, _)
-            | Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
+            Element::ProvableCountIndexedTree(primary, secondary, count_value, _) => {
                 let (primary_root_hash, secondary_root_hash) =
                     if primary.is_none() && secondary.is_none() && *count_value == 0 {
                         // Empty cidx: both root keys absent AND count
@@ -412,6 +411,27 @@ impl GroveDb {
                         grove_version,
                     )
                 );
+            }
+            // Phase 1 stubs: the new ProvableSumIndexedTree (PSIT) and
+            // ProvableCountProvableSumIndexedTree (PCPSIT) variants are
+            // not yet wired into direct `db.insert`. Phase 2 will add
+            // their primary+secondary / primary+axes-TLV insertion
+            // paths; until then we refuse with NotSupported rather than
+            // silently persist inconsistent state.
+            Element::ProvableSumIndexedTree(..) => {
+                return Err(Error::NotSupported(
+                    "ProvableSumIndexedTree direct insertion is not yet supported (Phase 2)"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                return Err(Error::NotSupported(
+                    "ProvableCountProvableSumIndexedTree direct insertion is not yet supported \
+                     (Phase 2)"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
             }
             Element::Tree(value, _)
             | Element::SumTree(value, ..)

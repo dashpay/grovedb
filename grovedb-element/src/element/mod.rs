@@ -247,38 +247,73 @@ pub enum Element {
     /// because the formula collapses for bases ≥ 16; their slots are 178
     /// (`0xB2`) and 194 (`0xC2`) respectively.
     ProvableCountProvableSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
-    /// Count-indexed tree: a `CountTree`-style primary Merk paired with a
-    /// secondary Merk keyed by `(count_be ‖ original_key)` for ordered
-    /// count-based queries. Both Merks contribute to the element's
-    /// `combined_value_hash` via the three-input hash composition.
+    /// Provable sum-indexed tree: a `ProvableSumTree`-style primary Merk
+    /// paired with a single secondary Merk keyed by
+    /// `(sum_sortable_be ‖ original_key)`. Both Merks contribute to the
+    /// element's `combined_value_hash` via the three-input hash composition
+    /// `combine_hash_three(value_hash, primary_root_hash,
+    /// secondary_root_hash)`.
     ///
-    /// Fields: `(primary_root_key, secondary_root_key, count_value, flags)`
-    /// - `primary_root_key`: root key of the primary count Merk.
-    /// - `secondary_root_key`: root key of the secondary count-ordered Merk.
-    /// - `count_value`: aggregated count of the primary Merk.
+    /// Fields: `(primary_root_key, secondary_root_key, sum_value, flags)`
+    /// - `primary_root_key`: root key of the primary `ProvableSumTree`.
+    /// - `secondary_root_key`: root key of the secondary sum-ordered Merk.
+    /// - `sum_value`: aggregated signed sum of the primary Merk.
     /// - `flags`: optional per-element metadata.
     ///
     /// Variant order in this enum determines bincode's variant-index
-    /// encoding on disk; `CountIndexedTree` is placed AFTER
-    /// `ProvableCountProvableSumTree` (variant index 20). This variant gets
-    /// index 21, matching `ElementType::CountIndexedTree`.
-    CountIndexedTree(
+    /// encoding on disk. This variant gets index 21 — the slot that was
+    /// previously held by the (now-removed, never-shipped) non-provable
+    /// `CountIndexedTree`. Wire compatibility for that legacy variant is
+    /// not required.
+    ProvableSumIndexedTree(
         Option<Vec<u8>>,
         Option<Vec<u8>>,
-        CountValue,
+        SumValue,
         Option<ElementFlags>,
     ),
-    /// Provable count-indexed tree: same as `CountIndexedTree` but the
-    /// primary Merk uses `ProvableCountedMerkNode` (count baked into node
-    /// hash). The secondary Merk's per-node feature type is
-    /// `ProvableCountedMerkNode(1)` in both variants — this lets aggregate
-    /// count queries against the secondary work uniformly.
+    /// Provable count-indexed tree: primary Merk uses
+    /// `ProvableCountedMerkNode` (count baked into node hash) and the
+    /// secondary Merk is keyed by `(count_be ‖ original_key)`. The
+    /// secondary's per-node feature type is `ProvableCountedMerkNode(1)`
+    /// so aggregate count queries against the secondary work uniformly.
     ///
     /// Fields: `(primary_root_key, secondary_root_key, count_value, flags)`
     ProvableCountIndexedTree(
         Option<Vec<u8>>,
         Option<Vec<u8>>,
         CountValue,
+        Option<ElementFlags>,
+    ),
+    /// Provable count + provable sum indexed tree: primary Merk uses
+    /// `ProvableCountedAndProvableSummedMerkNode` (both count AND sum
+    /// baked into node hash) and carries a TLV list of 1..=3 secondary
+    /// Merks — one per selected axis (count, sum, avg). Each secondary
+    /// lives at its own derived storage prefix and is itself a
+    /// `ProvableCountProvableSumTree` so any axis can produce both
+    /// count-on-range and sum-on-range proofs.
+    ///
+    /// Fields: `(primary_root_key, count_value, sum_value, axes, flags)`
+    /// - `primary_root_key`: root key of the primary
+    ///   `ProvableCountProvableSumTree`.
+    /// - `count_value`: aggregated count of the primary.
+    /// - `sum_value`: aggregated signed sum of the primary.
+    /// - `axes`: canonical (sorted by tag, deduped, 1..=3) list of
+    ///   `(axis_tag, secondary_root_key)`. Axis tags are
+    ///   `0 = count`, `1 = sum`, `2 = avg` (see
+    ///   [`crate::indexed::IndexAxis`]).
+    /// - `flags`: optional per-element metadata.
+    ///
+    /// The element's `combined_value_hash` is
+    /// `combine_hash_three(value_hash, primary_root_hash, axes_digest)`,
+    /// where `axes_digest` is a length-prefixed Blake3 over the canonical
+    /// axes TLV (see `merk::tree::hash::axes_digest`). Empty secondaries
+    /// (no entries yet for an axis) contribute `NULL_HASH` in their
+    /// per-axis hash slot.
+    ProvableCountProvableSumIndexedTree(
+        Option<Vec<u8>>,
+        CountValue,
+        SumValue,
+        Vec<(u8, Option<Vec<u8>>)>,
         Option<ElementFlags>,
     ),
 }
@@ -469,17 +504,22 @@ impl fmt::Display for Element {
             Element::NonCounted(inner) => {
                 write!(f, "NonCounted({})", inner)
             }
-            Element::CountIndexedTree(primary_root_key, secondary_root_key, count_value, flags) => {
+            Element::ProvableSumIndexedTree(
+                primary_root_key,
+                secondary_root_key,
+                sum_value,
+                flags,
+            ) => {
                 write!(
                     f,
-                    "CountIndexedTree(primary={}, secondary={}, count={}{})",
+                    "ProvableSumIndexedTree(primary={}, secondary={}, sum={}{})",
                     primary_root_key
                         .as_ref()
                         .map_or("None".to_string(), hex::encode),
                     secondary_root_key
                         .as_ref()
                         .map_or("None".to_string(), hex::encode),
-                    count_value,
+                    sum_value,
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
@@ -501,6 +541,43 @@ impl fmt::Display for Element {
                         .as_ref()
                         .map_or("None".to_string(), hex::encode),
                     count_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ProvableCountProvableSumIndexedTree(
+                primary_root_key,
+                count_value,
+                sum_value,
+                axes,
+                flags,
+            ) => {
+                write!(
+                    f,
+                    "ProvableCountProvableSumIndexedTree(primary={}, count={}, sum={}, axes=[",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                )?;
+                let mut first = true;
+                for (tag, sk) in axes {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    first = false;
+                    write!(
+                        f,
+                        "({}, {})",
+                        tag,
+                        sk.as_ref().map_or("None".to_string(), hex::encode)
+                    )?;
+                }
+                write!(
+                    f,
+                    "]{})",
                     flags
                         .as_ref()
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
@@ -578,8 +655,11 @@ impl Element {
             Element::ProvableSumTree(..) => ElementType::ProvableSumTree,
             Element::ProvableCountProvableSumTree(..) => ElementType::ProvableCountProvableSumTree,
             Element::ReferenceWithSumItem(..) => ElementType::ReferenceWithSumItem,
-            Element::CountIndexedTree(..) => ElementType::CountIndexedTree,
+            Element::ProvableSumIndexedTree(..) => ElementType::ProvableSumIndexedTree,
             Element::ProvableCountIndexedTree(..) => ElementType::ProvableCountIndexedTree,
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                ElementType::ProvableCountProvableSumIndexedTree
+            }
             Element::NonCounted(inner) => match inner.element_type() {
                 ElementType::Item => ElementType::NonCountedItem,
                 ElementType::Reference => ElementType::NonCountedReference,
@@ -603,9 +683,14 @@ impl Element {
                     ElementType::NonCountedProvableCountProvableSumTree
                 }
                 ElementType::ReferenceWithSumItem => ElementType::NonCountedReferenceWithSumItem,
-                ElementType::CountIndexedTree => ElementType::NonCountedCountIndexedTree,
+                ElementType::ProvableSumIndexedTree => {
+                    ElementType::NonCountedProvableSumIndexedTree
+                }
                 ElementType::ProvableCountIndexedTree => {
                     ElementType::NonCountedProvableCountIndexedTree
+                }
+                ElementType::ProvableCountProvableSumIndexedTree => {
+                    ElementType::NonCountedProvableCountProvableSumIndexedTree
                 }
                 // Inner is always a base type — nested wrappers are
                 // forbidden at construction and (de)serialization.
@@ -781,16 +866,23 @@ mod serde_impl {
             Option<ElementFlags>,
         ),
         ProvableCountProvableSumTree(Option<Vec<u8>>, CountValue, SumValue, Option<ElementFlags>),
-        CountIndexedTree(
+        ProvableSumIndexedTree(
             Option<Vec<u8>>,
             Option<Vec<u8>>,
-            CountValue,
+            SumValue,
             Option<ElementFlags>,
         ),
         ProvableCountIndexedTree(
             Option<Vec<u8>>,
             Option<Vec<u8>>,
             CountValue,
+            Option<ElementFlags>,
+        ),
+        ProvableCountProvableSumIndexedTree(
+            Option<Vec<u8>>,
+            CountValue,
+            SumValue,
+            Vec<(u8, Option<Vec<u8>>)>,
             Option<ElementFlags>,
         ),
     }
@@ -833,11 +925,14 @@ mod serde_impl {
                 ElementShadow::ProvableCountProvableSumTree(k, c, s, f) => {
                     Element::ProvableCountProvableSumTree(k, c, s, f)
                 }
-                ElementShadow::CountIndexedTree(pk, sk, c, f) => {
-                    Element::CountIndexedTree(pk, sk, c, f)
+                ElementShadow::ProvableSumIndexedTree(pk, sk, s, f) => {
+                    Element::ProvableSumIndexedTree(pk, sk, s, f)
                 }
                 ElementShadow::ProvableCountIndexedTree(pk, sk, c, f) => {
                     Element::ProvableCountIndexedTree(pk, sk, c, f)
+                }
+                ElementShadow::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f) => {
+                    Element::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f)
                 }
             }
         }

@@ -64,16 +64,21 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some((None, TreeType::DenseAppendOnlyFixedSizeTree(height)))
             }
-            // For count-indexed trees, return the primary root key and the
-            // new tree type. The secondary root key is part of the element
-            // bytes but is not surfaced through this single-root-key API
-            // — callers needing both must read the element bytes directly.
-            Element::CountIndexedTree(primary_root_key, ..) => {
-                Some((primary_root_key, TreeType::CountIndexedTree))
+            // For indexed trees, return the primary root key and the tree
+            // type. Secondary root keys (or the axes TLV for PCPSIT) are
+            // part of the element bytes but are not surfaced through this
+            // single-root-key API — callers needing them must read the
+            // element bytes directly.
+            Element::ProvableSumIndexedTree(primary_root_key, ..) => {
+                Some((primary_root_key, TreeType::ProvableSumIndexedTree))
             }
             Element::ProvableCountIndexedTree(primary_root_key, ..) => {
                 Some((primary_root_key, TreeType::ProvableCountIndexedTree))
             }
+            Element::ProvableCountProvableSumIndexedTree(primary_root_key, ..) => Some((
+                primary_root_key,
+                TreeType::ProvableCountProvableSumIndexedTree,
+            )),
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.root_key_and_tree_type_owned(),
@@ -113,12 +118,16 @@ impl ElementTreeTypeExtensions for Element {
                 &NONE_ROOT_KEY,
                 TreeType::DenseAppendOnlyFixedSizeTree(*height),
             )),
-            Element::CountIndexedTree(primary_root_key, ..) => {
-                Some((primary_root_key, TreeType::CountIndexedTree))
+            Element::ProvableSumIndexedTree(primary_root_key, ..) => {
+                Some((primary_root_key, TreeType::ProvableSumIndexedTree))
             }
             Element::ProvableCountIndexedTree(primary_root_key, ..) => {
                 Some((primary_root_key, TreeType::ProvableCountIndexedTree))
             }
+            Element::ProvableCountProvableSumIndexedTree(primary_root_key, ..) => Some((
+                primary_root_key,
+                TreeType::ProvableCountProvableSumIndexedTree,
+            )),
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.root_key_and_tree_type(),
@@ -153,9 +162,15 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, flags) => {
                 Some((flags, TreeType::DenseAppendOnlyFixedSizeTree(*height)))
             }
-            Element::CountIndexedTree(.., flags) => Some((flags, TreeType::CountIndexedTree)),
+            Element::ProvableSumIndexedTree(.., flags) => {
+                Some((flags, TreeType::ProvableSumIndexedTree))
+            }
             Element::ProvableCountIndexedTree(.., flags) => {
                 Some((flags, TreeType::ProvableCountIndexedTree))
+            }
+            // PCPSIT's flags are the trailing field after `axes`.
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => {
+                Some((flags, TreeType::ProvableCountProvableSumIndexedTree))
             }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -189,8 +204,11 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 Some(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
-            Element::CountIndexedTree(..) => Some(TreeType::CountIndexedTree),
+            Element::ProvableSumIndexedTree(..) => Some(TreeType::ProvableSumIndexedTree),
             Element::ProvableCountIndexedTree(..) => Some(TreeType::ProvableCountIndexedTree),
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                Some(TreeType::ProvableCountProvableSumIndexedTree)
+            }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.tree_type(),
@@ -223,13 +241,20 @@ impl ElementTreeTypeExtensions for Element {
             Element::MmrTree(..) => Some(BasicMerkNode),
             Element::BulkAppendTree(..) => Some(BasicMerkNode),
             Element::DenseAppendOnlyFixedSizeTree(..) => Some(BasicMerkNode),
-            // CountIndexedTree's primary uses CountedMerkNode; the secondary
-            // is opened separately as a regular ProvableCountTree.
-            Element::CountIndexedTree(.., count_value, _) => Some(CountedMerkNode(*count_value)),
+            // ProvableSumIndexedTree's primary uses ProvableSummedMerkNode.
+            Element::ProvableSumIndexedTree(.., sum_value, _) => {
+                Some(TreeFeatureType::ProvableSummedMerkNode(*sum_value))
+            }
             // ProvableCountIndexedTree's primary uses ProvableCountedMerkNode.
             Element::ProvableCountIndexedTree(.., count_value, _) => {
                 Some(TreeFeatureType::ProvableCountedMerkNode(*count_value))
             }
+            // ProvableCountProvableSumIndexedTree's primary uses
+            // ProvableCountedAndProvableSummedMerkNode (both axes baked
+            // into the node hash).
+            Element::ProvableCountProvableSumIndexedTree(_, count_value, sum_value, _, _) => Some(
+                TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(*count_value, *sum_value),
+            ),
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.tree_feature_type(),
@@ -262,9 +287,14 @@ impl ElementTreeTypeExtensions for Element {
             Element::DenseAppendOnlyFixedSizeTree(_, height, _) => {
                 MaybeTree::Tree(TreeType::DenseAppendOnlyFixedSizeTree(*height))
             }
-            Element::CountIndexedTree(..) => MaybeTree::Tree(TreeType::CountIndexedTree),
+            Element::ProvableSumIndexedTree(..) => {
+                MaybeTree::Tree(TreeType::ProvableSumIndexedTree)
+            }
             Element::ProvableCountIndexedTree(..) => {
                 MaybeTree::Tree(TreeType::ProvableCountIndexedTree)
+            }
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                MaybeTree::Tree(TreeType::ProvableCountProvableSumIndexedTree)
             }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
@@ -324,12 +354,22 @@ impl ElementTreeTypeExtensions for Element {
                     v.0, v.1,
                 ))
             }
-            // CountIndexedTree's primary aggregates like CountTree.
-            TreeType::CountIndexedTree => Ok(CountedMerkNode(self.count_value_or_default())),
+            // ProvableSumIndexedTree's primary aggregates like ProvableSumTree.
+            TreeType::ProvableSumIndexedTree => Ok(TreeFeatureType::ProvableSummedMerkNode(
+                self.sum_value_or_default(),
+            )),
             // ProvableCountIndexedTree's primary aggregates like ProvableCountTree.
             TreeType::ProvableCountIndexedTree => Ok(TreeFeatureType::ProvableCountedMerkNode(
                 self.count_value_or_default(),
             )),
+            // ProvableCountProvableSumIndexedTree's primary aggregates like
+            // ProvableCountProvableSumTree.
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                let v = self.count_sum_value_or_default();
+                Ok(TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(
+                    v.0, v.1,
+                ))
+            }
         }
     }
 }
@@ -682,55 +722,55 @@ mod tests {
     }
 
     // =====================================================================
-    // Coverage: cidx arms in ElementTreeTypeExtensions methods
-    // (L108-109, 111-112, 144-146, 174-175, 202, 204-205, 233, 235).
+    // Coverage: indexed-tree arms in ElementTreeTypeExtensions methods
+    // (mirrors the old cidx coverage block but for the new PSIT variant).
     // =====================================================================
 
     #[test]
-    fn tree_type_extensions_cover_count_indexed_tree_arms() {
-        // Build CountIndexedTree variants and verify every trait
-        // method returns the expected cidx-shaped value.
+    fn tree_type_extensions_cover_provable_sum_indexed_tree_arms() {
+        // Build a ProvableSumIndexedTree (PSIT) and verify every trait
+        // method returns the expected PSIT-shaped value.
         let primary_root = Some(b"primary_root".to_vec());
         let secondary_root = Some(b"secondary_root".to_vec());
         let flags = Some(vec![9, 9]);
-        let count_value: u64 = 42;
+        let sum_value: i64 = -42;
 
-        let cidx = Element::CountIndexedTree(
+        let psit = Element::ProvableSumIndexedTree(
             primary_root.clone(),
             secondary_root.clone(),
-            count_value,
+            sum_value,
             flags.clone(),
         );
 
         // tree_type()
-        assert_eq!(cidx.tree_type(), Some(TreeType::CountIndexedTree));
+        assert_eq!(psit.tree_type(), Some(TreeType::ProvableSumIndexedTree));
 
         // maybe_tree_type()
         assert_eq!(
-            cidx.maybe_tree_type(),
-            MaybeTree::Tree(TreeType::CountIndexedTree)
+            psit.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::ProvableSumIndexedTree)
         );
 
         // root_key_and_tree_type() — borrowed primary_root_key
-        let (rk, tt) = cidx.root_key_and_tree_type().expect("Some");
+        let (rk, tt) = psit.root_key_and_tree_type().expect("Some");
         assert_eq!(*rk, primary_root);
-        assert_eq!(tt, TreeType::CountIndexedTree);
+        assert_eq!(tt, TreeType::ProvableSumIndexedTree);
 
         // root_key_and_tree_type_owned() — owned primary_root_key
-        let (rk_owned, tt) = cidx.clone().root_key_and_tree_type_owned().expect("Some");
+        let (rk_owned, tt) = psit.clone().root_key_and_tree_type_owned().expect("Some");
         assert_eq!(rk_owned, primary_root);
-        assert_eq!(tt, TreeType::CountIndexedTree);
+        assert_eq!(tt, TreeType::ProvableSumIndexedTree);
 
         // tree_flags_and_type()
-        let (f, tt) = cidx.tree_flags_and_type().expect("Some");
+        let (f, tt) = psit.tree_flags_and_type().expect("Some");
         assert_eq!(*f, flags);
-        assert_eq!(tt, TreeType::CountIndexedTree);
+        assert_eq!(tt, TreeType::ProvableSumIndexedTree);
 
-        // tree_feature_type() — CountedMerkNode with the cidx's
-        // count_value.
-        match cidx.tree_feature_type().expect("Some") {
-            CountedMerkNode(c) => assert_eq!(c, count_value),
-            other => panic!("expected CountedMerkNode, got {:?}", other),
+        // tree_feature_type() — ProvableSummedMerkNode with the PSIT's
+        // sum_value.
+        match psit.tree_feature_type().expect("Some") {
+            TreeFeatureType::ProvableSummedMerkNode(s) => assert_eq!(s, sum_value),
+            other => panic!("expected ProvableSummedMerkNode, got {:?}", other),
         }
     }
 
@@ -774,15 +814,15 @@ mod tests {
     }
 
     #[test]
-    fn tree_type_extensions_look_through_non_counted_wrapping_cidx() {
-        // NonCounted-wrapped cidx must delegate every trait method to
-        // the inner cidx (look-through behavior at L114, 148, 176, 207,
-        // 237 / 117, 149, 178, 208, 239).
+    fn tree_type_extensions_look_through_non_counted_wrapping_indexed_tree() {
+        // NonCounted-wrapped indexed tree must delegate every trait method
+        // to the inner indexed tree. Uses PCIT (count-indexed) as the
+        // representative case.
         let primary_root = Some(b"primary_root".to_vec());
         let secondary_root = Some(b"secondary_root".to_vec());
         let count_value: u64 = 17;
 
-        let inner = Element::CountIndexedTree(
+        let inner = Element::ProvableCountIndexedTree(
             primary_root.clone(),
             secondary_root.clone(),
             count_value,
@@ -790,15 +830,69 @@ mod tests {
         );
         let wrapped = Element::new_non_counted(inner).expect("wrap");
 
-        assert_eq!(wrapped.tree_type(), Some(TreeType::CountIndexedTree));
+        assert_eq!(
+            wrapped.tree_type(),
+            Some(TreeType::ProvableCountIndexedTree)
+        );
         assert_eq!(
             wrapped.maybe_tree_type(),
-            MaybeTree::Tree(TreeType::CountIndexedTree)
+            MaybeTree::Tree(TreeType::ProvableCountIndexedTree)
         );
         let (rk, tt) = wrapped.root_key_and_tree_type().expect("Some");
         assert_eq!(*rk, primary_root);
-        assert_eq!(tt, TreeType::CountIndexedTree);
+        assert_eq!(tt, TreeType::ProvableCountIndexedTree);
         // tree_feature_type delegates through the wrapper.
         assert!(wrapped.tree_feature_type().is_some());
+    }
+
+    #[test]
+    fn tree_type_extensions_cover_provable_count_provable_sum_indexed_tree_arms() {
+        // Build a PCPSIT and verify the extension methods return the
+        // PCPSIT-shaped value across the board.
+        let primary_root = Some(b"primary_root".to_vec());
+        let flags = Some(vec![7, 7]);
+        let count_value: u64 = 11;
+        let sum_value: i64 = 23;
+        let axes = vec![(0u8, None), (1u8, Some(b"sec".to_vec()))];
+
+        let pcpsit = Element::ProvableCountProvableSumIndexedTree(
+            primary_root.clone(),
+            count_value,
+            sum_value,
+            axes.clone(),
+            flags.clone(),
+        );
+
+        assert_eq!(
+            pcpsit.tree_type(),
+            Some(TreeType::ProvableCountProvableSumIndexedTree)
+        );
+        assert_eq!(
+            pcpsit.maybe_tree_type(),
+            MaybeTree::Tree(TreeType::ProvableCountProvableSumIndexedTree)
+        );
+
+        let (rk, tt) = pcpsit.root_key_and_tree_type().expect("Some");
+        assert_eq!(*rk, primary_root);
+        assert_eq!(tt, TreeType::ProvableCountProvableSumIndexedTree);
+
+        let (rk_owned, tt) = pcpsit.clone().root_key_and_tree_type_owned().expect("Some");
+        assert_eq!(rk_owned, primary_root);
+        assert_eq!(tt, TreeType::ProvableCountProvableSumIndexedTree);
+
+        let (f, tt) = pcpsit.tree_flags_and_type().expect("Some");
+        assert_eq!(*f, flags);
+        assert_eq!(tt, TreeType::ProvableCountProvableSumIndexedTree);
+
+        match pcpsit.tree_feature_type().expect("Some") {
+            TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(c, s) => {
+                assert_eq!(c, count_value);
+                assert_eq!(s, sum_value);
+            }
+            other => panic!(
+                "expected ProvableCountedAndProvableSummedMerkNode, got {:?}",
+                other
+            ),
+        }
     }
 }

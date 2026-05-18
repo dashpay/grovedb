@@ -171,6 +171,58 @@ pub fn combine_hash_three(
     })
 }
 
+#[cfg(any(feature = "minimal", feature = "verify"))]
+/// Compute the canonical digest of an indexed-tree's `axes` TLV.
+///
+/// Used by `Element::ProvableCountProvableSumIndexedTree`: the element's
+/// `combined_value_hash` is
+/// `combine_hash_three(value_hash, primary_root_hash, axes_digest)`, where
+/// `axes_digest` binds the list of `(axis_tag, secondary_root_hash)` pairs
+/// into the element hash.
+///
+/// Encoding: `axis_count_u8 ‖ (axis_tag_u8 ‖ secondary_root_hash_32) for
+/// each axis in canonical order`. Empty secondaries (no entries yet) pass
+/// `NULL_HASH` in their hash slot. The leading 1-byte length prefix makes
+/// a 1-axis digest distinguishable from a 2-axis digest truncated to one
+/// entry.
+///
+/// **The caller is responsible for supplying `axes` in canonical order**
+/// (sorted by tag, no duplicates, 1..=3 entries). This function does NOT
+/// re-sort or validate — by the time we hash, the constructor / decoder
+/// has already enforced the invariant.
+///
+/// Cost: payload is `1 + 33 * N` bytes; Blake3 compresses in 64-byte
+/// blocks, so `hash_node_calls = ceil((1 + 33 * N) / 64)`. For N=1 that's
+/// 1 block; for N=2 it's 2 blocks; for N=3 it's still 2 blocks (100
+/// bytes).
+pub fn axes_digest(axes: &[(u8, CryptoHash)]) -> CostContext<CryptoHash> {
+    let n = axes.len();
+    // Length in bytes of the digest payload. The cast is safe in practice
+    // (the constructor caps N at 3) but we use u8 arithmetic to keep the
+    // wire format explicit.
+    let payload_bytes = 1usize + 33 * n;
+    // Each 64-byte block triggers one Blake3 compression. We round up.
+    let hashes = ((payload_bytes + 63) / 64) as u32;
+
+    let mut hasher = blake3::Hasher::new();
+    // Length prefix: distinguish a 1-axis digest from a 2-axis digest
+    // truncated to a single entry. Cast is safe — N is bounded by 3
+    // upstream; we still mask to avoid implicit promotion.
+    hasher.update(&[(n as u8)]);
+    for (tag, hash) in axes {
+        hasher.update(&[*tag]);
+        hasher.update(hash);
+    }
+
+    let res = hasher.finalize();
+    let mut out: CryptoHash = Default::default();
+    out.copy_from_slice(res.as_bytes());
+    out.wrap_with_cost(OperationCost {
+        hash_node_calls: hashes,
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +266,7 @@ mod tests {
 
     #[test]
     fn combine_hash_three_handles_null_hash_slots() {
-        // For a CountIndexedTree element with both child Merks empty, the
+        // For an indexed-tree element with both child Merks empty, the
         // composition is Blake3(value_hash || NULL_HASH || NULL_HASH).
         // Verify it is well-defined and stable across calls.
         let value_hash = [0xAA; 32];
@@ -226,6 +278,73 @@ mod tests {
             .to_owned();
         assert_eq!(h1, h2);
         assert_ne!(h1, NULL_HASH);
+    }
+
+    // -- axes_digest --
+
+    #[test]
+    fn axes_digest_is_deterministic() {
+        let axes = [(0u8, [1u8; 32]), (1, [2u8; 32]), (2, [3u8; 32])];
+        let a = axes_digest(&axes).value().to_owned();
+        let b = axes_digest(&axes).value().to_owned();
+        assert_eq!(a, b);
+    }
+
+    /// A 1-axis digest must differ from a 2-axis digest with the same
+    /// leading entry: the length prefix byte separates them.
+    #[test]
+    fn axes_digest_length_prefix_matters() {
+        let one = [(0u8, [1u8; 32])];
+        let two = [(0u8, [1u8; 32]), (1, [2u8; 32])];
+        let a = axes_digest(&one).value().to_owned();
+        let b = axes_digest(&two).value().to_owned();
+        assert_ne!(a, b);
+    }
+
+    /// Tag order matters even though both inputs contain the same set of
+    /// (tag, hash) pairs — the canonical-order contract is encoded in the
+    /// hash because we hash the sequence as-given.
+    #[test]
+    fn axes_digest_tag_order_matters() {
+        let count_then_sum = [(0u8, [1u8; 32]), (1, [2u8; 32])];
+        let sum_then_count = [(1u8, [2u8; 32]), (0, [1u8; 32])];
+        let a = axes_digest(&count_then_sum).value().to_owned();
+        let b = axes_digest(&sum_then_count).value().to_owned();
+        assert_ne!(a, b);
+    }
+
+    /// Three axes with all-`NULL_HASH` secondary hashes (the canonical
+    /// "empty PCPSIT" shape) is well-defined and distinct from any
+    /// 1- or 2-axis form.
+    #[test]
+    fn axes_digest_three_null_axes() {
+        let axes = [(0u8, NULL_HASH), (1, NULL_HASH), (2, NULL_HASH)];
+        let h = axes_digest(&axes).value().to_owned();
+        assert_ne!(h, NULL_HASH);
+
+        // Distinct from the 1-axis NULL form.
+        let one = [(0u8, NULL_HASH)];
+        assert_ne!(axes_digest(&one).value().to_owned(), h);
+    }
+
+    /// Pin the per-N cost model. Payload bytes = 1 + 33N; blocks =
+    /// ceil(payload / 64).
+    #[test]
+    fn axes_digest_hash_call_counts() {
+        let one = [(0u8, [0u8; 32])];
+        let cost1 = axes_digest(&one).cost();
+        // 1 + 33 = 34 bytes → 1 block.
+        assert_eq!(cost1.hash_node_calls, 1);
+
+        let two = [(0u8, [0u8; 32]), (1, [0u8; 32])];
+        let cost2 = axes_digest(&two).cost();
+        // 1 + 66 = 67 bytes → 2 blocks (one full 64, one partial 3).
+        assert_eq!(cost2.hash_node_calls, 2);
+
+        let three = [(0u8, [0u8; 32]), (1, [0u8; 32]), (2, [0u8; 32])];
+        let cost3 = axes_digest(&three).cost();
+        // 1 + 99 = 100 bytes → 2 blocks (one full 64, one partial 36).
+        assert_eq!(cost3.hash_node_calls, 2);
     }
 }
 
@@ -468,8 +587,8 @@ mod node_hash_with_sum_tests {
         let l = h(8);
         let r = h(9);
         let ab = node_hash_with_count_and_sum(&kv, &l, &r, 3, 5).unwrap();
-        let ba = node_hash_with_count_and_sum(&kv, &l, &r, 5, 3).unwrap();
-        assert_ne!(ab, ba);
+        let swapped = node_hash_with_count_and_sum(&kv, &l, &r, 5, 3).unwrap();
+        assert_ne!(ab, swapped);
     }
 
     #[test]

@@ -701,14 +701,13 @@ impl GroveDb {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
                         match element {
-                            // CountIndexedTree / ProvableCountIndexedTree:
-                            // descend into the primary as if it were a
-                            // standard Merk subtree, then chain via
-                            // combine_hash_three(value_hash, primary_root,
-                            // secondary_root) where secondary_root is the
-                            // attestation prefix on the cidx ProofBytes.
-                            Element::CountIndexedTree(..)
-                            | Element::ProvableCountIndexedTree(..) => {
+                            // ProvableCountIndexedTree: descend into the
+                            // primary as if it were a standard Merk subtree,
+                            // then chain via combine_hash_three(value_hash,
+                            // primary_root, secondary_root) where
+                            // secondary_root is the attestation prefix on
+                            // the cidx ProofBytes.
+                            Element::ProvableCountIndexedTree(..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -981,6 +980,20 @@ impl GroveDb {
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
                                 ));
                             }
+                            // Phase 1: descent into the new PSIT / PCPSIT
+                            // indexed-tree variants is not yet wired through
+                            // the V1 verifier. Phase 2 will add the
+                            // appropriate combine_hash_three chain for PSIT
+                            // and the axes_digest chain for PCPSIT.
+                            Element::ProvableSumIndexedTree(..)
+                            | Element::ProvableCountProvableSumIndexedTree(..) => {
+                                return Err(Error::NotSupported(
+                                    "V1 verifier descent into ProvableSumIndexedTree / \
+                                     ProvableCountProvableSumIndexedTree is not yet supported \
+                                     (Phase 2)"
+                                        .to_string(),
+                                ));
+                            }
                             Element::NonCounted(_)
                             | Element::NotSummed(_)
                             | Element::NotCountedOrSummed(_) => {
@@ -1005,11 +1018,8 @@ impl GroveDb {
                         // `combine_hash_three(H(value), NULL_HASH, NULL_HASH)`
                         // instead. Without the cidx-specific arm, valid
                         // empty-cidx terminal proofs fail verification.
-                        let is_empty_cidx = matches!(
-                            element,
-                            Element::CountIndexedTree(None, None, 0, _)
-                                | Element::ProvableCountIndexedTree(None, None, 0, _)
-                        );
+                        let is_empty_cidx =
+                            matches!(element, Element::ProvableCountIndexedTree(None, None, 0, _));
                         if is_empty_cidx {
                             let expected_value_hash = combine_hash_three(
                                 value_hash(value_bytes).value(),
@@ -1892,12 +1902,15 @@ impl GroveDb {
                             // it for the same reason). The verifier
                             // refuses to fabricate a chain for an
                             // envelope shape V0 cannot produce.
-                            Element::CountIndexedTree(..)
-                            | Element::ProvableCountIndexedTree(..) => {
+                            Element::ProvableSumIndexedTree(..)
+                            | Element::ProvableCountIndexedTree(..)
+                            | Element::ProvableCountProvableSumIndexedTree(..) => {
                                 return Err(Error::NotSupported(
-                                    "V0 proofs do not support descent into \
-                                     CountIndexedTree / ProvableCountIndexedTree; \
-                                     use V1 or verify_count_indexed_top_k"
+                                    "V0 proofs do not support descent into any indexed-tree \
+                                     element (ProvableSumIndexedTree / \
+                                     ProvableCountIndexedTree / \
+                                     ProvableCountProvableSumIndexedTree); use V1 or the \
+                                     dedicated verify_count_indexed_top_k API"
                                         .to_string(),
                                 ));
                             }

@@ -103,6 +103,10 @@ impl Element {
             | Element::ProvableSumTree(_, sum_value, _)
             | Element::ProvableCountProvableSumTree(_, _, sum_value, _)
             | Element::ReferenceWithSumItem(_, _, sum_value, _) => *sum_value,
+            // PSIT mirrors ProvableSumTree's contribution shape.
+            Element::ProvableSumIndexedTree(_, _, sum_value, _) => *sum_value,
+            // PCPSIT mirrors ProvableCountProvableSumTree.
+            Element::ProvableCountProvableSumIndexedTree(_, _, sum_value, _, _) => *sum_value,
             _ => 0,
         }
     }
@@ -122,8 +126,10 @@ impl Element {
             | Element::ProvableCountTree(_, count_value, _)
             | Element::ProvableCountSumTree(_, count_value, ..)
             | Element::ProvableCountProvableSumTree(_, count_value, ..)
-            | Element::CountIndexedTree(.., count_value, _)
             | Element::ProvableCountIndexedTree(.., count_value, _) => *count_value,
+            // PCPSIT: count_value is the second field.
+            Element::ProvableCountProvableSumIndexedTree(_, count_value, ..) => *count_value,
+            // PSIT carries a sum but no count — falls through to the default.
             _ => 1,
         }
     }
@@ -155,8 +161,13 @@ impl Element {
                 (*count_value, *sum_value)
             }
             Element::ProvableCountTree(_, count_value, _) => (*count_value, 0),
-            Element::CountIndexedTree(.., count_value, _)
-            | Element::ProvableCountIndexedTree(.., count_value, _) => (*count_value, 0),
+            Element::ProvableCountIndexedTree(.., count_value, _) => (*count_value, 0),
+            // PSIT contributes (1, sum) like a plain sum-bearing leaf.
+            Element::ProvableSumIndexedTree(_, _, sum_value, _) => (1, *sum_value),
+            // PCPSIT contributes both axes.
+            Element::ProvableCountProvableSumIndexedTree(_, count_value, sum_value, _, _) => {
+                (*count_value, *sum_value)
+            }
             _ => (1, 0),
         }
     }
@@ -177,6 +188,10 @@ impl Element {
             | Element::ProvableSumTree(_, sum_value, _)
             | Element::ProvableCountProvableSumTree(_, _, sum_value, _)
             | Element::ReferenceWithSumItem(_, _, sum_value, _) => *sum_value as i128,
+            Element::ProvableSumIndexedTree(_, _, sum_value, _) => *sum_value as i128,
+            Element::ProvableCountProvableSumIndexedTree(_, _, sum_value, _, _) => {
+                *sum_value as i128
+            }
             Element::BigSumTree(_, sum_value, _) => *sum_value,
             _ => 0,
         }
@@ -340,19 +355,42 @@ impl Element {
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
                 | Element::DenseAppendOnlyFixedSizeTree(..)
-                | Element::CountIndexedTree(..)
+                | Element::ProvableSumIndexedTree(..)
                 | Element::ProvableCountIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
         )
     }
 
-    /// Check if the element is a count-indexed tree (carries both a primary
-    /// count Merk and a secondary count-ordered Merk). Looks through
-    /// `NonCounted`.
+    /// Check if the element is the legacy count-indexed tree variant
+    /// (single-axis provable count). Kept for callers that specifically
+    /// need the count case; new code that needs the broad
+    /// "any indexed tree" predicate should use [`is_indexed_tree`].
+    /// Looks through `NonCounted`.
     pub fn is_count_indexed_tree(&self) -> bool {
+        matches!(self.underlying(), Element::ProvableCountIndexedTree(..))
+    }
+
+    /// Check if the element is any of the three indexed-tree variants
+    /// (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`,
+    /// `ProvableCountProvableSumIndexedTree`). Looks through `NonCounted`.
+    pub fn is_indexed_tree(&self) -> bool {
         matches!(
             self.underlying(),
-            Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+            Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
         )
+    }
+
+    /// Returns the `axes` TLV for a `ProvableCountProvableSumIndexedTree`,
+    /// otherwise `None`. Looks through `NonCounted`. The slice is the
+    /// canonical (sorted by tag, deduped, 1..=3 entries) TLV — see
+    /// [`crate::indexed::IndexAxis`] for the tag semantics.
+    pub fn axes(&self) -> Option<&[(u8, Option<Vec<u8>>)]> {
+        match self.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => Some(axes.as_slice()),
+            _ => None,
+        }
     }
 
     /// Check if the element is a commitment tree. Looks through `NonCounted`.
@@ -432,11 +470,12 @@ impl Element {
                 | Element::MmrTree(..)
                 | Element::BulkAppendTree(..)
                 | Element::DenseAppendOnlyFixedSizeTree(..)
-                | Element::CountIndexedTree(Some(_), ..)
-                | Element::CountIndexedTree(_, Some(_), ..)
+                | Element::ProvableSumIndexedTree(Some(_), ..)
+                | Element::ProvableSumIndexedTree(_, Some(_), ..)
                 | Element::ProvableCountIndexedTree(Some(_), ..)
                 | Element::ProvableCountIndexedTree(_, Some(_), ..)
-        )
+                | Element::ProvableCountProvableSumIndexedTree(Some(_), ..)
+        ) || self.has_pcpsit_with_any_secondary()
     }
 
     /// Check if the element is a non-empty Merk-backed tree.
@@ -458,11 +497,26 @@ impl Element {
                 | Element::ProvableCountSumTree(Some(_), ..)
                 | Element::ProvableSumTree(Some(_), ..)
                 | Element::ProvableCountProvableSumTree(Some(_), ..)
-                | Element::CountIndexedTree(Some(_), ..)
-                | Element::CountIndexedTree(_, Some(_), ..)
+                | Element::ProvableSumIndexedTree(Some(_), ..)
+                | Element::ProvableSumIndexedTree(_, Some(_), ..)
                 | Element::ProvableCountIndexedTree(Some(_), ..)
                 | Element::ProvableCountIndexedTree(_, Some(_), ..)
-        )
+                | Element::ProvableCountProvableSumIndexedTree(Some(_), ..)
+        ) || self.has_pcpsit_with_any_secondary()
+    }
+
+    /// Internal helper: returns true if `self` is a PCPSIT whose `axes`
+    /// TLV carries at least one populated secondary root key. PCPSIT
+    /// non-emptiness is determined by either the primary's root key
+    /// being `Some` (handled by the outer `matches!`) OR any of the
+    /// per-axis secondaries being populated.
+    fn has_pcpsit_with_any_secondary(&self) -> bool {
+        match self.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
+                axes.iter().any(|(_, sk)| sk.is_some())
+            }
+            _ => false,
+        }
     }
 
     /// Check if the element is a reference. Looks through `NonCounted`. Both
@@ -542,9 +596,11 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
-            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => flags,
+            // PCPSIT's flags are the trailing field after `axes`.
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.get_flags(),
@@ -572,9 +628,11 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
-            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => flags,
+            // PCPSIT's flags are the trailing field after `axes`.
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.get_flags_owned(),
@@ -602,9 +660,10 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
-            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => flags,
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.get_flags_mut(),
@@ -632,9 +691,10 @@ impl Element {
             | Element::MmrTree(.., flags)
             | Element::BulkAppendTree(.., flags)
             | Element::DenseAppendOnlyFixedSizeTree(.., flags)
-            | Element::CountIndexedTree(.., flags)
+            | Element::ProvableSumIndexedTree(.., flags)
             | Element::ProvableCountIndexedTree(.., flags)
             | Element::ReferenceWithSumItem(.., flags) => *flags = new_flags,
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, _, flags) => *flags = new_flags,
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => inner.set_flags(new_flags),

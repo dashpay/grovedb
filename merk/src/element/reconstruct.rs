@@ -17,11 +17,13 @@ pub trait ElementReconstructExtensions {
         aggregate_data: AggregateData,
     ) -> Option<Element>;
 
-    /// Reconstruct a `CountIndexedTree` / `ProvableCountIndexedTree` element
-    /// with updated primary and secondary root keys plus aggregate count,
+    /// Reconstruct a two-secondary indexed-tree element
+    /// (`ProvableSumIndexedTree` or `ProvableCountIndexedTree`) with
+    /// updated primary and secondary root keys plus aggregate data,
     /// preserving flags. Returns `None` for any other element type — the
     /// regular `reconstruct_with_root_key` covers single-Merk tree
-    /// elements.
+    /// elements, and `ProvableCountProvableSumIndexedTree` uses the
+    /// (Phase 2) `reconstruct_pcpsit_with_axes` API instead.
     ///
     /// Looks through `Element::NonCounted` and re-wraps the inner element
     /// once reconstructed.
@@ -120,10 +122,10 @@ impl ElementReconstructExtensions for Element {
         aggregate_data: AggregateData,
     ) -> Option<Element> {
         match self {
-            Element::CountIndexedTree(.., f) => Some(Element::CountIndexedTree(
+            Element::ProvableSumIndexedTree(.., f) => Some(Element::ProvableSumIndexedTree(
                 primary_root_key,
                 secondary_root_key,
-                aggregate_data.as_count_u64(),
+                aggregate_data.as_sum_i64(),
                 f.clone(),
             )),
             Element::ProvableCountIndexedTree(.., f) => Some(Element::ProvableCountIndexedTree(
@@ -139,6 +141,10 @@ impl ElementReconstructExtensions for Element {
                     aggregate_data,
                 )
                 .map(|reconstructed| Element::NonCounted(Box::new(reconstructed))),
+            // PCPSIT carries an axes TLV rather than a single secondary
+            // root key. Phase 1 deliberately returns `None` here — the
+            // caller path is wired up in Phase 2.
+            Element::ProvableCountProvableSumIndexedTree(..) => None,
             _ => None,
         }
     }

@@ -500,25 +500,25 @@ impl Element {
         Element::DenseAppendOnlyFixedSizeTree(count, height, flags)
     }
 
-    /// Set element to an empty count-indexed tree without flags.
-    pub fn empty_count_indexed_tree() -> Self {
-        Element::CountIndexedTree(None, None, 0, None)
+    /// Set element to an empty provable sum-indexed tree without flags.
+    pub fn empty_provable_sum_indexed_tree() -> Self {
+        Element::ProvableSumIndexedTree(None, None, 0, None)
     }
 
-    /// Set element to an empty count-indexed tree with flags.
-    pub fn empty_count_indexed_tree_with_flags(flags: Option<ElementFlags>) -> Self {
-        Element::CountIndexedTree(None, None, 0, flags)
+    /// Set element to an empty provable sum-indexed tree with flags.
+    pub fn empty_provable_sum_indexed_tree_with_flags(flags: Option<ElementFlags>) -> Self {
+        Element::ProvableSumIndexedTree(None, None, 0, flags)
     }
 
-    /// Construct a count-indexed tree with given primary/secondary root keys
-    /// and aggregate count.
-    pub fn new_count_indexed_tree_with_root_keys_and_count_value(
+    /// Construct a provable sum-indexed tree with given primary/secondary
+    /// root keys and aggregate sum.
+    pub fn new_provable_sum_indexed_tree_with_root_keys_and_sum_value(
         primary_root_key: Option<Vec<u8>>,
         secondary_root_key: Option<Vec<u8>>,
-        count_value: CountValue,
+        sum_value: SumValue,
         flags: Option<ElementFlags>,
     ) -> Self {
-        Element::CountIndexedTree(primary_root_key, secondary_root_key, count_value, flags)
+        Element::ProvableSumIndexedTree(primary_root_key, secondary_root_key, sum_value, flags)
     }
 
     /// Set element to an empty provable count-indexed tree without flags.
@@ -540,6 +540,84 @@ impl Element {
         flags: Option<ElementFlags>,
     ) -> Self {
         Element::ProvableCountIndexedTree(primary_root_key, secondary_root_key, count_value, flags)
+    }
+
+    /// Validate a `ProvableCountProvableSumIndexedTree` axes TLV: sorted by
+    /// tag ascending, no duplicate tags, 1..=3 entries, every tag in
+    /// `0..=2` (matching [`crate::indexed::IndexAxis`]).
+    fn validate_pcpsit_axes(axes: &[(u8, Option<Vec<u8>>)]) -> Result<(), ElementError> {
+        if axes.is_empty() {
+            return Err(ElementError::InvalidInput(
+                "ProvableCountProvableSumIndexedTree axes must have at least one entry",
+            ));
+        }
+        if axes.len() > 3 {
+            return Err(ElementError::InvalidInput(
+                "ProvableCountProvableSumIndexedTree axes must have at most three entries",
+            ));
+        }
+        let mut prev: Option<u8> = None;
+        for (tag, _) in axes {
+            // Every tag must be a known axis (0..=2). Re-using the
+            // canonical mapping in IndexAxis::try_from_tag.
+            crate::indexed::IndexAxis::try_from_tag(*tag)?;
+            match prev {
+                Some(p) if *tag <= p => {
+                    return Err(ElementError::InvalidInput(
+                        "ProvableCountProvableSumIndexedTree axes must be sorted ascending by \
+                         tag with no duplicates",
+                    ));
+                }
+                _ => prev = Some(*tag),
+            }
+        }
+        Ok(())
+    }
+
+    /// Set element to an empty provable count + provable sum indexed tree
+    /// without flags. `axes` must be canonical (sorted by tag, no
+    /// duplicates, 1..=3 entries).
+    pub fn empty_provable_count_provable_sum_indexed_tree(
+        axes: Vec<(u8, Option<Vec<u8>>)>,
+    ) -> Result<Self, ElementError> {
+        Self::validate_pcpsit_axes(&axes)?;
+        Ok(Element::ProvableCountProvableSumIndexedTree(
+            None, 0, 0, axes, None,
+        ))
+    }
+
+    /// Set element to an empty provable count + provable sum indexed tree
+    /// with flags. See [`empty_provable_count_provable_sum_indexed_tree`].
+    pub fn empty_provable_count_provable_sum_indexed_tree_with_flags(
+        axes: Vec<(u8, Option<Vec<u8>>)>,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        Self::validate_pcpsit_axes(&axes)?;
+        Ok(Element::ProvableCountProvableSumIndexedTree(
+            None, 0, 0, axes, flags,
+        ))
+    }
+
+    /// Construct a provable count + provable sum indexed tree with given
+    /// primary root key, aggregate count, aggregate sum, and canonical
+    /// axes TLV. Returns `InvalidInput` if `axes` is empty, has more than
+    /// three entries, contains an unknown tag, or is not strictly sorted
+    /// ascending by tag.
+    pub fn new_provable_count_provable_sum_indexed_tree(
+        primary_root_key: Option<Vec<u8>>,
+        count_value: CountValue,
+        sum_value: SumValue,
+        axes: Vec<(u8, Option<Vec<u8>>)>,
+        flags: Option<ElementFlags>,
+    ) -> Result<Self, ElementError> {
+        Self::validate_pcpsit_axes(&axes)?;
+        Ok(Element::ProvableCountProvableSumIndexedTree(
+            primary_root_key,
+            count_value,
+            sum_value,
+            axes,
+            flags,
+        ))
     }
 
     /// Wrap an element in `NonCounted` so it contributes 0 to its parent count

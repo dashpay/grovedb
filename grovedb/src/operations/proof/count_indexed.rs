@@ -462,7 +462,7 @@ impl GroveDb {
                     })
                 );
                 let attestation = match intermediate.underlying() {
-                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                    Element::ProvableCountIndexedTree(..) => {
                         // Open this ancestor cidx's secondary and capture
                         // its current root hash for the attestation.
                         let ancestor_cidx_path_owned: SubtreePathBuilder<Vec<u8>> =
@@ -471,8 +471,7 @@ impl GroveDb {
                             );
                         let ancestor_cidx_path = SubtreePath::from(&ancestor_cidx_path_owned);
                         let ancestor_secondary_root_key = match intermediate.underlying() {
-                            Element::CountIndexedTree(_, s, ..)
-                            | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                            Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
                             _ => unreachable!(),
                         };
                         let ancestor_secondary = cost_return_on_error!(
@@ -645,15 +644,14 @@ impl GroveDb {
                     })
                 );
                 let attestation = match intermediate.underlying() {
-                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                    Element::ProvableCountIndexedTree(..) => {
                         let ancestor_cidx_path_owned: SubtreePathBuilder<Vec<u8>> =
                             SubtreePathBuilder::owned_from_iter(
                                 path_keys[..=depth].iter().cloned(),
                             );
                         let ancestor_cidx_path = SubtreePath::from(&ancestor_cidx_path_owned);
                         let ancestor_secondary_root_key = match intermediate.underlying() {
-                            Element::CountIndexedTree(_, s, ..)
-                            | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                            Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
                             _ => unreachable!(),
                         };
                         let ancestor_secondary = cost_return_on_error!(
@@ -836,15 +834,14 @@ impl GroveDb {
                     })
                 );
                 let attestation = match intermediate.underlying() {
-                    Element::CountIndexedTree(..) | Element::ProvableCountIndexedTree(..) => {
+                    Element::ProvableCountIndexedTree(..) => {
                         let ancestor_cidx_path_owned: SubtreePathBuilder<Vec<u8>> =
                             SubtreePathBuilder::owned_from_iter(
                                 path_keys[..=depth].iter().cloned(),
                             );
                         let ancestor_cidx_path = SubtreePath::from(&ancestor_cidx_path_owned);
                         let ancestor_secondary_root_key = match intermediate.underlying() {
-                            Element::CountIndexedTree(_, s, ..)
-                            | Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
+                            Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
                             _ => unreachable!(),
                         };
                         let ancestor_secondary = cost_return_on_error!(
@@ -1030,12 +1027,11 @@ impl GroveDb {
             })
         );
         match element.underlying() {
-            Element::CountIndexedTree(_, secondary, ..)
-            | Element::ProvableCountIndexedTree(_, secondary, ..) => {
+            Element::ProvableCountIndexedTree(_, secondary, ..) => {
                 Ok(secondary.clone()).wrap_with_cost(cost)
             }
             _ => Err(Error::InvalidPath(
-                "path's last segment is not a CountIndexedTree element".to_string(),
+                "path's last segment is not a ProvableCountIndexedTree element".to_string(),
             ))
             .wrap_with_cost(cost),
         }
