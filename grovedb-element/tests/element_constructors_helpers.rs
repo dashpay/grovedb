@@ -479,6 +479,37 @@ fn required_item_space_matches_manual_formula() {
     assert_eq!(required, expected);
 }
 
+/// Exercise the `check_grovedb_v0!` mismatch arm for both new helpers
+/// so the macro-expanded error path is covered. The helpers only know
+/// version `0`; flipping the version field to `1` must return a
+/// `VersionError` instead of a value.
+#[test]
+fn required_with_sum_item_space_helpers_reject_unknown_version() {
+    let mut bad_version = GroveVersion::latest().clone();
+    bad_version
+        .grovedb_versions
+        .element
+        .required_item_with_sum_item_space = 1;
+    bad_version
+        .grovedb_versions
+        .element
+        .required_reference_with_sum_item_space = 1;
+
+    let item_err = Element::required_item_with_sum_item_space(1, 1, &bad_version).unwrap_err();
+    assert!(
+        matches!(item_err, ElementError::VersionError(_)),
+        "expected VersionError, got {:?}",
+        item_err
+    );
+
+    let ref_err = Element::required_reference_with_sum_item_space(1, 1, &bad_version).unwrap_err();
+    assert!(
+        matches!(ref_err, ElementError::VersionError(_)),
+        "expected VersionError, got {:?}",
+        ref_err
+    );
+}
+
 #[test]
 fn required_item_with_sum_item_space_matches_manual_formula() {
     let grove_version = GroveVersion::latest();
