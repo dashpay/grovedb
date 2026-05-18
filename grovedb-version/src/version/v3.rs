@@ -215,7 +215,12 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
         batch: MerkBatchVersions { commit: 1 }, // return accumulated batch costs
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 1,
-            sum_tree_estimated_size: 1,
+            // Bumped from 1 → 2: v2 folds the four `Provable*` tree-type
+            // weight fields on `EstimatedSumTrees::SomeSumTrees` into the
+            // weighted-average formula. v0/v1 outputs are preserved for
+            // already-shipped grove versions (v1 → v0 formula, v2 → v1
+            // formula).
+            sum_tree_estimated_size: 2,
         },
         proof: MerkProofVersions {
             // Initial implementation; introduced alongside the V1

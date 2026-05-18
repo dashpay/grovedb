@@ -3,7 +3,7 @@
 #[cfg(feature = "minimal")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 #[cfg(feature = "minimal")]
-use grovedb_version::{check_grovedb_v0_or_v1, error::GroveVersionError, version::GroveVersion};
+use grovedb_version::{check_grovedb_v0_v1_or_v2, error::GroveVersionError, version::GroveVersion};
 #[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
@@ -49,6 +49,21 @@ pub enum EstimatedSumTrees {
         count_sum_trees_weight: Weight,
         /// Non sum trees weight
         non_sum_trees_weight: Weight,
+        /// `ProvableSumTree` leaves. `ProvableSumNode` carries an i64 sum
+        /// that is baked into every node's hash; cost matches
+        /// `SumTree`'s `inner_node_type().cost()` (8 bytes).
+        provable_sum_trees_weight: Weight,
+        /// `ProvableCountTree` leaves. Same per-node cost as `CountTree`
+        /// (8 bytes), but the count is hash-committed.
+        provable_count_trees_weight: Weight,
+        /// `ProvableCountSumTree` leaves. Same per-node cost as
+        /// `CountSumTree` (16 bytes), but the count is hash-committed.
+        provable_count_sum_trees_weight: Weight,
+        /// `ProvableCountProvableSumTree` (PCPS) leaves — the v12 dual-axis
+        /// per-node variant. Same per-node cost as `CountSumTree`
+        /// (16 bytes), but BOTH the count and the sum are
+        /// hash-committed.
+        provable_count_provable_sum_trees_weight: Weight,
     },
     /// All sum trees
     AllSumTrees,
@@ -58,12 +73,20 @@ pub enum EstimatedSumTrees {
     AllCountTrees,
     /// All count sum trees
     AllCountSumTrees,
+    /// All `ProvableSumTree` leaves.
+    AllProvableSumTrees,
+    /// All `ProvableCountTree` leaves.
+    AllProvableCountTrees,
+    /// All `ProvableCountSumTree` leaves.
+    AllProvableCountSumTrees,
+    /// All `ProvableCountProvableSumTree` leaves.
+    AllProvableCountProvableSumTrees,
 }
 
 #[cfg(feature = "minimal")]
 impl EstimatedSumTrees {
     fn estimated_size(&self, grove_version: &GroveVersion) -> Result<u32, Error> {
-        let version = check_grovedb_v0_or_v1!(
+        let version = check_grovedb_v0_v1_or_v2!(
             "EstimatedSumTrees::estimated_size",
             grove_version
                 .merk_versions
@@ -78,20 +101,30 @@ impl EstimatedSumTrees {
                 count_trees_weight,
                 count_sum_trees_weight,
                 non_sum_trees_weight,
+                provable_sum_trees_weight,
+                provable_count_trees_weight,
+                provable_count_sum_trees_weight,
+                provable_count_provable_sum_trees_weight,
             } => {
-                // Example calculation including new weights
-                let total_weight = *sum_trees_weight as u32
+                // v0 / v1 formulas predate the four `provable_*` weight
+                // fields, so they ignore those weights (the old call
+                // sites couldn't set them anyway). v2 folds every weight
+                // into both numerator and denominator.
+                let total_weight_legacy = *sum_trees_weight as u32
                     + *big_sum_trees_weight as u32
                     + *count_trees_weight as u32
                     + *count_sum_trees_weight as u32
                     + *non_sum_trees_weight as u32;
-                if total_weight == 0 {
-                    return Err(Error::DivideByZero("weights add up to 0"));
-                };
                 if version == 0 {
+                    if total_weight_legacy == 0 {
+                        return Err(Error::DivideByZero("weights add up to 0"));
+                    }
                     Ok((*non_sum_trees_weight as u32 * 9)
                         / (*sum_trees_weight as u32 + *non_sum_trees_weight as u32))
                 } else if version == 1 {
+                    if total_weight_legacy == 0 {
+                        return Err(Error::DivideByZero("weights add up to 0"));
+                    }
                     let estimated_size = (*sum_trees_weight as u32
                         * TreeType::SumTree.inner_node_type().cost())
                     .checked_add(
@@ -112,6 +145,67 @@ impl EstimatedSumTrees {
                     })
                     .ok_or(Error::Overflow("Estimated size calculation overflowed"))?;
 
+                    Ok(estimated_size / total_weight_legacy)
+                } else if version == 2 {
+                    let total_weight = total_weight_legacy
+                        .checked_add(*provable_sum_trees_weight as u32)
+                        .and_then(|w| w.checked_add(*provable_count_trees_weight as u32))
+                        .and_then(|w| w.checked_add(*provable_count_sum_trees_weight as u32))
+                        .and_then(|w| {
+                            w.checked_add(*provable_count_provable_sum_trees_weight as u32)
+                        })
+                        .ok_or(Error::Overflow(
+                            "Estimated size total weight calculation overflowed",
+                        ))?;
+                    if total_weight == 0 {
+                        return Err(Error::DivideByZero("weights add up to 0"));
+                    }
+                    let estimated_size = (*sum_trees_weight as u32
+                        * TreeType::SumTree.inner_node_type().cost())
+                    .checked_add(
+                        *big_sum_trees_weight as u32
+                            * TreeType::BigSumTree.inner_node_type().cost(),
+                    )
+                    .and_then(|sum| {
+                        sum.checked_add(
+                            *count_trees_weight as u32
+                                * TreeType::CountTree.inner_node_type().cost(),
+                        )
+                    })
+                    .and_then(|sum| {
+                        sum.checked_add(
+                            *count_sum_trees_weight as u32
+                                * TreeType::CountSumTree.inner_node_type().cost(),
+                        )
+                    })
+                    .and_then(|sum| {
+                        sum.checked_add(
+                            *provable_sum_trees_weight as u32
+                                * TreeType::ProvableSumTree.inner_node_type().cost(),
+                        )
+                    })
+                    .and_then(|sum| {
+                        sum.checked_add(
+                            *provable_count_trees_weight as u32
+                                * TreeType::ProvableCountTree.inner_node_type().cost(),
+                        )
+                    })
+                    .and_then(|sum| {
+                        sum.checked_add(
+                            *provable_count_sum_trees_weight as u32
+                                * TreeType::ProvableCountSumTree.inner_node_type().cost(),
+                        )
+                    })
+                    .and_then(|sum| {
+                        sum.checked_add(
+                            *provable_count_provable_sum_trees_weight as u32
+                                * TreeType::ProvableCountProvableSumTree
+                                    .inner_node_type()
+                                    .cost(),
+                        )
+                    })
+                    .ok_or(Error::Overflow("Estimated size calculation overflowed"))?;
+
                     Ok(estimated_size / total_weight)
                 } else {
                     Err(Error::CorruptedCodeExecution("we already checked versions"))
@@ -122,6 +216,20 @@ impl EstimatedSumTrees {
             EstimatedSumTrees::AllCountTrees => Ok(TreeType::CountTree.inner_node_type().cost()),
             EstimatedSumTrees::AllCountSumTrees => {
                 Ok(TreeType::CountSumTree.inner_node_type().cost())
+            }
+            EstimatedSumTrees::AllProvableSumTrees => {
+                Ok(TreeType::ProvableSumTree.inner_node_type().cost())
+            }
+            EstimatedSumTrees::AllProvableCountTrees => {
+                Ok(TreeType::ProvableCountTree.inner_node_type().cost())
+            }
+            EstimatedSumTrees::AllProvableCountSumTrees => {
+                Ok(TreeType::ProvableCountSumTree.inner_node_type().cost())
+            }
+            EstimatedSumTrees::AllProvableCountProvableSumTrees => {
+                Ok(TreeType::ProvableCountProvableSumTree
+                    .inner_node_type()
+                    .cost())
             }
         }
     }
@@ -137,6 +245,15 @@ pub enum EstimatedLayerSizes {
     AllItems(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
     /// References
     AllReference(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
+    /// Layer where every leaf is `Element::ItemWithSumItem`. Sizing adds
+    /// the i64 sum_value's worst-case varint encoding (`+10`) on top of
+    /// the plain-item layout — same constant the per-element helper
+    /// `Element::required_item_with_sum_item_space` uses.
+    AllItemsWithSumItem(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
+    /// Layer where every leaf is `Element::ReferenceWithSumItem`. Sizing
+    /// adds the same `+10` worst-case sum_value adjustment on top of the
+    /// plain-reference layout.
+    AllReferencesWithSumItem(AverageKeySize, AverageValueSize, Option<AverageFlagsSize>),
     /// Mix
     Mix {
         /// Subtrees size
@@ -160,6 +277,23 @@ pub enum EstimatedLayerSizes {
             Option<AverageFlagsSize>,
             Weight,
         )>,
+        /// Weight of `ItemWithSumItem` leaves in the mix. Same sizing
+        /// formula as `items_size` plus `+10` for the worst-case i64
+        /// sum_value varint.
+        items_with_sum_item_size: Option<(
+            AverageKeySize,
+            AverageValueSize,
+            Option<AverageFlagsSize>,
+            Weight,
+        )>,
+        /// Weight of `ReferenceWithSumItem` leaves in the mix. Same
+        /// sizing formula as `references_size` plus `+10`.
+        references_with_sum_item_size: Option<(
+            AverageKeySize,
+            AverageValueSize,
+            Option<AverageFlagsSize>,
+            Weight,
+        )>,
     },
 }
 
@@ -171,8 +305,7 @@ impl EstimatedLayerSizes {
             EstimatedLayerSizes::AllSubtrees(_, _, flags_size) => Ok(flags_size),
             EstimatedLayerSizes::Mix {
                 subtrees_size: subtree_size,
-                items_size: _,
-                references_size: _,
+                ..
             } => {
                 if let Some((_, _, flags_size, _)) = subtree_size {
                     Ok(flags_size)
@@ -237,6 +370,16 @@ impl EstimatedLayerSizes {
                 // 2 for reference hops
                 Ok(*average_value_size + flags_size.unwrap_or_default() + 5)
             }
+            EstimatedLayerSizes::AllItemsWithSumItem(_, average_value_size, flags_size) => {
+                // 3 for plain-item layout, +10 for the worst-case i64
+                // sum_value varint, matching `required_item_with_sum_item_space`.
+                Ok(*average_value_size + flags_size.unwrap_or_default() + 13)
+            }
+            EstimatedLayerSizes::AllReferencesWithSumItem(_, average_value_size, flags_size) => {
+                // 5 for plain-reference layout, +10 for the worst-case i64
+                // sum_value varint.
+                Ok(*average_value_size + flags_size.unwrap_or_default() + 15)
+            }
             EstimatedLayerSizes::AllSubtrees(_, estimated_sum_trees, flags_size) => {
                 // 1 for enum type
                 // 1 for empty
@@ -249,6 +392,8 @@ impl EstimatedLayerSizes {
                 subtrees_size,
                 items_size,
                 references_size,
+                items_with_sum_item_size,
+                references_with_sum_item_size,
             } => {
                 let (item_size, item_weight) = items_size
                     .as_ref()
@@ -260,6 +405,16 @@ impl EstimatedLayerSizes {
                     .map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 5, *weight as u32))
                     .unwrap_or_default();
 
+                let (item_sum_size, item_sum_weight) = items_with_sum_item_size
+                    .as_ref()
+                    .map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 13, *weight as u32))
+                    .unwrap_or_default();
+
+                let (ref_sum_size, ref_sum_weight) = references_with_sum_item_size
+                    .as_ref()
+                    .map(|(_, vs, fs, weight)| (vs + fs.unwrap_or_default() + 15, *weight as u32))
+                    .unwrap_or_default();
+
                 let (subtree_size, subtree_weight) = match subtrees_size {
                     None => None,
                     Some((_, est, fs, weight)) => Some((
@@ -269,28 +424,55 @@ impl EstimatedLayerSizes {
                 }
                 .unwrap_or_default();
 
-                if item_weight == 0 && ref_weight == 0 && subtree_weight == 0 {
+                // Each per-kind size already represents a single
+                // element's worst-case footprint. When only one kind is
+                // populated, the per-kind size IS the layer-average size
+                // (regardless of how many such elements exist). Only
+                // when multiple kinds coexist do we weight them.
+                let nonzero_kinds = (item_weight > 0) as u32
+                    + (ref_weight > 0) as u32
+                    + (subtree_weight > 0) as u32
+                    + (item_sum_weight > 0) as u32
+                    + (ref_sum_weight > 0) as u32;
+                if nonzero_kinds == 0 {
                     return Err(Error::WrongEstimatedCostsElementTypeForLevel(
                         "this layer is a mix and does not have items, refs or trees",
                     ));
                 }
-                if item_weight == 0 && ref_weight == 0 {
-                    return Ok(subtree_size);
+                if nonzero_kinds == 1 {
+                    if item_weight > 0 {
+                        return Ok(item_size);
+                    }
+                    if ref_weight > 0 {
+                        return Ok(ref_size);
+                    }
+                    if subtree_weight > 0 {
+                        return Ok(subtree_size);
+                    }
+                    if item_sum_weight > 0 {
+                        return Ok(item_sum_size);
+                    }
+                    if ref_sum_weight > 0 {
+                        return Ok(ref_sum_size);
+                    }
                 }
-                if item_weight == 0 && subtree_weight == 0 {
-                    return Ok(ref_size);
-                }
-                if ref_weight == 0 && subtree_weight == 0 {
-                    return Ok(item_size);
-                }
+
                 let combined_weight = item_weight
                     .checked_add(ref_weight)
                     .and_then(|a| a.checked_add(subtree_weight))
+                    .and_then(|a| a.checked_add(item_sum_weight))
+                    .and_then(|a| a.checked_add(ref_sum_weight))
                     .ok_or(Error::Overflow("overflow for value size combining weights"))?;
-                item_size
+
+                let combined_size = item_size
                     .checked_add(ref_size)
                     .and_then(|a| a.checked_add(subtree_size))
-                    .and_then(|a| a.checked_div(combined_weight))
+                    .and_then(|a| a.checked_add(item_sum_size))
+                    .and_then(|a| a.checked_add(ref_sum_size))
+                    .ok_or(Error::Overflow("overflow for value size"))?;
+
+                combined_size
+                    .checked_div(combined_weight)
                     .ok_or(Error::Overflow("overflow for value size"))
             }
         }
@@ -563,10 +745,34 @@ fn add_average_case_merk_propagate_v1(
                     tree_type.inner_node_type(),
                 )
         }
+        EstimatedLayerSizes::AllItemsWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        )
+        | EstimatedLayerSizes::AllReferencesWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        ) => {
+            // +10 for the worst-case i64 sum_value varint, matching
+            // `required_item_with_sum_item_space` /
+            // `required_reference_with_sum_item_space`.
+            let flags_len = average_flags_size.unwrap_or(0);
+            let average_value_len = average_item_size + flags_len + 10;
+            nodes_updated
+                * KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                    *average_key_size as u32,
+                    average_value_len,
+                    tree_type.inner_node_type(),
+                )
+        }
         EstimatedLayerSizes::Mix {
             subtrees_size,
             items_size,
             references_size,
+            items_with_sum_item_size,
+            references_with_sum_item_size,
         } => {
             let total_weight = subtrees_size
                 .as_ref()
@@ -577,6 +783,14 @@ fn add_average_case_merk_propagate_v1(
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default()
                 + references_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + items_with_sum_item_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + references_with_sum_item_size
                     .as_ref()
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default();
@@ -633,10 +847,46 @@ fn add_average_case_merk_propagate_v1(
                             .ok_or(Error::Overflow("overflow for mixed item nodes updates"))?
                     }
                 };
+                let item_with_sum_node_updates_cost = match items_with_sum_item_size {
+                    None => 0,
+                    Some((average_key_size, average_value_size, average_flags_size, weight)) => {
+                        let flags_len = average_flags_size.unwrap_or(0);
+                        let value_len = average_value_size + flags_len + 10;
+                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                            *average_key_size as u32,
+                            value_len,
+                            tree_type.inner_node_type(),
+                        );
+                        (*weight as u64)
+                            .checked_mul(cost as u64)
+                            .ok_or(Error::Overflow(
+                                "overflow for mixed item-with-sum nodes updates",
+                            ))?
+                    }
+                };
+                let reference_with_sum_node_updates_cost = match references_with_sum_item_size {
+                    None => 0,
+                    Some((average_key_size, average_value_size, average_flags_size, weight)) => {
+                        let flags_len = average_flags_size.unwrap_or(0);
+                        let value_len = average_value_size + flags_len + 10;
+                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                            *average_key_size as u32,
+                            value_len,
+                            tree_type.inner_node_type(),
+                        );
+                        (*weight as u64)
+                            .checked_mul(cost as u64)
+                            .ok_or(Error::Overflow(
+                                "overflow for mixed reference-with-sum nodes updates",
+                            ))?
+                    }
+                };
 
                 let total_updates_cost = tree_node_updates_cost
                     .checked_add(item_node_updates_cost)
                     .and_then(|c| c.checked_add(reference_node_updates_cost))
+                    .and_then(|c| c.checked_add(item_with_sum_node_updates_cost))
+                    .and_then(|c| c.checked_add(reference_with_sum_node_updates_cost))
                     .ok_or(Error::Overflow("overflow for mixed item adding parts"))?;
                 let total_replaced_bytes = total_updates_cost / weighted_nodes_updated;
                 if total_replaced_bytes > u32::MAX as u64 {
@@ -679,10 +929,31 @@ fn add_average_case_merk_propagate_v1(
                     tree_type.inner_node_type(),
                 )
         }
+        EstimatedLayerSizes::AllItemsWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        )
+        | EstimatedLayerSizes::AllReferencesWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        ) => {
+            let flags_len = average_flags_size.unwrap_or(0);
+            let average_value_len = average_item_size + flags_len + 10;
+            nodes_updated
+                * KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                    *average_key_size as u32,
+                    average_value_len,
+                    tree_type.inner_node_type(),
+                )
+        }
         EstimatedLayerSizes::Mix {
             subtrees_size,
             items_size,
             references_size,
+            items_with_sum_item_size,
+            references_with_sum_item_size,
         } => {
             let total_weight = subtrees_size
                 .as_ref()
@@ -693,6 +964,14 @@ fn add_average_case_merk_propagate_v1(
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default()
                 + references_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + items_with_sum_item_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + references_with_sum_item_size
                     .as_ref()
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default();
@@ -755,10 +1034,50 @@ fn add_average_case_merk_propagate_v1(
                         },
                     )
                     .unwrap_or(Ok(0))?;
+                let item_with_sum_node_updates_cost = items_with_sum_item_size
+                    .as_ref()
+                    .map(
+                        |(average_key_size, average_value_size, average_flags_size, weight)| {
+                            let flags_len = average_flags_size.unwrap_or(0);
+                            let value_len = average_value_size + flags_len + 10;
+                            let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                                *average_key_size as u32,
+                                value_len,
+                                tree_type.inner_node_type(),
+                            );
+                            (*weight as u64)
+                                .checked_mul(cost as u64)
+                                .ok_or(Error::Overflow(
+                                    "overflow for mixed item-with-sum nodes updates",
+                                ))
+                        },
+                    )
+                    .unwrap_or(Ok(0))?;
+                let reference_with_sum_node_updates_cost = references_with_sum_item_size
+                    .as_ref()
+                    .map(
+                        |(average_key_size, average_value_size, average_flags_size, weight)| {
+                            let flags_len = average_flags_size.unwrap_or(0);
+                            let value_len = average_value_size + flags_len + 10;
+                            let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                                *average_key_size as u32,
+                                value_len,
+                                TreeType::NormalTree.inner_node_type(),
+                            );
+                            (*weight as u64)
+                                .checked_mul(cost as u64)
+                                .ok_or(Error::Overflow(
+                                    "overflow for mixed reference-with-sum nodes updates",
+                                ))
+                        },
+                    )
+                    .unwrap_or(Ok(0))?;
 
                 let total_updates_cost = tree_node_updates_cost
                     .checked_add(item_node_updates_cost)
                     .and_then(|c| c.checked_add(reference_node_updates_cost))
+                    .and_then(|c| c.checked_add(item_with_sum_node_updates_cost))
+                    .and_then(|c| c.checked_add(reference_with_sum_node_updates_cost))
                     .ok_or(Error::Overflow("overflow for mixed item adding parts"))?;
                 let total_loaded_bytes = total_updates_cost / weighted_nodes_updated;
                 if total_loaded_bytes > u32::MAX as u64 {
@@ -834,10 +1153,31 @@ fn add_average_case_merk_propagate_v0(
                     tree_type.inner_node_type(),
                 )
         }
+        EstimatedLayerSizes::AllItemsWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        )
+        | EstimatedLayerSizes::AllReferencesWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        ) => {
+            let flags_len = average_flags_size.unwrap_or(0);
+            let average_value_len = average_item_size + flags_len + 10;
+            nodes_updated
+                * KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                    *average_key_size as u32,
+                    average_value_len,
+                    tree_type.inner_node_type(),
+                )
+        }
         EstimatedLayerSizes::Mix {
             subtrees_size,
             items_size,
             references_size,
+            items_with_sum_item_size,
+            references_with_sum_item_size,
         } => {
             let total_weight = subtrees_size
                 .as_ref()
@@ -848,6 +1188,14 @@ fn add_average_case_merk_propagate_v0(
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default()
                 + references_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + items_with_sum_item_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + references_with_sum_item_size
                     .as_ref()
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default();
@@ -904,10 +1252,46 @@ fn add_average_case_merk_propagate_v0(
                             .ok_or(Error::Overflow("overflow for mixed item nodes updates"))?
                     }
                 };
+                let item_with_sum_node_updates_cost = match items_with_sum_item_size {
+                    None => 0,
+                    Some((average_key_size, average_value_size, average_flags_size, weight)) => {
+                        let flags_len = average_flags_size.unwrap_or(0);
+                        let value_len = average_value_size + flags_len + 10;
+                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                            *average_key_size as u32,
+                            value_len,
+                            tree_type.inner_node_type(),
+                        );
+                        (*weight as u64)
+                            .checked_mul(cost as u64)
+                            .ok_or(Error::Overflow(
+                                "overflow for mixed item-with-sum nodes updates",
+                            ))?
+                    }
+                };
+                let reference_with_sum_node_updates_cost = match references_with_sum_item_size {
+                    None => 0,
+                    Some((average_key_size, average_value_size, average_flags_size, weight)) => {
+                        let flags_len = average_flags_size.unwrap_or(0);
+                        let value_len = average_value_size + flags_len + 10;
+                        let cost = KV::value_byte_cost_size_for_key_and_raw_value_lengths(
+                            *average_key_size as u32,
+                            value_len,
+                            tree_type.inner_node_type(),
+                        );
+                        (*weight as u64)
+                            .checked_mul(cost as u64)
+                            .ok_or(Error::Overflow(
+                                "overflow for mixed reference-with-sum nodes updates",
+                            ))?
+                    }
+                };
 
                 let total_updates_cost = tree_node_updates_cost
                     .checked_add(item_node_updates_cost)
                     .and_then(|c| c.checked_add(reference_node_updates_cost))
+                    .and_then(|c| c.checked_add(item_with_sum_node_updates_cost))
+                    .and_then(|c| c.checked_add(reference_with_sum_node_updates_cost))
                     .ok_or(Error::Overflow("overflow for mixed item adding parts"))?;
                 let total_replaced_bytes = total_updates_cost / weighted_nodes_updated;
                 if total_replaced_bytes > u32::MAX as u64 {
@@ -950,10 +1334,31 @@ fn add_average_case_merk_propagate_v0(
                     tree_type.inner_node_type(),
                 )
         }
+        EstimatedLayerSizes::AllItemsWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        )
+        | EstimatedLayerSizes::AllReferencesWithSumItem(
+            average_key_size,
+            average_item_size,
+            average_flags_size,
+        ) => {
+            let flags_len = average_flags_size.unwrap_or(0);
+            let average_value_len = average_item_size + flags_len + 10;
+            nodes_updated
+                * KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                    *average_key_size as u32,
+                    average_value_len,
+                    tree_type.inner_node_type(),
+                )
+        }
         EstimatedLayerSizes::Mix {
             subtrees_size,
             items_size,
             references_size,
+            items_with_sum_item_size,
+            references_with_sum_item_size,
         } => {
             let total_weight = subtrees_size
                 .as_ref()
@@ -964,6 +1369,14 @@ fn add_average_case_merk_propagate_v0(
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default()
                 + references_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + items_with_sum_item_size
+                    .as_ref()
+                    .map(|(_, _, _, weight)| *weight as u32)
+                    .unwrap_or_default()
+                + references_with_sum_item_size
                     .as_ref()
                     .map(|(_, _, _, weight)| *weight as u32)
                     .unwrap_or_default();
@@ -1026,10 +1439,50 @@ fn add_average_case_merk_propagate_v0(
                         },
                     )
                     .unwrap_or(Ok(0))?;
+                let item_with_sum_node_updates_cost = items_with_sum_item_size
+                    .as_ref()
+                    .map(
+                        |(average_key_size, average_value_size, average_flags_size, weight)| {
+                            let flags_len = average_flags_size.unwrap_or(0);
+                            let value_len = average_value_size + flags_len + 10;
+                            let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                                *average_key_size as u32,
+                                value_len,
+                                tree_type.inner_node_type(),
+                            );
+                            (*weight as u64)
+                                .checked_mul(cost as u64)
+                                .ok_or(Error::Overflow(
+                                    "overflow for mixed item-with-sum nodes updates",
+                                ))
+                        },
+                    )
+                    .unwrap_or(Ok(0))?;
+                let reference_with_sum_node_updates_cost = references_with_sum_item_size
+                    .as_ref()
+                    .map(
+                        |(average_key_size, average_value_size, average_flags_size, weight)| {
+                            let flags_len = average_flags_size.unwrap_or(0);
+                            let value_len = average_value_size + flags_len + 10;
+                            let cost = KV::node_byte_cost_size_for_key_and_raw_value_lengths(
+                                *average_key_size as u32,
+                                value_len,
+                                tree_type.inner_node_type(),
+                            );
+                            (*weight as u64)
+                                .checked_mul(cost as u64)
+                                .ok_or(Error::Overflow(
+                                    "overflow for mixed reference-with-sum nodes updates",
+                                ))
+                        },
+                    )
+                    .unwrap_or(Ok(0))?;
 
                 let total_updates_cost = tree_node_updates_cost
                     .checked_add(item_node_updates_cost)
                     .and_then(|c| c.checked_add(reference_node_updates_cost))
+                    .and_then(|c| c.checked_add(item_with_sum_node_updates_cost))
+                    .and_then(|c| c.checked_add(reference_with_sum_node_updates_cost))
                     .ok_or(Error::Overflow("overflow for mixed item adding parts"))?;
                 let total_loaded_bytes = total_updates_cost / weighted_nodes_updated;
                 if total_loaded_bytes > u32::MAX as u64 {
@@ -1059,6 +1512,10 @@ mod tests {
             count_trees_weight: 0,
             count_sum_trees_weight: 0,
             non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
         };
         let err = estimated
             .estimated_size(GroveVersion::latest())
@@ -1074,6 +1531,10 @@ mod tests {
             count_trees_weight: 0,
             count_sum_trees_weight: 0,
             non_sum_trees_weight: 3,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
         };
         let size = estimated.estimated_size(GroveVersion::first()).unwrap();
         assert_eq!(size, 6);
@@ -1097,6 +1558,8 @@ mod tests {
             subtrees_size: None,
             items_size: Some((4, 10, Some(1), 1)),
             references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let err = layer
             .subtree_with_feature_and_flags_size(GroveVersion::latest())
@@ -1115,6 +1578,8 @@ mod tests {
             subtrees_size: None,
             items_size: None,
             references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let err = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
@@ -1245,6 +1710,8 @@ mod tests {
                 subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
                 items_size: Some((8, 32, Some(2), 3)),
                 references_size: Some((8, 24, Some(1), 1)),
+                items_with_sum_item_size: None,
+                references_with_sum_item_size: None,
             },
         };
         let mut cost = OperationCost::default();
@@ -1281,6 +1748,8 @@ mod tests {
                 subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
                 items_size: Some((8, 32, Some(2), 3)),
                 references_size: Some((8, 24, Some(1), 1)),
+                items_with_sum_item_size: None,
+                references_with_sum_item_size: None,
             },
         };
         let mut cost = OperationCost::default();
@@ -1357,6 +1826,8 @@ mod tests {
             subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
             items_size: Some((8, 32, Some(2), 1)),
             references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let flags = layer.layered_flags_size().unwrap();
         assert_eq!(*flags, Some(4));
@@ -1368,6 +1839,8 @@ mod tests {
             subtrees_size: None,
             items_size: Some((8, 32, Some(2), 1)),
             references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         assert!(layer.layered_flags_size().is_err());
     }
@@ -1387,6 +1860,8 @@ mod tests {
             subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
             items_size: None,
             references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let size = layer
             .subtree_with_feature_and_flags_size(GroveVersion::latest())
@@ -1426,6 +1901,8 @@ mod tests {
             subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
             items_size: Some((8, 32, Some(2), 3)),
             references_size: Some((8, 24, Some(1), 1)),
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let size = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
@@ -1441,6 +1918,8 @@ mod tests {
             subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 2)),
             items_size: None,
             references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let size = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
@@ -1454,6 +1933,8 @@ mod tests {
             subtrees_size: None,
             items_size: None,
             references_size: Some((8, 24, Some(1), 1)),
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let size = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
@@ -1467,10 +1948,465 @@ mod tests {
             subtrees_size: None,
             items_size: Some((8, 32, Some(2), 3)),
             references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
         };
         let size = layer
             .value_with_feature_and_flags_size(GroveVersion::latest())
             .unwrap();
         assert_eq!(size, 32 + 2 + 3);
+    }
+
+    // =========================================================================
+    // Sum-bearing layer / tree variants
+    // =========================================================================
+
+    /// `AllItemsWithSumItem` adds +10 over the plain-item layout for the
+    /// worst-case i64 sum_value varint, matching the per-element helper
+    /// `Element::required_item_with_sum_item_space`.
+    #[test]
+    fn test_value_size_all_items_with_sum_item_is_all_items_plus_ten() {
+        let key = 8;
+        let value = 32;
+        let flags = Some(2);
+
+        let plain = EstimatedLayerSizes::AllItems(key, value, flags);
+        let plain_size = plain
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+
+        let with_sum = EstimatedLayerSizes::AllItemsWithSumItem(key, value, flags);
+        let with_sum_size = with_sum
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+
+        assert_eq!(with_sum_size, plain_size + 10);
+    }
+
+    /// `AllReferencesWithSumItem` adds the same +10 over the plain
+    /// `AllReference` formula.
+    #[test]
+    fn test_value_size_all_references_with_sum_item_is_all_reference_plus_ten() {
+        let key = 8;
+        let value = 24;
+        let flags = Some(1);
+
+        let plain = EstimatedLayerSizes::AllReference(key, value, flags);
+        let plain_size = plain
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+
+        let with_sum = EstimatedLayerSizes::AllReferencesWithSumItem(key, value, flags);
+        let with_sum_size = with_sum
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+
+        assert_eq!(with_sum_size, plain_size + 10);
+    }
+
+    /// `AllItemsWithSumItem` propagation cost strictly exceeds the plain
+    /// `AllItems` cost for the same key/value/flags. The +10 per-element
+    /// sum-value adjustment flows through both `storage_cost.replaced_bytes`
+    /// and `storage_loaded_bytes`.
+    #[test]
+    fn test_propagate_all_items_with_sum_item_exceeds_all_items() {
+        let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
+        let plain_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
+        };
+        let sum_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::AllItemsWithSumItem(8, 32, Some(2)),
+        };
+
+        let mut plain_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut plain_cost, &plain_info, GroveVersion::latest())
+            .unwrap();
+        let mut sum_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut sum_cost, &sum_info, GroveVersion::latest()).unwrap();
+
+        assert!(
+            sum_cost.storage_cost.replaced_bytes > plain_cost.storage_cost.replaced_bytes,
+            "sum-item replaced_bytes ({}) must exceed plain ({})",
+            sum_cost.storage_cost.replaced_bytes,
+            plain_cost.storage_cost.replaced_bytes,
+        );
+        assert!(
+            sum_cost.storage_loaded_bytes > plain_cost.storage_loaded_bytes,
+            "sum-item storage_loaded_bytes ({}) must exceed plain ({})",
+            sum_cost.storage_loaded_bytes,
+            plain_cost.storage_loaded_bytes,
+        );
+    }
+
+    /// `AllReferencesWithSumItem` propagation cost strictly exceeds the
+    /// plain `AllReference` cost.
+    #[test]
+    fn test_propagate_all_references_with_sum_item_exceeds_all_reference() {
+        let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
+        let plain_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(1)),
+        };
+        let sum_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(8, 24, Some(1)),
+        };
+
+        let mut plain_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut plain_cost, &plain_info, GroveVersion::latest())
+            .unwrap();
+        let mut sum_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut sum_cost, &sum_info, GroveVersion::latest()).unwrap();
+
+        assert!(sum_cost.storage_cost.replaced_bytes > plain_cost.storage_cost.replaced_bytes);
+        assert!(sum_cost.storage_loaded_bytes > plain_cost.storage_loaded_bytes);
+    }
+
+    /// Mix with the new sum-bearing fields propagates without panicking
+    /// and produces a strictly larger cost than the same Mix with
+    /// `items_with_sum_item_size: None`.
+    #[test]
+    fn test_propagate_mix_with_items_with_sum_item_increases_cost() {
+        let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
+        let base = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: None,
+                items_size: Some((8, 32, Some(2), 1)),
+                references_size: None,
+                items_with_sum_item_size: None,
+                references_with_sum_item_size: None,
+            },
+        };
+        let with_sum = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: None,
+                items_size: Some((8, 32, Some(2), 1)),
+                references_size: None,
+                items_with_sum_item_size: Some((8, 32, Some(2), 1)),
+                references_with_sum_item_size: None,
+            },
+        };
+
+        let mut base_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut base_cost, &base, GroveVersion::latest()).unwrap();
+        let mut sum_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut sum_cost, &with_sum, GroveVersion::latest()).unwrap();
+
+        // Adding a sum-item-bearing kind to the mix must push the
+        // averaged cost upward (each sum-item leaf is +10 over a plain
+        // item leaf).
+        assert!(sum_cost.storage_cost.replaced_bytes > base_cost.storage_cost.replaced_bytes);
+    }
+
+    /// `Mix` layered_flags_size still picks up the subtrees' flags when
+    /// only the new sum-item fields are also present — sanity for the
+    /// `..` destructure.
+    #[test]
+    fn test_layered_flags_size_mix_with_subtrees_and_sum_item_fields() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(7), 1)),
+            items_size: None,
+            references_size: None,
+            items_with_sum_item_size: Some((8, 32, Some(2), 1)),
+            references_with_sum_item_size: None,
+        };
+        let flags = layer.layered_flags_size().unwrap();
+        assert_eq!(*flags, Some(7));
+    }
+
+    /// Regression: `Mix` with weights only on `items_with_sum_item_size`
+    /// short-circuits to the per-element sum-item size instead of
+    /// dividing by zero across the other empty kinds.
+    #[test]
+    fn test_value_size_mix_only_items_with_sum_item() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: None,
+            references_size: None,
+            items_with_sum_item_size: Some((8, 32, Some(2), 3)),
+            references_with_sum_item_size: None,
+        };
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        // 32 (value) + 2 (flags) + 3 (item base) + 10 (sum varint worst case)
+        assert_eq!(size, 32 + 2 + 13);
+    }
+
+    /// Regression: `Mix` with weights only on `references_with_sum_item_size`.
+    #[test]
+    fn test_value_size_mix_only_references_with_sum_item() {
+        let layer = EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: None,
+            references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: Some((8, 24, Some(1), 2)),
+        };
+        let size = layer
+            .value_with_feature_and_flags_size(GroveVersion::latest())
+            .unwrap();
+        // 24 + 1 + 5 (ref base) + 10 (sum varint)
+        assert_eq!(size, 24 + 1 + 15);
+    }
+
+    // =========================================================================
+    // EstimatedSumTrees v0/v1/v2 formula stability + new weights
+    // =========================================================================
+
+    /// New homogeneous variants resolve to their tree-type's
+    /// `inner_node_type().cost()`, mirroring the existing
+    /// `AllSumTrees`/`AllCountTrees` etc.
+    #[test]
+    fn test_estimated_sum_trees_all_provable_variant_arms() {
+        let v = GroveVersion::latest();
+        assert_eq!(
+            EstimatedSumTrees::AllProvableSumTrees
+                .estimated_size(v)
+                .unwrap(),
+            TreeType::ProvableSumTree.inner_node_type().cost(),
+        );
+        assert_eq!(
+            EstimatedSumTrees::AllProvableCountTrees
+                .estimated_size(v)
+                .unwrap(),
+            TreeType::ProvableCountTree.inner_node_type().cost(),
+        );
+        assert_eq!(
+            EstimatedSumTrees::AllProvableCountSumTrees
+                .estimated_size(v)
+                .unwrap(),
+            TreeType::ProvableCountSumTree.inner_node_type().cost(),
+        );
+        assert_eq!(
+            EstimatedSumTrees::AllProvableCountProvableSumTrees
+                .estimated_size(v)
+                .unwrap(),
+            TreeType::ProvableCountProvableSumTree
+                .inner_node_type()
+                .cost(),
+        );
+    }
+
+    /// v0 formula output is pinned to its historical value so the v2
+    /// expansion can't silently shift fees on already-shipped paths
+    /// (grove v1 uses v0 here). Same input as
+    /// `test_estimated_sum_trees_v0_formula_path` but explicit.
+    #[test]
+    fn test_estimated_sum_trees_v0_output_pinned_for_provable_weights() {
+        // v0 ignores ALL `provable_*` weights — populating them must
+        // produce the same output as leaving them at zero.
+        let baseline = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 3,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+        };
+        let with_provable = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 3,
+            provable_sum_trees_weight: 5,
+            provable_count_trees_weight: 7,
+            provable_count_sum_trees_weight: 9,
+            provable_count_provable_sum_trees_weight: 11,
+        };
+
+        let v0 = GroveVersion::first();
+        assert_eq!(
+            baseline.estimated_size(v0).unwrap(),
+            with_provable.estimated_size(v0).unwrap(),
+            "v0 must ignore new provable_* weights",
+        );
+    }
+
+    /// Same stability invariant for v1: production grove v2 uses v1 of
+    /// this method, so its output must not shift when callers fill new
+    /// `provable_*` fields.
+    #[test]
+    fn test_estimated_sum_trees_v1_output_pinned_for_provable_weights() {
+        let mut v1_version = GroveVersion::latest().clone();
+        v1_version
+            .merk_versions
+            .average_case_costs
+            .sum_tree_estimated_size = 1;
+
+        let baseline = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 2,
+            big_sum_trees_weight: 1,
+            count_trees_weight: 1,
+            count_sum_trees_weight: 1,
+            non_sum_trees_weight: 3,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+        };
+        let with_provable = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 2,
+            big_sum_trees_weight: 1,
+            count_trees_weight: 1,
+            count_sum_trees_weight: 1,
+            non_sum_trees_weight: 3,
+            provable_sum_trees_weight: 4,
+            provable_count_trees_weight: 6,
+            provable_count_sum_trees_weight: 8,
+            provable_count_provable_sum_trees_weight: 10,
+        };
+
+        assert_eq!(
+            baseline.estimated_size(&v1_version).unwrap(),
+            with_provable.estimated_size(&v1_version).unwrap(),
+            "v1 must ignore new provable_* weights so production grove v2 stays stable",
+        );
+    }
+
+    /// v2 must actually use the new `provable_*` weights — toggling them
+    /// changes the output, unlike v0/v1.
+    #[test]
+    fn test_estimated_sum_trees_v2_includes_provable_weights() {
+        let v = GroveVersion::latest(); // v3 → v2 of this method
+
+        let baseline = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+        };
+        let with_pcps = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 3, // PCPS dominates
+        };
+
+        let baseline_size = baseline.estimated_size(v).unwrap();
+        let with_pcps_size = with_pcps.estimated_size(v).unwrap();
+        assert_ne!(
+            baseline_size, with_pcps_size,
+            "v2 formula must respond to provable_count_provable_sum_trees_weight",
+        );
+    }
+
+    /// v2 weighted average: a homogeneous SomeSumTrees with only one
+    /// `provable_*` weight populated equals that tree-type's cost,
+    /// matching the `AllProvable*` shortcuts.
+    #[test]
+    fn test_estimated_sum_trees_v2_homogeneous_provable_matches_all_shortcut() {
+        let v = GroveVersion::latest();
+
+        let cases = [
+            (
+                EstimatedSumTrees::SomeSumTrees {
+                    sum_trees_weight: 0,
+                    big_sum_trees_weight: 0,
+                    count_trees_weight: 0,
+                    count_sum_trees_weight: 0,
+                    non_sum_trees_weight: 0,
+                    provable_sum_trees_weight: 4,
+                    provable_count_trees_weight: 0,
+                    provable_count_sum_trees_weight: 0,
+                    provable_count_provable_sum_trees_weight: 0,
+                },
+                EstimatedSumTrees::AllProvableSumTrees,
+            ),
+            (
+                EstimatedSumTrees::SomeSumTrees {
+                    sum_trees_weight: 0,
+                    big_sum_trees_weight: 0,
+                    count_trees_weight: 0,
+                    count_sum_trees_weight: 0,
+                    non_sum_trees_weight: 0,
+                    provable_sum_trees_weight: 0,
+                    provable_count_trees_weight: 5,
+                    provable_count_sum_trees_weight: 0,
+                    provable_count_provable_sum_trees_weight: 0,
+                },
+                EstimatedSumTrees::AllProvableCountTrees,
+            ),
+            (
+                EstimatedSumTrees::SomeSumTrees {
+                    sum_trees_weight: 0,
+                    big_sum_trees_weight: 0,
+                    count_trees_weight: 0,
+                    count_sum_trees_weight: 0,
+                    non_sum_trees_weight: 0,
+                    provable_sum_trees_weight: 0,
+                    provable_count_trees_weight: 0,
+                    provable_count_sum_trees_weight: 6,
+                    provable_count_provable_sum_trees_weight: 0,
+                },
+                EstimatedSumTrees::AllProvableCountSumTrees,
+            ),
+            (
+                EstimatedSumTrees::SomeSumTrees {
+                    sum_trees_weight: 0,
+                    big_sum_trees_weight: 0,
+                    count_trees_weight: 0,
+                    count_sum_trees_weight: 0,
+                    non_sum_trees_weight: 0,
+                    provable_sum_trees_weight: 0,
+                    provable_count_trees_weight: 0,
+                    provable_count_sum_trees_weight: 0,
+                    provable_count_provable_sum_trees_weight: 7,
+                },
+                EstimatedSumTrees::AllProvableCountProvableSumTrees,
+            ),
+        ];
+
+        for (homogeneous, shortcut) in cases {
+            assert_eq!(
+                homogeneous.estimated_size(v).unwrap(),
+                shortcut.estimated_size(v).unwrap(),
+                "homogeneous SomeSumTrees must match the All* shortcut for the same tree type",
+            );
+        }
+    }
+
+    /// v2 divide-by-zero guard kicks in even when only `provable_*`
+    /// weights are zero (legacy weights were zero too).
+    #[test]
+    fn test_estimated_sum_trees_v2_divide_by_zero() {
+        let v = GroveVersion::latest();
+        let all_zero = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 0,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+        };
+        let err = all_zero.estimated_size(v).unwrap_err();
+        assert!(matches!(err, Error::DivideByZero("weights add up to 0")));
     }
 }
