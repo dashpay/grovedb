@@ -59,6 +59,7 @@ mod partial_batch_consistency_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
 mod proof_depth_limit_tests;
+mod provable_count_indexed_tree_tests;
 mod provable_count_provable_sum_indexed_tree_tests;
 mod provable_count_provable_sum_tree_tests;
 mod provable_count_sum_tree_tests;
