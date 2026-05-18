@@ -125,20 +125,24 @@ pub struct IndexedAxisRangeProof {
     /// `layer_proofs.len() - 1`. See [`AncestorAttestation`].
     pub ancestor_attestations: Vec<AncestorAttestation>,
     /// **For PCPSIT only**: the canonical axes list of the queried
-    /// indexed-tree element. The verifier needs this to rebuild the
-    /// deepest-layer `axes_digest` (the queried-axis secondary's root
-    /// hash is the only one re-derived from `secondary_proof`; the
-    /// other axes' root hashes are carried here).
+    /// indexed-tree element, EXCLUDING the queried axis. The verifier
+    /// needs this to rebuild the deepest-layer `axes_digest` (the
+    /// queried axis's root hash is re-derived from `secondary_proof`;
+    /// the other axes' root hashes are carried here).
     ///
     /// For PCIT/PSIT this is empty (`Vec::new()`); the deepest layer
     /// composes via `combine_hash_three(value_hash, primary_root,
     /// secondary_root)` directly.
     ///
     /// Encoded canonically per the PCPSIT TLV rules (sorted by tag,
-    /// no duplicates, 1..=3 entries). The verifier substitutes the
-    /// queried axis's slot with the secondary proof's derived root
-    /// hash before computing `axes_digest`.
+    /// no duplicates, 0..=2 entries — the queried axis is removed).
     pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
+    /// Discriminator: `true` iff the queried target is a PCPSIT (the
+    /// deepest-layer composition uses `axes_digest(...)` even when only
+    /// the queried axis is in the TLV). For PCIT and PSIT this is
+    /// `false` and the composition uses the single-secondary root hash
+    /// directly.
+    pub target_is_pcpsit: bool,
     /// Encoded Merk range proof for the per-axis secondary.
     pub secondary_proof: Vec<u8>,
     /// Echoed query limit (preserves `None`-vs-`Some(0)` semantics).
@@ -173,6 +177,8 @@ pub struct IndexedAxisPaginatedProof {
     pub ancestor_attestations: Vec<AncestorAttestation>,
     /// Same as [`IndexedAxisRangeProof::other_axes_root_hashes`].
     pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
+    /// Same as [`IndexedAxisRangeProof::target_is_pcpsit`].
+    pub target_is_pcpsit: bool,
     /// Encoded paginated proof bytes for the per-axis secondary.
     ///
     /// For count/avg axes this is the
@@ -206,6 +212,8 @@ pub struct IndexedAxisAggregateProof {
     pub ancestor_attestations: Vec<AncestorAttestation>,
     /// Same as [`IndexedAxisRangeProof::other_axes_root_hashes`].
     pub other_axes_root_hashes: Vec<(u8, [u8; 32])>,
+    /// Same as [`IndexedAxisRangeProof::target_is_pcpsit`].
+    pub target_is_pcpsit: bool,
     /// Encoded aggregate proof bytes for the per-axis secondary.
     /// For count axis: `prove_aggregate_count_on_range` output.
     /// For sum axis: `prove_aggregate_sum_on_range` output.
@@ -459,6 +467,8 @@ fn build_layer_proofs<'db>(
 
 /// Path-keys-driven variant of `read_queried_axis_info`. For PCPSIT, also
 /// opens each non-queried axis's secondary to capture its root hash.
+///
+/// Returns `(secondary_root_key, other_axes_root_hashes, target_is_pcpsit)`.
 fn read_queried_axis_info_with_path_keys<'db>(
     grovedb: &'db GroveDb,
     path_keys: &[Vec<u8>],
@@ -467,7 +477,7 @@ fn read_queried_axis_info_with_path_keys<'db>(
     batch: &'db StorageBatch,
     grove_version: &GroveVersion,
     err_label: &'static str,
-) -> CostResult<(Option<Vec<u8>>, Vec<(u8, [u8; 32])>), Error> {
+) -> CostResult<(Option<Vec<u8>>, Vec<(u8, [u8; 32])>, bool), Error> {
     let mut cost = OperationCost::default();
     if path_keys.is_empty() {
         return Err(Error::InvalidPath(format!(
@@ -503,10 +513,10 @@ fn read_queried_axis_info_with_path_keys<'db>(
     );
     match (axis, element.underlying()) {
         (IndexAxis::Count, Element::ProvableCountIndexedTree(_, secondary, ..)) => {
-            Ok((secondary.clone(), Vec::new())).wrap_with_cost(cost)
+            Ok((secondary.clone(), Vec::new(), false)).wrap_with_cost(cost)
         }
         (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..)) => {
-            Ok((secondary.clone(), Vec::new())).wrap_with_cost(cost)
+            Ok((secondary.clone(), Vec::new(), false)).wrap_with_cost(cost)
         }
         (_, Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)) => {
             let want_tag = axis.tag();
@@ -550,7 +560,7 @@ fn read_queried_axis_info_with_path_keys<'db>(
                 other.push((*tag, sec_hash));
             }
             match queried_secondary {
-                Some(key) => Ok((key, other)).wrap_with_cost(cost),
+                Some(key) => Ok((key, other, true)).wrap_with_cost(cost),
                 None => Err(Error::InvalidPath(format!(
                     "{:?} axis not indexed at this path",
                     axis
@@ -652,6 +662,7 @@ fn verify_deepest_layer(
     secondary_root_hash: &[u8; 32],
     axis: IndexAxis,
     other_axes_root_hashes: &[(u8, [u8; 32])],
+    target_is_pcpsit: bool,
     err_label: &'static str,
 ) -> Result<CryptoHash, Error> {
     let last_idx = layer_proofs.len() - 1;
@@ -660,14 +671,12 @@ fn verify_deepest_layer(
         execute_single_key_proof(&layer_proofs[last_idx], cidx_key, err_label)?;
     let actual_value_hash = value_hash(&cidx_value_bytes).value().to_owned();
 
-    let queried_axis_digest = if other_axes_root_hashes.is_empty() {
-        // PCIT or PSIT: the queried axis IS the only secondary; the
-        // ancestor element's third-input slot is the secondary's root.
-        *secondary_root_hash
-    } else {
+    let queried_axis_digest = if target_is_pcpsit {
         // PCPSIT: rebuild the canonical axes list by combining
         // `other_axes_root_hashes` with the queried axis's actual root
-        // hash, then compute axes_digest.
+        // hash, then compute axes_digest. This applies even when the
+        // PCPSIT's TLV holds only one axis — the element's on-disk
+        // hash binds `axes_digest(...)`, not a raw secondary root hash.
         let mut combined: Vec<(u8, [u8; 32])> =
             Vec::with_capacity(other_axes_root_hashes.len() + 1);
         combined.extend_from_slice(other_axes_root_hashes);
@@ -676,16 +685,25 @@ fn verify_deepest_layer(
         // Reject duplicate tags (would be a corrupt envelope).
         let mut prev_tag: Option<u8> = None;
         for (t, _) in &combined {
-            if let Some(p) = prev_tag {
-                if *t <= p {
-                    return Err(Error::CorruptedData(format!(
-                        "{err_label}: duplicate or unsorted axis tag in PCPSIT envelope"
-                    )));
-                }
+            if let Some(p) = prev_tag
+                && *t <= p
+            {
+                return Err(Error::CorruptedData(format!(
+                    "{err_label}: duplicate or unsorted axis tag in PCPSIT envelope"
+                )));
             }
             prev_tag = Some(*t);
         }
         axes_digest(&combined).value().to_owned()
+    } else {
+        // PCIT or PSIT: the queried axis IS the only secondary; the
+        // ancestor element's third-input slot is the secondary's root.
+        if !other_axes_root_hashes.is_empty() {
+            return Err(Error::CorruptedData(format!(
+                "{err_label}: non-PCPSIT envelope must not carry other_axes_root_hashes"
+            )));
+        }
+        *secondary_root_hash
     };
 
     let combined = combine_hash_three(&actual_value_hash, primary_root_hash, &queried_axis_digest)
@@ -962,7 +980,7 @@ impl GroveDb {
         }
 
         // 1. Per-axis validation + secondary root key + non-queried axis hashes.
-        let (secondary_root_key, other_axes_root_hashes) = cost_return_on_error!(
+        let (secondary_root_key, other_axes_root_hashes, target_is_pcpsit) = cost_return_on_error!(
             &mut cost,
             read_queried_axis_info_with_path_keys(
                 self,
@@ -1057,6 +1075,7 @@ impl GroveDb {
             primary_root_hash,
             ancestor_attestations,
             other_axes_root_hashes,
+            target_is_pcpsit,
             secondary_proof: sec_result.proof,
             requested_limit,
             descending,
@@ -1086,7 +1105,7 @@ impl GroveDb {
         }
 
         // 1. Per-axis validation + secondary root key + non-queried axes.
-        let (secondary_root_key, other_axes_root_hashes) = cost_return_on_error!(
+        let (secondary_root_key, other_axes_root_hashes, target_is_pcpsit) = cost_return_on_error!(
             &mut cost,
             read_queried_axis_info_with_path_keys(
                 self,
@@ -1216,6 +1235,7 @@ impl GroveDb {
             primary_root_hash,
             ancestor_attestations,
             other_axes_root_hashes,
+            target_is_pcpsit,
             secondary_proof: serialized,
             requested_k: k,
             requested_offset: offset,
@@ -1245,7 +1265,7 @@ impl GroveDb {
         }
 
         // 1. Per-axis validation + secondary root key + non-queried axes.
-        let (secondary_root_key, other_axes_root_hashes) = cost_return_on_error!(
+        let (secondary_root_key, other_axes_root_hashes, target_is_pcpsit) = cost_return_on_error!(
             &mut cost,
             read_queried_axis_info_with_path_keys(
                 self,
@@ -1383,6 +1403,7 @@ impl GroveDb {
             primary_root_hash,
             ancestor_attestations,
             other_axes_root_hashes,
+            target_is_pcpsit,
             secondary_proof: serialized,
             lo,
             hi,
@@ -1612,6 +1633,7 @@ fn verify_indexed_axis_range_inner(
         &secondary_root_hash,
         axis,
         &envelope.other_axes_root_hashes,
+        envelope.target_is_pcpsit,
         "indexed-axis range proof",
     )?;
 
@@ -1720,6 +1742,7 @@ fn verify_indexed_axis_paginated_inner(
         &secondary_root_hash,
         axis,
         &envelope.other_axes_root_hashes,
+        envelope.target_is_pcpsit,
         "indexed-axis paginated proof",
     )?;
 
@@ -1797,6 +1820,7 @@ fn verify_indexed_axis_aggregate_inner(
         &secondary_root_hash,
         axis,
         &envelope.other_axes_root_hashes,
+        envelope.target_is_pcpsit,
         "indexed-axis aggregate proof",
     )?;
 
