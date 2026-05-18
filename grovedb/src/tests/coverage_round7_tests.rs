@@ -341,15 +341,9 @@ mod tests {
     /// insertion. Exercises the "1..=3 axes configured" check.
     #[test]
     fn batch_pcpsit_with_zero_axes_rejected() {
-        let grove_version = GroveVersion::latest();
-        let db = make_test_grovedb(grove_version);
         // Direct construction with zero axes is rejected by the
-        // constructor, but we can bypass by using raw struct: build via
-        // a single-axis PCPSIT then mutate. Simpler: feed the batch a
-        // PCPSIT-shape element via direct construction with one axis,
-        // then mutate axes to empty by serializing/deserializing. To
-        // avoid lifecycle complexity here, just verify the constructor
-        // rejects zero axes (also covered).
+        // constructor; this also gates the corresponding batch path
+        // (the batch never gets a chance to see a zero-axis PCPSIT).
         let res = Element::empty_provable_count_provable_sum_indexed_tree(vec![]);
         assert!(
             res.is_err(),
@@ -1373,6 +1367,53 @@ mod tests {
         );
     }
 
+    /// verify_query_with_chained_path_queries returns Err when the
+    /// chained generator returns None.
+    #[test]
+    fn verify_query_with_chained_path_queries_none_generator_rejected() {
+        use grovedb_merk::proofs::Query;
+
+        use crate::SizedQuery;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_item(b"hello".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert a");
+
+        let mut q1 = Query::new();
+        q1.insert_key(b"a".to_vec());
+        let pq1 = crate::PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: q1,
+                limit: None,
+                offset: None,
+            },
+        };
+        let proof = db
+            .prove_query(&pq1, None, grove_version)
+            .unwrap()
+            .expect("prove");
+
+        let chained: Vec<Box<dyn Fn(_) -> Option<crate::PathQuery>>> = vec![Box::new(|_| None)];
+        let result =
+            GroveDb::verify_query_with_chained_path_queries(&proof, &pq1, chained, grove_version);
+        assert!(
+            matches!(result, Err(Error::InvalidInput(_))),
+            "expected InvalidInput from None-returning generator, got {:?}",
+            result
+        );
+    }
+
     /// visualize_verify_grovedb on a clean db returns an empty map.
     #[test]
     fn visualize_verify_grovedb_clean_db_empty() {
@@ -2026,6 +2067,59 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, 10);
         assert_eq!(entries[1].0, 5);
+    }
+
+    /// L4019-4028: ops_at_level_above (level above) exists but the
+    /// specific parent_path isn't in it yet. The cidx_secondary_state
+    /// arm inserts a new ReplaceAggregateIndexedTreeRootKeys for the
+    /// cidx primary's parent_path while a sibling non-cidx ops at a
+    /// different deep path occupy a different parent_path at the same
+    /// level. Mixed-tree two-deep batch.
+    #[test]
+    fn batch_cidx_at_distinct_parent_path_uses_existing_level_map() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Path 1: [TEST_LEAF, "tree_a"] — regular tree.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"tree_a",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create tree_a");
+        db.insert(
+            [TEST_LEAF, b"tree_a"].as_ref(),
+            b"sub_a",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create sub_a");
+        // Path 2: [TEST_LEAF, "cidx_b"] — PCIT primary.
+        populate_simple_pcit(&db, b"cidx_b", &[], grove_version);
+
+        // Batch: deep write to both paths' children.
+        let ops = vec![
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"tree_a".to_vec(), b"sub_a".to_vec()],
+                b"deep_x".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx_b".to_vec()],
+                b"new_y".to_vec(),
+                Element::new_item(b"v".to_vec()),
+            ),
+        ];
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("mixed-tree depth batch");
+        assert_verify_passes(&db, grove_version);
     }
 
     /// Mixed cidx + non-cidx tree update in the same batch: a top-level
