@@ -43,6 +43,7 @@ mod count_tree_tests;
 mod delete_cost_estimation_tests;
 mod delete_up_tree_tests;
 mod dense_tree_tests;
+mod direct_insert_indexed_tests;
 mod error_display_tests;
 mod estimated_costs_average_case_tests;
 mod estimated_costs_worst_case_tests;
