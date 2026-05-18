@@ -856,6 +856,74 @@ mod tests {
     // Batch: fresh-create + descendant write (rejected)
     // -----------------------------------------------------------------
 
+    // -----------------------------------------------------------------
+    // Direct-API db.insert: on-disk validated path
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcpsit_direct_insert_rejects_partial_state() {
+        // The direct db.insert validated path requires either fully
+        // empty (primary=None, count=0, sum=0, all axis secondaries
+        // None) OR fully non-empty (primary=Some). Mixing — e.g.
+        // primary=None but count != 0 — must be rejected.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let bad = Element::new_provable_count_provable_sum_indexed_tree(
+            None,
+            5,
+            0,
+            vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)],
+            None,
+        )
+        .expect("valid axes");
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bad,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "PCPSIT with partial state must be rejected via direct insert"
+        );
+    }
+
+    #[test]
+    fn pcpsit_direct_insert_rejects_bogus_primary_root_key() {
+        // db.insert with a non-empty PCPSIT claim whose primary root
+        // key doesn't match an existing primary Merk should fail. The
+        // outer tree-override check fires before the validated insert
+        // path, but the operation must not succeed.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let bad = Element::new_provable_count_provable_sum_indexed_tree(
+            Some(b"bogus_primary".to_vec()),
+            5,
+            10,
+            vec![
+                (IndexAxis::Count.tag(), Some(b"bogus_count_sec".to_vec())),
+                (IndexAxis::Sum.tag(), Some(b"bogus_sum_sec".to_vec())),
+            ],
+            None,
+        )
+        .expect("valid axes");
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bad,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(result.is_err());
+    }
+
     #[test]
     fn pcpsit_batch_two_empty_pcpsits_in_one_batch_ok() {
         let grove_version = GroveVersion::latest();
