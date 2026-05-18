@@ -204,30 +204,38 @@ impl RocksDbStorage {
         }
     }
 
-    /// Derive the secondary `SubtreePrefix` for a `CountIndexedTree` /
-    /// `ProvableCountIndexedTree` element whose primary prefix is given.
+    /// Derive the per-axis secondary `SubtreePrefix` for any indexed-tree
+    /// element (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`, or
+    /// `ProvableCountProvableSumIndexedTree`) whose primary prefix is
+    /// given and whose axis is identified by `axis_tag`.
     ///
-    /// Per S2-B: `secondary_prefix = Blake3(primary_prefix ‖ 0x01)`.
+    /// Per S2-B (generalized): `secondary_prefix = Blake3(primary_prefix ‖
+    /// axis_tag)`. The axis tag byte is the `IndexAxis` value carried by
+    /// `grovedb-element::indexed::IndexAxis` (`0 = count`, `1 = sum`,
+    /// `2 = avg`). PCPSIT carries 1..=3 secondaries — one per axis — and
+    /// each lives at a distinct prefix derived via this function.
     ///
     /// Three useful properties hold:
     /// - **Primary parity with `Tree`.** The primary prefix is unchanged
-    ///   from `build_prefix` for the same path, so a `CountIndexedTree`'s
+    ///   from `build_prefix` for the same path, so an indexed-tree's
     ///   primary Merk lives where a `Tree` would.
     /// - **Collision-free secondary.** The secondary's Blake3 input is a
-    ///   33-byte block (prefix ‖ 0x01) that no path-derived prefix can
+    ///   33-byte block (prefix ‖ axis_tag) that no path-derived prefix can
     ///   produce — `build_prefix_body` always ends with per-segment length
-    ///   bytes, never a single 0x01 tag after a 32-byte block.
-    /// - **Empty-path safety.** If `primary_prefix` is the all-zero default
-    ///   prefix (root-level CountIndexedTree, unusual but legal), the
-    ///   secondary derivation still yields a well-defined 32-byte hash.
+    ///   bytes, never a single tag byte after a 32-byte block.
+    /// - **Per-axis isolation.** Different `axis_tag` values map the same
+    ///   primary to different storage namespaces, so a PCPSIT's count /
+    ///   sum / avg secondaries do not collide with each other.
     ///
     /// Cost: one Blake3 call (33 bytes fits in a single 64-byte block).
-    pub fn secondary_prefix_for(primary_prefix: &SubtreePrefix) -> CostContext<SubtreePrefix> {
+    pub fn secondary_prefix_for(
+        primary_prefix: &SubtreePrefix,
+        axis_tag: u8,
+    ) -> CostContext<SubtreePrefix> {
         // 33 bytes (prefix + tag) fits within one Blake3 block.
-        const SECONDARY_TAG: u8 = 0x01;
         let mut hasher = blake3::Hasher::new();
         hasher.update(primary_prefix);
-        hasher.update(&[SECONDARY_TAG]);
+        hasher.update(&[axis_tag]);
         SubtreePrefix::from(hasher.finalize())
             .wrap_with_cost(OperationCost::with_hash_node_calls(1))
     }
@@ -734,8 +742,8 @@ mod tests {
         let primary =
             RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
 
-        let s1 = RocksDbStorage::secondary_prefix_for(&primary).unwrap();
-        let s2 = RocksDbStorage::secondary_prefix_for(&primary).unwrap();
+        let s1 = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+        let s2 = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
         assert_eq!(s1, s2, "secondary prefix derivation must be deterministic");
         assert_ne!(primary, s1, "secondary prefix must differ from its primary");
     }
@@ -747,8 +755,8 @@ mod tests {
         let primary_b =
             RocksDbStorage::build_prefix([b"foo".as_ref(), b"baz"].as_ref().into()).unwrap();
 
-        let s_a = RocksDbStorage::secondary_prefix_for(&primary_a).unwrap();
-        let s_b = RocksDbStorage::secondary_prefix_for(&primary_b).unwrap();
+        let s_a = RocksDbStorage::secondary_prefix_for(&primary_a, 0).unwrap();
+        let s_b = RocksDbStorage::secondary_prefix_for(&primary_b, 0).unwrap();
         assert_ne!(
             s_a, s_b,
             "different primaries must produce different secondaries"
@@ -757,28 +765,43 @@ mod tests {
 
     #[test]
     fn secondary_prefix_for_handles_empty_path_root_prefix() {
-        // A root-level CountIndexedTree has primary_prefix = all-zero default.
+        // A root-level indexed tree has primary_prefix = all-zero default.
         // The derivation must still yield a well-defined 32-byte hash.
         let primary = SubtreePrefix::default();
-        let secondary = RocksDbStorage::secondary_prefix_for(&primary).unwrap();
+        let secondary = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
         assert_ne!(secondary, SubtreePrefix::default());
         // And the derivation is stable.
-        let secondary_again = RocksDbStorage::secondary_prefix_for(&primary).unwrap();
+        let secondary_again = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
         assert_eq!(secondary, secondary_again);
     }
 
     #[test]
+    fn secondary_prefix_for_distinguishes_different_axes() {
+        // The axis tag byte enters the Blake3 input — different axes for
+        // the SAME primary must produce different secondary prefixes so
+        // PCPSIT's count / sum / avg secondaries do not collide.
+        let primary =
+            RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
+        let s_count = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
+        let s_sum = RocksDbStorage::secondary_prefix_for(&primary, 1).unwrap();
+        let s_avg = RocksDbStorage::secondary_prefix_for(&primary, 2).unwrap();
+        assert_ne!(s_count, s_sum, "count and sum axes must be distinct");
+        assert_ne!(s_count, s_avg, "count and avg axes must be distinct");
+        assert_ne!(s_sum, s_avg, "sum and avg axes must be distinct");
+    }
+
+    #[test]
     fn secondary_prefix_for_does_not_collide_with_path_derived_prefix() {
-        // The secondary's Blake3 input is `primary || 0x01` (33 bytes). Path-
-        // derived prefixes hash a variable-length `path_body` that always
-        // ends with per-segment-length bytes followed by a single segment-
-        // count word — never a single 0x01 tag after a 32-byte block. So a
-        // collision would require Blake3 output collision (infeasible) AND
-        // is structurally impossible to construct via build_prefix.
-        // This test sanity-checks that a few path-derived prefixes do not
-        // happen to collide with secondaries.
+        // The secondary's Blake3 input is `primary || axis_tag` (33 bytes).
+        // Path-derived prefixes hash a variable-length `path_body` that
+        // always ends with per-segment-length bytes followed by a single
+        // segment-count word — never a single tag byte after a 32-byte
+        // block. So a collision would require Blake3 output collision
+        // (infeasible) AND is structurally impossible to construct via
+        // build_prefix. This test sanity-checks that a few path-derived
+        // prefixes do not happen to collide with secondaries.
         let primary = RocksDbStorage::build_prefix([b"a".as_ref(), b"b"].as_ref().into()).unwrap();
-        let secondary = RocksDbStorage::secondary_prefix_for(&primary).unwrap();
+        let secondary = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
 
         for path in [
             [b"a".as_ref(), b"b"].as_ref(),

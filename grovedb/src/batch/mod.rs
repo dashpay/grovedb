@@ -2,12 +2,16 @@
 
 mod batch_structure;
 
-/// Cidx-specific helpers for the batch apply pipeline (pre-apply count
-/// capture + post-apply secondary mirror). Extracted from `mod.rs` to
-/// keep the cidx propagation pattern self-contained and reusable for
-/// future aggregate-indexed tree shapes (e.g., the planned
-/// `SumIndexedTree`).
-mod count_indexed_tree;
+/// Indexed-tree helpers for the batch apply pipeline (pre-apply
+/// aggregate capture + post-apply secondary mirror) — covers
+/// `ProvableCountIndexedTree`, `ProvableSumIndexedTree`, and
+/// `ProvableCountProvableSumIndexedTree`. Extracted from `mod.rs` to
+/// keep the propagation pattern self-contained.
+mod indexed_tree;
+// Backward-compatible alias for callers that referenced the old module
+// name before Phase 2 generalized this module for all three indexed-tree
+// variants.
+use indexed_tree as count_indexed_tree;
 
 #[cfg(feature = "estimated_costs")]
 pub mod estimated_costs;
@@ -2527,26 +2531,154 @@ where
                                 )
                             );
                         }
-                        // Phase 1 stubs: the new ProvableSumIndexedTree
-                        // (PSIT) and ProvableCountProvableSumIndexedTree
-                        // (PCPSIT) variants are not yet wired into the
-                        // batch insert path. Phase 2 will add their
-                        // dedicated batch ops.
-                        Element::ProvableSumIndexedTree(..) => {
-                            return Err(Error::NotSupported(
-                                "ProvableSumIndexedTree batch insertion is not yet supported \
-                                 (Phase 2)"
-                                    .to_string(),
-                            ))
-                            .wrap_with_cost(cost);
+                        // ProvableSumIndexedTree empty-creation: same
+                        // shape as PCIT — both root keys must be None
+                        // and sum_value = 0, then we write the element
+                        // via insert_count_indexed_subtree_into_batch_operations
+                        // (the merk-side helper now accepts all three
+                        // indexed-tree variants).
+                        Element::ProvableSumIndexedTree(primary, secondary, sum_value, _) => {
+                            if primary.is_some() || secondary.is_some() || *sum_value != 0 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a ProvableSumIndexedTree must be empty at the moment of \
+                                     batch insertion (both primary_root_key and \
+                                     secondary_root_key must be None and sum = 0); item-level \
+                                     mutations require the dedicated insert_into_indexed_tree \
+                                     API",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert ProvableSumIndexedTree element \
+                                             that already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_count_indexed_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    NULL_HASH,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
                         }
-                        Element::ProvableCountProvableSumIndexedTree(..) => {
-                            return Err(Error::NotSupported(
-                                "ProvableCountProvableSumIndexedTree batch insertion is not \
-                                 yet supported (Phase 2)"
-                                    .to_string(),
-                            ))
-                            .wrap_with_cost(cost);
+                        // ProvableCountProvableSumIndexedTree empty-creation:
+                        // primary_root_key = None, count = 0, sum = 0,
+                        // and every axis slot's secondary_root_key =
+                        // None (the axes list carries the configured
+                        // schema and is non-empty). Each axis slot
+                        // contributes NULL_HASH to the axes_digest.
+                        Element::ProvableCountProvableSumIndexedTree(
+                            primary,
+                            count_value,
+                            sum_value,
+                            axes,
+                            _,
+                        ) => {
+                            let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
+                            if primary.is_some()
+                                || *count_value != 0
+                                || *sum_value != 0
+                                || !axes_all_empty
+                            {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a ProvableCountProvableSumIndexedTree must be empty at the \
+                                     moment of batch insertion (primary_root_key = None, count \
+                                     = 0, sum = 0, every axis secondary_root_key = None); \
+                                     item-level mutations require the dedicated \
+                                     insert_into_indexed_tree API",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            if axes.is_empty() || axes.len() > 3 {
+                                return Err(Error::InvalidBatchOperation(
+                                    "a ProvableCountProvableSumIndexedTree must have 1..=3 \
+                                     axes configured",
+                                ))
+                                .wrap_with_cost(cost);
+                            }
+                            if is_insert_if_not_exists
+                                || batch_apply_options.validate_insertion_does_not_override
+                            {
+                                let merk = self.merks.get_mut(path).expect("the Merk is cached");
+                                let existing = cost_return_on_error_into!(
+                                    &mut cost,
+                                    element.element_at_key_already_exists(
+                                        merk,
+                                        key_info.get_key_clone().as_slice(),
+                                        grove_version,
+                                    )
+                                );
+                                if existing {
+                                    if error_if_exists
+                                        || batch_apply_options.validate_insertion_does_not_override
+                                    {
+                                        return Err(Error::InvalidBatchOperation(
+                                            "attempting to insert \
+                                             ProvableCountProvableSumIndexedTree element that \
+                                             already exists",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                    continue;
+                                }
+                            }
+                            let merk_feature_type = cost_return_on_error_into!(
+                                &mut cost,
+                                element
+                                    .get_feature_type(in_tree_type)
+                                    .wrap_with_cost(OperationCost::default())
+                            );
+                            // For an empty PCPSIT each configured axis
+                            // contributes NULL_HASH to the digest. The
+                            // merk-side helper takes a single second
+                            // hash (axes_digest in this case).
+                            let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                                axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                            let empty_axes_digest =
+                                grovedb_merk::tree::axes_digest(&zero_axes).unwrap();
+                            cost_return_on_error_into!(
+                                &mut cost,
+                                element.insert_count_indexed_subtree_into_batch_operations(
+                                    key_info.get_key_clone(),
+                                    NULL_HASH,
+                                    empty_axes_digest,
+                                    false,
+                                    &mut batch_operations,
+                                    merk_feature_type,
+                                    grove_version,
+                                )
+                            );
                         }
                         Element::Tree(..)
                         | Element::SumTree(..)
@@ -4865,38 +4997,49 @@ impl GroveDb {
             }
         }
 
-        // CountIndexedTree secondary cleanup. find_subtrees walks the
+        // Indexed-tree secondary cleanup. find_subtrees walks the
         // primary's storage namespace via path-derived prefixes and
-        // does not see the cidx secondary at
-        // Blake3(primary_prefix ‖ 0x01). Clear it explicitly so the
-        // secondary's data does not survive a DeleteTree on its
-        // primary.
+        // does not see the per-axis secondaries at
+        // Blake3(primary_prefix ‖ axis_tag). Clear all three axis
+        // tags unconditionally so the secondary data does not survive
+        // a DeleteTree on its primary regardless of which
+        // indexed-tree variant the primary was. (Clears on empty
+        // namespaces are no-ops, so the sweep is safe.)
         for primary_path in &cidx_primary_delete_paths {
             let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
             let primary_prefix =
                 grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
                     .unwrap_add_cost(&mut cost);
-            let secondary_prefix =
-                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                    &primary_prefix,
-                )
-                .unwrap_add_cost(&mut cost);
-            let mut secondary_storage = self
-                .db
-                .get_transactional_storage_context_by_subtree_prefix(
-                    secondary_prefix,
-                    Some(&storage_batch),
-                    tx.as_ref(),
-                )
-                .unwrap_add_cost(&mut cost);
-            cost_return_on_error!(
-                &mut cost,
-                secondary_storage.clear().map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "unable to clean up cidx secondary storage in batch delete: {e}",
-                    ))
-                })
-            );
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch delete: {e}",
+                            axis
+                        ))
+                    })
+                );
+            }
         }
 
         // Cidx safe-subset OVERWRITE cleanup. When a batch op replaced
@@ -4930,32 +5073,44 @@ impl GroveDb {
                     })
                 );
             }
-            // Clear the secondary namespace at Blake3(primary ‖ 0x01).
+            // Clear the per-axis secondary namespaces at
+            // Blake3(primary ‖ axis_tag). Sweep all three axes — clear
+            // on empty is a no-op, so this also works for PCIT-only
+            // overwrites (the sum / avg slots are empty).
             let primary_prefix = grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
                 cidx_subtree_path.clone(),
             )
             .unwrap_add_cost(&mut cost);
-            let secondary_prefix =
-                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                    &primary_prefix,
-                )
-                .unwrap_add_cost(&mut cost);
-            let mut secondary_storage = self
-                .db
-                .get_transactional_storage_context_by_subtree_prefix(
-                    secondary_prefix,
-                    Some(&storage_batch),
-                    tx.as_ref(),
-                )
-                .unwrap_add_cost(&mut cost);
-            cost_return_on_error!(
-                &mut cost,
-                secondary_storage.clear().map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "unable to clean up cidx secondary storage in batch overwrite: {e}",
-                    ))
-                })
-            );
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch overwrite: {e}",
+                            axis
+                        ))
+                    })
+                );
+            }
         }
 
         // TODO: compute batch costs
@@ -5419,34 +5574,44 @@ impl GroveDb {
             }
         }
 
-        // CountIndexedTree secondary cleanup (parallels the
-        // apply_batch_with_element_flags_update pass).
+        // Indexed-tree secondary cleanup (parallels the
+        // apply_batch_with_element_flags_update pass). Sweep all
+        // three axes.
         for primary_path in &cidx_primary_delete_paths {
             let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
             let primary_prefix =
                 grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
                     .unwrap_add_cost(&mut cost);
-            let secondary_prefix =
-                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                    &primary_prefix,
-                )
-                .unwrap_add_cost(&mut cost);
-            let mut secondary_storage = self
-                .db
-                .get_transactional_storage_context_by_subtree_prefix(
-                    secondary_prefix,
-                    Some(&continue_storage_batch),
-                    tx.as_ref(),
-                )
-                .unwrap_add_cost(&mut cost);
-            cost_return_on_error!(
-                &mut cost,
-                secondary_storage.clear().map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "unable to clean up cidx secondary storage in batch delete: {e}",
-                    ))
-                })
-            );
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch delete: {e}",
+                            axis
+                        ))
+                    })
+                );
+            }
         }
 
         // Cidx safe-subset OVERWRITE cleanup (parallels the
@@ -5487,27 +5652,36 @@ impl GroveDb {
                 cidx_subtree_path.clone(),
             )
             .unwrap_add_cost(&mut cost);
-            let secondary_prefix =
-                grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                    &primary_prefix,
-                )
-                .unwrap_add_cost(&mut cost);
-            let mut secondary_storage = self
-                .db
-                .get_transactional_storage_context_by_subtree_prefix(
-                    secondary_prefix,
-                    Some(&continue_storage_batch),
-                    tx.as_ref(),
-                )
-                .unwrap_add_cost(&mut cost);
-            cost_return_on_error!(
-                &mut cost,
-                secondary_storage.clear().map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "unable to clean up cidx secondary storage in batch overwrite: {e}",
-                    ))
-                })
-            );
+            for axis in [
+                grovedb_element::indexed::IndexAxis::Count,
+                grovedb_element::indexed::IndexAxis::Sum,
+                grovedb_element::indexed::IndexAxis::Avg,
+            ] {
+                let secondary_prefix =
+                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
+                        &primary_prefix,
+                        axis.tag(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(&continue_storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed-tree secondary (axis {:?}) storage \
+                             in batch overwrite: {e}",
+                            axis
+                        ))
+                    })
+                );
+            }
         }
 
         // let's build the write batch

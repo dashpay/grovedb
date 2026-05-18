@@ -27,7 +27,13 @@ pub mod bulk_append_tree;
 pub mod dense_tree;
 
 #[cfg(feature = "minimal")]
-pub mod count_indexed_tree;
+pub mod indexed_tree;
+
+// Backward-compatible alias for callers that referenced the old module
+// name before Phase 2 generalized count_indexed_tree.rs into
+// indexed_tree.rs (now serving all three indexed-tree variants).
+#[cfg(feature = "minimal")]
+pub use indexed_tree as count_indexed_tree;
 
 #[cfg(feature = "minimal")]
 pub use get::{QueryItemOrSumReturnType, MAX_REFERENCE_HOPS};

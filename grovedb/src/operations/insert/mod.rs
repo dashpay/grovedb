@@ -412,26 +412,225 @@ impl GroveDb {
                     )
                 );
             }
-            // Phase 1 stubs: the new ProvableSumIndexedTree (PSIT) and
-            // ProvableCountProvableSumIndexedTree (PCPSIT) variants are
-            // not yet wired into direct `db.insert`. Phase 2 will add
-            // their primary+secondary / primary+axes-TLV insertion
-            // paths; until then we refuse with NotSupported rather than
-            // silently persist inconsistent state.
-            Element::ProvableSumIndexedTree(..) => {
-                return Err(Error::NotSupported(
-                    "ProvableSumIndexedTree direct insertion is not yet supported (Phase 2)"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
+            // ProvableSumIndexedTree owns two child Merks (primary +
+            // sum-ordered secondary). The H1-A combined value hash is
+            // `combine_hash_three(value_hash, primary_root_hash,
+            // secondary_root_hash)`. For the empty case (both root keys
+            // = None, sum = 0) both child root hashes are NULL_HASH.
+            Element::ProvableSumIndexedTree(primary, secondary, sum_value, _) => {
+                let (primary_root_hash, secondary_root_hash) =
+                    if primary.is_none() && secondary.is_none() && *sum_value == 0 {
+                        (NULL_HASH, NULL_HASH)
+                    } else {
+                        if primary.is_none() || secondary.is_none() {
+                            return Err(Error::InvalidInput(
+                                "ProvableSumIndexedTree direct insertion: non-empty PSIT must \
+                                 have BOTH primary_root_key and secondary_root_key set to \
+                                 Some(_); partial state is not permitted",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        let child_path_owned = path.derive_owned_with_child(key.to_vec());
+                        let child_path = SubtreePath::from(&child_path_owned);
+                        let primary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_transactional_merk_at_path(
+                                child_path.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (p_hash, p_root_key, _) = cost_return_on_error!(
+                            &mut cost,
+                            primary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &p_root_key != primary {
+                            return Err(Error::InvalidInput(
+                                "ProvableSumIndexedTree direct insertion: provided \
+                                 primary_root_key does not match the existing primary Merk's \
+                                 root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        let secondary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_indexed_secondary_at_path(
+                                child_path,
+                                grovedb_element::indexed::IndexAxis::Sum,
+                                secondary.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (s_hash, s_root_key, _) = cost_return_on_error!(
+                            &mut cost,
+                            secondary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &s_root_key != secondary {
+                            return Err(Error::InvalidInput(
+                                "ProvableSumIndexedTree direct insertion: provided \
+                                 secondary_root_key does not match the existing secondary \
+                                 Merk's root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        (p_hash, s_hash)
+                    };
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_count_indexed_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        primary_root_hash,
+                        secondary_root_hash,
+                        Some(options.as_merk_options()),
+                        grove_version,
+                    )
+                );
             }
-            Element::ProvableCountProvableSumIndexedTree(..) => {
-                return Err(Error::NotSupported(
-                    "ProvableCountProvableSumIndexedTree direct insertion is not yet supported \
-                     (Phase 2)"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
+            // ProvableCountProvableSumIndexedTree owns a primary Merk
+            // and 1..=3 per-axis secondaries. The H1-A combined value
+            // hash is `combine_hash_three(value_hash, primary_root_hash,
+            // axes_digest)`, where `axes_digest` is the canonical
+            // digest over the (axis_tag, secondary_root_hash) TLV.
+            //
+            // The "empty creation" case is: primary_root_key = None,
+            // count = 0, sum = 0, AND every axis entry has
+            // secondary_root_key = None (the axes list itself may be
+            // non-empty — it carries the schema). For an empty
+            // creation, each axis contributes NULL_HASH to the
+            // axes_digest payload.
+            Element::ProvableCountProvableSumIndexedTree(
+                primary,
+                count_value,
+                sum_value,
+                axes,
+                _,
+            ) => {
+                let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
+                let (primary_root_hash, second_hash) = if primary.is_none()
+                    && axes_all_empty
+                    && *count_value == 0
+                    && *sum_value == 0
+                {
+                    // Every axis slot is NULL_HASH for the empty case.
+                    let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                        axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                    let digest = grovedb_merk::tree::axes_digest(&zero_axes).unwrap();
+                    (NULL_HASH, digest)
+                } else {
+                    if primary.is_none() {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableSumIndexedTree direct insertion: non-empty \
+                             PCPSIT must have primary_root_key = Some(_); partial state is not \
+                             permitted",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    // Validate axes canonical form (sorted by tag,
+                    // 1..=3 entries, no duplicates).
+                    if axes.is_empty() || axes.len() > 3 {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableSumIndexedTree direct insertion: axes must \
+                             have 1..=3 entries",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    let mut last_tag: Option<u8> = None;
+                    for (tag, _) in axes.iter() {
+                        if let Some(prev) = last_tag
+                            && *tag <= prev
+                        {
+                            return Err(Error::InvalidInput(
+                                "ProvableCountProvableSumIndexedTree direct insertion: axes \
+                                 must be sorted by tag with no duplicates",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        last_tag = Some(*tag);
+                    }
+                    let child_path_owned = path.derive_owned_with_child(key.to_vec());
+                    let child_path = SubtreePath::from(&child_path_owned);
+                    let primary_merk = cost_return_on_error!(
+                        &mut cost,
+                        self.open_transactional_merk_at_path(
+                            child_path.clone(),
+                            transaction,
+                            Some(batch),
+                            grove_version,
+                        )
+                    );
+                    let (p_hash, p_root_key, _) = cost_return_on_error!(
+                        &mut cost,
+                        primary_merk
+                            .root_hash_key_and_aggregate_data()
+                            .map_err(Error::MerkError)
+                    );
+                    if &p_root_key != primary {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableSumIndexedTree direct insertion: provided \
+                             primary_root_key does not match the existing primary Merk's root \
+                             key",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    // For each axis, open + verify and collect its root hash.
+                    let mut axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                        Vec::with_capacity(axes.len());
+                    for (tag, sec_root_key) in axes.iter() {
+                        let axis = cost_return_on_error_no_add!(
+                            cost,
+                            grovedb_element::indexed::IndexAxis::try_from_tag(*tag).map_err(|e| {
+                                Error::CorruptedData(format!("invalid axis tag in PCPSIT: {e}"))
+                            })
+                        );
+                        let secondary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_indexed_secondary_at_path(
+                                child_path.clone(),
+                                axis,
+                                sec_root_key.clone(),
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (s_hash, s_root_key, _) = cost_return_on_error!(
+                            &mut cost,
+                            secondary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        if &s_root_key != sec_root_key {
+                            return Err(Error::InvalidInput(
+                                "ProvableCountProvableSumIndexedTree direct insertion: provided \
+                                 axis secondary_root_key does not match the existing secondary \
+                                 Merk's root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        axis_hashes.push((*tag, s_hash));
+                    }
+                    let digest = grovedb_merk::tree::axes_digest(&axis_hashes).unwrap();
+                    (p_hash, digest)
+                };
+                cost_return_on_error_into!(
+                    &mut cost,
+                    element.insert_count_indexed_subtree(
+                        &mut subtree_to_insert_into,
+                        key,
+                        primary_root_hash,
+                        second_hash,
+                        Some(options.as_merk_options()),
+                        grove_version,
+                    )
+                );
             }
             Element::Tree(value, _)
             | Element::SumTree(value, ..)

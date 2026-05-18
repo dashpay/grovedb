@@ -1,16 +1,21 @@
-//! `CountIndexedTree` direct operations.
+//! Direct operations for indexed-tree elements (`ProvableCountIndexedTree`,
+//! `ProvableSumIndexedTree`, `ProvableCountProvableSumIndexedTree`).
 //!
-//! These dedicated APIs handle the two-Merk machinery (primary +
-//! count-ordered secondary). Direct mutations against the cidx primary
-//! must go through these APIs (`insert_into_count_indexed_tree`,
-//! `delete_from_count_indexed_tree`); the level-by-level batch path
-//! fails closed for direct cidx primary mutations until full batch
-//! integration lands. Deep ops *under* a sub-tree of a cidx primary
-//! propagate correctly through the existing
+//! These dedicated APIs handle the two-Merk machinery for the single-axis
+//! variants (primary + one count-/sum-ordered secondary) and the
+//! multi-axis PCPSIT (primary + 1..=3 axis-specific secondaries). Direct
+//! mutations against an indexed-tree primary must go through these APIs
+//! (`insert_into_indexed_tree`, `delete_from_indexed_tree`); the
+//! level-by-level batch path fails closed for direct indexed-primary
+//! mutations until full batch integration lands. Deep ops *under* a
+//! sub-tree of a cidx primary propagate correctly through the existing
 //! `propagate_changes_with_transaction_with_initial_deferred` machinery.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
+use grovedb_element::indexed::{
+    encode_avg_sort_key, encode_count_sort_key, encode_sum_sort_key, IndexAxis,
 };
 use grovedb_merk::{
     element::{
@@ -32,18 +37,119 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
+/// Per-axis Merk tree type to open the secondary with.
+#[inline]
+fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
+    match axis {
+        // Each count entry contributes count = 1.
+        IndexAxis::Count => TreeType::ProvableCountTree,
+        // Each sum entry contributes its own SumValue.
+        IndexAxis::Sum => TreeType::ProvableSumTree,
+        // Each avg entry contributes (count = 1, sum = item's SumValue).
+        IndexAxis::Avg => TreeType::ProvableCountProvableSumTree,
+    }
+}
+
+/// Build the secondary key bytes for an entry at `item_key` under the
+/// given axis, given the relevant aggregate values:
+/// - count axis → `count_be(8) ‖ item_key`
+/// - sum axis   → `sum_sortable_be(8) ‖ item_key`
+/// - avg axis   → `avg_sortable_be(16) ‖ item_key`
+#[inline]
+fn make_axis_secondary_key(axis: IndexAxis, count: u64, sum: i64, item_key: &[u8]) -> Vec<u8> {
+    match axis {
+        IndexAxis::Count => {
+            let prefix = encode_count_sort_key(count);
+            let mut k = Vec::with_capacity(prefix.len() + item_key.len());
+            k.extend_from_slice(&prefix);
+            k.extend_from_slice(item_key);
+            k
+        }
+        IndexAxis::Sum => {
+            let prefix = encode_sum_sort_key(sum);
+            let mut k = Vec::with_capacity(prefix.len() + item_key.len());
+            k.extend_from_slice(&prefix);
+            k.extend_from_slice(item_key);
+            k
+        }
+        IndexAxis::Avg => {
+            let avg_fp = grovedb_element::indexed::compute_avg_fixed_point(sum, count);
+            let prefix = encode_avg_sort_key(avg_fp);
+            let mut k = Vec::with_capacity(prefix.len() + item_key.len());
+            k.extend_from_slice(&prefix);
+            k.extend_from_slice(item_key);
+            k
+        }
+    }
+}
+
 impl GroveDb {
-    /// Open the secondary Merk for a `CountIndexedTree` /
-    /// `ProvableCountIndexedTree` element at `path`. The secondary lives at
-    /// `Blake3(primary_prefix ‖ 0x01)` per the S2-B prefix derivation.
+    /// Open the per-axis secondary Merk for any indexed-tree element
+    /// (`ProvableCountIndexedTree`, `ProvableSumIndexedTree`, or
+    /// `ProvableCountProvableSumIndexedTree`) at `path`. The secondary
+    /// lives at `Blake3(primary_prefix ‖ axis_tag)` per the (now
+    /// generalized) S2-B prefix derivation. The Merk's
+    /// [`TreeType`] is selected by [`axis_secondary_tree_type`].
     ///
-    /// `secondary_root_key` is read from the parent's
-    /// `Element::CountIndexedTree(_, secondary_root_key, ..)` field.
-    ///
-    /// The Merk is opened with `TreeType::ProvableCountTree` regardless of
-    /// whether the parent was `CountIndexedTree` or
-    /// `ProvableCountIndexedTree` — the secondary is always a provable
-    /// count tree (each entry contributes count = 1).
+    /// `secondary_root_key` is read from the parent indexed-tree
+    /// element's matching field.
+    pub(crate) fn open_indexed_secondary_at_path<'db, 'b, B>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        secondary_root_key: Option<Vec<u8>>,
+        tx: &'db Transaction,
+        batch: Option<&'db StorageBatch>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
+        let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
+            .unwrap_add_cost(&mut cost);
+        let storage = self
+            .db
+            .get_transactional_storage_context_by_subtree_prefix(secondary_prefix, batch, tx)
+            .unwrap_add_cost(&mut cost);
+        let tree_type = axis_secondary_tree_type(axis);
+        if secondary_root_key.is_some() {
+            Merk::open_layered_with_root_key(
+                storage,
+                secondary_root_key,
+                tree_type,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "cannot open indexed-tree secondary (axis {:?}) by prefix with given root \
+                     key: {e}",
+                    axis
+                ))
+            })
+            .add_cost(cost)
+        } else {
+            Merk::open_base(
+                storage,
+                tree_type,
+                Some(&Element::value_defined_cost_for_serialized_value),
+                grove_version,
+            )
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "cannot open empty indexed-tree secondary (axis {:?}) by prefix: {e}",
+                    axis
+                ))
+            })
+            .add_cost(cost)
+        }
+    }
+
+    /// Backward-compatible alias for callers still using the
+    /// count-only entrypoint. Forwards to [`open_indexed_secondary_at_path`]
+    /// with `IndexAxis::Count`.
     pub(crate) fn open_count_indexed_secondary_at_path<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
@@ -55,42 +161,14 @@ impl GroveDb {
     where
         B: AsRef<[u8]> + 'b,
     {
-        let mut cost = OperationCost::default();
-        let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
-        let secondary_prefix =
-            RocksDbStorage::secondary_prefix_for(&primary_prefix).unwrap_add_cost(&mut cost);
-        let storage = self
-            .db
-            .get_transactional_storage_context_by_subtree_prefix(secondary_prefix, batch, tx)
-            .unwrap_add_cost(&mut cost);
-        if secondary_root_key.is_some() {
-            Merk::open_layered_with_root_key(
-                storage,
-                secondary_root_key,
-                TreeType::ProvableCountTree,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version,
-            )
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "cannot open count-indexed-tree secondary by prefix with given root key: {e}"
-                ))
-            })
-            .add_cost(cost)
-        } else {
-            Merk::open_base(
-                storage,
-                TreeType::ProvableCountTree,
-                Some(&Element::value_defined_cost_for_serialized_value),
-                grove_version,
-            )
-            .map_err(|e| {
-                Error::CorruptedData(format!(
-                    "cannot open empty count-indexed-tree secondary by prefix: {e}"
-                ))
-            })
-            .add_cost(cost)
-        }
+        self.open_indexed_secondary_at_path(
+            path,
+            IndexAxis::Count,
+            secondary_root_key,
+            tx,
+            batch,
+            grove_version,
+        )
     }
 
     /// Helper used by the batch path: open the secondary Merk for the cidx
@@ -404,8 +482,9 @@ impl GroveDb {
             if existing_is_cidx {
                 let primary_prefix =
                     RocksDbStorage::build_prefix(entry_path_ref.clone()).unwrap_add_cost(&mut cost);
-                let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix)
-                    .unwrap_add_cost(&mut cost);
+                let secondary_prefix =
+                    RocksDbStorage::secondary_prefix_for(&primary_prefix, IndexAxis::Count.tag())
+                        .unwrap_add_cost(&mut cost);
                 let mut secondary_storage = self
                     .db
                     .get_transactional_storage_context_by_subtree_prefix(
@@ -1612,7 +1691,7 @@ impl GroveDb {
             }
 
             // Nested cidx: also clear the deleted entry's secondary
-            // storage namespace at Blake3(primary_prefix ‖ 0x01).
+            // storage namespace at Blake3(primary_prefix ‖ count_tag).
             if deleted_was_cidx_primary {
                 let primary_prefix =
                     grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
@@ -1622,6 +1701,7 @@ impl GroveDb {
                 let secondary_prefix =
                     grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
                         &primary_prefix,
+                        IndexAxis::Count.tag(),
                     )
                     .unwrap_add_cost(&mut cost);
                 let mut secondary_storage = self
@@ -1804,6 +1884,1181 @@ impl GroveDb {
 
         Ok(true).wrap_with_cost(cost)
     }
+
+    // -----------------------------------------------------------------
+    // ProvableSumIndexedTree (PSIT) direct-insert / direct-delete path.
+    // -----------------------------------------------------------------
+
+    /// Insert (or update) an item under a key into a
+    /// `ProvableSumIndexedTree` (PSIT) primary, mirroring the change
+    /// into the sum-ordered secondary index and updating the parent's
+    /// stored element bytes (primary_root_key, secondary_root_key,
+    /// sum_value) via the H1-A three-input value hash.
+    ///
+    /// `path` is the path to the PSIT element (its primary Merk's
+    /// path). The child element must be sum-bearing (see
+    /// [`Element::is_sum_bearing_child`]); otherwise an
+    /// `InvalidInputError` is returned.
+    pub fn insert_into_provable_sum_indexed_tree<'b, B, P>(
+        &self,
+        path: P,
+        item_key: &[u8],
+        item: Element,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        cost_return_on_error!(
+            &mut cost,
+            self.insert_into_psit_on_transaction(
+                path,
+                item_key,
+                item,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, Some(tx_ref))
+                .map_err(Into::into)
+        );
+
+        tx.commit_local().wrap_with_cost(cost)
+    }
+
+    fn insert_into_psit_on_transaction<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        item_key: &[u8],
+        item: Element,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        // PSIT secondary key = sum_sort_key (8 bytes) ‖ item_key, so
+        // the same 247-byte ceiling as PCIT applies.
+        cost_return_on_error_no_add!(cost, validate_cidx_item_key_len(item_key));
+
+        // Reject non-sum-bearing children up front. PSIT's primary is
+        // a sum-bearing tree; inserting a non-sum-bearing item would
+        // contribute 0 to the sum but make the secondary entry
+        // meaningless.
+        if !item.is_sum_bearing_child() {
+            return Err(Error::InvalidInput(
+                "ProvableSumIndexedTree only accepts sum-bearing children (SumItem, \
+                 ItemWithSumItem, ReferenceWithSumItem, or any sum-bearing tree variant)",
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let (parent_path, psit_key) = match path.derive_parent() {
+            Some(p) => p,
+            None => {
+                return Err(Error::InvalidPath(
+                    "cannot insert into ProvableSumIndexedTree at the root path".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        let mut primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !matches!(primary_merk.tree_type, TreeType::ProvableSumIndexedTree) {
+            return Err(Error::InvalidPath(
+                "insert_into_provable_sum_indexed_tree requires the path's last segment to be a \
+                 ProvableSumIndexedTree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let mut parent_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                parent_path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        let psit_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&parent_merk, psit_key, true, grove_version).map_err(Error::MerkError)
+        );
+        let secondary_root_key_before = match psit_element.underlying() {
+            Element::ProvableSumIndexedTree(_, sec, ..) => sec.clone(),
+            _ => {
+                return Err(Error::CorruptedData(
+                    "parent element at PSIT key is not a ProvableSumIndexedTree".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        // Read existing primary entry's old sum for the secondary
+        // mirror.
+        let existing_item = cost_return_on_error!(
+            &mut cost,
+            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
+                .map_err(Error::MerkError)
+        );
+        let old_sum_for_secondary = existing_item.as_ref().map(|e| e.sum_value_or_default());
+        let new_sum_for_secondary = item.sum_value_or_default();
+
+        // Insert into primary. For PSIT we only accept sum-bearing
+        // items (sum item, item-with-sum, references, or sum-bearing
+        // trees). The merk Element::insert / insert_reference /
+        // insert_subtree dispatch covers all cases.
+        match item.underlying() {
+            Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert(&mut primary_merk, item_key, None, grove_version)
+                        .map_err(Error::MerkError)
+                );
+            }
+            Element::ReferenceWithSumItem(reference_path_type, ..) => {
+                let psit_primary_path_vec = path.to_vec();
+                let resolved_path = cost_return_on_error_no_add!(
+                    cost,
+                    grovedb_element::reference_path::path_from_reference_path_type(
+                        reference_path_type.clone(),
+                        &psit_primary_path_vec,
+                        Some(item_key)
+                    )
+                    .map_err(Error::from)
+                );
+                let referenced_item = cost_return_on_error!(
+                    &mut cost,
+                    self.follow_reference(
+                        resolved_path.as_slice().into(),
+                        false,
+                        Some(transaction),
+                        grove_version,
+                    )
+                );
+                let referenced_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_item
+                        .value_hash(grove_version)
+                        .map_err(Error::from)
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_reference(
+                        &mut primary_merk,
+                        item_key,
+                        referenced_value_hash,
+                        None,
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+                );
+            }
+            // Sum-bearing trees: write with NULL_HASH (empty subtree
+            // assumption); same restriction as the PCIT path.
+            Element::SumTree(..)
+            | Element::BigSumTree(..)
+            | Element::CountSumTree(..)
+            | Element::ProvableCountSumTree(..)
+            | Element::ProvableSumTree(..)
+            | Element::ProvableCountProvableSumTree(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_subtree(
+                        &mut primary_merk,
+                        item_key,
+                        grovedb_merk::tree::NULL_HASH,
+                        None,
+                        grove_version
+                    )
+                    .map_err(Error::MerkError)
+                );
+            }
+            _ => {
+                return Err(Error::InvalidInput(
+                    "ProvableSumIndexedTree: unsupported child element",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
+        // Open + mirror to the sum-axis secondary.
+        let mut secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path,
+                IndexAxis::Sum,
+                secondary_root_key_before,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        cost_return_on_error!(
+            &mut cost,
+            mirror_psit_to_secondary(
+                &mut secondary_merk,
+                item_key,
+                old_sum_for_secondary,
+                new_sum_for_secondary,
+                grove_version,
+            )
+        );
+
+        // Snapshot both merks.
+        let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(Error::MerkError)
+        );
+        let (secondary_root_hash, secondary_root_key, _) = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(Error::MerkError)
+        );
+
+        let reconstructed = cost_return_on_error_no_add!(
+            cost,
+            psit_element
+                .reconstruct_with_two_root_keys(
+                    primary_root_key,
+                    secondary_root_key,
+                    primary_aggregate_data,
+                )
+                .ok_or(Error::CorruptedCodeExecution(
+                    "reconstruct_with_two_root_keys returned None for a PSIT element",
+                ))
+        );
+        cost_return_on_error!(
+            &mut cost,
+            reconstructed
+                .insert_count_indexed_subtree(
+                    &mut parent_merk,
+                    psit_key,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    None,
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+        );
+
+        // Propagate parent changes via the shared propagation path. We
+        // do NOT need an initial_deferred_secondary here because PSIT
+        // primaries do not yet nest under another indexed-tree primary
+        // (PCIT nesting under PCIT is the only currently exercised
+        // nested case). When PSIT/PCPSIT under another indexed-tree
+        // primary lands, generalize this branch the way the PCIT path
+        // does (with a deferred-secondary capture).
+        let mut merk_cache: std::collections::HashMap<
+            SubtreePath<B>,
+            Merk<PrefixedRocksDbTransactionContext>,
+        > = std::collections::HashMap::default();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                parent_path,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Delete an item from a `ProvableSumIndexedTree` primary.
+    pub fn delete_from_provable_sum_indexed_tree<'b, B, P>(
+        &self,
+        path: P,
+        item_key: &[u8],
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let removed = cost_return_on_error!(
+            &mut cost,
+            self.delete_from_psit_on_transaction(path, item_key, tx_ref, &batch, grove_version,)
+        );
+
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, Some(tx_ref))
+                .map_err(Into::into)
+        );
+
+        cost_return_on_error_no_add!(cost, tx.commit_local());
+        Ok(removed).wrap_with_cost(cost)
+    }
+
+    fn delete_from_psit_on_transaction<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        item_key: &[u8],
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error> {
+        let mut cost = OperationCost::default();
+
+        let (parent_path, psit_key) = match path.derive_parent() {
+            Some(p) => p,
+            None => {
+                return Err(Error::InvalidPath(
+                    "cannot delete from ProvableSumIndexedTree at the root path".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        let mut primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !matches!(primary_merk.tree_type, TreeType::ProvableSumIndexedTree) {
+            return Err(Error::InvalidPath(
+                "delete_from_provable_sum_indexed_tree requires the path's last segment to be a \
+                 ProvableSumIndexedTree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let existing_item = cost_return_on_error!(
+            &mut cost,
+            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
+                .map_err(Error::MerkError)
+        );
+        let Some(existing) = existing_item else {
+            return Ok(false).wrap_with_cost(cost);
+        };
+        let old_sum = existing.sum_value_or_default();
+
+        let in_tree_type = primary_merk.tree_type;
+        let is_layered_target = existing.is_any_tree();
+
+        let mut parent_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                parent_path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        let psit_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&parent_merk, psit_key, true, grove_version).map_err(Error::MerkError)
+        );
+        let secondary_root_key_before = match psit_element.underlying() {
+            Element::ProvableSumIndexedTree(_, sec, ..) => sec.clone(),
+            _ => {
+                return Err(Error::CorruptedData(
+                    "parent element at PSIT key is not a ProvableSumIndexedTree".to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        cost_return_on_error!(
+            &mut cost,
+            Element::delete(
+                &mut primary_merk,
+                item_key,
+                None,
+                is_layered_target,
+                in_tree_type,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+
+        // Delete corresponding secondary entry.
+        let mut secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                path,
+                IndexAxis::Sum,
+                secondary_root_key_before,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        let old_secondary_key = make_axis_secondary_key(IndexAxis::Sum, 0, old_sum, item_key);
+        cost_return_on_error!(
+            &mut cost,
+            Element::delete(
+                &mut secondary_merk,
+                old_secondary_key.as_slice(),
+                None,
+                false,
+                TreeType::ProvableSumTree,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+
+        let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(Error::MerkError)
+        );
+        let (secondary_root_hash, secondary_root_key, _) = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(Error::MerkError)
+        );
+
+        let reconstructed = cost_return_on_error_no_add!(
+            cost,
+            psit_element
+                .reconstruct_with_two_root_keys(
+                    primary_root_key,
+                    secondary_root_key,
+                    primary_aggregate_data,
+                )
+                .ok_or(Error::CorruptedCodeExecution(
+                    "reconstruct_with_two_root_keys returned None for a PSIT element"
+                ))
+        );
+        cost_return_on_error!(
+            &mut cost,
+            reconstructed
+                .insert_count_indexed_subtree(
+                    &mut parent_merk,
+                    psit_key,
+                    primary_root_hash,
+                    secondary_root_hash,
+                    None,
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+        );
+
+        let mut merk_cache: std::collections::HashMap<
+            SubtreePath<B>,
+            Merk<PrefixedRocksDbTransactionContext>,
+        > = std::collections::HashMap::default();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                parent_path,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+
+        Ok(true).wrap_with_cost(cost)
+    }
+
+    // -----------------------------------------------------------------
+    // ProvableCountProvableSumIndexedTree (PCPSIT) direct-insert /
+    // direct-delete path.
+    // -----------------------------------------------------------------
+
+    /// Insert (or update) an item under a key into a
+    /// `ProvableCountProvableSumIndexedTree` primary, mirroring the
+    /// change into every axis's secondary index that the parent's
+    /// `axes` field declares, and updating the parent's element bytes
+    /// (primary_root_key, count_value, sum_value, axes) via the H1-A
+    /// three-input hash with `axes_digest` as the second input.
+    pub fn insert_into_provable_count_provable_sum_indexed_tree<'b, B, P>(
+        &self,
+        path: P,
+        item_key: &[u8],
+        item: Element,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        cost_return_on_error!(
+            &mut cost,
+            self.insert_into_pcpsit_on_transaction(
+                path,
+                item_key,
+                item,
+                tx_ref,
+                &batch,
+                grove_version,
+            )
+        );
+
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, Some(tx_ref))
+                .map_err(Into::into)
+        );
+
+        tx.commit_local().wrap_with_cost(cost)
+    }
+
+    fn insert_into_pcpsit_on_transaction<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        item_key: &[u8],
+        item: Element,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        cost_return_on_error_no_add!(cost, validate_cidx_item_key_len(item_key));
+
+        if !item.is_count_and_sum_bearing_child() {
+            return Err(Error::InvalidInput(
+                "ProvableCountProvableSumIndexedTree only accepts children that contribute \
+                 both count and sum (ItemWithSumItem, ReferenceWithSumItem, CountSumTree, \
+                 ProvableCountSumTree, ProvableCountProvableSumTree, or a nested PCPSIT)",
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let (parent_path, pcpsit_key) = match path.derive_parent() {
+            Some(p) => p,
+            None => {
+                return Err(Error::InvalidPath(
+                    "cannot insert into ProvableCountProvableSumIndexedTree at the root path"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        let mut primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !matches!(
+            primary_merk.tree_type,
+            TreeType::ProvableCountProvableSumIndexedTree
+        ) {
+            return Err(Error::InvalidPath(
+                "insert_into_provable_count_provable_sum_indexed_tree requires the path's last \
+                 segment to be a ProvableCountProvableSumIndexedTree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let mut parent_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                parent_path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        let pcpsit_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&parent_merk, pcpsit_key, true, grove_version).map_err(Error::MerkError)
+        );
+        let axes_before = match pcpsit_element.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
+            _ => {
+                return Err(Error::CorruptedData(
+                    "parent element at PCPSIT key is not a ProvableCountProvableSumIndexedTree"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        if axes_before.is_empty() {
+            return Err(Error::InvalidInput(
+                "ProvableCountProvableSumIndexedTree has no axes configured; cannot mirror to \
+                 any secondary index. Configure 1..=3 axes when first inserting the PCPSIT \
+                 element",
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // Read existing primary entry for (old_count, old_sum).
+        let existing_item = cost_return_on_error!(
+            &mut cost,
+            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
+                .map_err(Error::MerkError)
+        );
+        let (old_count, old_sum) = existing_item
+            .as_ref()
+            .map(|e| e.count_sum_value_or_default())
+            .map(|(c, s)| (Some(c), Some(s)))
+            .unwrap_or((None, None));
+        let (new_count, new_sum) = item.count_sum_value_or_default();
+
+        // Insert into primary.
+        match item.underlying() {
+            Element::ItemWithSumItem(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert(&mut primary_merk, item_key, None, grove_version)
+                        .map_err(Error::MerkError)
+                );
+            }
+            Element::ReferenceWithSumItem(reference_path_type, ..) => {
+                let primary_path_vec = path.to_vec();
+                let resolved_path = cost_return_on_error_no_add!(
+                    cost,
+                    grovedb_element::reference_path::path_from_reference_path_type(
+                        reference_path_type.clone(),
+                        &primary_path_vec,
+                        Some(item_key)
+                    )
+                    .map_err(Error::from)
+                );
+                let referenced_item = cost_return_on_error!(
+                    &mut cost,
+                    self.follow_reference(
+                        resolved_path.as_slice().into(),
+                        false,
+                        Some(transaction),
+                        grove_version,
+                    )
+                );
+                let referenced_value_hash = cost_return_on_error!(
+                    &mut cost,
+                    referenced_item
+                        .value_hash(grove_version)
+                        .map_err(Error::from)
+                );
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_reference(
+                        &mut primary_merk,
+                        item_key,
+                        referenced_value_hash,
+                        None,
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+                );
+            }
+            Element::CountSumTree(..)
+            | Element::ProvableCountSumTree(..)
+            | Element::ProvableCountProvableSumTree(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_subtree(
+                        &mut primary_merk,
+                        item_key,
+                        grovedb_merk::tree::NULL_HASH,
+                        None,
+                        grove_version
+                    )
+                    .map_err(Error::MerkError)
+                );
+            }
+            _ => {
+                return Err(Error::InvalidInput(
+                    "ProvableCountProvableSumIndexedTree: unsupported child element",
+                ))
+                .wrap_with_cost(cost);
+            }
+        }
+
+        // For each configured axis, open the secondary and apply the
+        // delete-then-insert mirror. Collect each axis's
+        // (root_hash, root_key) for the new axes TLV.
+        let mut new_axes: Vec<(u8, Option<Vec<u8>>)> = Vec::with_capacity(axes_before.len());
+        let mut axis_root_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
+            Vec::with_capacity(axes_before.len());
+        for (tag, sec_root_key_before) in &axes_before {
+            let axis = cost_return_on_error_no_add!(
+                cost,
+                IndexAxis::try_from_tag(*tag).map_err(|e| {
+                    Error::CorruptedData(format!("invalid axis tag in PCPSIT element: {e}"))
+                })
+            );
+            let mut secondary_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_indexed_secondary_at_path(
+                    path.clone(),
+                    axis,
+                    sec_root_key_before.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            cost_return_on_error!(
+                &mut cost,
+                mirror_pcpsit_axis_to_secondary(
+                    &mut secondary_merk,
+                    axis,
+                    item_key,
+                    old_count,
+                    old_sum,
+                    Some(new_count),
+                    Some(new_sum),
+                    grove_version,
+                )
+            );
+            let (sec_hash, sec_root_key, _) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            new_axes.push((*tag, sec_root_key));
+            axis_root_hashes.push((*tag, sec_hash));
+        }
+
+        let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(Error::MerkError)
+        );
+        let axes_digest_value =
+            grovedb_merk::tree::axes_digest(&axis_root_hashes).unwrap_add_cost(&mut cost);
+
+        let reconstructed = cost_return_on_error_no_add!(
+            cost,
+            pcpsit_element
+                .reconstruct_with_axes(primary_root_key, primary_aggregate_data, new_axes)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "reconstruct_with_axes returned None for a PCPSIT element"
+                ))
+        );
+        cost_return_on_error!(
+            &mut cost,
+            reconstructed
+                .insert_count_indexed_subtree(
+                    &mut parent_merk,
+                    pcpsit_key,
+                    primary_root_hash,
+                    axes_digest_value,
+                    None,
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+        );
+
+        let mut merk_cache: std::collections::HashMap<
+            SubtreePath<B>,
+            Merk<PrefixedRocksDbTransactionContext>,
+        > = std::collections::HashMap::default();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                parent_path,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Delete an item from a `ProvableCountProvableSumIndexedTree`
+    /// primary, removing its secondary entries from every configured
+    /// axis.
+    pub fn delete_from_provable_count_provable_sum_indexed_tree<'b, B, P>(
+        &self,
+        path: P,
+        item_key: &[u8],
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        let batch = StorageBatch::new();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let removed = cost_return_on_error!(
+            &mut cost,
+            self.delete_from_pcpsit_on_transaction(path, item_key, tx_ref, &batch, grove_version,)
+        );
+
+        cost_return_on_error!(
+            &mut cost,
+            self.db
+                .commit_multi_context_batch(batch, Some(tx_ref))
+                .map_err(Into::into)
+        );
+
+        cost_return_on_error_no_add!(cost, tx.commit_local());
+        Ok(removed).wrap_with_cost(cost)
+    }
+
+    fn delete_from_pcpsit_on_transaction<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        item_key: &[u8],
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error> {
+        let mut cost = OperationCost::default();
+
+        let (parent_path, pcpsit_key) = match path.derive_parent() {
+            Some(p) => p,
+            None => {
+                return Err(Error::InvalidPath(
+                    "cannot delete from ProvableCountProvableSumIndexedTree at the root path"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        let mut primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        if !matches!(
+            primary_merk.tree_type,
+            TreeType::ProvableCountProvableSumIndexedTree
+        ) {
+            return Err(Error::InvalidPath(
+                "delete_from_provable_count_provable_sum_indexed_tree requires the path's \
+                 last segment to be a ProvableCountProvableSumIndexedTree element"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        let existing_item = cost_return_on_error!(
+            &mut cost,
+            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
+                .map_err(Error::MerkError)
+        );
+        let Some(existing) = existing_item else {
+            return Ok(false).wrap_with_cost(cost);
+        };
+        let (old_count, old_sum) = existing.count_sum_value_or_default();
+
+        let in_tree_type = primary_merk.tree_type;
+        let is_layered_target = existing.is_any_tree();
+
+        let mut parent_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                parent_path.clone(),
+                transaction,
+                Some(batch),
+                grove_version
+            )
+        );
+        let pcpsit_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&parent_merk, pcpsit_key, true, grove_version).map_err(Error::MerkError)
+        );
+        let axes_before = match pcpsit_element.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
+            _ => {
+                return Err(Error::CorruptedData(
+                    "parent element at PCPSIT key is not a ProvableCountProvableSumIndexedTree"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+
+        cost_return_on_error!(
+            &mut cost,
+            Element::delete(
+                &mut primary_merk,
+                item_key,
+                None,
+                is_layered_target,
+                in_tree_type,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+
+        let mut new_axes: Vec<(u8, Option<Vec<u8>>)> = Vec::with_capacity(axes_before.len());
+        let mut axis_root_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
+            Vec::with_capacity(axes_before.len());
+        for (tag, sec_root_key_before) in &axes_before {
+            let axis = cost_return_on_error_no_add!(
+                cost,
+                IndexAxis::try_from_tag(*tag).map_err(|e| {
+                    Error::CorruptedData(format!("invalid axis tag in PCPSIT element: {e}"))
+                })
+            );
+            let mut secondary_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_indexed_secondary_at_path(
+                    path.clone(),
+                    axis,
+                    sec_root_key_before.clone(),
+                    transaction,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            cost_return_on_error!(
+                &mut cost,
+                mirror_pcpsit_axis_to_secondary(
+                    &mut secondary_merk,
+                    axis,
+                    item_key,
+                    Some(old_count),
+                    Some(old_sum),
+                    None,
+                    None,
+                    grove_version,
+                )
+            );
+            let (sec_hash, sec_root_key, _) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            new_axes.push((*tag, sec_root_key));
+            axis_root_hashes.push((*tag, sec_hash));
+        }
+
+        let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
+            &mut cost,
+            primary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(Error::MerkError)
+        );
+        let axes_digest_value =
+            grovedb_merk::tree::axes_digest(&axis_root_hashes).unwrap_add_cost(&mut cost);
+
+        let reconstructed = cost_return_on_error_no_add!(
+            cost,
+            pcpsit_element
+                .reconstruct_with_axes(primary_root_key, primary_aggregate_data, new_axes)
+                .ok_or(Error::CorruptedCodeExecution(
+                    "reconstruct_with_axes returned None for a PCPSIT element"
+                ))
+        );
+        cost_return_on_error!(
+            &mut cost,
+            reconstructed
+                .insert_count_indexed_subtree(
+                    &mut parent_merk,
+                    pcpsit_key,
+                    primary_root_hash,
+                    axes_digest_value,
+                    None,
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+        );
+
+        let mut merk_cache: std::collections::HashMap<
+            SubtreePath<B>,
+            Merk<PrefixedRocksDbTransactionContext>,
+        > = std::collections::HashMap::default();
+        merk_cache.insert(parent_path.clone(), parent_merk);
+        cost_return_on_error!(
+            &mut cost,
+            self.propagate_changes_with_transaction(
+                merk_cache,
+                parent_path,
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
+
+        Ok(true).wrap_with_cost(cost)
+    }
+}
+
+/// Apply the sum-axis secondary mirror for a PSIT insert/update. The
+/// secondary stores entries at `(sum_sort_key ‖ item_key)` whose value
+/// is a `SumItem(sum)` so the secondary's sum aggregate matches the
+/// primary's.
+fn mirror_psit_to_secondary<'db, S: StorageContext<'db>>(
+    secondary: &mut Merk<S>,
+    item_key: &[u8],
+    old_sum: Option<i64>,
+    new_sum: i64,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let mut cost = OperationCost::default();
+    if let Some(old) = old_sum
+        && old == new_sum
+    {
+        return Ok(()).wrap_with_cost(cost);
+    }
+    if let Some(old) = old_sum {
+        let old_secondary_key = make_axis_secondary_key(IndexAxis::Sum, 0, old, item_key);
+        cost_return_on_error!(
+            &mut cost,
+            Element::delete(
+                secondary,
+                old_secondary_key.as_slice(),
+                None,
+                false,
+                TreeType::ProvableSumTree,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+    }
+    let new_secondary_key = make_axis_secondary_key(IndexAxis::Sum, 0, new_sum, item_key);
+    let secondary_entry = Element::new_sum_item(new_sum);
+    cost_return_on_error!(
+        &mut cost,
+        secondary_entry
+            .insert(secondary, new_secondary_key.as_slice(), None, grove_version)
+            .map_err(Error::MerkError)
+    );
+    Ok(()).wrap_with_cost(cost)
+}
+
+/// Apply a PCPSIT axis secondary mirror covering insert, update, and
+/// delete via the (old, new) Option pair. Reads `old_count`/`old_sum`
+/// from the prior primary state and `new_count`/`new_sum` from the
+/// post-mutation state.
+///
+/// The secondary entry is a no-payload `Item` whose own sum / count
+/// contribution comes from its position in a sum/count-bearing tree.
+/// For the sum axis the secondary entry is a `SumItem(sum)`; for the
+/// avg axis the secondary entry is an `ItemWithSumItem(empty, sum)` so
+/// both count (= 1) and sum (= the entry's sum_value) propagate to the
+/// secondary's `ProvableCountProvableSumTree`. For the count axis the
+/// secondary entry is a plain `Item` (count = 1, no sum).
+#[allow(clippy::too_many_arguments)]
+fn mirror_pcpsit_axis_to_secondary<'db, S: StorageContext<'db>>(
+    secondary: &mut Merk<S>,
+    axis: IndexAxis,
+    item_key: &[u8],
+    old_count: Option<u64>,
+    old_sum: Option<i64>,
+    new_count: Option<u64>,
+    new_sum: Option<i64>,
+    grove_version: &GroveVersion,
+) -> CostResult<(), Error> {
+    let mut cost = OperationCost::default();
+    let secondary_tree_type = axis_secondary_tree_type(axis);
+
+    // Compute old and new sort keys. Either may be None (no entry).
+    let old_key = match (old_count, old_sum) {
+        (Some(c), Some(s)) => Some(make_axis_secondary_key(axis, c, s, item_key)),
+        _ => None,
+    };
+    let new_key = match (new_count, new_sum) {
+        (Some(c), Some(s)) => Some(make_axis_secondary_key(axis, c, s, item_key)),
+        _ => None,
+    };
+
+    if old_key == new_key && new_key.is_some() {
+        // The sort key didn't move and there's still an entry there;
+        // the previous insert already wrote the correct value, so
+        // nothing more is needed.
+        return Ok(()).wrap_with_cost(cost);
+    }
+
+    if let Some(ok) = &old_key {
+        cost_return_on_error!(
+            &mut cost,
+            Element::delete(
+                secondary,
+                ok.as_slice(),
+                None,
+                false,
+                secondary_tree_type,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+    }
+    if let (Some(nk), Some(new_sum_val)) = (&new_key, new_sum) {
+        let entry = match axis {
+            // Count axis: secondary uses a ProvableCountTree, every
+            // entry contributes count = 1; a plain Item is sufficient.
+            IndexAxis::Count => Element::new_item(Vec::new()),
+            // Sum axis: secondary uses a ProvableSumTree, each entry
+            // contributes its own sum value.
+            IndexAxis::Sum => Element::new_sum_item(new_sum_val),
+            // Avg axis: secondary uses a ProvableCountProvableSumTree;
+            // an ItemWithSumItem(empty, sum) contributes (1, sum).
+            IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), new_sum_val),
+        };
+        cost_return_on_error!(
+            &mut cost,
+            entry
+                .insert(secondary, nk.as_slice(), None, grove_version)
+                .map_err(Error::MerkError)
+        );
+    }
+    Ok(()).wrap_with_cost(cost)
 }
 
 /// Apply the secondary-mirror update for a primary mutation in the

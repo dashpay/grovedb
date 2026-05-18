@@ -46,7 +46,7 @@ use grovedb_costs::{
 use grovedb_version::version::GroveVersion;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use hash::{
-    combine_hash, combine_hash_three, kv_digest_to_kv_hash, kv_hash, node_hash,
+    axes_digest, combine_hash, combine_hash_three, kv_digest_to_kv_hash, kv_hash, node_hash,
     node_hash_with_count, node_hash_with_count_and_sum, node_hash_with_sum, value_hash, CryptoHash,
     HASH_LENGTH, NULL_HASH,
 };

@@ -145,15 +145,19 @@ pub trait ElementInsertToStorageExtensions {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
 
-    /// Insert a two-secondary indexed-tree element
-    /// (`ProvableSumIndexedTree` or `ProvableCountIndexedTree`) directly
-    /// into Merk under a key.
+    /// Insert any indexed-tree element (`ProvableSumIndexedTree`,
+    /// `ProvableCountIndexedTree`, or `ProvableCountProvableSumIndexedTree`)
+    /// directly into Merk under a key.
     ///
-    /// Carries BOTH child Merk root hashes (primary + secondary) and uses
-    /// the H1-A three-input hash composition. The
-    /// `ProvableCountProvableSumIndexedTree` variant uses a different
-    /// hash composition (`axes_digest`) and is handled in Phase 2 by a
-    /// separate API.
+    /// Carries the primary Merk root hash plus a second hash that depends
+    /// on the variant:
+    /// - For PSIT / PCIT (single-axis variants): the secondary Merk root
+    ///   hash.
+    /// - For PCPSIT (multi-axis variant): the `axes_digest` over the
+    ///   canonical (axis_tag, secondary_root_hash) TLV.
+    ///
+    /// In both cases the resulting `combined_value_hash` is
+    /// `combine_hash_three(value_hash, primary_root_hash, second_hash)`.
     fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
@@ -164,10 +168,10 @@ pub trait ElementInsertToStorageExtensions {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>;
 
-    /// Adds a "Put" op to batch operations for a `ProvableSumIndexedTree`
-    /// or `ProvableCountIndexedTree` element and key. The
-    /// `ProvableCountProvableSumIndexedTree` variant is handled
-    /// separately in Phase 2.
+    /// Adds a "Put" op to batch operations for any indexed-tree element
+    /// (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`, or
+    /// `ProvableCountProvableSumIndexedTree`). Same hash composition
+    /// rules as [`insert_count_indexed_subtree`].
     fn insert_count_indexed_subtree_into_batch_operations<K: AsRef<[u8]>>(
         &self,
         key: K,
@@ -729,12 +733,14 @@ impl ElementInsertToStorageExtensions for Element {
 
         if !matches!(
             self.underlying(),
-            Element::ProvableSumIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+            Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
-                "insert_count_indexed_subtree only accepts ProvableSumIndexedTree or \
-                 ProvableCountIndexedTree elements; ProvableCountProvableSumIndexedTree \
-                 uses a separate dual/triple-axis insert path (Phase 2)",
+                "insert_count_indexed_subtree only accepts indexed-tree elements \
+                 (ProvableSumIndexedTree, ProvableCountIndexedTree, or \
+                 ProvableCountProvableSumIndexedTree)",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -813,13 +819,14 @@ impl ElementInsertToStorageExtensions for Element {
 
         if !matches!(
             self.underlying(),
-            Element::ProvableSumIndexedTree(..) | Element::ProvableCountIndexedTree(..)
+            Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
         ) {
             return Err(Error::InvalidInputError(
                 "insert_count_indexed_subtree_into_batch_operations only accepts \
-                 ProvableSumIndexedTree or ProvableCountIndexedTree elements; \
-                 ProvableCountProvableSumIndexedTree uses a separate dual/triple-axis \
-                 insert path (Phase 2)",
+                 indexed-tree elements (ProvableSumIndexedTree, ProvableCountIndexedTree, \
+                 or ProvableCountProvableSumIndexedTree)",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -1417,7 +1424,7 @@ mod tests {
         match result {
             Err(Error::InvalidInputError(msg)) => {
                 assert!(
-                    msg.contains("only accepts ProvableSumIndexedTree"),
+                    msg.contains("only accepts indexed-tree elements"),
                     "expected non-indexed-tree error, got: {msg}"
                 );
             }
@@ -1516,7 +1523,7 @@ mod tests {
         match result {
             Err(Error::InvalidInputError(msg)) => {
                 assert!(
-                    msg.contains("only accepts ProvableSumIndexedTree"),
+                    msg.contains("only accepts indexed-tree elements"),
                     "expected non-indexed-tree error, got: {msg}"
                 );
             }

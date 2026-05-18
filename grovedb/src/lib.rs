@@ -1740,19 +1740,168 @@ impl GroveDb {
                         );
                     }
                 }
-                // Phase 1: PSIT and PCPSIT consistency verification is
-                // not yet wired through `verify_grovedb`. Their primary
-                // Merks would need PSIT- and PCPSIT-specific hash
-                // composition (`combine_hash_three` with the secondary
-                // root hash for PSIT, `axes_digest` for PCPSIT) which
-                // the current verify path doesn't synthesize. Phase 2
-                // adds the per-variant verification.
-                Element::ProvableSumIndexedTree(..)
-                | Element::ProvableCountProvableSumIndexedTree(..) => {
-                    // Skip silently for Phase 1: returning an issue here
-                    // would mark a legitimate empty indexed-tree as
-                    // corrupt. A follow-up Phase 2 patch must replace
-                    // this no-op with the matching verification arms.
+                // ProvableSumIndexedTree integrity: identical shape to
+                // PCIT but the secondary is a `ProvableSumTree`. Open
+                // both Merks, recompute `combine_hash_three(value_hash,
+                // primary_root_hash, secondary_root_hash)`, compare
+                // to the parent's stored combined value hash, and
+                // recurse into the primary.
+                Element::ProvableSumIndexedTree(..) => {
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let new_path = path.derive_owned_with_child(key);
+                    let new_path_ref = SubtreePath::from(&new_path);
+
+                    let primary_merk = self
+                        .open_transactional_merk_at_path(
+                            new_path_ref.clone(),
+                            transaction,
+                            batch,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                    let primary_root_hash = primary_merk.root_hash().unwrap();
+
+                    let secondary_root_key = match element {
+                        Element::ProvableSumIndexedTree(_, ref s, ..) => s.clone(),
+                        _ => unreachable!("matched PSIT variant above"),
+                    };
+                    let secondary_merk = self
+                        .open_indexed_secondary_at_path(
+                            new_path_ref.clone(),
+                            grovedb_element::indexed::IndexAxis::Sum,
+                            secondary_root_key,
+                            transaction,
+                            batch,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                    let secondary_root_hash = secondary_merk.root_hash().unwrap();
+
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash = combine_hash_three(
+                        &actual_value_hash,
+                        &primary_root_hash,
+                        &secondary_root_hash,
+                    )
+                    .unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(
+                            new_path.to_vec(),
+                            (primary_root_hash, combined_value_hash, element_value_hash),
+                        );
+                    }
+
+                    issues.extend(self.verify_merk_and_submerks_in_transaction(
+                        primary_merk,
+                        &new_path_ref,
+                        batch,
+                        transaction,
+                        verify_references,
+                        true,
+                        grove_version,
+                    )?);
+                }
+                // ProvableCountProvableSumIndexedTree integrity: open
+                // each axis's secondary Merk, build the canonical
+                // `axes_digest`, recompute `combine_hash_three(
+                // value_hash, primary_root_hash, axes_digest)`, and
+                // compare to the parent's stored hash. Then recurse
+                // into the primary.
+                Element::ProvableCountProvableSumIndexedTree(..) => {
+                    let (kv_value, element_value_hash) = merk
+                        .get_value_and_value_hash(
+                            &key,
+                            allow_cache,
+                            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                            grove_version,
+                        )
+                        .unwrap()
+                        .map_err(MerkError)?
+                        .ok_or(Error::CorruptedData(format!(
+                            "expected merk to contain value at key {} for {}",
+                            hex_to_ascii(&key),
+                            element.type_str()
+                        )))?;
+                    let new_path = path.derive_owned_with_child(key);
+                    let new_path_ref = SubtreePath::from(&new_path);
+
+                    let primary_merk = self
+                        .open_transactional_merk_at_path(
+                            new_path_ref.clone(),
+                            transaction,
+                            batch,
+                            grove_version,
+                        )
+                        .unwrap()?;
+                    let primary_root_hash = primary_merk.root_hash().unwrap();
+
+                    let axes = match element {
+                        Element::ProvableCountProvableSumIndexedTree(_, _, _, ref a, _) => {
+                            a.clone()
+                        }
+                        _ => unreachable!("matched PCPSIT variant above"),
+                    };
+                    let mut axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                        Vec::with_capacity(axes.len());
+                    for (tag, sec_root_key) in &axes {
+                        let axis = grovedb_element::indexed::IndexAxis::try_from_tag(*tag)
+                            .map_err(|e| {
+                                Error::CorruptedData(format!(
+                                    "invalid axis tag in PCPSIT element: {e}"
+                                ))
+                            })?;
+                        let secondary_merk = self
+                            .open_indexed_secondary_at_path(
+                                new_path_ref.clone(),
+                                axis,
+                                sec_root_key.clone(),
+                                transaction,
+                                batch,
+                                grove_version,
+                            )
+                            .unwrap()?;
+                        axis_hashes.push((*tag, secondary_merk.root_hash().unwrap()));
+                    }
+                    let axes_digest_value = grovedb_merk::tree::axes_digest(&axis_hashes).unwrap();
+
+                    let actual_value_hash = value_hash(&kv_value).unwrap();
+                    let combined_value_hash = combine_hash_three(
+                        &actual_value_hash,
+                        &primary_root_hash,
+                        &axes_digest_value,
+                    )
+                    .unwrap();
+
+                    if combined_value_hash != element_value_hash {
+                        issues.insert(
+                            new_path.to_vec(),
+                            (primary_root_hash, combined_value_hash, element_value_hash),
+                        );
+                    }
+
+                    issues.extend(self.verify_merk_and_submerks_in_transaction(
+                        primary_merk,
+                        &new_path_ref,
+                        batch,
+                        transaction,
+                        verify_references,
+                        true,
+                        grove_version,
+                    )?);
                 }
                 Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                     unreachable!("unwrapped above")

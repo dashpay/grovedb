@@ -1,7 +1,7 @@
 //! Reconstruct
 //! Functions for reconstructing tree elements with updated root keys
 
-use grovedb_element::Element;
+use grovedb_element::{indexed::IndexedTreeAxes, Element};
 
 use crate::tree::AggregateData;
 
@@ -23,7 +23,7 @@ pub trait ElementReconstructExtensions {
     /// preserving flags. Returns `None` for any other element type — the
     /// regular `reconstruct_with_root_key` covers single-Merk tree
     /// elements, and `ProvableCountProvableSumIndexedTree` uses the
-    /// (Phase 2) `reconstruct_pcpsit_with_axes` API instead.
+    /// `reconstruct_with_axes` API instead.
     ///
     /// Looks through `Element::NonCounted` and re-wraps the inner element
     /// once reconstructed.
@@ -32,6 +32,24 @@ pub trait ElementReconstructExtensions {
         primary_root_key: Option<Vec<u8>>,
         secondary_root_key: Option<Vec<u8>>,
         aggregate_data: AggregateData,
+    ) -> Option<Element>;
+
+    /// Reconstruct a `ProvableCountProvableSumIndexedTree` element with
+    /// updated primary root key, count + sum aggregates, and canonical
+    /// `axes` TLV, preserving flags. Returns `None` for any other
+    /// element type.
+    ///
+    /// `axes` is the canonical (sorted-by-tag, deduped, 1..=3 entries)
+    /// list of `(axis_tag, secondary_root_key)` pairs — see
+    /// `grovedb_element::indexed::IndexAxis` for the tag values.
+    ///
+    /// Looks through `Element::NonCounted` and re-wraps the inner element
+    /// once reconstructed.
+    fn reconstruct_with_axes(
+        &self,
+        primary_root_key: Option<Vec<u8>>,
+        aggregate_data: AggregateData,
+        axes: IndexedTreeAxes,
     ) -> Option<Element>;
 }
 
@@ -142,9 +160,31 @@ impl ElementReconstructExtensions for Element {
                 )
                 .map(|reconstructed| Element::NonCounted(Box::new(reconstructed))),
             // PCPSIT carries an axes TLV rather than a single secondary
-            // root key. Phase 1 deliberately returns `None` here — the
-            // caller path is wired up in Phase 2.
+            // root key; callers must use `reconstruct_with_axes`.
             Element::ProvableCountProvableSumIndexedTree(..) => None,
+            _ => None,
+        }
+    }
+
+    fn reconstruct_with_axes(
+        &self,
+        primary_root_key: Option<Vec<u8>>,
+        aggregate_data: AggregateData,
+        axes: IndexedTreeAxes,
+    ) -> Option<Element> {
+        match self {
+            Element::ProvableCountProvableSumIndexedTree(.., f) => {
+                Some(Element::ProvableCountProvableSumIndexedTree(
+                    primary_root_key,
+                    aggregate_data.as_count_u64(),
+                    aggregate_data.as_sum_i64(),
+                    axes,
+                    f.clone(),
+                ))
+            }
+            Element::NonCounted(inner) => inner
+                .reconstruct_with_axes(primary_root_key, aggregate_data, axes)
+                .map(|reconstructed| Element::NonCounted(Box::new(reconstructed))),
             _ => None,
         }
     }

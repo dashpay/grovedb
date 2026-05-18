@@ -575,6 +575,73 @@ impl Element {
         matches!(self.underlying(), Element::ItemWithSumItem(..))
     }
 
+    /// Returns whether this element legitimately contributes a sum value
+    /// to a sum-bearing parent (e.g. the primary Merk of a
+    /// `ProvableSumIndexedTree`).
+    ///
+    /// Looks through `NonCounted` (the wrapper preserves sum
+    /// propagation), but rejects `NotSummed` / `NotCountedOrSummed`
+    /// (those wrappers actively suppress the sum contribution).
+    ///
+    /// Items / item-like variants that carry a `SumValue` contribute
+    /// (`SumItem`, `ItemWithSumItem`, `ReferenceWithSumItem`) as do every
+    /// sum-bearing tree variant. Other items (`Item`, plain `Reference`)
+    /// and non-sum trees (`Tree`, `CountTree`, `ProvableCountTree`,
+    /// `ProvableCountIndexedTree`) return `false`.
+    pub fn is_sum_bearing_child(&self) -> bool {
+        if matches!(self, Element::NotSummed(_) | Element::NotCountedOrSummed(_)) {
+            return false;
+        }
+        matches!(
+            self.underlying(),
+            Element::SumItem(..)
+                | Element::ItemWithSumItem(..)
+                | Element::ReferenceWithSumItem(..)
+                | Element::SumTree(..)
+                | Element::BigSumTree(..)
+                | Element::CountSumTree(..)
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableSumTree(..)
+                | Element::ProvableCountProvableSumTree(..)
+                | Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
+        )
+    }
+
+    /// Returns whether this element contributes BOTH a count and a sum
+    /// value to a parent that aggregates both axes (e.g. the primary
+    /// Merk of a `ProvableCountProvableSumIndexedTree`).
+    ///
+    /// Stricter than `is_sum_bearing_child`: rejects sum-only items
+    /// (`SumItem`, plain `Reference`, `Item`, `SumTree`, etc.) and the
+    /// `NonCounted` / `NotSummed` / `NotCountedOrSummed` wrappers (those
+    /// suppress at least one of the two axes).
+    ///
+    /// Currently accepts:
+    /// - `ItemWithSumItem` (item that also carries a sum value),
+    /// - `ReferenceWithSumItem` (reference that also carries a sum
+    ///   value),
+    /// - `CountSumTree` / `ProvableCountSumTree` /
+    ///   `ProvableCountProvableSumTree` (count-and-sum subtrees), and
+    /// - `ProvableCountProvableSumIndexedTree` (nested PCPSIT).
+    pub fn is_count_and_sum_bearing_child(&self) -> bool {
+        if matches!(
+            self,
+            Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_)
+        ) {
+            return false;
+        }
+        matches!(
+            self,
+            Element::ItemWithSumItem(..)
+                | Element::ReferenceWithSumItem(..)
+                | Element::CountSumTree(..)
+                | Element::ProvableCountSumTree(..)
+                | Element::ProvableCountProvableSumTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
+        )
+    }
+
     /// Grab the optional flag stored in an element. For `NonCounted`, returns
     /// the inner element's flags.
     pub fn get_flags(&self) -> &Option<ElementFlags> {
