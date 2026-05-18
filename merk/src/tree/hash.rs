@@ -332,17 +332,20 @@ mod tests {
     #[test]
     fn axes_digest_hash_call_counts() {
         let one = [(0u8, [0u8; 32])];
-        let cost1 = axes_digest(&one).cost();
+        let result1 = axes_digest(&one);
+        let cost1 = result1.cost();
         // 1 + 33 = 34 bytes → 1 block.
         assert_eq!(cost1.hash_node_calls, 1);
 
         let two = [(0u8, [0u8; 32]), (1, [0u8; 32])];
-        let cost2 = axes_digest(&two).cost();
+        let result2 = axes_digest(&two);
+        let cost2 = result2.cost();
         // 1 + 66 = 67 bytes → 2 blocks (one full 64, one partial 3).
         assert_eq!(cost2.hash_node_calls, 2);
 
         let three = [(0u8, [0u8; 32]), (1, [0u8; 32]), (2, [0u8; 32])];
-        let cost3 = axes_digest(&three).cost();
+        let result3 = axes_digest(&three);
+        let cost3 = result3.cost();
         // 1 + 99 = 100 bytes → 2 blocks (one full 64, one partial 36).
         assert_eq!(cost3.hash_node_calls, 2);
     }

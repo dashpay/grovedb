@@ -41,7 +41,7 @@ fn populate_cidx(n: usize) -> (TempDir, GroveDb, &'static GroveVersion) {
     db.insert(
         EMPTY_PATH,
         b"cidx",
-        Element::empty_count_indexed_tree(),
+        Element::empty_provable_count_indexed_tree(),
         None,
         None,
         grove_version,
@@ -175,7 +175,7 @@ fn bench_insert_into_cidx(c: &mut Criterion) {
                 db.insert(
                     EMPTY_PATH,
                     b"cidx",
-                    Element::empty_count_indexed_tree(),
+                    Element::empty_provable_count_indexed_tree(),
                     None,
                     None,
                     gv,

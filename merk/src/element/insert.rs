@@ -1549,9 +1549,11 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut batch_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
 
-        // NonCounted-wrapped cidx + BasicMerkNode (not count-bearing).
-        let cidx_inner = Element::empty_count_indexed_tree();
-        let wrapped = Element::new_non_counted(cidx_inner).expect("wrap");
+        // NonCounted-wrapped indexed tree + BasicMerkNode (not count-bearing).
+        // Use PCIT (the count-axis indexed tree) since it's the case for
+        // which the non-counted destination guard is meaningful.
+        let pcit_inner = Element::empty_provable_count_indexed_tree();
+        let wrapped = Element::new_non_counted(pcit_inner).expect("wrap");
         let key: &[u8] = b"k";
         let result = wrapped
             .insert_count_indexed_subtree_into_batch_operations(
@@ -1616,7 +1618,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let mut batch_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
 
-        let cidx = Element::empty_count_indexed_tree();
+        let cidx = Element::empty_provable_count_indexed_tree();
         let key: &[u8] = b"k";
         cidx.insert_count_indexed_subtree_into_batch_operations(
             key,
