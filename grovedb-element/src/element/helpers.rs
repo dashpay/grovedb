@@ -386,7 +386,7 @@ impl Element {
     /// otherwise `None`. Looks through `NonCounted`. The slice is the
     /// canonical (sorted by tag, deduped, 1..=3 entries) TLV — see
     /// [`crate::indexed::IndexAxis`] for the tag semantics.
-    pub fn axes(&self) -> Option<&[(u8, Option<Vec<u8>>)]> {
+    pub fn axes(&self) -> Option<&[crate::indexed::IndexedTreeAxisEntry]> {
         match self.underlying() {
             Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => Some(axes.as_slice()),
             _ => None,

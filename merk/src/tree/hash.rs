@@ -202,7 +202,7 @@ pub fn axes_digest(axes: &[(u8, CryptoHash)]) -> CostContext<CryptoHash> {
     // wire format explicit.
     let payload_bytes = 1usize + 33 * n;
     // Each 64-byte block triggers one Blake3 compression. We round up.
-    let hashes = ((payload_bytes + 63) / 64) as u32;
+    let hashes = payload_bytes.div_ceil(64) as u32;
 
     let mut hasher = blake3::Hasher::new();
     // Length prefix: distinguish a 1-axis digest from a 2-axis digest

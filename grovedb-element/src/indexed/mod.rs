@@ -42,6 +42,18 @@ pub enum IndexAxis {
     Avg = 2,
 }
 
+/// One entry in a `ProvableCountProvableSumIndexedTree`'s `axes` TLV list:
+/// `(axis_tag, secondary_root_key)`. The tag byte matches [`IndexAxis::tag`];
+/// the optional `Vec<u8>` is the secondary Merk's root key (`None` while
+/// empty).
+pub type IndexedTreeAxisEntry = (u8, Option<Vec<u8>>);
+
+/// Canonical (sorted-by-tag, deduped, 1..=3 entries) TLV list of axis
+/// entries carried by a `ProvableCountProvableSumIndexedTree` element. See
+/// the variant doc comment on [`crate::Element`] for the on-disk
+/// encoding.
+pub type IndexedTreeAxes = Vec<IndexedTreeAxisEntry>;
+
 impl IndexAxis {
     /// On-disk tag byte for this axis.
     #[inline]
