@@ -2409,4 +2409,166 @@ mod tests {
         let err = all_zero.estimated_size(v).unwrap_err();
         assert!(matches!(err, Error::DivideByZero("weights add up to 0")));
     }
+
+    /// `check_grovedb_v0_v1_or_v2!` rejects any version outside {0, 1, 2}.
+    /// Exercises the version-gate error path on `estimated_size` so we
+    /// don't ship the macro without a regression test.
+    #[test]
+    fn test_estimated_sum_trees_unknown_version_error() {
+        let mut bad_version = GroveVersion::latest().clone();
+        bad_version
+            .merk_versions
+            .average_case_costs
+            .sum_tree_estimated_size = 99;
+        let any = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 1,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+        };
+        let err = any.estimated_size(&bad_version).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch { .. }
+            )
+        ));
+    }
+
+    // =========================================================================
+    // v0 propagation (grove v1 path) with the new sum-bearing layer variants
+    // — the variants are new at the type level, so even on the v0 propagate
+    // dispatch they must compile and produce sensible costs.
+    // =========================================================================
+
+    #[test]
+    fn test_propagate_v0_all_items_with_sum_item() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllItemsWithSumItem(8, 32, Some(2)),
+        };
+        let mut sum_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut sum_cost, &layer_info, GroveVersion::first()).unwrap();
+
+        // The +10 must flow through v0 propagate the same way as v1: the
+        // sum-bearing cost strictly exceeds the plain-AllItems cost.
+        let plain_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, Some(2)),
+        };
+        let mut plain_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut plain_cost, &plain_info, GroveVersion::first())
+            .unwrap();
+
+        assert!(sum_cost.storage_cost.replaced_bytes > plain_cost.storage_cost.replaced_bytes);
+        assert!(sum_cost.storage_loaded_bytes > plain_cost.storage_loaded_bytes);
+    }
+
+    #[test]
+    fn test_propagate_v0_all_references_with_sum_item() {
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllReferencesWithSumItem(8, 24, Some(1)),
+        };
+        let mut sum_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut sum_cost, &layer_info, GroveVersion::first()).unwrap();
+
+        let plain_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(3, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllReference(8, 24, Some(1)),
+        };
+        let mut plain_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut plain_cost, &plain_info, GroveVersion::first())
+            .unwrap();
+
+        assert!(sum_cost.storage_cost.replaced_bytes > plain_cost.storage_cost.replaced_bytes);
+        assert!(sum_cost.storage_loaded_bytes > plain_cost.storage_loaded_bytes);
+    }
+
+    /// v0 propagate with `Mix` containing both sum-item fields populated
+    /// must produce a strictly larger cost than the same Mix with those
+    /// fields cleared. Exercises both the replaced_bytes and the
+    /// storage_loaded_bytes Mix arms in v0.
+    #[test]
+    fn test_propagate_v0_mix_with_both_sum_item_fields() {
+        let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
+        let base = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
+                items_size: Some((8, 32, Some(2), 1)),
+                references_size: Some((8, 24, Some(1), 1)),
+                items_with_sum_item_size: None,
+                references_with_sum_item_size: None,
+            },
+        };
+        let with_sum = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: Some((8, EstimatedSumTrees::NoSumTrees, Some(4), 1)),
+                items_size: Some((8, 32, Some(2), 1)),
+                references_size: Some((8, 24, Some(1), 1)),
+                items_with_sum_item_size: Some((8, 32, Some(2), 1)),
+                references_with_sum_item_size: Some((8, 24, Some(1), 1)),
+            },
+        };
+
+        let mut base_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut base_cost, &base, GroveVersion::first()).unwrap();
+        let mut sum_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut sum_cost, &with_sum, GroveVersion::first()).unwrap();
+
+        assert!(sum_cost.storage_cost.replaced_bytes > base_cost.storage_cost.replaced_bytes);
+        assert!(sum_cost.storage_loaded_bytes > base_cost.storage_loaded_bytes);
+    }
+
+    /// Same as above but on the v1 propagate dispatch (grove v3 path),
+    /// so we cover the `references_with_sum_item_size` branch in the v1
+    /// Mix arms — the items-only version of this test already covers
+    /// the items-with-sum branch.
+    #[test]
+    fn test_propagate_v1_mix_with_references_with_sum_item() {
+        let layer_count = EstimatedLayerCount::EstimatedLevel(3, false);
+        let base = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: None,
+                items_size: None,
+                references_size: Some((8, 24, Some(1), 1)),
+                items_with_sum_item_size: None,
+                references_with_sum_item_size: None,
+            },
+        };
+        let with_sum = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: layer_count,
+            estimated_layer_sizes: EstimatedLayerSizes::Mix {
+                subtrees_size: None,
+                items_size: None,
+                references_size: Some((8, 24, Some(1), 1)),
+                items_with_sum_item_size: None,
+                references_with_sum_item_size: Some((8, 24, Some(1), 1)),
+            },
+        };
+
+        let mut base_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut base_cost, &base, GroveVersion::latest()).unwrap();
+        let mut sum_cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut sum_cost, &with_sum, GroveVersion::latest()).unwrap();
+
+        assert!(sum_cost.storage_cost.replaced_bytes > base_cost.storage_cost.replaced_bytes);
+        assert!(sum_cost.storage_loaded_bytes > base_cost.storage_loaded_bytes);
+    }
 }
