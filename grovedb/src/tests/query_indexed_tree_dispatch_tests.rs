@@ -319,4 +319,149 @@ mod tests {
             Err(e) => panic!("query_item_value_or_sum failed: {:?}", e),
         }
     }
+
+    // -----------------------------------------------------------------
+    // db.query() (follow_element) — Tree-typed targets are rejected with
+    // `path_queries can not refer to trees`. This covers the `Tree(..)`
+    // and `ProvableCountIndexedTree(..)` arms at L278-287 of
+    // operations/get/query.rs (the `query()` function, not
+    // `query_item_value`).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn db_query_targeting_plain_tree_element_returns_invalid_query() {
+        use crate::query_result_type::QueryResultType;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Insert a plain subtree under TEST_LEAF so the outer-key query
+        // returns a Tree element.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sub",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create plain subtree");
+        let mut q = MerkQuery::new();
+        q.insert_key(b"sub".to_vec());
+        let pq = PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(q, None, None));
+        let result = db
+            .query(
+                &pq,
+                true,
+                true,
+                true,
+                QueryResultType::QueryElementResultType,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidQuery(s)) if s.contains("trees")),
+            "expected InvalidQuery for Tree-typed target, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn db_query_targeting_pcit_element_returns_invalid_query() {
+        use crate::query_result_type::QueryResultType;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit_under_leaf(&db, grove_version);
+        let mut q = MerkQuery::new();
+        q.insert_key(b"pcit".to_vec());
+        let pq = PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(q, None, None));
+        let result = db
+            .query(
+                &pq,
+                true,
+                true,
+                true,
+                QueryResultType::QueryElementResultType,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidQuery(_))));
+    }
+
+    #[test]
+    fn db_query_targeting_psit_element_returns_invalid_query() {
+        use crate::query_result_type::QueryResultType;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit_under_leaf(&db, grove_version);
+        let mut q = MerkQuery::new();
+        q.insert_key(b"psit".to_vec());
+        let pq = PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(q, None, None));
+        let result = db
+            .query(
+                &pq,
+                true,
+                true,
+                true,
+                QueryResultType::QueryElementResultType,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidQuery(_))));
+    }
+
+    #[test]
+    fn db_query_targeting_pcpsit_element_returns_invalid_query() {
+        use crate::query_result_type::QueryResultType;
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit_under_leaf(
+            &db,
+            grove_version,
+            &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+        );
+        let mut q = MerkQuery::new();
+        q.insert_key(b"pcpsit".to_vec());
+        let pq = PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(q, None, None));
+        let result = db
+            .query(
+                &pq,
+                true,
+                true,
+                true,
+                QueryResultType::QueryElementResultType,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidQuery(_))));
+    }
+
+    /// `query_item_value` targeting a plain `Tree(..)` element exercises
+    /// the matching tree-type arm at L416-433. Mirror of the indexed
+    /// counterparts but for the plain Tree variant.
+    #[test]
+    fn query_item_value_targeting_plain_tree_returns_invalid_query() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"sub2",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create plain subtree");
+        let mut q = MerkQuery::new();
+        q.insert_key(b"sub2".to_vec());
+        let pq = PathQuery::new(vec![TEST_LEAF.to_vec()], SizedQuery::new(q, None, None));
+        let result = db
+            .query_item_value(&pq, true, true, true, None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidQuery(_))));
+    }
 }

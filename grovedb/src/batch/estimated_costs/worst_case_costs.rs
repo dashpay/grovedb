@@ -1457,4 +1457,71 @@ mod tests {
         assert!(cost.seek_count > 0);
         assert!(cost.hash_node_calls > 0);
     }
+
+    /// Covers the `GroveOp::ReplaceAggregateIndexedTreeRootKeys` arm in
+    /// `worst_case_cost`. The op is emitted by `execute_ops_on_path` when
+    /// a level's path resolves to a Count/ProvableCount-indexed primary
+    /// — the worst-case path here just delegates to
+    /// `worst_case_merk_replace_tree` with the carried
+    /// `primary_aggregate_data.parent_tree_type()`.
+    #[test]
+    fn test_replace_aggregate_indexed_tree_root_keys_worst_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        use grovedb_merk::tree::AggregateData;
+        let key = KeyInfo::KnownKey(b"agg_idx".to_vec());
+
+        let op_count = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [1u8; 32],
+            primary_root_key: Some(b"prk".to_vec()),
+            primary_aggregate_data: AggregateData::Count(42),
+            secondary_hash: [2u8; 32],
+            secondary_root_key: Some(b"srk".to_vec()),
+        };
+        let cost_count = op_count
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                false,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected worst case cost for ReplaceAggregateIndexedTreeRootKeys (Count)");
+        assert!(
+            cost_count.seek_count > 0
+                || cost_count.storage_loaded_bytes > 0
+                || cost_count.hash_node_calls > 0,
+            "expected non-trivial cost; got {:?}",
+            cost_count
+        );
+
+        // Also exercise the propagate=true path.
+        let op_pcount = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [3u8; 32],
+            primary_root_key: None,
+            primary_aggregate_data: AggregateData::ProvableCount(7),
+            secondary_hash: [4u8; 32],
+            secondary_root_key: None,
+        };
+        let cost_pcount = op_pcount
+            .worst_case_cost(
+                &key,
+                TreeType::NormalTree,
+                &MaxElementsNumber(100),
+                true,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect(
+                "expected worst case cost for ReplaceAggregateIndexedTreeRootKeys (ProvableCount)",
+            );
+        assert!(
+            cost_pcount.seek_count >= cost_count.seek_count
+                || cost_pcount.hash_node_calls >= cost_count.hash_node_calls,
+            "propagate should not reduce cost below non-propagate baseline; pcount={:?}, \
+             count={:?}",
+            cost_pcount,
+            cost_count,
+        );
+    }
 }

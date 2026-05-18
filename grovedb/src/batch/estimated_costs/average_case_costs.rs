@@ -1825,4 +1825,55 @@ mod tests {
             bare,
         );
     }
+
+    /// Covers the `GroveOp::ReplaceAggregateIndexedTreeRootKeys` arm in
+    /// `average_case_cost`. Cost shape is equivalent to
+    /// `ReplaceTreeRootKey` at this level (the dual-Merk update on the
+    /// secondary is accounted for at the cidx primary level inside
+    /// `execute_ops_on_path`, not here).
+    #[test]
+    fn test_replace_aggregate_indexed_tree_root_keys_average_case_cost_direct() {
+        let grove_version = GroveVersion::latest();
+        let key = KeyInfo::KnownKey(b"agg_idx".to_vec());
+        let layer_info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: ApproximateElements(8),
+            estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+        };
+
+        // Both AggregateData::Count and AggregateData::ProvableCount
+        // route through the same `worst_case_merk_replace_tree` shape;
+        // here we just confirm the arm yields a non-trivial cost.
+        let op_count = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [0xCDu8; 32],
+            primary_root_key: Some(b"prk".to_vec()),
+            primary_aggregate_data: AggregateData::Count(123),
+            secondary_hash: [0xEFu8; 32],
+            secondary_root_key: Some(b"srk".to_vec()),
+        };
+        let cost_count = op_count
+            .average_case_cost(&key, &layer_info, false, grove_version)
+            .cost_as_result()
+            .expect("expected average case cost for Count cidx replace");
+        assert!(cost_count.seek_count > 0 || cost_count.hash_node_calls > 0);
+
+        let op_pcount = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+            primary_hash: [9u8; 32],
+            primary_root_key: None,
+            primary_aggregate_data: AggregateData::ProvableCount(11),
+            secondary_hash: [8u8; 32],
+            secondary_root_key: None,
+        };
+        let cost_pcount = op_pcount
+            .average_case_cost(&key, &layer_info, true, grove_version)
+            .cost_as_result()
+            .expect("expected average case cost for ProvableCount cidx replace (propagate)");
+        assert!(
+            cost_pcount.seek_count >= cost_count.seek_count
+                || cost_pcount.hash_node_calls >= cost_count.hash_node_calls,
+            "propagate=true cost should be >= non-propagate baseline; pcount={:?}, count={:?}",
+            cost_pcount,
+            cost_count,
+        );
+    }
 }
