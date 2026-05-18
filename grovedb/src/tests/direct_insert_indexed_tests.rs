@@ -499,4 +499,648 @@ mod tests {
         // won't match the freshly-opened secondary's root key.
         assert!(result.is_err());
     }
+
+    // -----------------------------------------------------------------
+    // Non-empty insert success paths + value-mismatch error paths
+    //
+    // These exercise the deep validation branches in
+    // `add_element_on_transaction` for PCIT (L319–L413),
+    // PSIT (L420–L513), and PCPSIT (L516–L622+):
+    //   - success: provided root_keys match on-disk → element written
+    //   - error : provided primary_root_key mismatches on-disk
+    //   - error : provided secondary_root_key mismatches on-disk
+    //   - error : provided axis secondary_root_key mismatches (PCPSIT)
+    // -----------------------------------------------------------------
+
+    use crate::operations::insert::InsertOptions;
+
+    fn override_tree_opts() -> InsertOptions {
+        InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        }
+    }
+
+    #[test]
+    fn direct_insert_pcit_with_matching_roots_succeeds() {
+        // Build a real non-empty PCIT, capture its actual root keys
+        // and count, then replace via `db.insert` with
+        // `validate_insertion_does_not_override_tree: false`. This
+        // exercises the success branch at L401 in
+        // insert/mod.rs (the (p_hash, s_hash) tuple).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        // Read the actual on-disk roots.
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, real_secondary, real_count) = match elem.underlying() {
+            Element::ProvableCountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected PCIT, got {:?}", other),
+        };
+        assert!(real_primary.is_some());
+        assert!(real_secondary.is_some());
+        assert_eq!(real_count, 1);
+
+        // Re-insert with the actual roots — must succeed via L401.
+        let claimed = Element::new_provable_count_indexed_tree_with_root_keys_and_count_value(
+            real_primary.clone(),
+            real_secondary.clone(),
+            real_count,
+            None,
+        );
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            claimed,
+            Some(override_tree_opts()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("matching-roots PCIT insert succeeds");
+
+        // Verify post-condition.
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
+    #[test]
+    fn direct_insert_pcit_mismatched_primary_root_key_with_override_rejected() {
+        // Same shape as the success test but the claimed
+        // primary_root_key is bogus — must hit L369 (primary mismatch).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (_, real_secondary, real_count) = match elem.underlying() {
+            Element::ProvableCountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected PCIT, got {:?}", other),
+        };
+
+        let bogus = Element::new_provable_count_indexed_tree_with_root_keys_and_count_value(
+            Some(b"WRONG_PRIMARY".to_vec()),
+            real_secondary,
+            real_count,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_pcit_mismatched_secondary_root_key_with_override_rejected() {
+        // Mismatch on the secondary root key — must hit L393.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"cidx", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, _, real_count) = match elem.underlying() {
+            Element::ProvableCountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected PCIT, got {:?}", other),
+        };
+
+        let bogus = Element::new_provable_count_indexed_tree_with_root_keys_and_count_value(
+            real_primary,
+            Some(b"WRONG_SECONDARY".to_vec()),
+            real_count,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_psit_with_matching_roots_succeeds() {
+        // PSIT success path at L483.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"psit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, real_secondary, real_sum) = match elem.underlying() {
+            Element::ProvableSumIndexedTree(p, s, sv, _) => (p.clone(), s.clone(), *sv),
+            other => panic!("expected PSIT, got {:?}", other),
+        };
+        assert!(real_primary.is_some());
+        assert!(real_secondary.is_some());
+
+        let claimed = Element::ProvableSumIndexedTree(real_primary, real_secondary, real_sum, None);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            claimed,
+            Some(override_tree_opts()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("matching-roots PSIT insert succeeds");
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
+    #[test]
+    fn direct_insert_psit_mismatched_primary_with_override_rejected() {
+        // Hits L450 (primary mismatch in PSIT branch).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"psit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (_, real_secondary, real_sum) = match elem.underlying() {
+            Element::ProvableSumIndexedTree(p, s, sv, _) => (p.clone(), s.clone(), *sv),
+            _ => panic!(),
+        };
+
+        let bogus = Element::ProvableSumIndexedTree(
+            Some(b"WRONG_PRIMARY".to_vec()),
+            real_secondary,
+            real_sum,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_psit_mismatched_secondary_with_override_rejected() {
+        // Hits L475 (secondary mismatch in PSIT branch).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"psit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, _, real_sum) = match elem.underlying() {
+            Element::ProvableSumIndexedTree(p, s, sv, _) => (p.clone(), s.clone(), *sv),
+            _ => panic!(),
+        };
+        let bogus = Element::ProvableSumIndexedTree(
+            real_primary,
+            Some(b"WRONG_SECONDARY".to_vec()),
+            real_sum,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_with_matching_roots_succeeds() {
+        // PCPSIT success path at L621 (full axis loop).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"a".to_vec(), 5),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"pcpsit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, real_count, real_sum, real_axes) = match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(p, c, s, ax, _) => {
+                (p.clone(), *c, *s, ax.clone())
+            }
+            _ => panic!("expected PCPSIT"),
+        };
+        assert!(real_primary.is_some());
+        assert!(real_axes.iter().all(|(_, sk)| sk.is_some()));
+
+        let claimed = Element::ProvableCountProvableSumIndexedTree(
+            real_primary,
+            real_count,
+            real_sum,
+            real_axes,
+            None,
+        );
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            claimed,
+            Some(override_tree_opts()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("matching-roots PCPSIT insert succeeds");
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify");
+        assert!(issues.is_empty(), "issues: {:?}", issues);
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_mismatched_primary_with_override_rejected() {
+        // Hits L575 in PCPSIT branch (primary mismatch).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"a".to_vec(), 5),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"pcpsit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (_, real_count, real_sum, real_axes) = match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(p, c, s, ax, _) => {
+                (p.clone(), *c, *s, ax.clone())
+            }
+            _ => panic!(),
+        };
+        let bogus = Element::ProvableCountProvableSumIndexedTree(
+            Some(b"WRONG_PRIMARY".to_vec()),
+            real_count,
+            real_sum,
+            real_axes,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_mismatched_axis_secondary_with_override_rejected() {
+        // Hits L610 in PCPSIT axis loop (axis secondary mismatch).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"a".to_vec(), 5),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("populate");
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"pcpsit", None, grove_version)
+            .unwrap()
+            .expect("get");
+        let (real_primary, real_count, real_sum, real_axes) = match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(p, c, s, ax, _) => {
+                (p.clone(), *c, *s, ax.clone())
+            }
+            _ => panic!(),
+        };
+        // Sabotage axis 0's secondary key, keep axis 1 correct.
+        let mut bad_axes = real_axes;
+        bad_axes[0].1 = Some(b"WRONG_AXIS_SEC".to_vec());
+
+        let bogus = Element::ProvableCountProvableSumIndexedTree(
+            real_primary,
+            real_count,
+            real_sum,
+            bad_axes,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_with_unsorted_axes_rejected_at_validation() {
+        // PCPSIT validation: axes must be sorted. Hits L549.
+        // We bypass the constructor (which would reject) by building
+        // the element manually with bad axes order.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Build axes Sum-then-Count (reversed) plus a phony primary so
+        // we land in the "non-empty" branch where validation runs.
+        let axes = vec![
+            (IndexAxis::Sum.tag(), Some(b"x".to_vec())),
+            (IndexAxis::Count.tag(), Some(b"y".to_vec())),
+        ];
+        let bogus = Element::ProvableCountProvableSumIndexedTree(
+            Some(b"primary".to_vec()),
+            1,
+            1,
+            axes,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_with_duplicate_axes_rejected_at_validation() {
+        // PCPSIT validation: duplicate tags fail the strictly-greater
+        // sortedness check at L548-555.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![
+            (IndexAxis::Count.tag(), Some(b"x".to_vec())),
+            (IndexAxis::Count.tag(), Some(b"y".to_vec())),
+        ];
+        let bogus = Element::ProvableCountProvableSumIndexedTree(
+            Some(b"primary".to_vec()),
+            1,
+            1,
+            axes,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_with_empty_axes_rejected_at_validation() {
+        // PCPSIT validation: 0 axes. Hits L538.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let bogus = Element::ProvableCountProvableSumIndexedTree(
+            Some(b"primary".to_vec()),
+            1,
+            1,
+            vec![],
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn direct_insert_pcpsit_with_oversized_axes_rejected_at_validation() {
+        // PCPSIT validation: 4 axes. Hits L538.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![
+            (0u8, Some(b"a".to_vec())),
+            (1u8, Some(b"b".to_vec())),
+            (2u8, Some(b"c".to_vec())),
+            (3u8, Some(b"d".to_vec())),
+        ];
+        let bogus = Element::ProvableCountProvableSumIndexedTree(
+            Some(b"primary".to_vec()),
+            1,
+            1,
+            axes,
+            None,
+        );
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                bogus,
+                Some(override_tree_opts()),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+    }
 }
