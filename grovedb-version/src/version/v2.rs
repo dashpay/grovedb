@@ -47,6 +47,8 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             value_defined_cost_for_serialized_value: 0,
             specialized_costs_for_key_value: 0,
             required_item_space: 0,
+            required_item_with_sum_item_space: 0,
+            required_reference_with_sum_item_space: 0,
             insert: 0,
             insert_into_batch_operations: 0,
             insert_if_not_exists: 0,
