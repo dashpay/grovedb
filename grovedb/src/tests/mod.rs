@@ -73,6 +73,7 @@ mod provable_count_tree_structure_test;
 mod provable_count_tree_test;
 mod provable_sum_indexed_tree_tests;
 mod provable_sum_tree_tests;
+mod query_indexed_tree_dispatch_tests;
 mod query_result_type_tests;
 mod reference_path_tests;
 mod reference_with_sum_item_tests;
