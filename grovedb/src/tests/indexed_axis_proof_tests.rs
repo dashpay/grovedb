@@ -915,4 +915,926 @@ mod tests {
             .unwrap();
         assert!(matches!(result, Err(Error::InvalidPath(_))));
     }
+
+    // =================================================================
+    // Additional coverage: tampering, edge cases, axis-rejection grid
+    // =================================================================
+
+    /// Helper: build a PSIT and prove a sum top-k. Returns (proof, path).
+    fn psit_sum_top_k_proof<'a>(
+        db: &GroveDb,
+        grove_version: &GroveVersion,
+        k: u16,
+        descending: bool,
+    ) -> Vec<u8> {
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        db.prove_indexed_sum_top_k(path, k, descending, None, grove_version)
+            .unwrap()
+            .expect("prove")
+    }
+
+    // --- Range tamper grid: 3 axes × varied tamper sites ---
+
+    #[test]
+    fn verify_indexed_sum_top_k_rejects_tampered_layer_proof() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let mut proof = psit_sum_top_k_proof(&db, grove_version, 2, true);
+        // Flip a byte near the front of the proof (within the layer
+        // proof region after the brief header).
+        let i = 12.min(proof.len() - 1);
+        proof[i] ^= 0xFF;
+        let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 2, true);
+        assert!(result.is_err(), "tampered layer proof should not verify");
+    }
+
+    #[test]
+    fn verify_indexed_count_paginated_rejects_tampered_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2), (b"c", 3)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let mut proof = db
+            .prove_indexed_count_top_k_paginated(path, 1, 1, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Tamper near the middle of the proof.
+        let i = proof.len() / 2;
+        proof[i] ^= 0xFF;
+        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 1, 1, true);
+        assert!(
+            result.is_err(),
+            "tampered paginated proof should not verify"
+        );
+    }
+
+    #[test]
+    fn verify_indexed_sum_paginated_rejects_tampered_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1), (b"b", 2), (b"c", 3)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let mut proof = db
+            .prove_indexed_sum_top_k_paginated(path, 1, 1, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let i = proof.len() - 5;
+        proof[i] ^= 0xFF;
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 1, 1, true);
+        assert!(
+            result.is_err(),
+            "tampered sum paginated proof should not verify"
+        );
+    }
+
+    #[test]
+    fn verify_indexed_avg_top_k_rejects_tampered_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(
+            &db,
+            grove_version,
+            &[IndexAxis::Avg.tag()],
+            &[(b"a", 1), (b"b", 2), (b"c", 3)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+        let mut proof = db
+            .prove_indexed_avg_top_k(path, 2, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let i = proof.len() - 8;
+        proof[i] ^= 0xFF;
+        let result = GroveDb::verify_indexed_avg_top_k(&proof, path, 2, true);
+        assert!(
+            result.is_err(),
+            "tampered avg top-k proof should not verify"
+        );
+    }
+
+    #[test]
+    fn verify_indexed_avg_paginated_rejects_tampered_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(
+            &db,
+            grove_version,
+            &[IndexAxis::Avg.tag()],
+            &[(b"a", 1), (b"b", 2), (b"c", 3)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+        let mut proof = db
+            .prove_indexed_avg_top_k_paginated(path, 1, 1, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let i = proof.len() / 3;
+        proof[i] ^= 0xFF;
+        let result = GroveDb::verify_indexed_avg_top_k_paginated(&proof, path, 1, 1, true);
+        assert!(
+            result.is_err(),
+            "tampered avg paginated proof should not verify"
+        );
+    }
+
+    #[test]
+    fn verify_indexed_count_aggregate_rejects_tampered_bytes() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let mut proof = db
+            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Tamper at multiple sites: front and back.
+        let i = proof.len() - 4;
+        proof[i] ^= 0xFF;
+        let result = GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 10);
+        assert!(
+            result.is_err(),
+            "tampered count aggregate proof should not verify"
+        );
+    }
+
+    #[test]
+    fn verify_indexed_count_query_rejects_lo_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Wrong expected lo on verify.
+        let result = GroveDb::verify_indexed_count_range_aggregate(&proof, path, 1, 10);
+        assert!(result.is_err(), "lo mismatch should be rejected");
+    }
+
+    #[test]
+    fn verify_indexed_count_aggregate_rejects_hi_mismatch() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_range_aggregate(path, 0, 10, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 11);
+        assert!(result.is_err(), "hi mismatch should be rejected");
+    }
+
+    #[test]
+    fn verify_indexed_axis_aggregate_rejects_avg_axis_at_verify() {
+        // Sum-axis aggregate proof is built; then we try to verify under
+        // Avg axis. The pre-check at the verifier returns NotSupported.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_range_aggregate(path, 0, 10, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Tamper the envelope to claim axis=Avg by reading and forging
+        // bytes is brittle; instead just call verify_indexed_axis_range_aggregate
+        // expecting axis=Avg — the axis-tag mismatch fires first.
+        let result =
+            GroveDb::verify_indexed_axis_range_aggregate(&proof, path, IndexAxis::Avg, 0, 10);
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn verify_indexed_axis_paginated_axis_mismatch_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k_paginated(path, 1, 0, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Envelope tag is Count, verify under Sum.
+        let result =
+            GroveDb::verify_indexed_axis_top_k_paginated(&proof, path, IndexAxis::Sum, 1, 0, true);
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn verify_indexed_axis_paginated_k_mismatch_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k_paginated(path, 1, 0, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Wrong k on verify.
+        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 3, 0, true);
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn verify_indexed_axis_paginated_direction_mismatch_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k_paginated(path, 1, 0, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Verify with wrong direction.
+        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 1, 0, false);
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn verify_indexed_query_limit_mismatch_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let mut q = MerkQuery::new();
+        q.insert_all();
+        let proof = db
+            .prove_indexed_count_query(path, q.clone(), Some(2), None, grove_version)
+            .unwrap()
+            .expect("prove");
+        // Verify with wrong expected_limit.
+        let result = GroveDb::verify_indexed_count_query(&proof, path, q, Some(5));
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn verify_indexed_query_direction_mismatch_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let mut q_asc = MerkQuery::new();
+        q_asc.insert_all();
+        q_asc.left_to_right = true;
+        let proof = db
+            .prove_indexed_count_query(path, q_asc.clone(), Some(2), None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let mut q_desc = MerkQuery::new();
+        q_desc.insert_all();
+        q_desc.left_to_right = false;
+        let result = GroveDb::verify_indexed_count_query(&proof, path, q_desc, Some(2));
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn decode_garbage_bytes_rejected() {
+        // Pure garbage bytes — bincode decode fails.
+        let garbage = vec![0xFFu8; 4];
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let r1 = GroveDb::verify_indexed_count_top_k(&garbage, path, 1, true);
+        assert!(matches!(r1, Err(Error::CorruptedData(_))));
+        let r2 = GroveDb::verify_indexed_count_top_k_paginated(&garbage, path, 1, 0, true);
+        assert!(matches!(r2, Err(Error::CorruptedData(_))));
+        let r3 = GroveDb::verify_indexed_count_range_aggregate(&garbage, path, 0, 10);
+        assert!(matches!(r3, Err(Error::CorruptedData(_))));
+    }
+
+    // --- Edge case combinations ---
+
+    #[test]
+    fn pcit_top_k_zero_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 0, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 0, true).expect("verify");
+        assert!(result.entries.is_empty());
+        assert_eq!(result.entries.len(), 0);
+    }
+
+    #[test]
+    fn pcit_top_k_larger_than_total_returns_all() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k(path, 100, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_top_k(&proof, path, 100, true).expect("verify");
+        assert_eq!(result.entries.len(), 2);
+    }
+
+    #[test]
+    fn pcit_top_k_paginated_offset_zero_returns_all() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2), (b"c", 3)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k_paginated(path, 3, 0, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 3, 0, true)
+            .expect("verify");
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.entries.len(), 3);
+    }
+
+    #[test]
+    fn pcit_top_k_paginated_offset_larger_than_total_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_top_k_paginated(path, 2, 100, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_top_k_paginated(&proof, path, 2, 100, true)
+            .expect("verify");
+        // Only 2 entries total; offset 100 → empty result.
+        assert_eq!(result.entries.len(), 0);
+    }
+
+    #[test]
+    fn psit_top_k_paginated_offset_larger_than_total_returns_empty() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", 1), (b"b", 2)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_top_k_paginated(path, 2, 100, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_sum_top_k_paginated(&proof, path, 2, 100, true)
+            .expect("verify");
+        // 2 entries in proof, skip should be min(100, 2) = 2 → empty.
+        assert_eq!(result.skipped, 2);
+        assert_eq!(result.entries.len(), 0);
+    }
+
+    #[test]
+    fn count_aggregate_range_at_u64_max_round_trip() {
+        // Test the hi=u64::MAX (RangeFrom) path in count_aggregate_inner_range.
+        // We use moderate count values but ask for [100, u64::MAX].
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 1000), (b"c", 100)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_range_aggregate(path, 100, u64::MAX, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_range_aggregate(&proof, path, 100, u64::MAX)
+            .expect("verify");
+        // c(100) and b(1000) in range; a(1) excluded.
+        assert_eq!(result.aggregate, 2);
+    }
+
+    #[test]
+    fn count_aggregate_full_range_equals_total() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 2), (b"c", 5)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_range_aggregate(path, 0, u64::MAX, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, u64::MAX)
+            .expect("verify");
+        assert_eq!(result.aggregate, 3);
+    }
+
+    #[test]
+    fn count_aggregate_empty_primary_returns_zero() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_count_range_aggregate(path, 0, 100, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result =
+            GroveDb::verify_indexed_count_range_aggregate(&proof, path, 0, 100).expect("verify");
+        assert_eq!(result.aggregate, 0);
+    }
+
+    #[test]
+    fn sum_aggregate_range_at_i64_max_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", i64::MAX), (b"b", 0)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_range_aggregate(path, 1, i64::MAX, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result =
+            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, 1, i64::MAX).expect("verify");
+        // Only a(i64::MAX) is in [1, i64::MAX].
+        assert_eq!(result.aggregate, i64::MAX as i128);
+    }
+
+    #[test]
+    fn sum_aggregate_negative_only_range() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(
+            &db,
+            grove_version,
+            &[(b"a", -10), (b"b", -5), (b"c", 5), (b"d", 10)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let proof = db
+            .prove_indexed_sum_range_aggregate(path, -100, -1, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result =
+            GroveDb::verify_indexed_sum_range_aggregate(&proof, path, -100, -1).expect("verify");
+        // -10 + -5 = -15
+        assert_eq!(result.aggregate, -15);
+    }
+
+    #[test]
+    fn count_aggregate_negative_hi_returns_zero() {
+        // hi < 0 → empty-range builder path.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let proof = db
+            .prove_indexed_axis_range_aggregate(
+                path,
+                IndexAxis::Count,
+                -50,
+                -10,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("prove");
+        let result =
+            GroveDb::verify_indexed_axis_range_aggregate(&proof, path, IndexAxis::Count, -50, -10)
+                .expect("verify");
+        assert_eq!(result.aggregate, 0);
+    }
+
+    #[test]
+    fn count_top_k_on_empty_primary_returns_error_from_merk() {
+        // Empty merk secondary can't produce a range proof; we verify
+        // the prover surfaces a CorruptedData error (the wrapped merk
+        // "Cannot create proof for empty tree" path).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let result = db
+            .prove_indexed_count_top_k(path, 5, true, None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn sum_top_k_on_empty_primary_returns_error_from_merk() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let result = db
+            .prove_indexed_sum_top_k(path, 5, true, None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    #[test]
+    fn avg_top_k_on_empty_pcpsit_returns_error_from_merk() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(&db, grove_version, &[IndexAxis::Avg.tag()], &[]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+        let result = db
+            .prove_indexed_avg_top_k(path, 5, true, None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::CorruptedData(_))));
+    }
+
+    // --- Cross-axis on PCPSIT ---
+
+    #[test]
+    fn pcpsit_multi_axis_proves_independently() {
+        // Same PCPSIT, query count, sum, avg, each independently. Each
+        // proof should verify and reconstruct the same root hash.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(
+            &db,
+            grove_version,
+            &[
+                IndexAxis::Count.tag(),
+                IndexAxis::Sum.tag(),
+                IndexAxis::Avg.tag(),
+            ],
+            &[(b"a", 5), (b"b", 10), (b"c", 20)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+        let root = root_hash(&db, grove_version);
+
+        let proof_c = db
+            .prove_indexed_count_top_k(path, 3, true, None, grove_version)
+            .unwrap()
+            .expect("prove count");
+        let r_c =
+            GroveDb::verify_indexed_count_top_k(&proof_c, path, 3, true).expect("verify count");
+        assert_eq!(r_c.root_hash, root);
+
+        let proof_s = db
+            .prove_indexed_sum_top_k(path, 3, true, None, grove_version)
+            .unwrap()
+            .expect("prove sum");
+        let r_s = GroveDb::verify_indexed_sum_top_k(&proof_s, path, 3, true).expect("verify sum");
+        assert_eq!(r_s.root_hash, root);
+
+        let proof_a = db
+            .prove_indexed_avg_top_k(path, 3, true, None, grove_version)
+            .unwrap()
+            .expect("prove avg");
+        let r_a = GroveDb::verify_indexed_avg_top_k(&proof_a, path, 3, true).expect("verify avg");
+        assert_eq!(r_a.root_hash, root);
+    }
+
+    // --- Axis-rejection grid (variant × axis) ---
+
+    #[test]
+    fn pcit_rejects_avg_axis_query() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1)]);
+        let result = db
+            .prove_indexed_avg_top_k([TEST_LEAF, b"pcit"].as_ref(), 1, false, None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn pcpsit_count_only_rejects_avg_axis_query() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(&db, grove_version, &[IndexAxis::Count.tag()], &[(b"a", 1)]);
+        let result = db
+            .prove_indexed_avg_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                1,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn pcpsit_sum_only_rejects_avg_axis_query() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(&db, grove_version, &[IndexAxis::Sum.tag()], &[(b"a", 1)]);
+        let result = db
+            .prove_indexed_avg_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                1,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn pcpsit_count_avg_only_rejects_sum_axis_query() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(
+            &db,
+            grove_version,
+            &[IndexAxis::Count.tag(), IndexAxis::Avg.tag()],
+            &[(b"a", 1)],
+        );
+        let result = db
+            .prove_indexed_sum_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                1,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn pcpsit_sum_avg_only_rejects_count_axis_query() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(
+            &db,
+            grove_version,
+            &[IndexAxis::Sum.tag(), IndexAxis::Avg.tag()],
+            &[(b"a", 1)],
+        );
+        let result = db
+            .prove_indexed_count_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                1,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    // --- Paginated + aggregate root-path rejection ---
+
+    #[test]
+    fn paginated_at_root_path_is_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty: &[&[u8]] = &[];
+        let result = db
+            .prove_indexed_count_top_k_paginated(empty, 1, 0, true, None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn aggregate_at_root_path_is_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let empty: &[&[u8]] = &[];
+        let result = db
+            .prove_indexed_count_range_aggregate(empty, 0, 10, None, grove_version)
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn paginated_on_non_indexed_target_is_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"plain",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create plain tree");
+        let result = db
+            .prove_indexed_count_top_k_paginated(
+                [TEST_LEAF, b"plain"].as_ref(),
+                1,
+                0,
+                true,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    #[test]
+    fn aggregate_on_non_indexed_target_is_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"plain",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create plain tree");
+        let result = db
+            .prove_indexed_count_range_aggregate(
+                [TEST_LEAF, b"plain"].as_ref(),
+                0,
+                10,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidPath(_))));
+    }
+
+    // --- Descending direction round-trips per axis ---
+
+    #[test]
+    fn pcit_descending_query_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcit(&db, grove_version, &[(b"a", 1), (b"b", 5), (b"c", 10)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let mut q = MerkQuery::new();
+        q.insert_all();
+        q.left_to_right = false;
+        let proof = db
+            .prove_indexed_count_query(path, q.clone(), Some(3), None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_count_query(&proof, path, q, Some(3)).expect("verify");
+        let entries = entries_as_count(&result.entries);
+        assert_eq!(
+            entries,
+            &[
+                (10u64, b"c".to_vec()),
+                (5u64, b"b".to_vec()),
+                (1u64, b"a".to_vec())
+            ]
+        );
+    }
+
+    #[test]
+    fn psit_ascending_query_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_psit(&db, grove_version, &[(b"a", -3), (b"b", 0), (b"c", 7)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let mut q = MerkQuery::new();
+        q.insert_all();
+        q.left_to_right = true;
+        let proof = db
+            .prove_indexed_sum_query(path, q.clone(), Some(3), None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_sum_query(&proof, path, q, Some(3)).expect("verify");
+        let entries = entries_as_sum(&result.entries);
+        assert_eq!(
+            entries,
+            &[
+                (-3i64, b"a".to_vec()),
+                (0, b"b".to_vec()),
+                (7, b"c".to_vec())
+            ]
+        );
+    }
+
+    #[test]
+    fn avg_axis_descending_paginated_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(
+            &db,
+            grove_version,
+            &[IndexAxis::Avg.tag()],
+            &[(b"a", 5), (b"b", 10), (b"c", 20)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+        let proof = db
+            .prove_indexed_avg_top_k_paginated(path, 1, 0, false, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result =
+            GroveDb::verify_indexed_avg_top_k_paginated(&proof, path, 1, 0, false).expect("verify");
+        assert_eq!(result.skipped, 0);
+        assert_eq!(result.entries.len(), 1);
+    }
+
+    // --- Direct verify_indexed_axis_query for arbitrary query ---
+
+    #[test]
+    fn verify_indexed_axis_query_pcpsit_avg_returns_root() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(
+            &db,
+            grove_version,
+            &[IndexAxis::Avg.tag()],
+            &[(b"a", 5), (b"b", 10)],
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+        let mut q = MerkQuery::new();
+        q.insert_all();
+        q.left_to_right = true;
+        let proof = db
+            .prove_indexed_avg_query(path, q.clone(), None, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_avg_query(&proof, path, q, None).expect("verify");
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.root_hash, root_hash(&db, grove_version));
+    }
+
+    // --- Nested PCPSIT under tree depth 2 ---
+
+    #[test]
+    fn pcpsit_at_depth_2_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"outer",
+            Element::empty_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create outer tree");
+        let axes: Vec<(u8, Option<Vec<u8>>)> =
+            vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        let elem =
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("axes canonical");
+        db.insert(
+            [TEST_LEAF, b"outer"].as_ref(),
+            b"pcpsit",
+            elem,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCPSIT under outer");
+        for (k, sum) in &[
+            (b"a" as &[u8], 5i64),
+            (b"b" as &[u8], 10),
+            (b"c" as &[u8], 15),
+        ] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"outer", b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(b"v".to_vec(), *sum),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert PCPSIT entry");
+        }
+        let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"pcpsit"];
+        let proof = db
+            .prove_indexed_sum_top_k(path, 3, true, None, grove_version)
+            .unwrap()
+            .expect("prove");
+        let result = GroveDb::verify_indexed_sum_top_k(&proof, path, 3, true).expect("verify");
+        let entries = entries_as_sum(&result.entries);
+        assert_eq!(
+            entries,
+            &[
+                (15i64, b"c".to_vec()),
+                (10, b"b".to_vec()),
+                (5, b"a".to_vec())
+            ]
+        );
+        assert_eq!(result.root_hash, root_hash(&db, grove_version));
+    }
+
+    // --- Aggregate query AVG axis at the public API level ---
+
+    #[test]
+    fn prove_indexed_axis_range_aggregate_avg_returns_not_supported() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        build_pcpsit(&db, grove_version, &[IndexAxis::Avg.tag()], &[(b"a", 1)]);
+        let result = db
+            .prove_indexed_axis_range_aggregate(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                IndexAxis::Avg,
+                0,
+                100,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::NotSupported(_))));
+    }
+
+    // --- AxisEntries methods (Display/coverage glue) ---
+
+    #[test]
+    fn axis_entries_helpers() {
+        let c = AxisEntries::Count(vec![(1u64, b"a".to_vec())]);
+        assert_eq!(c.len(), 1);
+        assert!(!c.is_empty());
+        let empty_c = AxisEntries::Count(vec![]);
+        assert_eq!(empty_c.len(), 0);
+        assert!(empty_c.is_empty());
+        let s = AxisEntries::Sum(vec![(1i64, b"a".to_vec()), (2i64, b"b".to_vec())]);
+        assert_eq!(s.len(), 2);
+        let a = AxisEntries::Avg(vec![(1i128, b"a".to_vec())]);
+        assert_eq!(a.len(), 1);
+    }
 }
