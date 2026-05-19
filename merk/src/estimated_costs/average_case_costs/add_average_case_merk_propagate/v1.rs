@@ -8,8 +8,6 @@
 //! (`total_updates_cost / (nodes_updated · total_weight)`); see v2 for
 //! the corrected formula.
 
-#![cfg(feature = "minimal")]
-
 use grovedb_costs::OperationCost;
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;

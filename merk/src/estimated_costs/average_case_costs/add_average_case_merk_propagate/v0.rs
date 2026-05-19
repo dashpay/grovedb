@@ -7,8 +7,6 @@
 //! `TreeType::NormalTree.inner_node_type()`; the inline `// this was
 //! changed in v1` comment marks that line).
 
-#![cfg(feature = "minimal")]
-
 use grovedb_costs::OperationCost;
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;

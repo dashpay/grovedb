@@ -5,8 +5,6 @@
 //! implementation by
 //! `GroveVersion::merk_versions.average_case_costs.sum_tree_estimated_size`.
 
-#![cfg(feature = "minimal")]
-
 mod v0;
 mod v1;
 mod v2;

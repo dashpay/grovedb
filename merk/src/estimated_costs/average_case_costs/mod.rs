@@ -4,26 +4,18 @@
 // `<function>/{mod.rs, v0.rs, v1.rs, ...}` — `mod.rs` holds the
 // version-dispatching wrapper and the `v*.rs` files hold the
 // per-version implementations.
-#[cfg(feature = "minimal")]
 mod add_average_case_merk_propagate;
-#[cfg(feature = "minimal")]
 mod estimated_sum_trees_size;
-#[cfg(feature = "minimal")]
 mod value_with_feature_and_flags_size;
 
-#[cfg(feature = "minimal")]
 pub use add_average_case_merk_propagate::{
     add_average_case_merk_propagate, average_case_merk_propagate,
 };
 
-#[cfg(feature = "minimal")]
 use grovedb_costs::OperationCost;
-#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "minimal")]
 use crate::{
     error::Error,
     tree::{kv::KV, Link, TreeNode},
@@ -31,20 +23,15 @@ use crate::{
 };
 use crate::{merk::NodeType, tree_type::TreeType};
 
-#[cfg(feature = "minimal")]
 /// Average key size
 pub type AverageKeySize = u8;
-#[cfg(feature = "minimal")]
 /// Average value size
 pub type AverageValueSize = u32;
-#[cfg(feature = "minimal")]
 /// Average flags size
 pub type AverageFlagsSize = u32;
-#[cfg(feature = "minimal")]
 /// Weight
 pub type Weight = u8;
 
-#[cfg(feature = "minimal")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated number of sum trees
 #[derive(Default)]
@@ -102,7 +89,6 @@ pub enum EstimatedSumTrees {
 // live in the `estimated_sum_trees_size` submodule (one v*.rs per
 // version).
 
-#[cfg(feature = "minimal")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated layer sizes
 pub enum EstimatedLayerSizes {
@@ -164,7 +150,6 @@ pub enum EstimatedLayerSizes {
     },
 }
 
-#[cfg(feature = "minimal")]
 impl EstimatedLayerSizes {
     /// Return average flags size for layer
     pub fn layered_flags_size(&self) -> Result<&Option<AverageFlagsSize>, Error> {
@@ -223,17 +208,13 @@ impl EstimatedLayerSizes {
     // `value_with_feature_and_flags_size` submodule.
 }
 
-#[cfg(feature = "minimal")]
 /// Approximate element count
 pub type ApproximateElementCount = u32;
-#[cfg(feature = "minimal")]
 /// Estimated level number
 pub type EstimatedLevelNumber = u32;
-#[cfg(feature = "minimal")]
 /// Estimated to be empty
 pub type EstimatedToBeEmpty = bool;
 
-#[cfg(feature = "minimal")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Information on an estimated layer
 pub struct EstimatedLayerInformation {
@@ -245,10 +226,8 @@ pub struct EstimatedLayerInformation {
     pub estimated_layer_sizes: EstimatedLayerSizes,
 }
 
-#[cfg(feature = "minimal")]
 impl EstimatedLayerInformation {}
 
-#[cfg(feature = "minimal")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 /// Estimated elements and level number of a layer
 pub enum EstimatedLayerCount {
@@ -260,7 +239,6 @@ pub enum EstimatedLayerCount {
     EstimatedLevel(EstimatedLevelNumber, EstimatedToBeEmpty),
 }
 
-#[cfg(feature = "minimal")]
 impl EstimatedLayerCount {
     /// Returns true if the tree is estimated to be empty.
     pub fn estimated_to_be_empty(&self) -> bool {
@@ -288,7 +266,6 @@ impl EstimatedLayerCount {
     }
 }
 
-#[cfg(feature = "minimal")]
 impl TreeNode {
     /// Return estimate of average encoded tree size
     pub fn average_case_encoded_tree_size(
@@ -304,7 +281,6 @@ impl TreeNode {
     }
 }
 
-#[cfg(feature = "minimal")]
 /// Add worst case for getting a merk node
 pub fn add_average_case_get_merk_node(
     cost: &mut OperationCost,
@@ -326,7 +302,6 @@ pub fn add_average_case_get_merk_node(
     Ok(())
 }
 
-#[cfg(feature = "minimal")]
 /// Add worst case for getting a merk tree
 pub fn add_average_case_merk_has_value(
     cost: &mut OperationCost,
@@ -337,7 +312,6 @@ pub fn add_average_case_merk_has_value(
     cost.storage_loaded_bytes += (not_prefixed_key_len + estimated_element_size) as u64;
 }
 
-#[cfg(feature = "minimal")]
 /// Add worst case for insertion into merk
 pub fn add_average_case_merk_replace_layered(
     cost: &mut OperationCost,
@@ -360,7 +334,6 @@ pub fn add_average_case_merk_replace_layered(
     cost.hash_node_calls += 2;
 }
 
-#[cfg(feature = "minimal")]
 /// Add average case for deletion from merk
 pub fn add_average_case_merk_delete_layered(
     cost: &mut OperationCost,
@@ -372,7 +345,6 @@ pub fn add_average_case_merk_delete_layered(
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
 }
 
-#[cfg(feature = "minimal")]
 /// Add average case for deletion from merk
 pub fn add_average_case_merk_delete(cost: &mut OperationCost, _key_len: u32, value_len: u32) {
     // todo: verify this
@@ -380,7 +352,6 @@ pub fn add_average_case_merk_delete(cost: &mut OperationCost, _key_len: u32, val
     cost.hash_node_calls += 1 + ((value_len - 1) / HASH_BLOCK_SIZE_U32);
 }
 
-#[cfg(feature = "minimal")]
 const fn node_hash_update_count() -> u32 {
     // It's a hash of node hash, left and right
     let bytes = HASH_LENGTH * 3;
@@ -389,7 +360,6 @@ const fn node_hash_update_count() -> u32 {
     1 + ((bytes - 1) / HASH_BLOCK_SIZE) as u32
 }
 
-#[cfg(feature = "minimal")]
 /// Add worst case for getting a merk tree root hash
 pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
     cost.hash_node_calls += node_hash_update_count();

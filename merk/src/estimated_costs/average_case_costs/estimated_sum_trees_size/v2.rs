@@ -6,8 +6,6 @@
 //! own `inner_node_type().cost()` and is summed into both numerator
 //! and denominator alongside the legacy four.
 
-#![cfg(feature = "minimal")]
-
 use crate::{
     error::Error, estimated_costs::average_case_costs::EstimatedSumTrees, tree_type::TreeType,
 };

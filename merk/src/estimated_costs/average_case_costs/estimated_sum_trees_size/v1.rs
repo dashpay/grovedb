@@ -8,8 +8,6 @@
 //! `provable_*` weight fields didn't exist when this formula shipped
 //! and are ignored.
 
-#![cfg(feature = "minimal")]
-
 use crate::{
     error::Error, estimated_costs::average_case_costs::EstimatedSumTrees, tree_type::TreeType,
 };

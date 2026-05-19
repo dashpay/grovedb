@@ -5,8 +5,6 @@
 //! function. The dispatcher below selects the implementation by
 //! `GroveVersion::merk_versions.average_case_costs.add_average_case_merk_propagate`.
 
-#![cfg(feature = "minimal")]
-
 mod v0;
 mod v1;
 mod v2;

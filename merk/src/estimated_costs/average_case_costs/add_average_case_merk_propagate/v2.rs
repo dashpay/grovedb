@@ -15,8 +15,6 @@
 //! throughout (same as v0; v1's `storage_loaded_bytes` arm used
 //! `TreeType::NormalTree.inner_node_type()` — see v1's doc comment).
 
-#![cfg(feature = "minimal")]
-
 use grovedb_costs::OperationCost;
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;

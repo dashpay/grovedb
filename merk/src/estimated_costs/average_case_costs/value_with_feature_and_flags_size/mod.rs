@@ -6,8 +6,6 @@
 //! selects the implementation by
 //! `GroveVersion::merk_versions.average_case_costs.value_with_feature_and_flags_size`.
 
-#![cfg(feature = "minimal")]
-
 mod v0;
 mod v1;
 

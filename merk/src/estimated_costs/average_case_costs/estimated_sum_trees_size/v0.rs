@@ -7,8 +7,6 @@
 //! layer with only `big_sum_trees_weight` (or any count weight) set
 //! would have a nonzero legacy total but a zero v0 denominator.
 
-#![cfg(feature = "minimal")]
-
 use crate::{
     error::Error, estimated_costs::average_case_costs::EstimatedSumTrees, tree_type::TreeType,
 };
