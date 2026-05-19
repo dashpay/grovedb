@@ -214,8 +214,24 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
     merk_versions: MerkVersions {
         batch: MerkBatchVersions { commit: 1 }, // return accumulated batch costs
         average_case_costs: MerkAverageCaseCostsVersions {
-            add_average_case_merk_propagate: 1,
-            sum_tree_estimated_size: 1,
+            // Bumped from 1 → 2: v2 fixes the Mix-arm divisor on both
+            // `replaced_bytes` and `storage_loaded_bytes`. v1 computed
+            // `Σ(weight_i · cost_i) / (nodes_updated · total_weight)`
+            // (off by a factor of `nodes_updated²` vs the equivalent
+            // homogeneous-layer cost); v2 computes
+            // `nodes_updated · Σ(weight_i · cost_i) / total_weight`.
+            add_average_case_merk_propagate: 2,
+            // Bumped from 1 → 2: v2 folds the four `Provable*` tree-type
+            // weight fields on `EstimatedSumTrees::SomeSumTrees` into the
+            // weighted-average formula. v0/v1 outputs are preserved for
+            // already-shipped grove versions (v1 → v0 formula, v2 → v1
+            // formula).
+            sum_tree_estimated_size: 2,
+            // Bumped from 0 → 1: v1 fixes the Mix-arm "average" to a
+            // proper weighted average. v0 returned
+            // `Σ size_i / Σ weight_i` (low-biased and ignored weights);
+            // v1 returns `Σ (size_i · weight_i) / Σ weight_i`.
+            value_with_feature_and_flags_size: 1,
         },
         proof: MerkProofVersions {
             // Initial implementation; introduced alongside the V1

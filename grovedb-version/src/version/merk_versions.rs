@@ -18,6 +18,13 @@ pub struct MerkBatchVersions {
 pub struct MerkAverageCaseCostsVersions {
     pub add_average_case_merk_propagate: FeatureVersion,
     pub sum_tree_estimated_size: FeatureVersion,
+    /// `EstimatedLayerSizes::value_with_feature_and_flags_size`. Version
+    /// 0 keeps the pre-existing **unweighted** Mix average
+    /// `Σ size_i / Σ weight_i` (used by grove v1/v2, consensus-locked).
+    /// Version 1 switches to a proper weighted average
+    /// `Σ (size_i · weight_i) / Σ weight_i`. Output for non-Mix
+    /// variants is identical across versions.
+    pub value_with_feature_and_flags_size: FeatureVersion,
 }
 
 /// Merk-level proof method versions.

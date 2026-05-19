@@ -216,6 +216,9 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 1, // changed
             sum_tree_estimated_size: 1,         // changed
+            // grove v2 is consensus-locked to the legacy unweighted
+            // Mix average; v3 bumps this to 1 with the fixed formula.
+            value_with_feature_and_flags_size: 0,
         },
         // See the comment in v1.rs — `prove_count_offset_on_range` is
         // not reachable from v2's prove path (V0 envelope rejects

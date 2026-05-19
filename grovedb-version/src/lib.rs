@@ -73,6 +73,31 @@ macro_rules! check_grovedb_v0_or_v1 {
 }
 
 #[macro_export]
+macro_rules! check_grovedb_v0_v1_or_v2 {
+    ($method:expr, $version:expr) => {{
+        const EXPECTED_VERSION_V0: u16 = 0;
+        const EXPECTED_VERSION_V1: u16 = 1;
+        const EXPECTED_VERSION_V2: u16 = 2;
+        if $version != EXPECTED_VERSION_V0
+            && $version != EXPECTED_VERSION_V1
+            && $version != EXPECTED_VERSION_V2
+        {
+            return Err($crate::error::GroveVersionError::UnknownVersionMismatch {
+                method: $method.to_string(),
+                known_versions: vec![
+                    EXPECTED_VERSION_V0,
+                    EXPECTED_VERSION_V1,
+                    EXPECTED_VERSION_V2,
+                ],
+                received: $version,
+            }
+            .into());
+        }
+        $version
+    }};
+}
+
+#[macro_export]
 macro_rules! check_merk_v0_with_cost {
     ($method:expr, $version:expr) => {{
         const EXPECTED_VERSION: u16 = 0;

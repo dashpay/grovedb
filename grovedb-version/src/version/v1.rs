@@ -216,6 +216,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 0,
             sum_tree_estimated_size: 0,
+            value_with_feature_and_flags_size: 0,
         },
         // `prove_count_offset_on_range` is implementation-version 0
         // here too — but in grove v1 the V0 proof envelope rejects
