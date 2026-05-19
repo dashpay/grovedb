@@ -8,12 +8,12 @@
 //! `provable_*` weight fields didn't exist when this formula shipped
 //! and are ignored.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 use crate::{
     error::Error, estimated_costs::average_case_costs::EstimatedSumTrees, tree_type::TreeType,
 };
 
-#[cfg(feature = "minimal")]
 impl EstimatedSumTrees {
     pub(super) fn estimated_size_v1(&self) -> Result<u32, Error> {
         match self {

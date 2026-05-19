@@ -5,31 +5,22 @@
 //! function. The dispatcher below selects the implementation by
 //! `GroveVersion::merk_versions.average_case_costs.add_average_case_merk_propagate`.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 mod v0;
-#[cfg(feature = "minimal")]
 mod v1;
-#[cfg(feature = "minimal")]
 mod v2;
 
-#[cfg(feature = "minimal")]
 use v0::add_average_case_merk_propagate_v0;
-#[cfg(feature = "minimal")]
 use v1::add_average_case_merk_propagate_v1;
-#[cfg(feature = "minimal")]
 use v2::add_average_case_merk_propagate_v2;
 
-#[cfg(feature = "minimal")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-#[cfg(feature = "minimal")]
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
 use super::EstimatedLayerInformation;
-#[cfg(feature = "minimal")]
 use crate::error::Error;
 
-#[cfg(feature = "minimal")]
 /// Average case cost of propagating a merk
 pub fn average_case_merk_propagate(
     input: &EstimatedLayerInformation,
@@ -39,7 +30,6 @@ pub fn average_case_merk_propagate(
     add_average_case_merk_propagate(&mut cost, input, grove_version).wrap_with_cost(cost)
 }
 
-#[cfg(feature = "minimal")]
 /// Add average case cost for propagating a merk
 pub fn add_average_case_merk_propagate(
     cost: &mut OperationCost,

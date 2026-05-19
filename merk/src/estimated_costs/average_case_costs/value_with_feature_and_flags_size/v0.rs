@@ -5,13 +5,12 @@
 //! On a 3:1:2 item/ref/subtree mix this returns
 //! `(item + ref + subtree) / 6`, ignoring weights in the numerator.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "minimal")]
 use crate::{error::Error, estimated_costs::average_case_costs::EstimatedLayerSizes};
 
-#[cfg(feature = "minimal")]
 impl EstimatedLayerSizes {
     pub(super) fn value_with_feature_and_flags_size_v0(
         &self,

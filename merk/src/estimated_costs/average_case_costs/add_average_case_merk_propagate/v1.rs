@@ -8,14 +8,12 @@
 //! (`total_updates_cost / (nodes_updated · total_weight)`); see v2 for
 //! the corrected formula.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 use grovedb_costs::OperationCost;
-#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "minimal")]
 use crate::{
     error::Error,
     estimated_costs::{
@@ -26,7 +24,6 @@ use crate::{
     tree_type::TreeType,
 };
 
-#[cfg(feature = "minimal")]
 pub(super) fn add_average_case_merk_propagate_v1(
     cost: &mut OperationCost,
     input: &EstimatedLayerInformation,

@@ -2,13 +2,12 @@
 //! average: `Σ (size_i · weight_i) / Σ weight_i`. Non-Mix arms behave
 //! identically to v0.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "minimal")]
 use crate::{error::Error, estimated_costs::average_case_costs::EstimatedLayerSizes};
 
-#[cfg(feature = "minimal")]
 impl EstimatedLayerSizes {
     pub(super) fn value_with_feature_and_flags_size_v1(
         &self,

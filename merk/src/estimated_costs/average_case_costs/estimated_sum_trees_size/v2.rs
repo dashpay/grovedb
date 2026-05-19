@@ -6,12 +6,12 @@
 //! own `inner_node_type().cost()` and is summed into both numerator
 //! and denominator alongside the legacy four.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 use crate::{
     error::Error, estimated_costs::average_case_costs::EstimatedSumTrees, tree_type::TreeType,
 };
 
-#[cfg(feature = "minimal")]
 impl EstimatedSumTrees {
     pub(super) fn estimated_size_v2(&self) -> Result<u32, Error> {
         match self {

@@ -6,20 +6,16 @@
 //! selects the implementation by
 //! `GroveVersion::merk_versions.average_case_costs.value_with_feature_and_flags_size`.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 mod v0;
-#[cfg(feature = "minimal")]
 mod v1;
 
-#[cfg(feature = "minimal")]
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
 use super::EstimatedLayerSizes;
-#[cfg(feature = "minimal")]
 use crate::error::Error;
 
-#[cfg(feature = "minimal")]
 impl EstimatedLayerSizes {
     /// Returns the size of a value's feature and flags. Version-dispatched
     /// to preserve consensus-locked grove v1/v2 outputs while letting

@@ -5,22 +5,17 @@
 //! implementation by
 //! `GroveVersion::merk_versions.average_case_costs.sum_tree_estimated_size`.
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 mod v0;
-#[cfg(feature = "minimal")]
 mod v1;
-#[cfg(feature = "minimal")]
 mod v2;
 
-#[cfg(feature = "minimal")]
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
 use super::EstimatedSumTrees;
-#[cfg(feature = "minimal")]
 use crate::error::Error;
 
-#[cfg(feature = "minimal")]
 impl EstimatedSumTrees {
     /// Returns the average per-node cost contribution of the sum/count
     /// aggregate state for a tree with this distribution of leaf tree

@@ -15,14 +15,12 @@
 //! throughout (same as v0; v1's `storage_loaded_bytes` arm used
 //! `TreeType::NormalTree.inner_node_type()` — see v1's doc comment).
 
-#[cfg(feature = "minimal")]
+#![cfg(feature = "minimal")]
+
 use grovedb_costs::OperationCost;
-#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
 use integer_encoding::VarInt;
 
-#[cfg(feature = "minimal")]
 use crate::{
     error::Error,
     estimated_costs::{
@@ -32,7 +30,6 @@ use crate::{
     tree::kv::KV,
 };
 
-#[cfg(feature = "minimal")]
 pub(super) fn add_average_case_merk_propagate_v2(
     cost: &mut OperationCost,
     input: &EstimatedLayerInformation,
