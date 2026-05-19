@@ -521,44 +521,96 @@ impl GroveDb {
         //     accepting one without that would silently bypass the
         //     child-hash invariant the regular flow enforces.
         for item in count_offset_result.returned_items.iter() {
-            if let Ok(elem) = Element::deserialize(item.value.as_slice(), grove_version) {
-                // NonCounted-wrapped values are checked **before**
-                // unwrapping via `into_underlying`, since the wrapper
-                // itself is the rejected shape. The merk-level prover
-                // already refuses to emit NonCounted entries as
-                // value-bearing nodes, so an honest proof can never
-                // surface one here. Reject as `InvalidProof`
-                // (forgery) rather than `NotSupported` to make the
-                // distinction visible.
-                if elem.is_non_counted() {
+            // Reject non-Element bytes — a forged proof might surface raw
+            // bytes that don't deserialize as any known Element type. The
+            // count-offset prover only emits real Element bytes, so a
+            // deserialization failure here means a malformed or forged
+            // payload. Previously this branch silently fell through to the
+            // `result.push` below, surfacing the unparsed bytes to the
+            // caller.
+            let elem = Element::deserialize(item.value.as_slice(), grove_version).map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "count-offset paginated proof returned non-Element bytes at \
+                         key {}: {e}",
+                        hex::encode(&item.key)
+                    ),
+                )
+            })?;
+            // NonCounted-wrapped values are checked **before**
+            // unwrapping via `into_underlying`, since the wrapper
+            // itself is the rejected shape. The merk-level prover
+            // already refuses to emit NonCounted entries as
+            // value-bearing nodes, so an honest proof can never
+            // surface one here. Reject as `InvalidProof`
+            // (forgery) rather than `NotSupported` to make the
+            // distinction visible.
+            if elem.is_non_counted() {
+                return Err(Error::InvalidProof(
+                    query.clone(),
+                    format!(
+                        "count-offset paginated proofs do not surface \
+                         NonCounted-wrapped entries in returned items — proof at \
+                         key {} appears forged",
+                        hex::encode(&item.key)
+                    ),
+                ));
+            }
+            let inner = elem.into_underlying();
+            if inner.is_non_empty_tree() {
+                return Err(Error::NotSupported(format!(
+                    "count-offset paginated proofs do not yet support \
+                     non-empty tree return values (key {})",
+                    hex::encode(&item.key)
+                )));
+            }
+            if inner.is_reference() {
+                return Err(Error::NotSupported(format!(
+                    "count-offset paginated proofs do not yet support \
+                     Reference / ReferenceWithSumItem return values (key {}); the \
+                     regular flow's reference post-pass isn't applied on the \
+                     count-offset short-circuit, so an accepted reference here \
+                     would surface the raw Element::Reference rather than the \
+                     dereferenced target",
+                    hex::encode(&item.key)
+                )));
+            }
+            // Empty-tree value-hash equality check (defense-in-depth on
+            // top of the merk-level KV→KVValueHash forgery guard).
+            //
+            // For an empty Merk subtree (`Tree(None, _)`, `SumTree(None,
+            // ..)`, etc.), the committed value-hash is
+            // `combine_hash(value_hash(value), NULL_HASH)`. The
+            // proof-carried `item.value_hash` is structurally trusted by
+            // the merk-level chain check (it's what the reconstruction
+            // hashes); if it doesn't actually equal the expected
+            // composition, the bytes were swapped without the proof
+            // catching it. Recompute and compare.
+            //
+            // Skipped for non-tree elements (Items / SumItems) — their
+            // value-hash IS `value_hash(value)` and is already enforced
+            // by the merk-level KVCount path, which recomputes it via
+            // `compute_value_hash` rather than trusting the proof.
+            //
+            // Skipped for non-empty trees and references — those are
+            // already rejected above as NotSupported.
+            if inner.is_any_tree() && !inner.is_non_empty_tree() {
+                use grovedb_merk::tree::{combine_hash, value_hash, NULL_HASH};
+                let expected =
+                    combine_hash(&value_hash(item.value.as_slice()).unwrap(), &NULL_HASH).unwrap();
+                if expected != item.value_hash {
                     return Err(Error::InvalidProof(
                         query.clone(),
                         format!(
-                            "count-offset paginated proofs do not surface \
-                             NonCounted-wrapped entries in returned items — proof at \
-                             key {} appears forged",
-                            hex::encode(&item.key)
+                            "count-offset paginated proof: empty-tree return at key {} \
+                             has value_hash {} but expected combine_hash(H(value), \
+                             NULL_HASH) = {} — possible KV→KVValueHash forgery",
+                            hex::encode(&item.key),
+                            hex::encode(item.value_hash),
+                            hex::encode(expected),
                         ),
                     ));
-                }
-                let inner = elem.into_underlying();
-                if inner.is_non_empty_tree() {
-                    return Err(Error::NotSupported(format!(
-                        "count-offset paginated proofs do not yet support \
-                         non-empty tree return values (key {})",
-                        hex::encode(&item.key)
-                    )));
-                }
-                if inner.is_reference() {
-                    return Err(Error::NotSupported(format!(
-                        "count-offset paginated proofs do not yet support \
-                         Reference / ReferenceWithSumItem return values (key {}); the \
-                         regular flow's reference post-pass isn't applied on the \
-                         count-offset short-circuit, so an accepted reference here \
-                         would surface the raw Element::Reference rather than the \
-                         dereferenced target",
-                        hex::encode(&item.key)
-                    )));
                 }
             }
             let proved_key_optional_value = grovedb_merk::proofs::query::ProvedKeyOptionalValue {

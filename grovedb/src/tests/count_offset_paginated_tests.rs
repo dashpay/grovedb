@@ -1125,9 +1125,18 @@ mod tests {
     }
 
     /// Defense-in-depth: a forged proof that surfaces a NonCounted
-    /// element in `returned_items` must be rejected as `InvalidProof`
-    /// mentioning "NonCounted" — the merk prover refuses to emit these,
-    /// so reaching the GroveDB-layer check means the proof was forged.
+    /// element in `returned_items` must be rejected as `InvalidProof`.
+    ///
+    /// Wraps an `Item("forged_item")` inside `Element::NonCounted` then
+    /// emits it as a `KVValueHashFeatureType` substitution for the
+    /// honest `KVCount` at key "f". The forgery is caught at the
+    /// merk-level KV→KVValueHash guard (the NonCountedItem base type
+    /// resolves to `Item`, which has `has_simple_value_hash() == true`,
+    /// so KVValueHashFeatureType is structurally illegal for it). A
+    /// NonCounted-wrapped tree element (where `base()` returns a tree
+    /// type that doesn't have a simple value-hash) would slip past the
+    /// merk-level guard and be caught by the GroveDB-level NonCounted
+    /// blacklist instead — both layers are needed for defense in depth.
     #[test]
     fn verifier_rejects_forged_non_counted_returned_item() {
         let v = GroveVersion::latest();
@@ -1138,9 +1147,76 @@ mod tests {
         let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
         let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
         let err = result.expect_err("forged NonCounted return must be rejected");
+        // Accept rejection at either layer: the merk-level guard catches
+        // "simple-value Element type" forgeries (Item / SumItem /
+        // ItemWithSumItem + their NonCounted twins); the GroveDB-level
+        // blacklist catches NonCounted-wrapped tree elements that slip
+        // past the merk layer.
         assert!(
-            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("NonCounted")),
-            "forged NonCounted return should reject as InvalidProof mentioning NonCounted; got {:?}",
+            matches!(
+                err,
+                crate::Error::InvalidProof(_, ref msg)
+                    if msg.contains("NonCounted")
+                        || msg.contains("simple-value Element")
+                        || msg.contains("KVValueHashFeatureType")
+            ),
+            "forged NonCounted return should reject as InvalidProof at either the \
+             merk-level (simple-value Element / KVValueHashFeatureType) or the \
+             GroveDB-level (NonCounted) guard; got {:?}",
+            err,
+        );
+    }
+
+    /// Regression for the P1 KV→KVValueHash forgery against count-offset
+    /// verification.
+    ///
+    /// Attack: an honest count-offset proof emits `KVCount(k, real_value,
+    /// count)` for an in-range Item entry. An attacker rewrites the same
+    /// node as `KVValueHashFeatureType(k, serialized_forged_Item,
+    /// H(real_value), ProvableCountedMerkNode(count))`:
+    ///
+    ///   - The merk tree-hash chain still reconstructs because
+    ///     `KVValueHashFeatureType` consumes the proof-supplied
+    ///     `value_hash` directly rather than recomputing it from `value`.
+    ///   - The own-count assertion (`own_count == 1`) still passes
+    ///     because the feature_type carries the original count.
+    ///   - Without the merk-level guard, `classify_self` would surface
+    ///     `BoundaryKind::ValueReturned { value: forged_bytes,
+    ///     value_hash: H(real_value) }` and GroveDB would push the
+    ///     forged Item to the caller verbatim — same root hash,
+    ///     different bytes.
+    ///
+    /// The merk-level guard in `count_offset/verify.rs` mirrors the V1
+    /// strict-mode check in the regular `Query::execute_proof` and
+    /// rejects `KVValueHashFeatureType` whose `value` deserializes to an
+    /// element type with `has_simple_value_hash() == true` (Item,
+    /// SumItem, ItemWithSumItem). The verifier surfaces the rejection
+    /// via the merk error string; either layer's message satisfies the
+    /// assertion.
+    #[test]
+    fn verifier_rejects_kv_to_kvvaluehash_item_forgery() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        // Plain Item (no NonCounted wrapper) — exercises the
+        // simple-value-hash forgery vector specifically.
+        let forged_elem = Element::new_item(b"forged_item".to_vec());
+        let forged_bytes = forged_elem.serialize(v).expect("serialize forged Item");
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err(
+            "forged Item-in-KVValueHashFeatureType return must be rejected — \
+             this would otherwise be a silent value-swap forgery against \
+             count-offset paginated proofs",
+        );
+        assert!(
+            matches!(
+                err,
+                crate::Error::InvalidProof(_, ref msg)
+                    if msg.contains("simple-value Element")
+                        || msg.contains("KVValueHashFeatureType")
+            ),
+            "forged Item return should reject as InvalidProof at the merk-level \
+             KV→KVValueHash guard; got {:?}",
             err,
         );
     }
@@ -1192,6 +1268,60 @@ mod tests {
             matches!(err, crate::Error::NotSupported(ref msg) if msg.contains("non-empty tree")),
             "forged non-empty tree return should reject as NotSupported mentioning \
              non-empty tree; got {:?}",
+            err,
+        );
+    }
+
+    /// Defense-in-depth: empty-tree returns must have `value_hash ==
+    /// combine_hash(H(value), NULL_HASH)`.
+    ///
+    /// Even with the merk-level KV→KVValueHash guard, an attacker can
+    /// craft a forgery where the substituted `value` deserializes as
+    /// (e.g.) an empty `Element::Tree(None, _)` — its base type has
+    /// `has_simple_value_hash() == false`, so the merk-level guard
+    /// passes. The proof-carried `value_hash` is still trusted by the
+    /// merk tree-hash chain. Without the GroveDB-side empty-tree check
+    /// the forged empty-tree bytes would be surfaced to the caller as
+    /// if they were legitimately committed.
+    ///
+    /// The GroveDB-side check in `verify.rs:run_count_offset_layer_dispatch`
+    /// recomputes the expected `combine_hash(H(value), NULL_HASH)` for
+    /// any deserialized-as-tree element that isn't `is_non_empty_tree`
+    /// (i.e. empty trees + non-tree elements that don't have the
+    /// simple-hash shape). If the proof-carried `value_hash` doesn't
+    /// match, it's a forgery.
+    ///
+    /// Attack construction: take an honest proof, replace a `KVCount`
+    /// for an in-range Item with `KVValueHashFeatureType(k,
+    /// serialized_empty_tree, H(real_value), feature_type)`. The merk
+    /// chain verifies because `H(real_value)` is the original committed
+    /// value-hash for the entry, but the surfaced value bytes are now
+    /// an empty Tree. The GroveDB-side `combine_hash(H(empty_tree),
+    /// NULL_HASH) != H(real_value)` check catches it.
+    #[test]
+    fn verifier_rejects_forged_empty_tree_with_simple_value_hash() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        // Empty Element::Tree(None, _) — empty so it passes
+        // is_non_empty_tree filter; tree-shape so it passes the
+        // merk-level simple-value-hash guard.
+        let forged_elem = Element::Tree(None, None);
+        let forged_bytes = forged_elem.serialize(v).expect("serialize empty tree");
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err(
+            "forged empty-tree return with simple value-hash must be rejected — \
+             without the combine_hash(H(value), NULL_HASH) check this is a silent \
+             value-swap forgery",
+        );
+        assert!(
+            matches!(
+                err,
+                crate::Error::InvalidProof(_, ref msg)
+                    if msg.contains("empty-tree") || msg.contains("KV→KVValueHash forgery")
+            ),
+            "forged empty-tree return should reject as InvalidProof at the \
+             GroveDB-level combine_hash(H(value), NULL_HASH) check; got {:?}",
             err,
         );
     }
