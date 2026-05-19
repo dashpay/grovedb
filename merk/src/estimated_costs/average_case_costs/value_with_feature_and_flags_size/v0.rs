@@ -113,9 +113,14 @@ impl EstimatedLayerSizes {
                     .and_then(|a| a.checked_add(ref_sum_size))
                     .ok_or(Error::Overflow("overflow for value size"))?;
 
+                // `checked_div` only fails on divide-by-zero, which the
+                // `nonzero_kinds == 0` guard above already rules out;
+                // surface that case clearly anyway so the unreachable
+                // path produces an accurate error rather than the
+                // misleading "overflow" used previously.
                 combined_size
                     .checked_div(combined_weight)
-                    .ok_or(Error::Overflow("overflow for value size"))
+                    .ok_or(Error::DivideByZero("value size divisor was zero"))
             }
         }
     }
