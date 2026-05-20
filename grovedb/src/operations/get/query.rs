@@ -928,14 +928,12 @@ where {
         transaction: TransactionArg,
         grove_version: &GroveVersion,
     ) -> CostResult<(u64, i64), Error> {
-        check_grovedb_v0_with_cost!(
-            "query_aggregate_count_and_sum",
-            grove_version
-                .grovedb_versions
-                .operations
-                .query
-                .query_aggregate_count_and_sum_on_range
-        );
+        let version_slot = grove_version
+            .grovedb_versions
+            .operations
+            .query
+            .query_aggregate_count_and_sum_on_range;
+        check_grovedb_v0_with_cost!("query_aggregate_count_and_sum", version_slot);
 
         let mut cost = OperationCost::default();
 
