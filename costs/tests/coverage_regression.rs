@@ -8,7 +8,10 @@ use grovedb_costs::{
     error::Error,
     storage_cost::{
         key_value_cost::KeyValueStorageCost,
-        removal::{Identifier, StorageRemovedBytes, StorageRemovedBytes::*},
+        removal::{
+            with_basic_sectioned_removal_addition_version, Identifier, StorageRemovedBytes,
+            StorageRemovedBytes::*,
+        },
         transition::OperationStorageTransitionType,
         StorageCost,
     },
@@ -601,7 +604,10 @@ fn storage_removed_bytes_add_and_add_assign_paths_are_exercised() {
 
     let basic_plus_sectioned_missing_default =
         BasicStorageRemoval(7) + sectioned(identifier_a, 8, 9);
-    assert!(basic_plus_sectioned_missing_default.has_removal());
+    assert_eq!(
+        basic_plus_sectioned_missing_default.total_removed_bytes(),
+        16
+    );
 
     let basic_plus_sectioned_with_default = BasicStorageRemoval(4)
         + sectioned(
@@ -613,13 +619,17 @@ fn storage_removed_bytes_add_and_add_assign_paths_are_exercised() {
         basic_plus_sectioned_with_default,
         SectionedStorageRemoval(_)
     ));
+    assert_eq!(basic_plus_sectioned_with_default.total_removed_bytes(), 0);
 
     let sectioned_plus_no = sectioned(identifier_a, 1, 2) + NoStorageRemoval;
     assert!(sectioned_plus_no.has_removal());
 
     let sectioned_plus_basic_missing_default =
         sectioned(identifier_a, 3, 4) + BasicStorageRemoval(5);
-    assert!(sectioned_plus_basic_missing_default.has_removal());
+    assert_eq!(
+        sectioned_plus_basic_missing_default.total_removed_bytes(),
+        9
+    );
 
     let sectioned_plus_basic_with_default = sectioned(
         Identifier::default(),
@@ -630,6 +640,7 @@ fn storage_removed_bytes_add_and_add_assign_paths_are_exercised() {
         sectioned_plus_basic_with_default,
         SectionedStorageRemoval(_)
     ));
+    assert_eq!(sectioned_plus_basic_with_default.total_removed_bytes(), 0);
 
     let sectioned_plus_sectioned = sectioned(identifier_a, 1, 10) + sectioned(identifier_a, 1, 20);
     assert_eq!(sectioned_plus_sectioned.total_removed_bytes(), 30);
@@ -654,13 +665,30 @@ fn storage_removed_bytes_add_and_add_assign_paths_are_exercised() {
         basic_assign_with_sectioned,
         SectionedStorageRemoval(_)
     ));
+    assert_eq!(basic_assign_with_sectioned.total_removed_bytes(), 14);
+
+    let mut basic_assign_with_default_sectioned = BasicStorageRemoval(4);
+    basic_assign_with_default_sectioned += sectioned(
+        Identifier::default(),
+        grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+        10,
+    );
+    assert_eq!(basic_assign_with_default_sectioned.total_removed_bytes(), 0);
 
     let mut sectioned_assign = sectioned(identifier_a, 10, 1);
     sectioned_assign += NoStorageRemoval;
     assert!(sectioned_assign.has_removal());
 
     sectioned_assign += BasicStorageRemoval(2);
-    assert!(sectioned_assign.has_removal());
+    assert_eq!(sectioned_assign.total_removed_bytes(), 3);
+
+    let mut sectioned_default_assign = sectioned(
+        Identifier::default(),
+        grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+        11,
+    );
+    sectioned_default_assign += BasicStorageRemoval(2);
+    assert_eq!(sectioned_default_assign.total_removed_bytes(), 0);
 
     sectioned_assign += sectioned(identifier_a, 10, 3);
     assert!(sectioned_assign.has_removal());
@@ -684,6 +712,54 @@ fn storage_removed_bytes_add_and_add_assign_paths_are_exercised() {
     assert_eq!(NoStorageRemoval.total_removed_bytes(), 0);
     assert_eq!(BasicStorageRemoval(7).total_removed_bytes(), 7);
     assert_eq!(sectioned(identifier_b, 2, 11).total_removed_bytes(), 11);
+}
+
+#[test]
+fn latest_storage_removed_bytes_add_preserves_default_section() {
+    let identifier_a = [1u8; 32];
+
+    with_basic_sectioned_removal_addition_version(1, || {
+        let basic_plus_sectioned_with_default = BasicStorageRemoval(4)
+            + sectioned(
+                Identifier::default(),
+                grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+                5,
+            );
+        assert_eq!(basic_plus_sectioned_with_default.total_removed_bytes(), 9);
+
+        let sectioned_plus_basic_with_default = sectioned(
+            Identifier::default(),
+            grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+            6,
+        ) + BasicStorageRemoval(7);
+        assert_eq!(sectioned_plus_basic_with_default.total_removed_bytes(), 13);
+
+        let mut basic_assign_with_default_sectioned = BasicStorageRemoval(4);
+        basic_assign_with_default_sectioned += sectioned(
+            Identifier::default(),
+            grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+            10,
+        );
+        assert_eq!(
+            basic_assign_with_default_sectioned.total_removed_bytes(),
+            14
+        );
+
+        let mut sectioned_default_assign = sectioned(
+            Identifier::default(),
+            grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
+            11,
+        );
+        sectioned_default_assign += BasicStorageRemoval(2);
+        assert_eq!(sectioned_default_assign.total_removed_bytes(), 13);
+
+        let basic_plus_sectioned_missing_default =
+            BasicStorageRemoval(7) + sectioned(identifier_a, 8, 9);
+        assert_eq!(
+            basic_plus_sectioned_missing_default.total_removed_bytes(),
+            16
+        );
+    });
 }
 
 #[test]

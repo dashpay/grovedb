@@ -395,6 +395,13 @@ impl GroveDb {
                 .delete
                 .delete_with_sectional_storage_function
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
 
         let tx = TxRef::new(&self.db, transaction);
 
@@ -527,6 +534,13 @@ impl GroveDb {
                 .delete
                 .delete_if_empty_tree_with_sectional_storage_function
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
 
         let options = DeleteOptions {
             allow_deleting_non_empty_trees: false,

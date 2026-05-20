@@ -5694,6 +5694,13 @@ impl GroveDb {
                 .apply_batch
                 .apply_batch_with_element_flags_update
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
@@ -6104,6 +6111,13 @@ impl GroveDb {
                 .apply_batch
                 .apply_partial_batch_with_element_flags_update
         );
+        let _storage_removal_version_guard =
+            grovedb_costs::storage_cost::removal::use_basic_sectioned_removal_addition_version(
+                grove_version
+                    .grovedb_versions
+                    .storage_costs
+                    .add_basic_storage_removal_to_sectioned_storage_removal,
+            );
         let mut cost = OperationCost::default();
         let tx = TxRef::new(&self.db, transaction);
 
