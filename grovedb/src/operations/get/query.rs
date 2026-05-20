@@ -882,6 +882,104 @@ where {
         Ok(count).wrap_with_cost(cost)
     }
 
+    /// Execute an `AggregateCountAndSumOnRange` path query without
+    /// producing a proof, returning the in-range `(count, sum)` pair
+    /// from a single merk-internal traversal.
+    ///
+    /// No-prove sibling of [`Self::query_aggregate_sum`] and
+    /// [`Self::query_aggregate_count`] for the combined-axis flavor —
+    /// the same call shape, just yielding both metrics at once. The
+    /// returned tuple matches what
+    /// [`GroveDb::verify_aggregate_count_and_sum_query`] extracts from
+    /// the prove-side equivalent for the same path query, so consumers
+    /// can swap between the two paths without changing call sites.
+    ///
+    /// Internally this runs ONE classification walk over the leaf
+    /// merk (the same shape the combined prover walks) and accumulates
+    /// both axes in parallel; it is strictly cheaper than calling
+    /// `query_aggregate_count` and `query_aggregate_sum` separately.
+    ///
+    /// `path_query` must satisfy
+    /// [`PathQuery::validate_leaf_aggregate_count_and_sum_on_range`] —
+    /// strictly the **leaf** shape: a single
+    /// `AggregateCountAndSumOnRange(_)` item, no subqueries, no
+    /// pagination, and an inner range that isn't `Key`, `RangeFull`,
+    /// or another aggregate variant. Carrier-shape queries are
+    /// rejected here because this entry point returns one `(u64, i64)`
+    /// and has no way to surface per-outer-key carrier results. Any
+    /// other shape is rejected up front with `Error::InvalidQuery`
+    /// before any merk reads happen.
+    ///
+    /// The subtree at `path_query.path` must be a
+    /// `ProvableCountProvableSumTree` — the merk-level walk rejects
+    /// any other tree type with the same `WrongElementType`-shape
+    /// error the sibling no-prove accumulators return. If the subtree
+    /// is missing (path does not resolve), this returns the same
+    /// `PathNotFound` / `PathParentLayerNotFound` errors as other
+    /// path-based reads.
+    ///
+    /// The returned pair is **not** independently verifiable — callers
+    /// are trusting their own merk read path. For a verifiable
+    /// `(count, sum)`, use [`Self::prove_query`] +
+    /// [`GroveDb::verify_aggregate_count_and_sum_query`].
+    pub fn query_aggregate_count_and_sum(
+        &self,
+        path_query: &PathQuery,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(u64, i64), Error> {
+        let version_slot = grove_version
+            .grovedb_versions
+            .operations
+            .query
+            .query_aggregate_count_and_sum_on_range;
+        check_grovedb_v0_with_cost!("query_aggregate_count_and_sum", version_slot);
+
+        let mut cost = OperationCost::default();
+
+        // Up-front shape validation. Strictly the leaf shape — this
+        // entry point returns a single `(u64, i64)` and has no way to
+        // surface per-outer-key carrier results. Catches malformed
+        // leaf combined-aggregate queries (illegal inner range,
+        // pagination, etc.) AND carrier-shape queries before any
+        // storage reads.
+        let inner_range = cost_return_on_error_no_add!(
+            cost,
+            path_query
+                .validate_leaf_aggregate_count_and_sum_on_range()
+                .cloned()
+        );
+
+        let tx = TxRef::new(&self.db, transaction);
+
+        // Open the leaf merk and ask it for the (count, sum). The
+        // merk-level entry point enforces
+        // `tree_type == ProvableCountProvableSumTree` and handles the
+        // empty-merk case (returns (0, 0)).
+        let path_slices: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
+        let subtree = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                SubtreePath::from(path_slices.as_slice()),
+                tx.as_ref(),
+                None,
+                grove_version,
+            )
+        );
+
+        let count_and_sum = cost_return_on_error!(
+            &mut cost,
+            subtree
+                .count_and_sum_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "query_aggregate_count_and_sum at path {:?}: {}",
+                    path_slices, e
+                )))
+        );
+
+        Ok(count_and_sum).wrap_with_cost(cost)
+    }
+
     /// Executes an `AggregateCountOnRange` query in either the **leaf** or
     /// **carrier** shape without generating a proof, returning one
     /// `(outer_key, count)` pair per matched outer key.

@@ -118,6 +118,7 @@ pub struct GroveDBOperationsQueryVersions {
     pub query_aggregate_sums: FeatureVersion,
     pub query_aggregate_count_on_range: FeatureVersion,
     pub query_aggregate_sum_on_range: FeatureVersion,
+    pub query_aggregate_count_and_sum_on_range: FeatureVersion,
     pub query_sums: FeatureVersion,
     pub query_raw: FeatureVersion,
     pub query_keys_optional: FeatureVersion,

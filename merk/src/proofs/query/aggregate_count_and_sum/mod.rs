@@ -57,6 +57,8 @@ mod prove;
 mod tests;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;
+#[cfg(feature = "minimal")]
+mod walk;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use verify::verify_aggregate_count_and_sum_on_range_proof;
