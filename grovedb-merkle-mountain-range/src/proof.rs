@@ -616,8 +616,15 @@ impl MmrTreeProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>();
-        let (proof, _) = bincode::decode_from_slice(bytes, config)
+        let (proof, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| Error::InvalidData(format!("failed to decode MmrTreeProof: {}", e)))?;
+        if consumed != bytes.len() {
+            return Err(Error::InvalidData(format!(
+                "MmrTreeProof decode did not consume all bytes: consumed {}, total {}",
+                consumed,
+                bytes.len()
+            )));
+        }
         Ok(proof)
     }
 }
@@ -802,6 +809,21 @@ mod tests {
         assert_eq!(verified.len(), 2);
         assert_eq!(verified[0].1, b"item_0".to_vec());
         assert_eq!(verified[1].1, b"item_2".to_vec());
+    }
+
+    #[test]
+    fn test_mmr_proof_decode_rejects_trailing_bytes() {
+        let (store, mmr_size) = build_mmr(&[b"item_0", b"item_1", b"item_2"]);
+        let proof = MmrTreeProof::generate(mmr_size, &[0, 2], get_node_from_store(&store))
+            .expect("generate proof");
+
+        let mut bytes = proof.encode_to_vec().expect("encode proof");
+        bytes.push(0xff);
+
+        let err = MmrTreeProof::decode_from_slice(&bytes).expect_err("trailing bytes must fail");
+        assert!(
+            matches!(err, Error::InvalidData(message) if message.contains("did not consume all bytes"))
+        );
     }
 
     #[test]
