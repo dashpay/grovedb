@@ -1389,25 +1389,13 @@ where
             .split_last()
             .expect("path validated non-empty above");
 
-        // Fast path: `recursions_allowed == 1` means the user-declared
-        // `max_reference_hop` budget allows exactly one more hop. Under
-        // the well-formed-user contract, that one hop must land on an
-        // `Item` (or `SumItem` / `ItemWithSumItem`) terminal — pointing
-        // at another `Reference` would violate the user's own budget.
-        //
-        // For an `Item` terminal the merk-stored `value_hash` IS the
-        // terminal's simple hash `H(serialize(item))`, which is exactly
-        // what `insert_reference` bakes into the dependent ref via
-        // `Op::PutCombinedReference`. So we can skip a full element
-        // decode and read the value_hash directly.
-        //
-        // Ill-formed input (`max_hop = 1` pointing at a `Reference`)
-        // is out of scope: this fast path would return the target's
-        // merk-combined hash as if it were a simple hash, producing a
-        // hash mismatch that `verify_grovedb` later reports. The
-        // contract is the user's to uphold; we don't pay the price of
-        // an extra dispatch on every well-formed hop=1 ref.
-        if recursions_allowed == 1 {
+        if grove_version
+            .grovedb_versions
+            .apply_batch
+            .validate_reference_hop_limits
+            == 0
+            && recursions_allowed == 1
+        {
             let merk = match self.merks.entry(reference_path.to_vec()) {
                 HashMapEntry::Occupied(o) => o.into_mut(),
                 HashMapEntry::Vacant(v) => v.insert(cost_return_on_error!(
@@ -1448,10 +1436,10 @@ where
             return Ok(referenced_element_value_hash).wrap_with_cost(cost);
         }
 
-        // Slow path: `recursions_allowed > 1`. Dispatch on whether the
-        // target is being modified in this same batch. Neither branch
-        // needs the merk handle here — the helpers open (or reuse the
-        // cached) merk themselves via `self.merks.entry(..)`.
+        // Dispatch on whether the target is being modified in this same
+        // batch. The on-disk branch always decodes the target so a final
+        // hop that lands on another reference is rejected with
+        // ReferenceLimit instead of borrowing the intermediate value hash.
         if let Some(referenced_path) = intermediate_reference_info {
             // Target is in batch (refresh). Hop through the op's new
             // path; budget decrements by one for this hop.

@@ -17,7 +17,7 @@ mod tests {
     };
     use crate::reference_path::ReferencePathType;
     use crate::tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF};
-    use crate::Element;
+    use crate::{Element, Error};
 
     // ===================================================================
     // Group 1: NonMerkTreeMeta::to_tree_type() and count()
@@ -1144,6 +1144,114 @@ mod tests {
             .unwrap()
             .expect("should resolve hop-1 ref");
         assert_eq!(result, Element::new_item(b"hop1_val".to_vec()));
+    }
+
+    #[test]
+    fn test_batch_ref_hop_one_to_existing_reference_errors() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"hop1_val".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert target");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing_ref",
+            Element::new_reference_with_hops(
+                ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"target".to_vec(),
+                ]),
+                Some(1),
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert existing reference");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"ref_to_ref".to_vec(),
+            Element::new_reference_with_hops(
+                ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"existing_ref".to_vec(),
+                ]),
+                Some(1),
+            ),
+        )];
+
+        assert!(matches!(
+            db.apply_batch(ops, None, None, grove_version).unwrap(),
+            Err(Error::ReferenceLimit)
+        ));
+        let issues = db
+            .verify_grovedb(None, true, true, grove_version)
+            .expect("verify grovedb after rejected batch");
+        assert!(issues.is_empty(), "verification issues: {:?}", issues);
+    }
+
+    #[test]
+    fn test_batch_ref_hop_one_to_existing_reference_legacy_version_allows() {
+        let mut legacy_version = GroveVersion::latest().clone();
+        legacy_version
+            .grovedb_versions
+            .apply_batch
+            .validate_reference_hop_limits = 0;
+        let grove_version = &legacy_version;
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"target",
+            Element::new_item(b"hop1_val".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert target");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"existing_ref",
+            Element::new_reference_with_hops(
+                ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"target".to_vec(),
+                ]),
+                Some(1),
+            ),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert existing reference");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![TEST_LEAF.to_vec()],
+            b"ref_to_ref".to_vec(),
+            Element::new_reference_with_hops(
+                ReferencePathType::AbsolutePathReference(vec![
+                    TEST_LEAF.to_vec(),
+                    b"existing_ref".to_vec(),
+                ]),
+                Some(1),
+            ),
+        )];
+
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("legacy hop validation should accept final-hop references");
     }
 
     /// RefreshReference with trust_refresh_reference=false reads the element
