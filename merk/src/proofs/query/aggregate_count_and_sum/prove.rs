@@ -128,26 +128,30 @@ where
             &mut cost,
             walk_count_and_sum(self, inner_range, None, None, grove_version)
         );
-        let count: u64 = match u64::try_from(count_u128) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(Error::CorruptedData(format!(
+        // A real PCPS tree maintains every aggregate as (u64, i64) at
+        // every level, so the widened (u128, i128) walk only holds an
+        // out-of-narrow-range value if the tree state is internally
+        // inconsistent. Surface either narrowing failure as
+        // `CorruptedData` — the existing error class for "merk reads
+        // returned a value our type contract says shouldn't exist".
+        let narrowed: Result<(u64, i64), Error> = u64::try_from(count_u128)
+            .map_err(|_| {
+                Error::CorruptedData(format!(
                     "no-proof aggregate-count-and-sum: in-range count overflowed u64 ({})",
                     count_u128
-                )))
-                .wrap_with_cost(cost);
-            }
-        };
-        let sum: i64 = match i64::try_from(sum_i128) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(Error::CorruptedData(format!(
-                    "no-proof aggregate-count-and-sum: in-range sum overflowed i64 ({})",
-                    sum_i128
-                )))
-                .wrap_with_cost(cost);
-            }
-        };
-        Ok((count, sum)).wrap_with_cost(cost)
+                ))
+            })
+            .and_then(|count| {
+                i64::try_from(sum_i128)
+                    .map(|sum| (count, sum))
+                    .map_err(|_| {
+                        Error::CorruptedData(format!(
+                            "no-proof aggregate-count-and-sum: in-range sum overflowed \
+                             i64 ({})",
+                            sum_i128
+                        ))
+                    })
+            });
+        narrowed.wrap_with_cost(cost)
     }
 }
