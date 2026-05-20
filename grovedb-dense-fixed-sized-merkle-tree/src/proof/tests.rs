@@ -189,6 +189,22 @@ mod proof_tests {
     }
 
     #[test]
+    fn test_proof_decode_rejects_trailing_bytes() {
+        let tree = make_tree_h3_full();
+        let proof = DenseTreeProof::generate(&tree, &[2, 4])
+            .unwrap()
+            .expect("generate should succeed");
+        let mut bytes = proof.encode_to_vec().expect("encode should succeed");
+        bytes.push(0xff);
+
+        let err = DenseTreeProof::decode_from_slice(&bytes)
+            .expect_err("trailing bytes should be rejected");
+        assert!(
+            matches!(err, DenseMerkleError::InvalidProof(message) if message.contains("did not consume all bytes"))
+        );
+    }
+
+    #[test]
     fn test_proof_partially_filled_tree() {
         let mut tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
             .expect("height 3 should be valid");

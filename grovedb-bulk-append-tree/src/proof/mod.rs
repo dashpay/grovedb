@@ -560,9 +560,20 @@ impl BulkAppendTreeProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>();
-        let (proof, _) = bincode::decode_from_slice(bytes, config).map_err(|e| {
-            BulkAppendError::CorruptedData(format!("failed to decode BulkAppendTreeProof: {}", e))
-        })?;
+        let (proof, consumed): (Self, usize) =
+            bincode::decode_from_slice(bytes, config).map_err(|e| {
+                BulkAppendError::CorruptedData(format!(
+                    "failed to decode BulkAppendTreeProof: {}",
+                    e
+                ))
+            })?;
+        if consumed != bytes.len() {
+            return Err(BulkAppendError::CorruptedData(format!(
+                "BulkAppendTreeProof decode did not consume all bytes: consumed {}, total {}",
+                consumed,
+                bytes.len()
+            )));
+        }
         Ok(proof)
     }
 }
