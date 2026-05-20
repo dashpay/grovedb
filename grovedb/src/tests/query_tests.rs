@@ -874,6 +874,87 @@ mod tests {
     }
 
     #[test]
+    fn test_subquery_offset_consumed_empty_does_not_decrease_limit_forward() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
+
+        let path = vec![TEST_LEAF.to_vec()];
+        let mut query = Query::new_with_direction(true);
+        query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+        query.set_subquery(Query::new_range_full());
+
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(2), Some(1)));
+
+        let (elements, skipped) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            elements,
+            vec![
+                1989_u32.to_be_bytes().to_vec(),
+                1990_u32.to_be_bytes().to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_subquery_offset_consumed_empty_does_not_decrease_limit_reverse() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
+
+        let path = vec![TEST_LEAF.to_vec()];
+        let mut query = Query::new_with_direction(false);
+        query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+        query.set_subquery(Query::new_range_full());
+
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(2), Some(1)));
+
+        let (elements, skipped) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(skipped, 1);
+        assert_eq!(
+            elements,
+            vec![
+                1990_u32.to_be_bytes().to_vec(),
+                1989_u32.to_be_bytes().to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_subquery_offset_consumed_empty_legacy_version_decreases_limit() {
+        let mut legacy_version = GroveVersion::latest().clone();
+        legacy_version.grovedb_versions.element.path_query_push = 0;
+        let grove_version = &legacy_version;
+
+        let db = make_test_grovedb(grove_version);
+        populate_tree_for_unique_range_subquery(&db, grove_version);
+
+        let path = vec![TEST_LEAF.to_vec()];
+        let mut query = Query::new_with_direction(true);
+        query.insert_range(1988_u32.to_be_bytes().to_vec()..1992_u32.to_be_bytes().to_vec());
+        query.set_subquery(Query::new_range_full());
+
+        let path_query = PathQuery::new(path, SizedQuery::new(query, Some(2), Some(1)));
+
+        let (elements, skipped) = db
+            .query_item_value(&path_query, true, true, true, None, grove_version)
+            .unwrap()
+            .expect("expected successful get_path_query");
+
+        assert_eq!(skipped, 1);
+        assert_eq!(elements, vec![1989_u32.to_be_bytes().to_vec()]);
+    }
+
+    #[test]
     fn test_get_range_query_with_unique_subquery_on_references() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);

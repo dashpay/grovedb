@@ -12,7 +12,10 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, StorageContext};
-use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0, check_grovedb_v0_or_v1_with_cost, check_grovedb_v0_with_cost,
+    version::GroveVersion,
+};
 
 use crate::{
     element::{path_query_push_args::PathQueryPushArgs, query_options::QueryOptions},
@@ -331,10 +334,8 @@ impl ElementQueryExtensions for Element {
     ) -> CostResult<(), Error> {
         use crate::util::{compat, TxRef};
 
-        check_grovedb_v0_with_cost!(
-            "path_query_push",
-            grove_version.grovedb_versions.element.path_query_push
-        );
+        let path_query_push_version = grove_version.grovedb_versions.element.path_query_push;
+        check_grovedb_v0_or_v1_with_cost!("path_query_push", path_query_push_version);
 
         // println!("path_query_push {} \n", args);
 
@@ -396,7 +397,10 @@ impl ElementQueryExtensions for Element {
                 );
 
                 if let Some(limit) = limit {
-                    if sub_elements.is_empty() && decrease_limit_on_range_with_no_sub_elements {
+                    if sub_elements.is_empty()
+                        && decrease_limit_on_range_with_no_sub_elements
+                        && (path_query_push_version == 0 || skipped == 0)
+                    {
                         // we should decrease by 1 in this case
                         *limit = limit.saturating_sub(1);
                     } else {
