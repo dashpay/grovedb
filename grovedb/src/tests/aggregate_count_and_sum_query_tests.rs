@@ -493,16 +493,15 @@ mod tests {
     }
 
     #[test]
-    fn no_proof_combined_v0_envelope_rejected_by_version_gate() {
+    fn no_proof_combined_v0_envelope_accepted_under_v2() {
         // GROVE_V2 sets `query_aggregate_count_and_sum_on_range = 0`
-        // (V0-supported), so the V0 gate accepts it — but the feature
-        // didn't ship in any prior envelope, so this test pins that the
-        // version slot exists and routes to the v0 dispatch path. The
-        // sibling sum/count entry points are also V0-gated; this
-        // mirrors that contract.
+        // (V0-supported), so the V0 gate accepts it. This test pins
+        // that the version slot exists and routes to the v0 dispatch
+        // path — the sibling sum/count entry points are also V0-gated
+        // and this mirrors that contract.
         //
-        // Sanity-check: the call should succeed under GROVE_V2 because
-        // the slot is 0 — proving the routing was set up correctly.
+        // The call must succeed under GROVE_V2 (the slot is 0), which
+        // is what proves the routing was set up correctly.
         let v: &GroveVersion = &GROVE_V2;
         let (db, _) = setup_15_key_pcps(v);
         let path_query = PathQuery::new_aggregate_count_and_sum_on_range(
