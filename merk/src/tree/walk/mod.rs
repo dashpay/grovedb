@@ -77,21 +77,22 @@ where
                 }
             }
         } else {
-            let link = self.tree.slot_mut(left).take();
-            match link {
-                Some(Link::Reference { .. }) => (),
-                _ => {
-                    return Err(Error::CorruptedState(
-                        "expected Link::Reference but found other variant or None",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            }
-            cost_return_on_error!(
+            let Some(link @ Link::Reference { .. }) = self.tree.slot_mut(left).take() else {
+                return Err(Error::CorruptedState(
+                    "expected Link::Reference but found other variant or None",
+                ))
+                .wrap_with_cost(cost);
+            };
+            let child = cost_return_on_error!(
                 &mut cost,
                 self.source
-                    .fetch(&link.unwrap(), value_defined_cost_fn, grove_version)
-            )
+                    .fetch(&link, value_defined_cost_fn, grove_version)
+            );
+            cost_return_on_error_no_add!(
+                cost,
+                TreeNode::validate_fetched_link(&link, &child, self.source.tree_type())
+            );
+            child
         };
 
         let child = self.wrap(child);
@@ -421,12 +422,19 @@ mod test {
     use grovedb_version::version::GroveVersion;
 
     use super::{super::NoopCommit, *};
-    use crate::tree::{AggregateData, TreeFeatureType::BasicMerkNode, TreeNode};
+    use crate::{
+        tree::{TreeFeatureType::BasicMerkNode, TreeNode},
+        tree_type::TreeType,
+    };
 
     #[derive(Clone)]
     struct MockSource {}
 
     impl Fetch for MockSource {
+        fn tree_type(&self) -> TreeType {
+            TreeType::NormalTree
+        }
+
         fn fetch(
             &self,
             link: &Link,
@@ -435,7 +443,7 @@ mod test {
             >,
             _grove_version: &GroveVersion,
         ) -> CostResult<TreeNode, Error> {
-            TreeNode::new(link.key().to_vec(), b"foo".to_vec(), None, BasicMerkNode).map(Ok)
+            TreeNode::new(link.key().to_vec(), b"bar".to_vec(), None, BasicMerkNode).map(Ok)
         }
     }
 
@@ -503,15 +511,16 @@ mod test {
     #[test]
     fn walk_pruned() {
         let grove_version = GroveVersion::latest();
+        let child = TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerkNode).unwrap();
         let tree = TreeNode::from_fields(
             b"test".to_vec(),
             b"abc".to_vec(),
             Default::default(),
             Some(Link::Reference {
-                hash: Default::default(),
+                hash: child.hash_for_link(TreeType::NormalTree).unwrap(),
                 key: b"foo".to_vec(),
-                child_heights: (0, 0),
-                aggregate_data: AggregateData::NoAggregateData,
+                child_heights: child.child_heights(),
+                aggregate_data: child.aggregate_data().unwrap(),
             }),
             None,
             BasicMerkNode,
@@ -534,6 +543,134 @@ mod test {
             .unwrap()
             .expect("walk failed");
         assert!(walker.into_inner().child(true).is_none());
+    }
+
+    #[derive(Clone)]
+    struct BadKeySource;
+
+    impl Fetch for BadKeySource {
+        fn tree_type(&self) -> TreeType {
+            TreeType::NormalTree
+        }
+
+        fn fetch(
+            &self,
+            _link: &Link,
+            _value_defined_cost_fn: Option<
+                &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+            >,
+            _grove_version: &GroveVersion,
+        ) -> CostResult<TreeNode, Error> {
+            TreeNode::new(b"wrong".to_vec(), b"bar".to_vec(), None, BasicMerkNode).map(Ok)
+        }
+    }
+
+    #[derive(Clone)]
+    struct BadHashSource;
+
+    impl Fetch for BadHashSource {
+        fn tree_type(&self) -> TreeType {
+            TreeType::NormalTree
+        }
+
+        fn fetch(
+            &self,
+            link: &Link,
+            _value_defined_cost_fn: Option<
+                &impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+            >,
+            _grove_version: &GroveVersion,
+        ) -> CostResult<TreeNode, Error> {
+            TreeNode::new(link.key().to_vec(), b"wrong".to_vec(), None, BasicMerkNode).map(Ok)
+        }
+    }
+
+    fn tree_with_pruned_child() -> TreeNode {
+        let child = TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerkNode).unwrap();
+        TreeNode::from_fields(
+            b"test".to_vec(),
+            b"abc".to_vec(),
+            Default::default(),
+            Some(Link::Reference {
+                hash: child.hash_for_link(TreeType::NormalTree).unwrap(),
+                key: b"foo".to_vec(),
+                child_heights: child.child_heights(),
+                aggregate_data: child.aggregate_data().unwrap(),
+            }),
+            None,
+            BasicMerkNode,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn walk_pruned_rejects_wrong_fetched_key() {
+        let grove_version = GroveVersion::latest();
+        let walker = Walker::new(tree_with_pruned_child(), BadKeySource);
+
+        let result = walker
+            .walk_expect(
+                true,
+                |_| -> CostResult<Option<TreeNode>, Error> {
+                    panic!("validation should fail before callback")
+                },
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap();
+        let Err(err) = result else {
+            panic!("wrong fetched key should fail");
+        };
+        assert!(matches!(
+            err,
+            Error::CorruptedState("fetched link key mismatch")
+        ));
+    }
+
+    #[test]
+    fn walk_pruned_rejects_wrong_fetched_hash() {
+        let grove_version = GroveVersion::latest();
+        let walker = Walker::new(tree_with_pruned_child(), BadHashSource);
+
+        let result = walker
+            .walk_expect(
+                true,
+                |_| -> CostResult<Option<TreeNode>, Error> {
+                    panic!("validation should fail before callback")
+                },
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap();
+        let Err(err) = result else {
+            panic!("wrong fetched hash should fail");
+        };
+        assert!(matches!(
+            err,
+            Error::CorruptedState("fetched link hash mismatch")
+        ));
+    }
+
+    #[test]
+    fn ref_walker_rejects_wrong_fetched_hash() {
+        let grove_version = GroveVersion::latest();
+        let mut tree = tree_with_pruned_child();
+        let mut walker = RefWalker::new(&mut tree, BadHashSource);
+
+        let result = walker
+            .walk(
+                true,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap();
+        let Err(err) = result else {
+            panic!("wrong fetched hash should fail");
+        };
+        assert!(matches!(
+            err,
+            Error::CorruptedState("fetched link hash mismatch")
+        ));
     }
 
     #[test]

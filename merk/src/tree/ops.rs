@@ -25,7 +25,10 @@ use Op::*;
 #[cfg(feature = "minimal")]
 use super::{Fetch, Link, TreeNode, Walker};
 #[cfg(feature = "minimal")]
-use crate::{error::Error, tree::tree_feature_type::TreeFeatureType, CryptoHash, HASH_LENGTH_U32};
+use crate::{
+    error::Error, tree::tree_feature_type::TreeFeatureType, tree_type::TreeType, CryptoHash,
+    HASH_LENGTH_U32,
+};
 use crate::{
     merk::KeyUpdates,
     tree::kv::{ValueDefinedCostType, ValueDefinedCostType::SpecializedValueDefinedCost},
@@ -123,6 +126,10 @@ pub struct PanicSource {}
 
 #[cfg(feature = "minimal")]
 impl Fetch for PanicSource {
+    fn tree_type(&self) -> TreeType {
+        TreeType::NormalTree
+    }
+
     fn fetch(
         &self,
         _link: &Link,

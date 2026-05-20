@@ -1455,6 +1455,65 @@ impl TreeNode {
         Ok(()).wrap_with_cost(cost)
     }
 
+    /// Validates that a fetched child matches the pruned link metadata.
+    pub(crate) fn validate_fetched_link(
+        link: &Link,
+        tree: &Self,
+        tree_type: TreeType,
+    ) -> Result<(), Error> {
+        if tree.key() != link.key() {
+            return Err(Error::CorruptedState("fetched link key mismatch"));
+        }
+        let expected_child_heights = match link {
+            Link::Reference { child_heights, .. }
+            | Link::Uncommitted { child_heights, .. }
+            | Link::Loaded { child_heights, .. } => *child_heights,
+            Link::Modified { .. } => {
+                return Err(Error::CorruptedState(
+                    "cannot validate fetched link against modified link",
+                ));
+            }
+        };
+        if tree.child_heights() != expected_child_heights {
+            return Err(Error::CorruptedState("fetched link child heights mismatch"));
+        }
+        let aggregate_data = tree.aggregate_data()?;
+        if aggregate_data != link.aggregate_data() {
+            return Err(Error::CorruptedState("fetched link aggregate mismatch"));
+        }
+        match (tree_type, aggregate_data) {
+            (TreeType::ProvableCountTree, AggregateData::ProvableCount(_))
+            | (TreeType::ProvableCountSumTree, AggregateData::ProvableCountAndSum(..))
+            | (TreeType::ProvableSumTree, AggregateData::ProvableSum(_))
+            | (
+                TreeType::ProvableCountProvableSumTree,
+                AggregateData::ProvableCountAndProvableSum(..),
+            )
+            | (
+                TreeType::NormalTree
+                | TreeType::SumTree
+                | TreeType::BigSumTree
+                | TreeType::CountTree
+                | TreeType::CountSumTree
+                | TreeType::CommitmentTree(_)
+                | TreeType::MmrTree
+                | TreeType::BulkAppendTree(_)
+                | TreeType::DenseAppendOnlyFixedSizeTree(_),
+                _,
+            ) => {}
+            _ => {
+                return Err(Error::CorruptedState(
+                    "fetched link aggregate incompatible with tree type",
+                ));
+            }
+        }
+        let hash = tree.hash_for_link(tree_type).unwrap();
+        if &hash != link.hash() {
+            return Err(Error::CorruptedState("fetched link hash mismatch"));
+        }
+        Ok(())
+    }
+
     /// Fetches the child on the given side using the given data source, and
     /// places it in the child slot (upgrading the link from `Link::Reference`
     /// to `Link::Loaded`).
@@ -1494,7 +1553,10 @@ impl TreeNode {
             &mut cost,
             source.fetch(link, value_defined_cost_fn, grove_version)
         );
-        debug_assert_eq!(tree.key(), link.key());
+        cost_return_on_error_no_add!(
+            cost,
+            Self::validate_fetched_link(link, &tree, source.tree_type())
+        );
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,
             hash: *hash,

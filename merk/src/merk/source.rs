@@ -40,6 +40,10 @@ impl<'db, S> Fetch for MerkSource<'_, S>
 where
     S: StorageContext<'db>,
 {
+    fn tree_type(&self) -> TreeType {
+        self.tree_type
+    }
+
     fn fetch(
         &self,
         link: &Link,
