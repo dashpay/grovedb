@@ -552,6 +552,130 @@ mod tests {
         );
     }
 
+    fn assert_append_keyed_conflict_both_orders(
+        append_op: QualifiedGroveDbOp,
+        keyed_op: QualifiedGroveDbOp,
+    ) {
+        for ops in [
+            vec![append_op.clone(), keyed_op.clone()],
+            vec![keyed_op.clone(), append_op.clone()],
+        ] {
+            let results = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
+            assert!(
+                !results.is_empty(),
+                "append + keyed op targeting same tree should be flagged for {:?}",
+                ops
+            );
+        }
+    }
+
+    #[test]
+    fn test_consistency_append_keyed_conflicts() {
+        let append_path = vec![b"root".to_vec(), b"tree_key".to_vec()];
+        let keyed_path = vec![b"root".to_vec()];
+        let keyed_key = b"tree_key".to_vec();
+
+        for append_op in [
+            QualifiedGroveDbOp::commitment_tree_insert_op(
+                append_path.clone(),
+                [1; 32],
+                [2; 32],
+                vec![],
+            ),
+            QualifiedGroveDbOp::mmr_tree_append_op(append_path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::bulk_append_op(append_path.clone(), b"data".to_vec()),
+            QualifiedGroveDbOp::dense_tree_insert_op(append_path.clone(), b"data".to_vec()),
+        ] {
+            assert_append_keyed_conflict_both_orders(
+                append_op,
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    keyed_path.clone(),
+                    keyed_key.clone(),
+                    Element::new_item(b"value".to_vec()),
+                ),
+            );
+        }
+
+        let append_op =
+            QualifiedGroveDbOp::mmr_tree_append_op(append_path.clone(), b"data".to_vec());
+        assert_append_keyed_conflict_both_orders(
+            append_op.clone(),
+            QualifiedGroveDbOp::replace_op(
+                keyed_path.clone(),
+                keyed_key.clone(),
+                Element::new_item(b"value".to_vec()),
+            ),
+        );
+        assert_append_keyed_conflict_both_orders(
+            append_op,
+            QualifiedGroveDbOp::patch_op(
+                keyed_path,
+                keyed_key,
+                Element::new_item(b"value".to_vec()),
+                0,
+            ),
+        );
+    }
+
+    #[test]
+    fn test_consistency_append_keyed_conflict_legacy_version_allows() {
+        let ops = vec![
+            QualifiedGroveDbOp::mmr_tree_append_op(
+                vec![b"root".to_vec(), b"tree_key".to_vec()],
+                b"data".to_vec(),
+            ),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"root".to_vec()],
+                b"tree_key".to_vec(),
+                Element::new_item(b"value".to_vec()),
+            ),
+        ];
+
+        let results = QualifiedGroveDbOp::verify_consistency_of_operations_for_version(&ops, 0);
+        assert!(
+            results.is_empty(),
+            "legacy consistency check should not flag append + keyed conflicts"
+        );
+    }
+
+    #[test]
+    fn test_batch_append_keyed_conflict_leaves_root_unchanged() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        db.insert(
+            EMPTY_PATH,
+            b"tree_key",
+            Element::empty_mmr_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert mmr tree");
+        let root_before = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root should exist");
+
+        let ops = vec![
+            QualifiedGroveDbOp::mmr_tree_append_op(vec![b"tree_key".to_vec()], b"data".to_vec()),
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                b"tree_key".to_vec(),
+                Element::new_item(b"replacement".to_vec()),
+            ),
+        ];
+
+        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
+        assert!(result.is_err(), "append/keyed conflict should fail");
+        let root_after = db
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("root should still exist");
+        assert_eq!(root_after, root_before);
+    }
+
     #[test]
     fn test_consistency_insert_only_under_deleted_path() {
         let ops = vec![
