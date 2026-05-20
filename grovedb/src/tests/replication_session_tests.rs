@@ -583,6 +583,108 @@ mod tests {
     }
 
     #[test]
+    fn failed_chunk_after_batched_sync_rolls_back_all_restored_subtrees() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"sub",
+                Element::empty_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert subtree");
+        source
+            .insert(
+                [TEST_LEAF, b"sub"].as_ref(),
+                b"nested",
+                Element::new_item(b"value".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert nested item");
+
+        let source_hash = source
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get source hash");
+
+        let dest = make_empty_grovedb();
+        let empty_dest_hash = dest
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("should get empty destination hash");
+        let mut session = dest
+            .start_snapshot_syncing(source_hash, 1, CURRENT_STATE_SYNC_VERSION, grove_version)
+            .expect("should start snapshot syncing");
+
+        let root_chunk_data = source
+            .fetch_chunk(
+                source_hash.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should fetch root chunk");
+        let next_chunk_ids = session
+            .apply_chunk(
+                source_hash.as_slice(),
+                &root_chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should apply root chunk");
+        assert!(
+            !next_chunk_ids.is_empty(),
+            "root chunk should discover child subtree chunks"
+        );
+
+        let next_chunk_id = next_chunk_ids.first().expect("expected next chunk id");
+        let mut corrupt_chunk_data = source
+            .fetch_chunk(
+                next_chunk_id.as_slice(),
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect("should fetch child chunk");
+        let last_byte = corrupt_chunk_data
+            .last_mut()
+            .expect("chunk data should not be empty");
+        *last_byte ^= 0xFF;
+
+        let err = session
+            .apply_chunk(
+                next_chunk_id.as_slice(),
+                &corrupt_chunk_data,
+                CURRENT_STATE_SYNC_VERSION,
+                grove_version,
+            )
+            .expect_err("corrupt child chunk should fail");
+        let err_msg = format!("{err:?}");
+        assert!(
+            err_msg.contains("Unable to finalize Merk")
+                || err_msg.contains("corrupt")
+                || err_msg.contains("Corrupted"),
+            "unexpected error: {err:?}"
+        );
+        drop(session);
+        assert!(
+            dest.root_hash(None, grove_version)
+                .unwrap()
+                .expect("should get destination hash after failed commit")
+                == empty_dest_hash,
+            "failed sync commit must not persist restored root data"
+        );
+    }
+
+    #[test]
     fn sync_with_empty_subtree_succeeds() {
         let grove_version = GroveVersion::latest();
         let source = make_test_grovedb(grove_version);

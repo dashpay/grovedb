@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     marker::PhantomPinned,
-    mem,
     pin::Pin,
 };
 
@@ -248,11 +247,8 @@ impl<'db> MultiStateSyncSession<'db> {
         // Individual subtree chunks are hash-verified during restore, but we must also
         // verify the overall GroveDB root to ensure the composition is correct.
         //
-        // TODO: This check is not fully atomic. apply_chunk() flushes completed
-        // subtree batches via set_new_transaction()/commit_transaction(), so on
-        // mismatch only the last transaction is rolled back while earlier subtrees
-        // remain on disk. A full fix requires staging all subtree commits and only
-        // persisting them after root hash verification passes.
+        // apply_chunk() keeps all restored subtree batches inside this transaction,
+        // so a mismatch rolls back the whole sync when the session is dropped.
         let actual_root_hash = session
             .db
             .root_hash(Some(&session.transaction), grove_version)
@@ -273,24 +269,6 @@ impl<'db> MultiStateSyncSession<'db> {
             .commit_transaction(session.transaction)
             .value
             .map_err(|e| Error::InternalError(format!("failed to commit sync transaction: {e}")))?;
-        Ok(())
-    }
-
-    // SAFETY: This is unsafe as it requires `self.current_prefixes` to be empty
-    // so no storage contexts hold references to the transaction being replaced.
-    unsafe fn set_new_transaction(
-        self: &mut Pin<Box<MultiStateSyncSession<'db>>>,
-    ) -> Result<(), Error> {
-        if !self.current_prefixes.is_empty() {
-            return Err(Error::InternalError(
-                "current_prefixes must be empty before replacing transaction".to_string(),
-            ));
-        }
-        let this = unsafe { Pin::as_mut(self).get_unchecked_mut() };
-        let old_tx = mem::replace(&mut this.transaction, this.db.start_transaction());
-        self.db.commit_transaction(old_tx).value.map_err(|e| {
-            Error::InternalError(format!("failed to commit old transaction during sync: {e}"))
-        })?;
         Ok(())
     }
 
@@ -590,12 +568,6 @@ impl<'db> MultiStateSyncSession<'db> {
         if self.num_processed_subtrees_in_batch >= self.subtrees_batch_size
             && self.current_prefixes.is_empty()
         {
-            // SAFETY: we made sure `self.current_prefixes` is empty so there are no
-            // references to the transaction we're about to replace
-            unsafe {
-                self.set_new_transaction()?;
-            }
-
             let new_subtrees_metadata =
                 self.as_mut()
                     .pending_discovered_subtrees()
