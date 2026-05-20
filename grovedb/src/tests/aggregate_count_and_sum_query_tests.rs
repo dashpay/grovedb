@@ -518,4 +518,37 @@ mod tests {
         // are covered by the latest-version tests above.
         assert_eq!(direct.0, 15);
     }
+
+    #[test]
+    fn no_proof_combined_path_not_found_at_merk_open() {
+        // Covers the `open_transactional_merk_at_path` error branch in
+        // `query_aggregate_count_and_sum`: when the path doesn't
+        // resolve (intermediate subtree missing), the wrapped
+        // path-lookup error must propagate up the call chain instead
+        // of producing a spurious `(0, 0)` result.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let path_query = PathQuery::new_aggregate_count_and_sum_on_range(
+            vec![TEST_LEAF.to_vec(), b"nope".to_vec()],
+            QueryItem::RangeFrom(b"a".to_vec()..),
+        );
+        let err = db
+            .grove_db
+            .query_aggregate_count_and_sum(&path_query, None, v)
+            .unwrap()
+            .expect_err("missing intermediate path must surface as an error");
+        // Path resolution failures bubble up as `InvalidParentLayerPath`
+        // / `PathNotFound` / `PathParentLayerNotFound` / `PathKeyNotFound`
+        // depending on which layer fails. Any non-success outcome from
+        // a path-not-found shape covers the branch — we assert it's NOT
+        // a CorruptedData wrap (which would imply the merk was opened)
+        // and NOT an InvalidQuery (validation passed).
+        match err {
+            crate::Error::InvalidParentLayerPath(_)
+            | crate::Error::PathNotFound(_)
+            | crate::Error::PathParentLayerNotFound(_)
+            | crate::Error::PathKeyNotFound(_) => {}
+            other => panic!("expected a path-resolution error, got {:?}", other),
+        }
+    }
 }
