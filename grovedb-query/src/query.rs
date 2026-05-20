@@ -355,10 +355,139 @@ impl Query {
         max_results: usize,
         result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
     ) -> Result<usize, Error> {
-        self.terminal_keys_inner(current_path, max_results, result, 0)
+        self.terminal_keys_for_version(current_path, max_results, result, 1)
+    }
+
+    /// Pushes terminal key paths and keys using a specific terminal-key
+    /// feature version.
+    pub fn terminal_keys_for_version(
+        &self,
+        current_path: Vec<Vec<u8>>,
+        max_results: usize,
+        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+        terminal_keys_version: u16,
+    ) -> Result<usize, Error> {
+        match terminal_keys_version {
+            0 => self.terminal_keys_inner_legacy(current_path, max_results, result, 0),
+            1 => self.terminal_keys_inner(current_path, max_results, result, 0),
+            version => Err(Error::NotSupported(format!(
+                "unsupported terminal_keys version {version}"
+            ))),
+        }
     }
 
     fn terminal_keys_inner(
+        &self,
+        current_path: Vec<Vec<u8>>,
+        max_results: usize,
+        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+        depth: usize,
+    ) -> Result<usize, Error> {
+        if depth >= Self::MAX_TERMINAL_KEYS_DEPTH {
+            return Err(Error::NotSupported(
+                "terminal_keys subquery nesting depth exceeded".to_string(),
+            ));
+        }
+        let mut added = 0;
+        if let Some(conditional_subquery_branches) = &self.conditional_subquery_branches {
+            for conditional_query_item in conditional_subquery_branches.keys() {
+                // unbounded ranges can not be supported
+                if conditional_query_item.is_unbounded_range() {
+                    return Err(Error::NotSupported(
+                        "terminal keys are not supported with conditional unbounded ranges"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        for item in self.items.iter() {
+            if item.is_unbounded_range() {
+                return Err(Error::NotSupported(
+                    "terminal keys are not supported with unbounded ranges".to_string(),
+                ));
+            }
+            let keys = item.keys()?;
+            for key in keys.into_iter() {
+                let branch = self
+                    .conditional_subquery_branches
+                    .as_ref()
+                    .and_then(|conditional_subquery_branches| {
+                        conditional_subquery_branches
+                            .iter()
+                            .find(|(conditional_query_item, _)| {
+                                conditional_query_item.contains(&key)
+                            })
+                            .map(|(_, subquery_branch)| subquery_branch)
+                    })
+                    .unwrap_or(&self.default_subquery_branch);
+
+                added += Self::terminal_keys_for_branch(
+                    branch,
+                    key,
+                    current_path.as_slice(),
+                    max_results,
+                    result,
+                    depth,
+                )?;
+            }
+        }
+        Ok(added)
+    }
+
+    fn terminal_keys_for_branch(
+        subquery_branch: &SubqueryBranch,
+        key: Vec<u8>,
+        current_path: &[Vec<u8>],
+        max_results: usize,
+        result: &mut Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+        depth: usize,
+    ) -> Result<usize, Error> {
+        let mut path = current_path.to_vec();
+        if let Some(subquery_path) = &subquery_branch.subquery_path {
+            if let Some(subquery) = &subquery_branch.subquery {
+                // A subquery path with a subquery.
+                path.push(key);
+                path.extend(subquery_path.iter().cloned());
+                subquery.terminal_keys_inner(path, max_results, result, depth + 1)
+            } else {
+                if result.len() >= max_results {
+                    return Err(Error::RequestAmountExceeded(format!(
+                        "terminal keys limit exceeded when subquery path but no subquery, set max \
+                         is {max_results}, current len is {}",
+                        result.len(),
+                    )));
+                }
+                // A subquery path but no subquery: the path tail is the
+                // terminal key.
+                path.push(key);
+                if let Some((last_key, front_keys)) = subquery_path.split_last() {
+                    path.extend(front_keys.iter().cloned());
+                    result.push((path, last_key.clone()));
+                    Ok(1)
+                } else {
+                    Err(Error::CorruptedCodeExecution(
+                        "subquery_path set but doesn't contain any values",
+                    ))
+                }
+            }
+        } else if let Some(subquery) = &subquery_branch.subquery {
+            // A subquery without a subquery path.
+            path.push(key);
+            subquery.terminal_keys_inner(path, max_results, result, depth + 1)
+        } else {
+            if result.len() >= max_results {
+                return Err(Error::RequestAmountExceeded(format!(
+                    "terminal keys limit exceeded without subquery or subquery path, set max is \
+                     {max_results}, current len is {}",
+                    result.len(),
+                )));
+            }
+            result.push((path, key));
+            Ok(1)
+        }
+    }
+
+    fn terminal_keys_inner_legacy(
         &self,
         current_path: Vec<Vec<u8>>,
         max_results: usize,
@@ -394,13 +523,9 @@ impl Query {
                     let mut path = current_path.clone();
                     if let Some(subquery_path) = &subquery_branch.subquery_path {
                         if let Some(subquery) = &subquery_branch.subquery {
-                            // a subquery path with a subquery
-                            // push the key to the path
                             path.push(key);
-                            // push the subquery path to the path
                             path.extend(subquery_path.iter().cloned());
-                            // recurse onto the lower level
-                            let added_here = subquery.terminal_keys_inner(
+                            let added_here = subquery.terminal_keys_inner_legacy(
                                 path,
                                 max_results,
                                 result,
@@ -416,10 +541,6 @@ impl Query {
                                      {current_len}",
                                 )));
                             }
-                            // a subquery path but no subquery
-                            // split the subquery path and remove the last element
-                            // push the key to the path with the front elements,
-                            // and set the tail of the subquery path as the terminal key
                             path.push(key);
                             if let Some((last_key, front_keys)) = subquery_path.split_last() {
                                 path.extend(front_keys.iter().cloned());
@@ -434,12 +555,13 @@ impl Query {
                             current_len += 1;
                         }
                     } else if let Some(subquery) = &subquery_branch.subquery {
-                        // a subquery without a subquery path
-                        // push the key to the path
                         path.push(key);
-                        // recurse onto the lower level
-                        let added_here =
-                            subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
+                        let added_here = subquery.terminal_keys_inner_legacy(
+                            path,
+                            max_results,
+                            result,
+                            depth + 1,
+                        )?;
                         added += added_here;
                         current_len += added_here;
                     }
@@ -455,8 +577,7 @@ impl Query {
             let keys = item.keys()?;
             for key in keys.into_iter() {
                 if already_added_keys.contains(&key) {
-                    // we already had this key in the conditional subqueries
-                    continue; // skip this key
+                    continue;
                 }
                 if current_len > max_results {
                     return Err(Error::RequestAmountExceeded(format!(
@@ -467,14 +588,14 @@ impl Query {
                 let mut path = current_path.clone();
                 if let Some(subquery_path) = &self.default_subquery_branch.subquery_path {
                     if let Some(subquery) = &self.default_subquery_branch.subquery {
-                        // a subquery path with a subquery
-                        // push the key to the path
                         path.push(key);
-                        // push the subquery path to the path
                         path.extend(subquery_path.iter().cloned());
-                        // recurse onto the lower level
-                        let added_here =
-                            subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
+                        let added_here = subquery.terminal_keys_inner_legacy(
+                            path,
+                            max_results,
+                            result,
+                            depth + 1,
+                        )?;
                         added += added_here;
                         current_len += added_here;
                     } else {
@@ -484,10 +605,6 @@ impl Query {
                                  set max is {max_results}, current len is {current_len}",
                             )));
                         }
-                        // a subquery path but no subquery
-                        // split the subquery path and remove the last element
-                        // push the key to the path with the front elements,
-                        // and set the tail of the subquery path as the terminal key
                         path.push(key);
                         if let Some((last_key, front_keys)) = subquery_path.split_last() {
                             path.extend(front_keys.iter().cloned());
@@ -501,12 +618,13 @@ impl Query {
                         current_len += 1;
                     }
                 } else if let Some(subquery) = &self.default_subquery_branch.subquery {
-                    // a subquery without a subquery path
-                    // push the key to the path
                     path.push(key);
-                    // recurse onto the lower level
-                    let added_here =
-                        subquery.terminal_keys_inner(path, max_results, result, depth + 1)?;
+                    let added_here = subquery.terminal_keys_inner_legacy(
+                        path,
+                        max_results,
+                        result,
+                        depth + 1,
+                    )?;
                     added += added_here;
                     current_len += added_here;
                 } else {

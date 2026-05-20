@@ -59,6 +59,56 @@ fn terminal_keys_recursive_and_deduplicated() {
 }
 
 #[test]
+fn terminal_keys_conditionals_only_apply_to_queried_items() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(2)),
+        Some(vec![k(3)]),
+        Some(Query::new_single_key(k(4))),
+    );
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![], k(1))]);
+}
+
+#[test]
+fn terminal_keys_legacy_version_applies_conditionals_before_items() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(2)),
+        Some(vec![k(3)]),
+        Some(Query::new_single_key(k(4))),
+    );
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_for_version(vec![], 10, &mut result, 0)
+        .expect("terminal keys");
+
+    assert_eq!(added, 2);
+    assert_eq!(result, vec![(vec![k(2), k(3)], k(4)), (vec![], k(1))]);
+}
+
+#[test]
+fn terminal_keys_empty_conditional_branch_keeps_matching_key_terminal() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(QueryItem::Key(k(1)), None, None);
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys(vec![], 10, &mut result)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![], k(1))]);
+}
+
+#[test]
 fn terminal_keys_error_paths_are_reported() {
     let mut with_unbounded = Query::new();
     with_unbounded.insert_all();

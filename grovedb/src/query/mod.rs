@@ -22,7 +22,9 @@ use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{Key, SubqueryBranch};
 
 use grovedb_merk::proofs::Query;
-use grovedb_version::{check_grovedb_v0, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0, check_grovedb_v0_or_v1, error::GroveVersionError, version::GroveVersion,
+};
 use indexmap::IndexMap;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub use path_branch_chunk_query::PathBranchChunkQuery;
@@ -767,8 +769,8 @@ impl PathQuery {
         max_results: usize,
         grove_version: &GroveVersion,
     ) -> Result<Vec<PathKey>, Error> {
-        check_grovedb_v0!(
-            "merge",
+        let terminal_keys_version = check_grovedb_v0_or_v1!(
+            "terminal_keys",
             grove_version
                 .grovedb_versions
                 .path_query_methods
@@ -777,7 +779,12 @@ impl PathQuery {
         let mut result: Vec<(Vec<Vec<u8>>, Vec<u8>)> = vec![];
         self.query
             .query
-            .terminal_keys(self.path.clone(), max_results, &mut result)
+            .terminal_keys_for_version(
+                self.path.clone(),
+                max_results,
+                &mut result,
+                terminal_keys_version,
+            )
             .map_err(Error::QueryError)?;
         Ok(result)
     }
