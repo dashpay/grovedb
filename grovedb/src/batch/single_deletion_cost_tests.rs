@@ -5,7 +5,8 @@ mod tests {
 
     use grovedb_costs::storage_cost::removal::{
         Identifier, StorageRemovalPerEpochByIdentifier,
-        StorageRemovedBytes::SectionedStorageRemoval,
+        StorageRemovedBytes::{BasicStorageRemoval, SectionedStorageRemoval},
+        UNKNOWN_EPOCH,
     };
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
@@ -16,6 +17,53 @@ mod tests {
         tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element,
     };
+
+    #[test]
+    fn latest_delete_preserves_basic_plus_default_sectioned_removal_cost() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        let insertion_cost = db
+            .insert(
+                EMPTY_PATH,
+                b"key1",
+                Element::new_item_with_flags(b"cat".to_vec(), Some(b"apple".to_vec())),
+                None,
+                None,
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to insert successfully");
+
+        let deletion_cost = db
+            .delete_with_sectional_storage_function(
+                EMPTY_PATH,
+                b"key1",
+                None,
+                None,
+                &mut |_element_flags, removed_key_bytes, removed_value_bytes| {
+                    let mut removed_bytes = StorageRemovalPerEpochByIdentifier::default();
+                    let mut removed_bytes_for_identity = IntMap::new();
+                    removed_bytes_for_identity.insert(UNKNOWN_EPOCH, removed_value_bytes);
+                    removed_bytes.insert(Identifier::default(), removed_bytes_for_identity);
+                    Ok((
+                        BasicStorageRemoval(removed_key_bytes),
+                        SectionedStorageRemoval(removed_bytes),
+                    ))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected to delete successfully");
+
+        assert_eq!(
+            deletion_cost
+                .storage_cost
+                .removed_bytes
+                .total_removed_bytes(),
+            insertion_cost.storage_cost.added_bytes
+        );
+    }
 
     #[test]
     fn test_batch_one_deletion_tree_costs_match_non_batch_on_transaction() {
