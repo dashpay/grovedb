@@ -128,30 +128,32 @@ where
             &mut cost,
             walk_count_and_sum(self, inner_range, None, None, grove_version)
         );
-        // A real PCPS tree maintains every aggregate as (u64, i64) at
-        // every level, so the widened (u128, i128) walk only holds an
-        // out-of-narrow-range value if the tree state is internally
-        // inconsistent. Surface either narrowing failure as
-        // `CorruptedData` — the existing error class for "merk reads
-        // returned a value our type contract says shouldn't exist".
-        let narrowed: Result<(u64, i64), Error> = u64::try_from(count_u128)
-            .map_err(|_| {
-                Error::CorruptedData(format!(
-                    "no-proof aggregate-count-and-sum: in-range count overflowed u64 ({})",
-                    count_u128
-                ))
-            })
-            .and_then(|count| {
-                i64::try_from(sum_i128)
-                    .map(|sum| (count, sum))
-                    .map_err(|_| {
-                        Error::CorruptedData(format!(
-                            "no-proof aggregate-count-and-sum: in-range sum overflowed \
-                             i64 ({})",
-                            sum_i128
-                        ))
-                    })
-            });
-        narrowed.wrap_with_cost(cost)
+        narrow_count_and_sum(count_u128, sum_i128).wrap_with_cost(cost)
     }
+}
+
+/// Narrow the no-proof walker's `(u128, i128)` accumulator pair to the
+/// on-the-wire `(u64, i64)` shape, returning `CorruptedData` if either
+/// axis is out of range. Extracted into a free function so the narrowing
+/// arms are unit-testable without standing up a corrupted merk.
+///
+/// A real PCPS tree maintains every aggregate as `(u64, i64)` at every
+/// level, so an honest walk lands inside both narrower ranges. An
+/// out-of-range value implies the merk's in-memory state disagrees with
+/// its type contract — local invariant failure, so `CorruptedData` per
+/// the repo's error-handling convention.
+pub(super) fn narrow_count_and_sum(count_u128: u128, sum_i128: i128) -> Result<(u64, i64), Error> {
+    let count = u64::try_from(count_u128).map_err(|_| {
+        Error::CorruptedData(format!(
+            "no-proof aggregate-count-and-sum: in-range count overflowed u64 ({})",
+            count_u128
+        ))
+    })?;
+    let sum = i64::try_from(sum_i128).map_err(|_| {
+        Error::CorruptedData(format!(
+            "no-proof aggregate-count-and-sum: in-range sum overflowed i64 ({})",
+            sum_i128
+        ))
+    })?;
+    Ok((count, sum))
 }

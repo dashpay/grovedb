@@ -9,7 +9,7 @@ use std::collections::LinkedList;
 
 use grovedb_version::version::GroveVersion;
 
-use super::verify_aggregate_count_and_sum_on_range_proof;
+use super::{prove::narrow_count_and_sum, verify_aggregate_count_and_sum_on_range_proof};
 use crate::{
     proofs::{
         encode_into,
@@ -1363,4 +1363,73 @@ fn no_proof_combined_negative_sums_match_prover() {
         -70,
         v,
     );
+}
+
+// ---------- narrow_count_and_sum unit tests ----------
+//
+// The narrowing helper isolates the defense-in-depth `(u128, i128) →
+// (u64, i64)` arms so they can be exercised without scaffolding a
+// corrupted merk. An honest walker never hits these arms because PCPS
+// maintains every aggregate inside `(u64, i64)` at every level — but if
+// the merk's in-memory state disagrees with its type contract (i.e.,
+// local corruption), the narrowing surfaces it as `CorruptedData`.
+
+#[test]
+fn narrow_count_and_sum_happy_path_preserves_values() {
+    let cases: &[(u128, i64, i64)] = &[
+        (0, 0, 0),
+        (1, 1, 1),
+        (u64::MAX as u128, i64::MAX, i64::MAX),
+        (u64::MAX as u128, i64::MIN, i64::MIN),
+    ];
+    for (c_in, s_in, expected_sum) in cases {
+        let (c, s) = narrow_count_and_sum(*c_in, *s_in as i128).expect("in-range narrow");
+        assert_eq!(c as u128, *c_in);
+        assert_eq!(s, *expected_sum);
+    }
+}
+
+#[test]
+fn narrow_count_and_sum_rejects_count_overflow() {
+    // count_u128 > u64::MAX → CorruptedData on the count axis.
+    let result = narrow_count_and_sum(u128::from(u64::MAX) + 1, 0);
+    match result {
+        Err(Error::CorruptedData(msg)) => assert!(
+            msg.contains("count overflowed u64"),
+            "unexpected error message: {msg}"
+        ),
+        other => panic!("expected CorruptedData for count overflow, got {:?}", other),
+    }
+}
+
+#[test]
+fn narrow_count_and_sum_rejects_sum_positive_overflow() {
+    // sum_i128 > i64::MAX → CorruptedData on the sum axis.
+    let result = narrow_count_and_sum(0, i128::from(i64::MAX) + 1);
+    match result {
+        Err(Error::CorruptedData(msg)) => assert!(
+            msg.contains("sum overflowed i64"),
+            "unexpected error message: {msg}"
+        ),
+        other => panic!(
+            "expected CorruptedData for sum positive overflow, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn narrow_count_and_sum_rejects_sum_negative_overflow() {
+    // sum_i128 < i64::MIN → CorruptedData on the sum axis.
+    let result = narrow_count_and_sum(0, i128::from(i64::MIN) - 1);
+    match result {
+        Err(Error::CorruptedData(msg)) => assert!(
+            msg.contains("sum overflowed i64"),
+            "unexpected error message: {msg}"
+        ),
+        other => panic!(
+            "expected CorruptedData for sum negative overflow, got {:?}",
+            other
+        ),
+    }
 }
