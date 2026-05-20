@@ -7,6 +7,7 @@ mod query_tests;
 mod sum_tree_tests;
 
 mod aggregate_count_and_sum_carrier_query_tests;
+mod aggregate_count_and_sum_query_tests;
 mod aggregate_count_query_tests;
 mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
