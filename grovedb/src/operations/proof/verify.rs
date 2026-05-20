@@ -1121,8 +1121,18 @@ impl GroveDb {
             grovedb_bulk_append_tree::BulkAppendTreeProof::decode_from_slice(bulk_bytes)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
 
+        let validate_completed_chunk_lengths = grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .verify_bulk_append_completed_chunk_lengths
+            > 0;
         let (bulk_state_root, proof_result) = bulk_proof
-            .verify_and_compute_root(element_height, element_total_count)
+            .verify_and_compute_root_for_version(
+                element_height,
+                element_total_count,
+                validate_completed_chunk_lengths,
+            )
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
 
         // Get the query range from the path query to extract matching values

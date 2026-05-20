@@ -357,6 +357,17 @@ impl BulkAppendTreeProof {
         height: u8,
         total_count: u64,
     ) -> Result<([u8; 32], BulkAppendTreeProofResult), BulkAppendError> {
+        self.verify_and_compute_root_for_version(height, total_count, true)
+    }
+
+    /// Verify this proof's internal consistency for a specific proof feature
+    /// version and return the computed state root.
+    pub fn verify_and_compute_root_for_version(
+        &self,
+        height: u8,
+        total_count: u64,
+        validate_completed_chunk_lengths: bool,
+    ) -> Result<([u8; 32], BulkAppendTreeProofResult), BulkAppendError> {
         // 0. Validate height
         if !(1..=16).contains(&height) {
             return Err(BulkAppendError::InvalidProof(format!(
@@ -391,6 +402,36 @@ impl BulkAppendTreeProof {
             })?;
             (root, verified_leaves)
         };
+
+        if validate_completed_chunk_lengths {
+            for (chunk_idx, blob) in &chunk_blobs {
+                if *chunk_idx >= completed_chunks {
+                    return Err(BulkAppendError::InvalidProof(format!(
+                        "chunk {} is out of range for {} completed chunks",
+                        chunk_idx, completed_chunks
+                    )));
+                }
+
+                let entries = deserialize_chunk_blob(blob).map_err(|e| {
+                    BulkAppendError::CorruptedData(format!(
+                        "failed to deserialize chunk blob {}: {}",
+                        chunk_idx, e
+                    ))
+                })?;
+                let entry_count = u64::try_from(entries.len()).map_err(|_| {
+                    BulkAppendError::InvalidProof(format!(
+                        "chunk {} entry count does not fit in u64",
+                        chunk_idx
+                    ))
+                })?;
+                if entry_count != chunk_item_count {
+                    return Err(BulkAppendError::InvalidProof(format!(
+                        "chunk {} contains {} entries, expected {}",
+                        chunk_idx, entry_count, chunk_item_count
+                    )));
+                }
+            }
+        }
 
         // 2. Verify dense tree buffer sub-proof
         let (dense_root, dense_entries) = if dense_count > 0 {

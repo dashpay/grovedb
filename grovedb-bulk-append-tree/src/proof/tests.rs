@@ -1,9 +1,13 @@
 #[cfg(test)]
 mod proof_tests {
-    use grovedb_merkle_mountain_range::MmrTreeProof;
+    use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
+    use grovedb_merkle_mountain_range::{leaf_hash, MmrTreeProof};
     use grovedb_query::{Query, QueryItem};
 
-    use crate::{proof::*, test_utils::MemStorageContext, BulkAppendTree};
+    use crate::{
+        compute_state_root, proof::*, serialize_chunk_blob, test_utils::MemStorageContext,
+        BulkAppendTree,
+    };
 
     /// Helper: build a test tree and return it (tree owns the storage).
     fn build_test_tree(
@@ -483,6 +487,54 @@ mod proof_tests {
             )
             .expect_err("must fail for missing chunk");
         assert!(matches!(err, BulkAppendError::InvalidProof(_)));
+    }
+
+    #[test]
+    fn test_verify_against_query_rejects_short_completed_chunk_blob() {
+        let height = 2u8;
+        let total_count = 4u64;
+        let short_blob =
+            serialize_chunk_blob(&[b"only".to_vec()]).expect("serialize short chunk blob");
+        let chunk_root = leaf_hash(&short_blob);
+        let state_root = compute_state_root(&chunk_root, &[0; 32]);
+
+        let proof = BulkAppendTreeProof {
+            chunk_proof: MmrTreeProof::new(1, vec![(0, short_blob)], vec![]),
+            buffer_proof: DenseTreeProof {
+                entries: Vec::new(),
+                node_value_hashes: Vec::new(),
+                node_hashes: Vec::new(),
+            },
+        };
+
+        let mut query = Query::default();
+        query.items.push(QueryItem::Key(pos_bytes(3)));
+
+        let err = proof
+            .verify_against_query::<Vec<(u64, Vec<u8>)>>(&state_root, height, total_count, &query)
+            .expect_err("short completed chunk blob must fail");
+        assert!(matches!(err, BulkAppendError::InvalidProof(_)));
+    }
+
+    #[test]
+    fn test_verify_compute_root_legacy_version_accepts_short_completed_chunk_blob() {
+        let height = 2u8;
+        let total_count = 4u64;
+        let short_blob =
+            serialize_chunk_blob(&[b"only".to_vec()]).expect("serialize short chunk blob");
+
+        let proof = BulkAppendTreeProof {
+            chunk_proof: MmrTreeProof::new(1, vec![(0, short_blob)], vec![]),
+            buffer_proof: DenseTreeProof {
+                entries: Vec::new(),
+                node_value_hashes: Vec::new(),
+                node_hashes: Vec::new(),
+            },
+        };
+
+        proof
+            .verify_and_compute_root_for_version(height, total_count, false)
+            .expect("legacy version should not validate completed chunk length");
     }
 
     #[test]
