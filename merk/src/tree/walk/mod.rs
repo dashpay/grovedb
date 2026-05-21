@@ -618,21 +618,15 @@ mod test {
         let walker = Walker::new(tree_with_pruned_child_heights(Some((1, 0))), MockSource {});
 
         let result = walker
-            .walk_expect(
+            .detach_expect(
                 true,
-                |_| -> CostResult<Option<TreeNode>, Error> {
-                    panic!("validation should fail before callback")
-                },
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
             .unwrap();
-        let Err(err) = result else {
-            panic!("wrong fetched child heights should fail");
-        };
         assert!(matches!(
-            err,
-            Error::CorruptedState("fetched link child heights mismatch")
+            result,
+            Err(Error::CorruptedState("fetched link child heights mismatch"))
         ));
     }
 
@@ -642,21 +636,15 @@ mod test {
         let walker = Walker::new(tree_with_pruned_child(), BadKeySource);
 
         let result = walker
-            .walk_expect(
+            .detach_expect(
                 true,
-                |_| -> CostResult<Option<TreeNode>, Error> {
-                    panic!("validation should fail before callback")
-                },
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
             .unwrap();
-        let Err(err) = result else {
-            panic!("wrong fetched key should fail");
-        };
         assert!(matches!(
-            err,
-            Error::CorruptedState("fetched link key mismatch")
+            result,
+            Err(Error::CorruptedState("fetched link key mismatch"))
         ));
     }
 
@@ -666,21 +654,15 @@ mod test {
         let walker = Walker::new(tree_with_pruned_child(), BadHashSource);
 
         let result = walker
-            .walk_expect(
+            .detach_expect(
                 true,
-                |_| -> CostResult<Option<TreeNode>, Error> {
-                    panic!("validation should fail before callback")
-                },
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
                 grove_version,
             )
             .unwrap();
-        let Err(err) = result else {
-            panic!("wrong fetched hash should fail");
-        };
         assert!(matches!(
-            err,
-            Error::CorruptedState("fetched link hash mismatch")
+            result,
+            Err(Error::CorruptedState("fetched link hash mismatch"))
         ));
     }
 
@@ -697,12 +679,9 @@ mod test {
                 grove_version,
             )
             .unwrap();
-        let Err(err) = result else {
-            panic!("wrong fetched hash should fail");
-        };
         assert!(matches!(
-            err,
-            Error::CorruptedState("fetched link hash mismatch")
+            result,
+            Err(Error::CorruptedState("fetched link hash mismatch"))
         ));
     }
 

@@ -1067,6 +1067,11 @@ mod test {
     };
 
     #[test]
+    fn panic_source_reports_normal_tree_type() {
+        assert_eq!((PanicSource {}).tree_type(), TreeType::NormalTree);
+    }
+
+    #[test]
     fn simple_insert() {
         let grove_version = GroveVersion::latest();
         let batch = [(b"foo2".to_vec(), Put(b"bar2".to_vec(), BasicMerkNode))];

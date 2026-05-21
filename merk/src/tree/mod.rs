@@ -1593,10 +1593,15 @@ mod test_provable_count_edge_cases;
 #[cfg(test)]
 mod test {
 
-    use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, TreeNode};
+    use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, Link, TreeNode};
     use crate::tree::{
         tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
     };
+    use crate::tree_type::TreeType;
+
+    fn fetched_child() -> TreeNode {
+        TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerkNode).unwrap()
+    }
 
     #[test]
     fn build_tree() {
@@ -1736,6 +1741,85 @@ mod test {
             ]
         );
         assert_eq!(tree.child_hash(false), &NULL_HASH);
+    }
+
+    #[test]
+    fn validate_fetched_link_accepts_loaded_and_uncommitted_links() {
+        let tree = fetched_child();
+        let hash = tree.hash_for_link(TreeType::NormalTree).unwrap();
+        let child_heights = tree.child_heights();
+        let aggregate_data = tree.aggregate_data().unwrap();
+
+        let uncommitted = Link::Uncommitted {
+            hash,
+            child_heights,
+            tree: fetched_child(),
+            aggregate_data,
+        };
+        TreeNode::validate_fetched_link(&uncommitted, &tree, TreeType::NormalTree, true)
+            .expect("uncommitted link should validate");
+
+        let loaded = Link::Loaded {
+            hash,
+            child_heights,
+            tree: fetched_child(),
+            aggregate_data,
+        };
+        TreeNode::validate_fetched_link(&loaded, &tree, TreeType::NormalTree, true)
+            .expect("loaded link should validate");
+    }
+
+    #[test]
+    fn validate_fetched_link_rejects_modified_link() {
+        let tree = fetched_child();
+        let modified = Link::Modified {
+            pending_writes: 0,
+            child_heights: tree.child_heights(),
+            tree: fetched_child(),
+        };
+
+        assert!(matches!(
+            TreeNode::validate_fetched_link(&modified, &tree, TreeType::NormalTree, true),
+            Err(crate::Error::CorruptedState(
+                "cannot validate fetched link against modified link"
+            ))
+        ));
+    }
+
+    #[test]
+    fn validate_fetched_link_rejects_aggregate_mismatch() {
+        let tree = fetched_child();
+        let link = Link::Reference {
+            hash: tree.hash_for_link(TreeType::NormalTree).unwrap(),
+            key: tree.key().to_vec(),
+            child_heights: tree.child_heights(),
+            aggregate_data: AggregateData::Sum(1),
+        };
+
+        assert!(matches!(
+            TreeNode::validate_fetched_link(&link, &tree, TreeType::NormalTree, true),
+            Err(crate::Error::CorruptedState(
+                "fetched link aggregate mismatch"
+            ))
+        ));
+    }
+
+    #[test]
+    fn validate_fetched_link_rejects_tree_type_aggregate_mismatch() {
+        let tree = fetched_child();
+        let link = Link::Reference {
+            hash: tree.hash_for_link(TreeType::NormalTree).unwrap(),
+            key: tree.key().to_vec(),
+            child_heights: tree.child_heights(),
+            aggregate_data: tree.aggregate_data().unwrap(),
+        };
+
+        assert!(matches!(
+            TreeNode::validate_fetched_link(&link, &tree, TreeType::ProvableSumTree, true),
+            Err(crate::Error::CorruptedState(
+                "fetched link aggregate incompatible with tree type"
+            ))
+        ));
     }
 
     #[test]
