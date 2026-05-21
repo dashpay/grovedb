@@ -117,6 +117,19 @@ pub struct OperationCost {
 }
 
 impl OperationCost {
+    fn checked_len_with_required_space(len: u32, context: &'static str) -> Result<u32, Error> {
+        len.checked_add(len.required_space() as u32)
+            .ok_or(Error::Overflow(context))
+    }
+
+    fn checked_add(left: u32, right: u32, context: &'static str) -> Result<u32, Error> {
+        left.checked_add(right).ok_or(Error::Overflow(context))
+    }
+
+    fn checked_sub(left: u32, right: u32, context: &'static str) -> Result<u32, Error> {
+        left.checked_sub(right).ok_or(Error::Overflow(context))
+    }
+
     /// Is Nothing
     pub fn is_nothing(&self) -> bool {
         self == &Self::default()
@@ -191,43 +204,63 @@ impl OperationCost {
         children_sizes: ChildrenSizesWithIsSumTree,
         storage_cost_info: Option<KeyValueStorageCost>,
     ) -> Result<(), Error> {
-        let paid_key_len = key_len + key_len.required_space() as u32;
+        let paid_key_len =
+            Self::checked_len_with_required_space(key_len, "key length required space overflow")?;
 
-        let doesnt_need_verification = storage_cost_info
-            .as_ref()
-            .map(|key_value_storage_cost| {
-                if !key_value_storage_cost.needs_value_verification {
-                    Some(
-                        key_value_storage_cost.value_storage_cost.added_bytes
-                            + key_value_storage_cost.value_storage_cost.replaced_bytes,
-                    )
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(None);
+        let doesnt_need_verification = match storage_cost_info.as_ref() {
+            Some(key_value_storage_cost) if !key_value_storage_cost.needs_value_verification => {
+                Some(Self::checked_add(
+                    key_value_storage_cost.value_storage_cost.added_bytes,
+                    key_value_storage_cost.value_storage_cost.replaced_bytes,
+                    "value storage cost overflow",
+                )?)
+            }
+            _ => None,
+        };
         let final_paid_value_len = if let Some(value_cost_len) = doesnt_need_verification {
             value_cost_len
         } else {
             let mut paid_value_len = value_len;
             // We need to remove the child sizes if they exist
             if let Some((in_sum_tree, left_child, right_child)) = children_sizes {
-                paid_value_len = paid_value_len.saturating_sub(2); // for the child options
+                paid_value_len =
+                    Self::checked_sub(paid_value_len, 2, "value length child option underflow")?; // for the child options
 
                 // We need to remove the costs of the children
                 if let Some((left_child_len, left_child_sum_len)) = left_child {
-                    paid_value_len = paid_value_len.saturating_sub(left_child_len);
-                    paid_value_len = paid_value_len.saturating_sub(left_child_sum_len);
+                    paid_value_len = Self::checked_sub(
+                        paid_value_len,
+                        left_child_len,
+                        "left child length underflow",
+                    )?;
+                    paid_value_len = Self::checked_sub(
+                        paid_value_len,
+                        left_child_sum_len,
+                        "left child sum length underflow",
+                    )?;
                 }
                 if let Some((right_child_len, right_child_sum_len)) = right_child {
-                    paid_value_len = paid_value_len.saturating_sub(right_child_len);
-                    paid_value_len = paid_value_len.saturating_sub(right_child_sum_len);
+                    paid_value_len = Self::checked_sub(
+                        paid_value_len,
+                        right_child_len,
+                        "right child length underflow",
+                    )?;
+                    paid_value_len = Self::checked_sub(
+                        paid_value_len,
+                        right_child_sum_len,
+                        "right child sum length underflow",
+                    )?;
                 }
 
                 let sum_tree_node_size = if let Some((tree_cost_type, sum_tree_len)) = in_sum_tree {
                     let cost_size = tree_cost_type.cost_size();
-                    paid_value_len = paid_value_len.saturating_sub(sum_tree_len);
-                    paid_value_len += cost_size;
+                    paid_value_len = Self::checked_sub(
+                        paid_value_len,
+                        sum_tree_len,
+                        "sum tree length underflow",
+                    )?;
+                    paid_value_len =
+                        Self::checked_add(paid_value_len, cost_size, "sum tree cost overflow")?;
                     cost_size
                 } else {
                     0
@@ -235,7 +268,10 @@ impl OperationCost {
 
                 // This is the moment we need to add the required space (after removing
                 // children) but before adding the parent to child hook
-                paid_value_len += paid_value_len.required_space() as u32;
+                paid_value_len = Self::checked_len_with_required_space(
+                    paid_value_len,
+                    "value length required space overflow",
+                )?;
 
                 // Now we are the parent to child hook
 
@@ -244,9 +280,22 @@ impl OperationCost {
                 // So we need to remove it and then add a hash length
                 // For the parent ref + 4 (2 for child sizes, 1 for key_len, 1 for sum option)
 
-                paid_value_len += key_len + 4 + sum_tree_node_size;
+                let parent_hook_len = Self::checked_add(key_len, 4, "parent hook length overflow")?;
+                let parent_hook_len = Self::checked_add(
+                    parent_hook_len,
+                    sum_tree_node_size,
+                    "parent hook sum size overflow",
+                )?;
+                paid_value_len = Self::checked_add(
+                    paid_value_len,
+                    parent_hook_len,
+                    "parent hook value length overflow",
+                )?;
             } else {
-                paid_value_len += paid_value_len.required_space() as u32;
+                paid_value_len = Self::checked_len_with_required_space(
+                    paid_value_len,
+                    "value length required space overflow",
+                )?;
             }
             paid_value_len
         };

@@ -479,6 +479,31 @@ fn required_item_space_matches_manual_formula() {
     assert_eq!(required, expected);
 }
 
+#[test]
+fn required_space_helpers_reject_u32_overflow() {
+    let grove_version = GroveVersion::latest();
+
+    let item_err = Element::required_item_space(u32::MAX, 0, grove_version).unwrap_err();
+    assert!(matches!(
+        item_err,
+        ElementError::Overflow("required_item_space")
+    ));
+
+    let item_with_sum_err =
+        Element::required_item_with_sum_item_space(u32::MAX, 0, grove_version).unwrap_err();
+    assert!(matches!(
+        item_with_sum_err,
+        ElementError::Overflow("required_item_with_sum_item_space")
+    ));
+
+    let reference_with_sum_err =
+        Element::required_reference_with_sum_item_space(u32::MAX, 0, grove_version).unwrap_err();
+    assert!(matches!(
+        reference_with_sum_err,
+        ElementError::Overflow("required_reference_with_sum_item_space")
+    ));
+}
+
 /// Exercise the `check_grovedb_v0!` mismatch arm for both new helpers
 /// so the macro-expanded error path is covered. The helpers only know
 /// version `0`; flipping the version field to `1` must return a

@@ -419,12 +419,16 @@ where
                     {
                         let costs = if self.merk_type == StandaloneMerk {
                             // if we are a standalone merk we want real costs
-                            Some(KeyValueStorageCost::for_updated_root_cost(
-                                key_updates
-                                    .updated_root_key_from
-                                    .as_ref()
-                                    .map(|k| k.len() as u32),
-                                tree_key.len() as u32,
+                            Some(cost_return_on_error_no_add!(
+                                inner_cost,
+                                KeyValueStorageCost::for_updated_root_cost(
+                                    key_updates
+                                        .updated_root_key_from
+                                        .as_ref()
+                                        .map(|k| k.len() as u32),
+                                    tree_key.len() as u32,
+                                )
+                                .map_err(Error::CostsError)
                             ))
                         } else {
                             // if we are a base merk we estimate these costs are free

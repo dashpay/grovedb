@@ -11,6 +11,17 @@ use crate::{
 };
 
 impl Element {
+    fn checked_required_space_sum(
+        context: &'static str,
+        parts: impl IntoIterator<Item = u32>,
+    ) -> Result<u32, ElementError> {
+        parts.into_iter().try_fold(0u32, |total, part| {
+            total
+                .checked_add(part)
+                .ok_or(ElementError::Overflow(context))
+        })
+    }
+
     /// Returns `true` if this element is wrapped in `Element::NonCounted`.
     /// The wrapper suppresses count propagation to the parent count tree but
     /// leaves all other behavior (storage, hashing, sum propagation, internal
@@ -619,7 +630,16 @@ impl Element {
             "required_item_space",
             grove_version.grovedb_versions.element.required_item_space
         );
-        Ok(len + len.required_space() as u32 + flag_len + flag_len.required_space() as u32 + 1)
+        Self::checked_required_space_sum(
+            "required_item_space",
+            [
+                len,
+                len.required_space() as u32,
+                flag_len,
+                flag_len.required_space() as u32,
+                1,
+            ],
+        )
     }
 
     /// Worst-case serialized-storage cost of an
@@ -644,12 +664,16 @@ impl Element {
                 .element
                 .required_item_with_sum_item_space
         );
-        Ok(
-            len + len.required_space() as u32
-                + flag_len
-                + flag_len.required_space() as u32
-                + 10
-                + 1,
+        Self::checked_required_space_sum(
+            "required_item_with_sum_item_space",
+            [
+                len,
+                len.required_space() as u32,
+                flag_len,
+                flag_len.required_space() as u32,
+                10,
+                1,
+            ],
         )
     }
 
@@ -678,12 +702,17 @@ impl Element {
                 .element
                 .required_reference_with_sum_item_space
         );
-        Ok(path_len
-            + path_len.required_space() as u32
-            + flag_len
-            + flag_len.required_space() as u32
-            + 10
-            + 1)
+        Self::checked_required_space_sum(
+            "required_reference_with_sum_item_space",
+            [
+                path_len,
+                path_len.required_space() as u32,
+                flag_len,
+                flag_len.required_space() as u32,
+                10,
+                1,
+            ],
+        )
     }
 
     /// Convert the reference to an absolute reference. Looks through a

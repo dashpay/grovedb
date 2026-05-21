@@ -2907,6 +2907,14 @@ where
                                 // in `merk/src/element/costs.rs`).
                                 let wrapper_overhead =
                                     if new_element.is_wrapped() { 1u32 } else { 0 };
+                                let checked_value_defined_cost =
+                                    |parts: &[u32]| -> Result<u32, MerkError> {
+                                        parts.iter().try_fold(0u32, |total, part| {
+                                            total.checked_add(*part).ok_or(MerkError::Overflow(
+                                                "value defined cost overflow",
+                                            ))
+                                        })
+                                    };
                                 match new_element.underlying() {
                                     Element::Tree(..)
                                     | Element::SumTree(..)
@@ -2925,17 +2933,21 @@ where
                                             .tree_type()
                                             .expect("tree_type guaranteed by match arm");
                                         let tree_cost_size = tree_type.cost_size();
-                                        let tree_value_cost = tree_cost_size
-                                            + flags_len
-                                            + flags_len.required_space() as u32
-                                            + wrapper_overhead;
+                                        let tree_value_cost = checked_value_defined_cost(&[
+                                            tree_cost_size,
+                                            flags_len,
+                                            flags_len.required_space() as u32,
+                                            wrapper_overhead,
+                                        ])?;
                                         Ok((true, Some(LayeredValueDefinedCost(tree_value_cost))))
                                     }
                                     Element::SumItem(..) => {
-                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
-                                            + flags_len
-                                            + flags_len.required_space() as u32
-                                            + wrapper_overhead;
+                                        let sum_item_value_cost = checked_value_defined_cost(&[
+                                            SUM_ITEM_COST_SIZE,
+                                            flags_len,
+                                            flags_len.required_space() as u32,
+                                            wrapper_overhead,
+                                        ])?;
                                         Ok((
                                             true,
                                             Some(SpecializedValueDefinedCost(sum_item_value_cost)),
@@ -2943,12 +2955,14 @@ where
                                     }
                                     Element::ItemWithSumItem(item_value, ..) => {
                                         let item_len = item_value.len() as u32;
-                                        let sum_item_value_cost = SUM_ITEM_COST_SIZE
-                                            + flags_len
-                                            + flags_len.required_space() as u32
-                                            + item_len
-                                            + item_len.required_space() as u32
-                                            + wrapper_overhead;
+                                        let sum_item_value_cost = checked_value_defined_cost(&[
+                                            SUM_ITEM_COST_SIZE,
+                                            flags_len,
+                                            flags_len.required_space() as u32,
+                                            item_len,
+                                            item_len.required_space() as u32,
+                                            wrapper_overhead,
+                                        ])?;
                                         Ok((
                                             true,
                                             Some(SpecializedValueDefinedCost(sum_item_value_cost)),

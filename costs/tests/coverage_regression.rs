@@ -162,6 +162,7 @@ fn add_key_value_storage_costs_respects_verification_flags_and_errors() {
             assert_eq!(expected.added_bytes, paid_key_len + 1);
             assert_eq!(actual_total_bytes, paid_key_len);
         }
+        other => panic!("expected StorageCostMismatch, got {other:?}"),
     }
 
     let mut update_node = OperationCost::default();
@@ -497,12 +498,12 @@ fn storage_cost_verify_and_transition_paths() {
 
 #[test]
 fn key_value_storage_cost_paths_are_exercised() {
-    let insert = KeyValueStorageCost::for_updated_root_cost(None, 20);
+    let insert = KeyValueStorageCost::for_updated_root_cost(None, 20).unwrap();
     assert!(insert.new_node);
     assert_eq!(insert.key_storage_cost.added_bytes, 34);
     assert_eq!(insert.value_storage_cost.added_bytes, 21);
 
-    let less = KeyValueStorageCost::for_updated_root_cost(Some(20), 10);
+    let less = KeyValueStorageCost::for_updated_root_cost(Some(20), 10).unwrap();
     assert!(!less.new_node);
     assert_eq!(less.key_storage_cost.replaced_bytes, 34);
     assert_eq!(less.value_storage_cost.added_bytes, 0);
@@ -512,11 +513,11 @@ fn key_value_storage_cost_paths_are_exercised() {
         BasicStorageRemoval(10)
     );
 
-    let equal = KeyValueStorageCost::for_updated_root_cost(Some(10), 10);
+    let equal = KeyValueStorageCost::for_updated_root_cost(Some(10), 10).unwrap();
     assert_eq!(equal.value_storage_cost.replaced_bytes, 11);
     assert_eq!(equal.value_storage_cost.removed_bytes, NoStorageRemoval);
 
-    let greater = KeyValueStorageCost::for_updated_root_cost(Some(10), 20);
+    let greater = KeyValueStorageCost::for_updated_root_cost(Some(10), 20).unwrap();
     assert_eq!(greater.value_storage_cost.added_bytes, 10);
     assert_eq!(greater.value_storage_cost.replaced_bytes, 11);
 
@@ -574,6 +575,36 @@ fn key_value_storage_cost_paths_are_exercised() {
 
     a += b;
     assert!(a == sum);
+}
+
+#[test]
+fn checked_storage_cost_arithmetic_rejects_overflow() {
+    let err = StorageCost {
+        added_bytes: u32::MAX,
+        replaced_bytes: 1,
+        removed_bytes: NoStorageRemoval,
+    }
+    .verify(0)
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Overflow("storage cost verify overflow")
+    ));
+
+    let err = KeyValueStorageCost::for_updated_root_cost(None, u32::MAX).unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Overflow("root key length required space overflow")
+    ));
+
+    let mut cost = OperationCost::default();
+    let err = cost
+        .add_key_value_storage_costs(1, 1, Some((None, None, None)), None)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Overflow("value length child option underflow")
+    ));
 }
 
 #[test]

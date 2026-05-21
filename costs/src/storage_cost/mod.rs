@@ -74,7 +74,11 @@ impl AddAssign for StorageCost {
 impl StorageCost {
     /// Verify that the len of the item matches the given storage_cost cost
     pub fn verify(&self, len: u32) -> Result<(), Error> {
-        if self.added_bytes + self.replaced_bytes == len {
+        let total_bytes = self
+            .added_bytes
+            .checked_add(self.replaced_bytes)
+            .ok_or(Error::Overflow("storage cost verify overflow"))?;
+        if total_bytes == len {
             Ok(())
         } else {
             Err(Error::StorageCostMismatch {

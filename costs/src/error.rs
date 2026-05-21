@@ -31,6 +31,10 @@ use crate::StorageCost;
 /// An Error coming from costs
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Arithmetic overflow
+    #[error("overflow error: {0}")]
+    Overflow(&'static str),
+
     /// Storage Cost Value mismatch
     #[error("storage_cost cost mismatch added: {0} replaced: {1} actual:{actual_total_bytes}",
         expected.added_bytes, expected.replaced_bytes)]

@@ -12,6 +12,10 @@ pub enum ElementError {
     /// Invalid input
     InvalidInput(&'static str),
 
+    #[error("overflow error: {0}")]
+    /// Arithmetic overflow
+    Overflow(&'static str),
+
     /// The corrupted path represents a consistency error in internal groveDB
     /// logic
     #[error("corrupted path: {0}")]

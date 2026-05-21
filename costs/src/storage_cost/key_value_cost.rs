@@ -34,12 +34,13 @@ use std::{
 use integer_encoding::VarInt;
 
 use crate::{
+    error::Error,
     storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
     BasicStorageRemoval, StorageRemovedBytes,
 };
 
 /// Storage only operation costs separated by key and value
-#[derive(PartialEq, Clone, Eq, Default)]
+#[derive(Debug, PartialEq, Clone, Eq, Default)]
 pub struct KeyValueStorageCost {
     /// Key storage_cost costs
     pub key_storage_cost: StorageCost,
@@ -54,22 +55,34 @@ pub struct KeyValueStorageCost {
 impl KeyValueStorageCost {
     /// Convenience method for getting the cost of updating the key of the root
     /// of each merk
-    pub fn for_updated_root_cost(old_tree_key_len: Option<u32>, tree_key_len: u32) -> Self {
+    pub fn for_updated_root_cost(
+        old_tree_key_len: Option<u32>,
+        tree_key_len: u32,
+    ) -> Result<Self, Error> {
+        fn with_required_space(len: u32) -> Result<u32, Error> {
+            len.checked_add(len.required_space() as u32)
+                .ok_or(Error::Overflow("root key length required space overflow"))
+        }
+
         if let Some(old_tree_key_len) = old_tree_key_len {
             let key_storage_cost = StorageCost {
                 added_bytes: 0,
                 replaced_bytes: 34, // prefix + 1 for 'r' + 1 required space
                 removed_bytes: NoStorageRemoval,
             };
-            let new_bytes = tree_key_len + tree_key_len.required_space() as u32;
+            let new_bytes = with_required_space(tree_key_len)?;
             let value_storage_cost = match tree_key_len.cmp(&old_tree_key_len) {
                 Ordering::Less => {
                     // we removed bytes
-                    let old_bytes = old_tree_key_len + old_tree_key_len.required_space() as u32;
+                    let old_bytes = with_required_space(old_tree_key_len)?;
                     StorageCost {
                         added_bytes: 0,
                         replaced_bytes: new_bytes,
-                        removed_bytes: BasicStorageRemoval(old_bytes - new_bytes),
+                        removed_bytes: BasicStorageRemoval(
+                            old_bytes
+                                .checked_sub(new_bytes)
+                                .ok_or(Error::Overflow("root key removed bytes underflow"))?,
+                        ),
                     }
                 }
                 Ordering::Equal => StorageCost {
@@ -78,35 +91,37 @@ impl KeyValueStorageCost {
                     removed_bytes: NoStorageRemoval,
                 },
                 Ordering::Greater => {
-                    let old_bytes = old_tree_key_len + old_tree_key_len.required_space() as u32;
+                    let old_bytes = with_required_space(old_tree_key_len)?;
                     StorageCost {
-                        added_bytes: new_bytes - old_bytes,
+                        added_bytes: new_bytes
+                            .checked_sub(old_bytes)
+                            .ok_or(Error::Overflow("root key added bytes underflow"))?,
                         replaced_bytes: old_bytes,
                         removed_bytes: NoStorageRemoval,
                     }
                 }
             };
-            KeyValueStorageCost {
+            Ok(KeyValueStorageCost {
                 key_storage_cost,
                 value_storage_cost,
                 new_node: false,
                 needs_value_verification: false,
-            }
+            })
         } else {
-            KeyValueStorageCost {
+            Ok(KeyValueStorageCost {
                 key_storage_cost: StorageCost {
                     added_bytes: 34, // prefix + 1 for 'r' + 1 required space
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 value_storage_cost: StorageCost {
-                    added_bytes: tree_key_len + tree_key_len.required_space() as u32,
+                    added_bytes: with_required_space(tree_key_len)?,
                     replaced_bytes: 0,
                     removed_bytes: NoStorageRemoval,
                 },
                 new_node: true,
                 needs_value_verification: false,
-            }
+            })
         }
     }
 
