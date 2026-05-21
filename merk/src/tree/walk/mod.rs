@@ -18,7 +18,7 @@ use grovedb_version::version::GroveVersion;
 pub use ref_walker::RefWalker;
 
 #[cfg(feature = "minimal")]
-use super::{Link, TreeNode};
+use super::TreeNode;
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::{owner::Owner, tree::tree_feature_type::TreeFeatureType, CryptoHash, Error};
@@ -430,6 +430,7 @@ mod test {
     use crate::{
         tree::{TreeFeatureType::BasicMerkNode, TreeNode},
         tree_type::TreeType,
+        Link,
     };
 
     #[derive(Clone)]
