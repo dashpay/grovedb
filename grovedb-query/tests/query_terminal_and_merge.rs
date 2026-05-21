@@ -141,6 +141,20 @@ fn terminal_keys_error_paths_are_reported() {
         .terminal_keys(vec![], 10, &mut out)
         .expect_err("must fail on empty subquery path");
     assert!(matches!(err, Error::CorruptedCodeExecution(_)));
+
+    let mut out = vec![];
+    let err = Query::new_single_key(k(1))
+        .terminal_keys_for_version(vec![], 10, &mut out, 2)
+        .expect_err("must fail on unsupported terminal-key version");
+    assert!(matches!(err, Error::NotSupported(_)));
+
+    let mut exceeding_subquery_path = Query::new_single_key(k(1));
+    exceeding_subquery_path.set_subquery_path(vec![k(2)]);
+    let mut out = vec![(vec![], k(0))];
+    let err = exceeding_subquery_path
+        .terminal_keys(vec![], 1, &mut out)
+        .expect_err("must fail when subquery path result would exceed limit");
+    assert!(matches!(err, Error::RequestAmountExceeded(_)));
 }
 
 #[test]
@@ -157,6 +171,53 @@ fn terminal_keys_rejects_excessive_nesting_depth() {
         .terminal_keys(vec![], 1000, &mut out)
         .expect_err("must fail on excessive depth");
     assert!(matches!(err, Error::NotSupported(_)));
+}
+
+#[test]
+fn terminal_keys_legacy_conditional_subquery_skips_duplicate_item_key() {
+    let mut query = Query::new_single_key(k(1));
+    query.add_conditional_subquery(
+        QueryItem::Key(k(1)),
+        None,
+        Some(Query::new_single_key(k(2))),
+    );
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_for_version(vec![], 10, &mut result, 0)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![k(1)], k(2))]);
+}
+
+#[test]
+fn terminal_keys_legacy_default_branch_recurses_with_subquery_path() {
+    let mut query = Query::new_single_key(k(1));
+    query.set_subquery_path(vec![k(2)]);
+    query.set_subquery(Query::new_single_key(k(3)));
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_for_version(vec![], 10, &mut result, 0)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![k(1), k(2)], k(3))]);
+}
+
+#[test]
+fn terminal_keys_legacy_default_branch_recurses_without_subquery_path() {
+    let mut query = Query::new_single_key(k(4));
+    query.set_subquery(Query::new_single_key(k(5)));
+
+    let mut result = vec![];
+    let added = query
+        .terminal_keys_for_version(vec![], 10, &mut result, 0)
+        .expect("terminal keys");
+
+    assert_eq!(added, 1);
+    assert_eq!(result, vec![(vec![k(4)], k(5))]);
 }
 
 #[test]

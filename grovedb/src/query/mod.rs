@@ -3024,6 +3024,21 @@ mod tests {
         assert!(!result.unwrap());
     }
 
+    #[test]
+    fn path_query_terminal_keys_uses_versioned_terminal_keys() {
+        let grove_version = GroveVersion::latest();
+        let path_query = PathQuery::new_unsized(
+            vec![b"root".to_vec()],
+            Query::new_single_key(b"leaf".to_vec()),
+        );
+
+        let keys = path_query
+            .terminal_keys(10, grove_version)
+            .expect("terminal keys");
+
+        assert_eq!(keys, vec![(vec![b"root".to_vec()], b"leaf".to_vec())]);
+    }
+
     // ---------- SizedQuery / PathQuery AggregateCountOnRange validation ----------
 
     #[test]
