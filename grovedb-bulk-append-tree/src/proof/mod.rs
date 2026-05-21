@@ -405,25 +405,13 @@ impl BulkAppendTreeProof {
 
         if validate_completed_chunk_lengths {
             for (chunk_idx, blob) in &chunk_blobs {
-                if *chunk_idx >= completed_chunks {
-                    return Err(BulkAppendError::InvalidProof(format!(
-                        "chunk {} is out of range for {} completed chunks",
-                        chunk_idx, completed_chunks
-                    )));
-                }
-
                 let entries = deserialize_chunk_blob(blob).map_err(|e| {
                     BulkAppendError::CorruptedData(format!(
                         "failed to deserialize chunk blob {}: {}",
                         chunk_idx, e
                     ))
                 })?;
-                let entry_count = u64::try_from(entries.len()).map_err(|_| {
-                    BulkAppendError::InvalidProof(format!(
-                        "chunk {} entry count does not fit in u64",
-                        chunk_idx
-                    ))
-                })?;
+                let entry_count = entries.len() as u64;
                 if entry_count != chunk_item_count {
                     return Err(BulkAppendError::InvalidProof(format!(
                         "chunk {} contains {} entries, expected {}",

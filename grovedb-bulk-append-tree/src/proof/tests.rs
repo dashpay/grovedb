@@ -517,6 +517,27 @@ mod proof_tests {
     }
 
     #[test]
+    fn test_verify_compute_root_rejects_malformed_completed_chunk_blob() {
+        let height = 2u8;
+        let total_count = 4u64;
+        let malformed_blob = vec![0xff];
+
+        let proof = BulkAppendTreeProof {
+            chunk_proof: MmrTreeProof::new(1, vec![(0, malformed_blob)], vec![]),
+            buffer_proof: DenseTreeProof {
+                entries: Vec::new(),
+                node_value_hashes: Vec::new(),
+                node_hashes: Vec::new(),
+            },
+        };
+
+        let err = proof
+            .verify_and_compute_root(height, total_count)
+            .expect_err("malformed completed chunk blob must fail");
+        assert!(matches!(err, BulkAppendError::CorruptedData(_)));
+    }
+
+    #[test]
     fn test_verify_compute_root_legacy_version_accepts_short_completed_chunk_blob() {
         let height = 2u8;
         let total_count = 4u64;
