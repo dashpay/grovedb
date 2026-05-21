@@ -130,7 +130,7 @@ impl GroveDb {
             .validate_leaf_aggregate_count_and_sum_on_range()?
             .clone();
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
         let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
@@ -188,7 +188,7 @@ impl GroveDb {
         let classification =
             classification::classify_aggregate_count_and_sum_path_query(path_query)?;
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
         let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;

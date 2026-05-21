@@ -1668,7 +1668,7 @@ mod tests {
     }
 
     /// Unparsable envelope bytes → bincode-decode rejection arm in
-    /// `verify_aggregate_count_and_sum_query` (`decode_grovedb_proof_canonical`).
+    /// `verify_aggregate_count_and_sum_query` (`decode_grovedb_proof_versioned`).
     #[test]
     fn combined_unparsable_envelope_is_rejected() {
         use crate::tests::TEST_LEAF;

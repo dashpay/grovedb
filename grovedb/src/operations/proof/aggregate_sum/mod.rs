@@ -116,7 +116,7 @@ impl GroveDb {
         // use `verify_aggregate_sum_query_per_key` instead.
         let inner_range = path_query.validate_leaf_aggregate_sum_on_range()?.clone();
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
         let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;
@@ -187,7 +187,7 @@ impl GroveDb {
         // descent below is skipped (carrier_outer_items is None).
         let classification = classification::classify_aggregate_sum_path_query(path_query)?;
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
         let path_keys: Vec<&[u8]> = path_query.path.iter().map(|p| p.as_slice()).collect();
 
         let root_layer = require_v1_envelope(&grovedb_proof, path_query)?;

@@ -60,7 +60,7 @@ impl GroveDb {
         // (verify_query_with_options, verify_query_raw,
         // verify_query_get_parent_tree_info_with_options).
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
 
         let (root_hash, _, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -104,7 +104,7 @@ impl GroveDb {
             ));
         }
 
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
 
         let (root_hash, tree_feature_type, result) =
             Self::verify_proof_internal(&grovedb_proof, query, options, grove_version)?;
@@ -132,7 +132,7 @@ impl GroveDb {
                 .proof
                 .verify_query_raw
         );
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
 
         let (root_hash, _, result) = Self::verify_proof_raw_internal(
             &grovedb_proof,
@@ -2221,7 +2221,7 @@ impl GroveDb {
         query: &PathTrunkChunkQuery,
         grove_version: &GroveVersion,
     ) -> Result<(CryptoHash, GroveTrunkQueryResult), Error> {
-        let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
+        let grovedb_proof = super::decode_grovedb_proof_versioned(proof, grove_version)?;
 
         match grovedb_proof {
             GroveDBProof::V0(proof_v0) => {

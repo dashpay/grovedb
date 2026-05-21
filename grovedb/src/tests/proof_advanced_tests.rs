@@ -320,7 +320,7 @@ mod tests {
     ///
     /// `GroveDb::verify_query` (and its siblings `verify_query_raw`,
     /// `verify_query_with_options`, `verify_trunk_chunk_proof`) all
-    /// route through `decode_grovedb_proof_canonical`, which rejects
+    /// route through `decode_grovedb_proof_versioned`, which rejects
     /// any trailing bytes beyond the encoded envelope. Without this,
     /// the same logical proof would have many distinct byte encodings
     /// (a proof and the same proof with arbitrary suffix bytes), all
@@ -374,6 +374,42 @@ mod tests {
             }
             other => panic!("expected CorruptedData, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn verify_query_legacy_version_accepts_proof_with_trailing_bytes() {
+        let mut legacy_version = GroveVersion::latest().clone();
+        legacy_version
+            .grovedb_versions
+            .operations
+            .proof
+            .decode_rejects_trailing_bytes = 0;
+        let grove_version = &legacy_version;
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"k",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert");
+
+        let mut query = Query::new();
+        query.insert_all();
+        let path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], query);
+
+        let mut proof = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("prove_query");
+        proof.push(0u8);
+
+        GroveDb::verify_query(&proof, &path_query, grove_version)
+            .expect("legacy proof decoding should ignore trailing bytes");
     }
 
     #[test]
