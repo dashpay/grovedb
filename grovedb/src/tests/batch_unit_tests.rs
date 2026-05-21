@@ -618,27 +618,6 @@ mod tests {
     }
 
     #[test]
-    fn test_consistency_append_keyed_conflict_legacy_version_allows() {
-        let ops = vec![
-            QualifiedGroveDbOp::mmr_tree_append_op(
-                vec![b"root".to_vec(), b"tree_key".to_vec()],
-                b"data".to_vec(),
-            ),
-            QualifiedGroveDbOp::insert_or_replace_op(
-                vec![b"root".to_vec()],
-                b"tree_key".to_vec(),
-                Element::new_item(b"value".to_vec()),
-            ),
-        ];
-
-        let results = QualifiedGroveDbOp::verify_consistency_of_operations_for_version(&ops, 0);
-        assert!(
-            results.is_empty(),
-            "legacy consistency check should not flag append + keyed conflicts"
-        );
-    }
-
-    #[test]
     fn test_batch_append_keyed_conflict_leaves_root_unchanged() {
         let grove_version = GroveVersion::latest();
         let db = make_empty_grovedb();

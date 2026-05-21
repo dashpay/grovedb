@@ -67,10 +67,7 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::{
     rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
 };
-use grovedb_version::{
-    check_grovedb_v0_with_cost,
-    version::{FeatureVersion, GroveVersion},
-};
+use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 use grovedb_visualize::{Drawer, Visualize};
 use integer_encoding::VarInt;
 use itertools::Itertools;
@@ -1113,15 +1110,6 @@ impl QualifiedGroveDbOp {
     pub fn verify_consistency_of_operations(
         ops: &[QualifiedGroveDbOp],
     ) -> GroveDbOpConsistencyResults {
-        Self::verify_consistency_of_operations_for_version(ops, 1)
-    }
-
-    /// Verify consistency of operations for a specific apply-batch feature
-    /// version.
-    pub fn verify_consistency_of_operations_for_version(
-        ops: &[QualifiedGroveDbOp],
-        validate_append_conflicts_with_keyed_operations: FeatureVersion,
-    ) -> GroveDbOpConsistencyResults {
         // Reject internal-only ops that should never appear in user-submitted
         // batches. These are produced by preprocessing or propagation only.
         let internal_only_ops: Vec<(QualifiedGroveDbOp, u16)> = ops
@@ -1177,7 +1165,7 @@ impl QualifiedGroveDbOp {
         }
 
         let mut append_keyed_conflicts = vec![];
-        if validate_append_conflicts_with_keyed_operations > 0 {
+        {
             // Detect conflicts between keyless append ops and keyed ops
             // targeting the same tree element. Keyless ops encode the tree as
             // the last path segment; keyed ops use (parent_path, key).
@@ -4042,14 +4030,7 @@ impl GroveDb {
             .unwrap_or(true);
 
         if check_batch_operation_consistency {
-            let consistency_result =
-                QualifiedGroveDbOp::verify_consistency_of_operations_for_version(
-                    &ops,
-                    grove_version
-                        .grovedb_versions
-                        .apply_batch
-                        .validate_append_conflicts_with_keyed_operations,
-                );
+            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -4420,14 +4401,7 @@ impl GroveDb {
             .unwrap_or(true);
 
         if check_batch_operation_consistency {
-            let consistency_result =
-                QualifiedGroveDbOp::verify_consistency_of_operations_for_version(
-                    &ops,
-                    grove_version
-                        .grovedb_versions
-                        .apply_batch
-                        .validate_append_conflicts_with_keyed_operations,
-                );
+            let consistency_result = QualifiedGroveDbOp::verify_consistency_of_operations(&ops);
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "batch operations fail consistency checks",
@@ -4683,13 +4657,7 @@ impl GroveDb {
         // must be extended to cover new_operations as well.
         if check_batch_operation_consistency && !new_operations.is_empty() {
             let consistency_result =
-                QualifiedGroveDbOp::verify_consistency_of_operations_for_version(
-                    &new_operations,
-                    grove_version
-                        .grovedb_versions
-                        .apply_batch
-                        .validate_append_conflicts_with_keyed_operations,
-                );
+                QualifiedGroveDbOp::verify_consistency_of_operations(&new_operations);
             if !consistency_result.is_empty() {
                 return Err(Error::InvalidBatchOperation(
                     "add-on operations from callback fail consistency checks",

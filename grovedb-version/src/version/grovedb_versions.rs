@@ -50,7 +50,6 @@ pub struct GroveDBApplyBatchVersions {
     pub apply_batch_with_element_flags_update: FeatureVersion,
     pub apply_partial_batch_with_element_flags_update: FeatureVersion,
     pub estimated_case_operations_for_batch: FeatureVersion,
-    pub validate_append_conflicts_with_keyed_operations: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
