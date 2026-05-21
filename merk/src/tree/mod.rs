@@ -1460,6 +1460,7 @@ impl TreeNode {
         link: &Link,
         tree: &Self,
         tree_type: TreeType,
+        validate_child_heights: bool,
     ) -> Result<(), Error> {
         if tree.key() != link.key() {
             return Err(Error::CorruptedState("fetched link key mismatch"));
@@ -1474,7 +1475,7 @@ impl TreeNode {
                 ));
             }
         };
-        if tree.child_heights() != expected_child_heights {
+        if validate_child_heights && tree.child_heights() != expected_child_heights {
             return Err(Error::CorruptedState("fetched link child heights mismatch"));
         }
         let aggregate_data = tree.aggregate_data()?;
@@ -1555,7 +1556,12 @@ impl TreeNode {
         );
         cost_return_on_error_no_add!(
             cost,
-            Self::validate_fetched_link(link, &tree, source.tree_type())
+            Self::validate_fetched_link(
+                link,
+                &tree,
+                source.tree_type(),
+                source.validate_fetched_link_child_heights(),
+            )
         );
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,

@@ -90,7 +90,12 @@ where
             );
             cost_return_on_error_no_add!(
                 cost,
-                TreeNode::validate_fetched_link(&link, &child, self.source.tree_type())
+                TreeNode::validate_fetched_link(
+                    &link,
+                    &child,
+                    self.source.tree_type(),
+                    self.source.validate_fetched_link_child_heights(),
+                )
             );
             child
         };
@@ -586,6 +591,10 @@ mod test {
     }
 
     fn tree_with_pruned_child() -> TreeNode {
+        tree_with_pruned_child_heights(None)
+    }
+
+    fn tree_with_pruned_child_heights(child_heights: Option<(u8, u8)>) -> TreeNode {
         let child = TreeNode::new(b"foo".to_vec(), b"bar".to_vec(), None, BasicMerkNode).unwrap();
         TreeNode::from_fields(
             b"test".to_vec(),
@@ -594,13 +603,37 @@ mod test {
             Some(Link::Reference {
                 hash: child.hash_for_link(TreeType::NormalTree).unwrap(),
                 key: b"foo".to_vec(),
-                child_heights: child.child_heights(),
+                child_heights: child_heights.unwrap_or_else(|| child.child_heights()),
                 aggregate_data: child.aggregate_data().unwrap(),
             }),
             None,
             BasicMerkNode,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn walk_pruned_rejects_wrong_fetched_child_heights() {
+        let grove_version = GroveVersion::latest();
+        let walker = Walker::new(tree_with_pruned_child_heights(Some((1, 0))), MockSource {});
+
+        let result = walker
+            .walk_expect(
+                true,
+                |_| -> CostResult<Option<TreeNode>, Error> {
+                    panic!("validation should fail before callback")
+                },
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap();
+        let Err(err) = result else {
+            panic!("wrong fetched child heights should fail");
+        };
+        assert!(matches!(
+            err,
+            Error::CorruptedState("fetched link child heights mismatch")
+        ));
     }
 
     #[test]

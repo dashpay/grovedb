@@ -599,7 +599,10 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                 .ok_or(Error::ChunkRestoringError(ChunkError::InternalError(
                     "tree is None in rewrite_heights",
                 )))?;
-        let walker = RefWalker::new(&mut tree, self.merk.source());
+        let walker = RefWalker::new(
+            &mut tree,
+            self.merk.source_without_child_height_validation(),
+        );
 
         rewrite_child_heights(walker, &mut batch, grove_version)?;
 

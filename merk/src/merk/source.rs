@@ -16,6 +16,15 @@ where
         MerkSource {
             storage: &self.storage,
             tree_type: self.tree_type,
+            validate_child_heights: true,
+        }
+    }
+
+    pub(in crate::merk) fn source_without_child_height_validation(&self) -> MerkSource<'_, S> {
+        MerkSource {
+            storage: &self.storage,
+            tree_type: self.tree_type,
+            validate_child_heights: false,
         }
     }
 }
@@ -25,6 +34,7 @@ where
 pub struct MerkSource<'s, S> {
     storage: &'s S,
     tree_type: TreeType,
+    validate_child_heights: bool,
 }
 
 impl<S> Clone for MerkSource<'_, S> {
@@ -32,6 +42,7 @@ impl<S> Clone for MerkSource<'_, S> {
         MerkSource {
             storage: self.storage,
             tree_type: self.tree_type,
+            validate_child_heights: self.validate_child_heights,
         }
     }
 }
@@ -42,6 +53,10 @@ where
 {
     fn tree_type(&self) -> TreeType {
         self.tree_type
+    }
+
+    fn validate_fetched_link_child_heights(&self) -> bool {
+        self.validate_child_heights
     }
 
     fn fetch(

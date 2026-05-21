@@ -21,6 +21,12 @@ pub trait Fetch {
     /// The tree type used to validate fetched links.
     fn tree_type(&self) -> TreeType;
 
+    /// Whether fetched children must match the child-height metadata stored on
+    /// the pruned link.
+    fn validate_fetched_link_child_heights(&self) -> bool {
+        true
+    }
+
     /// Called when the tree needs to fetch a node with the given `Link`. The
     /// `link` value will always be a `Link::Reference` variant.
     fn fetch(
