@@ -2,7 +2,9 @@
 //! Implements serialization functions in Element
 
 use bincode::config;
-use grovedb_version::{check_grovedb_v0, version::GroveVersion};
+use grovedb_version::{
+    check_grovedb_v0, check_grovedb_v0_or_v1, error::GroveVersionError, version::GroveVersion,
+};
 
 use crate::{
     element::Element,
@@ -100,7 +102,7 @@ impl Element {
     /// the three wrapper discriminants (15 NonCounted, 16 NotSummed,
     /// 17 NotCountedOrSummed) — nine in total.
     pub fn deserialize(bytes: &[u8], grove_version: &GroveVersion) -> Result<Self, ElementError> {
-        check_grovedb_v0!(
+        let deserialize_version = check_grovedb_v0_or_v1!(
             "Element::deserialize",
             grove_version.grovedb_versions.element.deserialize
         );
@@ -130,7 +132,7 @@ impl Element {
             .map_err(|e| {
                 ElementError::CorruptedData(format!("unable to deserialize element {}", e))
             })?;
-        if consumed != bytes.len() {
+        if deserialize_version > 0 && consumed != bytes.len() {
             return Err(ElementError::CorruptedData(format!(
                 "element deserialization did not consume all bytes: consumed {}, total {}",
                 consumed,
@@ -342,5 +344,20 @@ mod tests {
                 "unexpected error: {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn deserialize_legacy_version_accepts_trailing_bytes() {
+        let mut legacy_version = GroveVersion::latest().clone();
+        legacy_version.grovedb_versions.element.deserialize = 0;
+        let grove_version = &legacy_version;
+
+        let element = Element::new_item(b"abc".to_vec());
+        let mut serialized = element.serialize(grove_version).expect("serialize element");
+        serialized.push(0xff);
+
+        let decoded =
+            Element::deserialize(&serialized, grove_version).expect("legacy deserialize element");
+        assert_eq!(decoded, element);
     }
 }

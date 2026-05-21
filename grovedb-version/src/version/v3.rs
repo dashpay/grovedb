@@ -73,7 +73,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             basic_aggregate_sum_push: 0,
             serialize: 0,
             serialized_size: 0,
-            deserialize: 0,
+            deserialize: 1,
             get_with_value_hash: 0,
             insert_reference_if_changed_value: 0,
             aggregate_sum_query_item: 0,
