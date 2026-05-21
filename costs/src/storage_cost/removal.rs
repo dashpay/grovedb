@@ -61,6 +61,27 @@ pub enum StorageRemovedBytes {
     SectionedStorageRemoval(StorageRemovalPerEpochByIdentifier),
 }
 
+// Version selector for the basic-into-sectioned storage-removal arithmetic.
+//
+// Why a thread-local instead of an explicit parameter: the version-sensitive
+// combination happens inside the `Add`/`AddAssign` operator overloads for
+// `StorageRemovedBytes`, which are reached through `StorageCost` and
+// `OperationCost` aggregation at hundreds of version-less call sites (every
+// `add_cost` / `cost_return_on_error!`). Those operator signatures cannot carry
+// a `grove_version`, and `grovedb-costs` does not depend on `grovedb-version`.
+// The version is only known at the GroveDB apply / delete / batch entry points,
+// which install a guard ([`use_basic_sectioned_removal_addition_version`] /
+// [`with_basic_sectioned_removal_addition_version`]) for the duration of the
+// operation.
+//
+// The default is `0` (legacy / shipped v1/v2 behavior). That default is the safe
+// one: an un-guarded caller reproduces historical behavior rather than silently
+// "upgrading" to the fixed arithmetic and diverging from the rest of the
+// network. Only an explicit guard set from a v3+ context enables the fix.
+//
+// Note: this selector only affects the three historically-buggy arms. The
+// `Sectioned += Basic` arm was always correct and bypasses the selector
+// entirely (see [`AddAssign`]).
 thread_local! {
     static BASIC_SECTIONED_REMOVAL_ADDITION_VERSION: Cell<u16> = const { Cell::new(0) };
 }
@@ -99,6 +120,10 @@ fn basic_sectioned_removal_addition_version() -> u16 {
     BASIC_SECTIONED_REMOVAL_ADDITION_VERSION.with(Cell::get)
 }
 
+/// Correct behavior: fold the basic removal into the default identifier's
+/// `UNKNOWN_EPOCH` entry while preserving the rest of the default section. Used
+/// unconditionally for the always-correct `Sectioned += Basic` arm, and for the
+/// fixed (v3+) path of the three historically-buggy arms.
 fn add_basic_removal_to_sectioned_map(
     map: &mut StorageRemovalPerEpochByIdentifier,
     removed_bytes: u32,
@@ -108,6 +133,11 @@ fn add_basic_removal_to_sectioned_map(
     epoch_map.insert(UNKNOWN_EPOCH, old_value.saturating_add(removed_bytes));
 }
 
+/// Buggy shipped (v1/v2) behavior, preserved verbatim for replay
+/// compatibility: when the default identifier already exists it is removed,
+/// mutated, and then **dropped** instead of reinserted, losing the rest of the
+/// default section. Only reachable through the legacy (v0) path of the three
+/// historically-buggy arms.
 fn legacy_add_basic_removal_to_sectioned_map(
     map: &mut StorageRemovalPerEpochByIdentifier,
     removed_bytes: u32,
@@ -127,6 +157,11 @@ fn legacy_add_basic_removal_to_sectioned_map(
     }
 }
 
+/// Version-selecting helper for the three historically-buggy arms only
+/// (Add: Basic+Sectioned, Add: Sectioned+Basic, AddAssign: Basic+=Sectioned).
+/// v0 keeps the buggy shipped behavior; v3+ uses the corrected behavior. The
+/// always-correct `Sectioned += Basic` arm must NOT use this — it calls
+/// [`add_basic_removal_to_sectioned_map`] directly.
 fn add_basic_removal_to_sectioned_map_for_current_version(
     map: &mut StorageRemovalPerEpochByIdentifier,
     removed_bytes: u32,
@@ -205,7 +240,15 @@ impl AddAssign for StorageRemovedBytes {
             SectionedStorageRemoval(smap) => match rhs {
                 NoStorageRemoval => {}
                 BasicStorageRemoval(r) => {
-                    add_basic_removal_to_sectioned_map_for_current_version(smap, r);
+                    // `Sectioned += Basic` reinserted the default section
+                    // correctly in EVERY shipped version, so it is intentionally
+                    // NOT version-gated — always use the default-section-
+                    // preserving helper. The three historically-buggy arms
+                    // (Add: Basic+Sectioned, Add: Sectioned+Basic, AddAssign:
+                    // Basic+=Sectioned) are gated; this one was never broken, so
+                    // routing it through the version selector would *regress*
+                    // shipped v1/v2 output (drop the default section under v0).
+                    add_basic_removal_to_sectioned_map(smap, r);
                 }
                 SectionedStorageRemoval(rmap) => {
                     rmap.into_iter().for_each(|(identifier, mut int_map_b)| {

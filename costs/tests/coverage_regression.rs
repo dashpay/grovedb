@@ -682,13 +682,16 @@ fn storage_removed_bytes_add_and_add_assign_paths_are_exercised() {
     sectioned_assign += BasicStorageRemoval(2);
     assert_eq!(sectioned_assign.total_removed_bytes(), 3);
 
+    // `Sectioned += Basic` was always correct (it reinserts the default
+    // section), so it preserves both removals (11 + 2) even on the legacy/v0
+    // path exercised here — it is not version-gated.
     let mut sectioned_default_assign = sectioned(
         Identifier::default(),
         grovedb_costs::storage_cost::removal::UNKNOWN_EPOCH,
         11,
     );
     sectioned_default_assign += BasicStorageRemoval(2);
-    assert_eq!(sectioned_default_assign.total_removed_bytes(), 0);
+    assert_eq!(sectioned_default_assign.total_removed_bytes(), 13);
 
     sectioned_assign += sectioned(identifier_a, 10, 3);
     assert!(sectioned_assign.has_removal());
