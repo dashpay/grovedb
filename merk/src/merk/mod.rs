@@ -1083,7 +1083,9 @@ mod test {
 
     use grovedb_path::SubtreePath;
     use grovedb_storage::{
-        rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
+        rocksdb_storage::{
+            test_utils::TempStorage, PrefixedRocksDbTransactionContext, RocksDbStorage,
+        },
         RawIterator, Storage, StorageBatch, StorageContext,
     };
     use grovedb_version::version::GroveVersion;
@@ -1121,6 +1123,35 @@ mod test {
                 218, 90, 71, 153, 240, 47, 227, 168, 1, 104, 239, 237, 140, 147
             ]
         );
+    }
+
+    #[test]
+    fn standalone_apply_charges_updated_root_key_storage_cost() {
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let batch = StorageBatch::new();
+        let transaction = storage.start_transaction();
+        let mut merk = Merk::open_standalone(
+            storage
+                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .expect("cannot open standalone merk");
+
+        merk.apply::<_, Vec<_>>(
+            &[(b"root".to_vec(), Op::Put(b"value".to_vec(), BasicMerkNode))],
+            &[],
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("apply failed");
+
+        assert_eq!(merk.root_key(), Some(b"root".to_vec()));
     }
 
     #[test]

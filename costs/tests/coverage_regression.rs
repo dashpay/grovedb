@@ -12,7 +12,7 @@ use grovedb_costs::{
         transition::OperationStorageTransitionType,
         StorageCost,
     },
-    OperationCost, TreeCostType,
+    ChildrenSizesWithIsSumTree, OperationCost, TreeCostType,
 };
 use integer_encoding::VarInt;
 use intmap::IntMap;
@@ -579,6 +579,22 @@ fn key_value_storage_cost_paths_are_exercised() {
 
 #[test]
 fn checked_storage_cost_arithmetic_rejects_overflow() {
+    fn add_key_value_storage_overflow(
+        key_len: u32,
+        value_len: u32,
+        children_sizes: ChildrenSizesWithIsSumTree,
+        storage_cost_info: Option<KeyValueStorageCost>,
+    ) -> &'static str {
+        let mut cost = OperationCost::default();
+        match cost
+            .add_key_value_storage_costs(key_len, value_len, children_sizes, storage_cost_info)
+            .unwrap_err()
+        {
+            Error::Overflow(context) => context,
+            other => panic!("expected overflow, got {other:?}"),
+        }
+    }
+
     let err = StorageCost {
         added_bytes: u32::MAX,
         replaced_bytes: 1,
@@ -605,6 +621,89 @@ fn checked_storage_cost_arithmetic_rejects_overflow() {
         err,
         Error::Overflow("value length child option underflow")
     ));
+
+    assert_eq!(
+        add_key_value_storage_overflow(
+            1,
+            1,
+            None,
+            Some(KeyValueStorageCost {
+                key_storage_cost: StorageCost::default(),
+                value_storage_cost: StorageCost {
+                    added_bytes: u32::MAX,
+                    replaced_bytes: 1,
+                    removed_bytes: NoStorageRemoval,
+                },
+                new_node: false,
+                needs_value_verification: false,
+            }),
+        ),
+        "value storage cost overflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(1, 2, Some((None, Some((1, 0)), None)), None),
+        "left child length underflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(1, 3, Some((None, Some((1, 1)), None)), None),
+        "left child sum length underflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(1, 2, Some((None, None, Some((1, 0)))), None),
+        "right child length underflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(1, 3, Some((None, None, Some((1, 1)))), None),
+        "right child sum length underflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(
+            1,
+            2,
+            Some((Some((TreeCostType::TreeFeatureUses16Bytes, 1)), None, None,)),
+            None,
+        ),
+        "sum tree length underflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(
+            1,
+            u32::MAX,
+            Some((Some((TreeCostType::TreeFeatureUses16Bytes, 0)), None, None,)),
+            None,
+        ),
+        "sum tree cost overflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(
+            1,
+            u32::MAX,
+            Some((
+                Some((TreeCostType::TreeFeatureUsesVarIntCostAs8Bytes, 6)),
+                None,
+                None,
+            )),
+            None,
+        ),
+        "value length required space overflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(
+            u32::MAX - 15,
+            100,
+            Some((Some((TreeCostType::TreeFeatureUses16Bytes, 0)), None, None,)),
+            None,
+        ),
+        "parent hook sum size overflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(u32::MAX - 20, 100, Some((None, None, None)), None),
+        "parent hook value length overflow"
+    );
+    assert_eq!(
+        add_key_value_storage_overflow(1, u32::MAX, None, None),
+        "value length required space overflow"
+    );
 }
 
 #[test]
