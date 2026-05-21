@@ -77,12 +77,12 @@ where
                 }
             }
         } else {
-            let Some(link @ Link::Reference { .. }) = self.tree.slot_mut(left).take() else {
-                return Err(Error::CorruptedState(
-                    "expected Link::Reference but found other variant or None",
+            let link = cost_return_on_error_no_add!(
+                cost,
+                self.tree.slot_mut(left).take().ok_or(Error::CorruptedState(
+                    "expected Link::Reference but found other variant or None"
                 ))
-                .wrap_with_cost(cost);
-            };
+            );
             let child = cost_return_on_error!(
                 &mut cost,
                 self.source
