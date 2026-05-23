@@ -1810,16 +1810,22 @@ mod tests {
                 ElementType::ProvableSumTree,
                 "ProvableSumTree",
             ),
+            // discriminant 20
+            (
+                Element::ProvableCountProvableSumTree(None, 0, 0, None),
+                ElementType::ProvableCountProvableSumTree,
+                "ProvableCountProvableSumTree",
+            ),
         ];
 
-        // Verify we're testing all 17 base discriminants: 0..=14, 18, 19.
+        // Verify we're testing all 18 base discriminants: 0..=14, 18, 19, 20.
         // (15 = NonCounted wrapper byte, 16 = NotSummed wrapper byte,
         // 17 = NotCountedOrSummed wrapper byte — none has a base
         // ElementType variant.)
         assert_eq!(
             test_cases.len(),
-            17,
-            "Expected 17 base Element variants in test, got {}",
+            18,
+            "Expected 18 base Element variants in test, got {}",
             test_cases.len()
         );
 
