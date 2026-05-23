@@ -64,6 +64,9 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                 }
             }
             QueryItem::RangeInclusive(r) => {
+                if count == 0 {
+                    continue;
+                }
                 let start = bytes_to_position(r.start())?;
                 let end = bytes_to_position(r.end())?;
                 let clamped_end = end.min(count.saturating_sub(1));
@@ -89,6 +92,9 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                 }
             }
             QueryItem::RangeToInclusive(r) => {
+                if count == 0 {
+                    continue;
+                }
                 let end = bytes_to_position(&r.end)?;
                 let clamped_end = end.min(count.saturating_sub(1));
                 for p in 0..=clamped_end {
@@ -109,6 +115,9 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                 }
             }
             QueryItem::RangeAfterToInclusive(r) => {
+                if count == 0 {
+                    continue;
+                }
                 let start = bytes_to_position(r.start())?;
                 let end = bytes_to_position(r.end())?;
                 let clamped_end = end.min(count.saturating_sub(1));

@@ -707,6 +707,20 @@ mod proof_tests {
             assert_eq!(entries[0].0, 5);
             assert_eq!(entries[1].0, 6);
         }
+
+        #[test]
+        fn empty_tree_yields_no_positions() {
+            let positions = query_to_positions(
+                &{
+                    let mut q = Query::new();
+                    q.insert_range_inclusive(vec![0]..=vec![0]);
+                    q
+                },
+                0,
+            )
+            .expect("should succeed");
+            assert!(positions.is_empty());
+        }
     }
 
     // =======================================================================
@@ -997,6 +1011,20 @@ mod proof_tests {
             let entries = gen_and_verify(&tree, &query);
             assert_eq!(entries.len(), 7);
         }
+
+        #[test]
+        fn empty_tree_yields_no_positions() {
+            let positions = query_to_positions(
+                &{
+                    let mut q = Query::new();
+                    q.insert_range_to_inclusive(..=vec![0]);
+                    q
+                },
+                0,
+            )
+            .expect("should succeed");
+            assert!(positions.is_empty());
+        }
     }
 
     mod range_after {
@@ -1239,6 +1267,20 @@ mod proof_tests {
             assert_eq!(entries[0].0, 4);
             assert_eq!(entries[2].0, 6);
         }
+
+        #[test]
+        fn empty_tree_yields_no_positions() {
+            let positions = query_to_positions(
+                &{
+                    let mut q = Query::new();
+                    q.insert_range_after_to_inclusive(vec![0xff, 0xff]..=vec![0xff, 0xff]);
+                    q
+                },
+                0,
+            )
+            .expect("should succeed");
+            assert!(positions.is_empty());
+        }
     }
 
     // =======================================================================
@@ -1461,6 +1503,51 @@ mod proof_tests {
             let proof = DenseTreeProof::generate_for_query(&tree, &query)
                 .unwrap()
                 .expect("should succeed for empty query on empty tree");
+            let (_root, entries) = proof
+                .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, 3, 0)
+                .expect("should succeed");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_range_inclusive_query() {
+            let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+                .expect("height 3 should be valid");
+            let mut query = Query::new();
+            query.insert_range_inclusive(vec![0]..=vec![0]);
+            let proof = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("should succeed for inclusive query on empty tree");
+            let (_root, entries) = proof
+                .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, 3, 0)
+                .expect("should succeed");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_range_to_inclusive_query() {
+            let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+                .expect("height 3 should be valid");
+            let mut query = Query::new();
+            query.insert_range_to_inclusive(..=vec![0]);
+            let proof = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("should succeed for inclusive query on empty tree");
+            let (_root, entries) = proof
+                .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, 3, 0)
+                .expect("should succeed");
+            assert!(entries.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_range_after_to_inclusive_query() {
+            let tree = DenseFixedSizedMerkleTree::new(3, MemStorageContext::new())
+                .expect("height 3 should be valid");
+            let mut query = Query::new();
+            query.insert_range_after_to_inclusive(vec![0xff, 0xff]..=vec![0xff, 0xff]);
+            let proof = DenseTreeProof::generate_for_query(&tree, &query)
+                .unwrap()
+                .expect("should succeed for inclusive query on empty tree");
             let (_root, entries) = proof
                 .verify_for_query::<Vec<(u16, Vec<u8>)>>(&query, 3, 0)
                 .expect("should succeed");
