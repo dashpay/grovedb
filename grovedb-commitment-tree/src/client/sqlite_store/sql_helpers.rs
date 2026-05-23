@@ -125,20 +125,10 @@ pub(crate) fn sql_get_shard_roots(
 ) -> Result<Vec<Address>, SqliteShardStoreError> {
     let mut stmt =
         conn.prepare("SELECT shard_index FROM commitment_tree_shards ORDER BY shard_index")?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, i64>(0))
-        .map_err(|err| {
-            SqliteShardStoreError::Serialization(format!(
-                "failed to query shard roots from sqlite: {err}"
-            ))
-        })?;
+    let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
     let mut result = Vec::new();
     for index in rows {
-        let index = index.map_err(|err| {
-            SqliteShardStoreError::Serialization(format!(
-                "failed to read shard root row from sqlite: {err}"
-            ))
-        })?;
+        let index = index?;
         result.push(Address::from_parts(
             Level::from(SHARD_HEIGHT),
             non_negative_i64_to_u64("shard_index", index)?,
@@ -410,22 +400,10 @@ fn sql_load_checkpoint(
     let mut stmt = conn.prepare(
         "SELECT position FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
     )?;
-    let rows = stmt
-        .query_map(params![checkpoint_id], |row| row.get::<_, i64>(0))
-        .map_err(|err| {
-            SqliteShardStoreError::Serialization(format!(
-                "failed to query checkpoint removed marks from sqlite for checkpoint \
-                 {checkpoint_id}: {err}"
-            ))
-        })?;
+    let rows = stmt.query_map(params![checkpoint_id], |row| row.get::<_, i64>(0))?;
     let mut marks = BTreeSet::new();
     for position in rows {
-        let position = position.map_err(|err| {
-            SqliteShardStoreError::Serialization(format!(
-                "failed to read checkpoint removed mark row from sqlite for checkpoint \
-                 {checkpoint_id}: {err}"
-            ))
-        })?;
+        let position = position?;
         marks.insert(Position::from(non_negative_i64_to_u64(
             "position", position,
         )?));
