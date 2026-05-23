@@ -2260,6 +2260,60 @@ mod tests {
     }
 
     #[test]
+    fn delete_with_validate_tree_at_path_exists_success_on_pcps_path() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert ProvableCountProvableSumTree");
+
+        db.insert(
+            [TEST_LEAF, b"pcps"].as_ref(),
+            b"item_v",
+            Element::new_item(b"data".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item into ProvableCountProvableSumTree");
+
+        db.delete(
+            [TEST_LEAF, b"pcps"].as_ref(),
+            b"item_v",
+            Some(DeleteOptions {
+                validate_tree_at_path_exists: true,
+                ..Default::default()
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should delete with path validation through ProvableCountProvableSumTree");
+
+        let result = db
+            .get(
+                [TEST_LEAF, b"pcps"].as_ref(),
+                b"item_v",
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::PathKeyNotFound(_))),
+            "item should be deleted from ProvableCountProvableSumTree"
+        );
+    }
+
+    #[test]
     fn delete_with_sectional_storage_function_with_flags() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);

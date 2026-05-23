@@ -173,6 +173,52 @@ mod tests {
     }
 
     #[test]
+    fn test_is_empty_tree_on_provable_count_provable_sum_subtree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcps",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert ProvableCountProvableSumTree");
+
+        let empty_result = db
+            .is_empty_tree([TEST_LEAF, b"pcps"].as_ref(), None, grove_version)
+            .unwrap()
+            .expect("should succeed checking empty ProvableCountProvableSumTree");
+        assert!(
+            empty_result,
+            "empty ProvableCountProvableSumTree should be empty"
+        );
+
+        db.insert(
+            [TEST_LEAF, b"pcps"].as_ref(),
+            b"item",
+            Element::new_item(b"value".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert item into ProvableCountProvableSumTree");
+
+        let non_empty_result = db
+            .is_empty_tree([TEST_LEAF, b"pcps"].as_ref(), None, grove_version)
+            .unwrap()
+            .expect("should succeed checking non-empty ProvableCountProvableSumTree");
+        assert!(
+            !non_empty_result,
+            "ProvableCountProvableSumTree with items should not be empty"
+        );
+    }
+
+    #[test]
     fn test_is_empty_tree_after_delete() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);

@@ -405,23 +405,7 @@ impl GroveDb {
             // check_subtree_exists would reject paths through wrapped
             // parents — breaking the wrapper-transparency contract.
             match element.map(|e| e.into_underlying()) {
-                Ok(Element::Tree(..))
-                | Ok(Element::SumTree(..))
-                | Ok(Element::BigSumTree(..))
-                | Ok(Element::CountTree(..))
-                | Ok(Element::CountSumTree(..))
-                | Ok(Element::ProvableCountTree(..))
-                | Ok(Element::ProvableCountSumTree(..))
-                | Ok(Element::ProvableSumTree(..))
-                | Ok(Element::ProvableCountProvableSumTree(..))
-                | Ok(Element::ProvableCountIndexedTree(..))
-                | Ok(Element::ProvableSumIndexedTree(..))
-                | Ok(Element::ProvableCountProvableSumIndexedTree(..))
-                | Ok(Element::CommitmentTree(..))
-                | Ok(Element::MmrTree(..))
-                | Ok(Element::BulkAppendTree(..))
-                | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                | Ok(Element::PrivateDocumentStore(..)) => Ok(()).wrap_with_cost(cost),
+                Ok(e) if e.is_any_tree() => Ok(()).wrap_with_cost(cost),
                 Ok(_) | Err(Error::PathKeyNotFound(_)) => Err(error_fn()).wrap_with_cost(cost),
                 Err(e) => Err(e).wrap_with_cost(cost),
             }
