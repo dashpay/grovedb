@@ -210,13 +210,21 @@ impl Link {
             }
         }
 
+        const fn saturating_add_one(height: u8) -> u8 {
+            if height == u8::MAX {
+                u8::MAX
+            } else {
+                height + 1
+            }
+        }
+
         let (left_height, right_height) = match self {
             Link::Reference { child_heights, .. } => *child_heights,
             Link::Modified { child_heights, .. } => *child_heights,
             Link::Uncommitted { child_heights, .. } => *child_heights,
             Link::Loaded { child_heights, .. } => *child_heights,
         };
-        1 + max(left_height, right_height)
+        saturating_add_one(max(left_height, right_height))
     }
 
     /// Returns the balance factor of the tree referenced by the link.
@@ -234,8 +242,8 @@ impl Link {
         let diff = right_height as i16 - left_height as i16;
         if diff > i8::MAX as i16 {
             i8::MAX
-        } else if diff < i8::MIN as i16 {
-            i8::MIN
+        } else if diff < (i8::MIN + 1) as i16 {
+            i8::MIN + 1
         } else {
             diff as i8
         }
@@ -803,6 +811,26 @@ mod test {
         assert_eq!(loaded.hash(), &[0; 32]);
         assert_eq!(loaded.height(), 1);
         assert!(loaded.into_reference().unwrap().is_reference());
+    }
+
+    #[test]
+    fn height_saturates_for_corrupt_child_heights() {
+        let left_heavy_link = Link::Reference {
+            hash: NULL_HASH,
+            aggregate_data: AggregateData::NoAggregateData,
+            child_heights: (255, 0),
+            key: vec![0],
+        };
+        let right_heavy_link = Link::Reference {
+            hash: NULL_HASH,
+            aggregate_data: AggregateData::NoAggregateData,
+            child_heights: (0, 255),
+            key: vec![0],
+        };
+
+        assert_eq!(left_heavy_link.height(), u8::MAX);
+        assert_eq!(left_heavy_link.balance_factor(), i8::MIN + 1);
+        assert_eq!(right_heavy_link.balance_factor(), i8::MAX);
     }
 
     #[test]

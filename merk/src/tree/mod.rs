@@ -942,7 +942,7 @@ impl TreeNode {
     /// etc.
     #[inline]
     pub fn height(&self) -> u8 {
-        1 + max(self.child_height(true), self.child_height(false))
+        max(self.child_height(true), self.child_height(false)).saturating_add(1)
     }
 
     /// Returns the balance factor of the root node. This is the difference
@@ -951,13 +951,17 @@ impl TreeNode {
     /// subtree is 2 levels taller than the left subtree.
     #[inline]
     pub const fn balance_factor(&self) -> i8 {
-        // Cast to i8 is safe: child_height() returns at most the tree height,
-        // which is O(log n). Even with 2^127 elements the height would be ~127,
-        // well within i8 range. An AVL tree that could overflow u8 child heights
-        // (>255) is physically impossible.
-        let left_height = self.child_height(true) as i8;
-        let right_height = self.child_height(false) as i8;
-        right_height - left_height
+        // Subtract in i16 to avoid wrapping when corrupted child heights exceed
+        // 127, then clamp to i8 range. For a valid AVL tree the result is in
+        // [-2, 2], but corrupted data could produce larger differences.
+        let diff = self.child_height(false) as i16 - self.child_height(true) as i16;
+        if diff > i8::MAX as i16 {
+            i8::MAX
+        } else if diff < (i8::MIN + 1) as i16 {
+            i8::MIN + 1
+        } else {
+            diff as i8
+        }
     }
 
     /// Attaches the child (if any) to the root node on the given side. Creates
@@ -1525,7 +1529,7 @@ mod test_provable_count_edge_cases;
 #[cfg(test)]
 mod test {
 
-    use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, TreeNode};
+    use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, Link, TreeNode};
     use crate::tree::{
         tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
     };
@@ -1723,6 +1727,44 @@ mod test {
         assert_eq!(tree.child_height(true), 0);
         assert_eq!(tree.child_height(false), 1);
         assert_eq!(tree.balance_factor(), 1);
+
+        let tree = TreeNode::from_fields(
+            vec![0],
+            vec![1],
+            NULL_HASH,
+            Some(Link::Reference {
+                hash: NULL_HASH,
+                child_heights: (255, 0),
+                key: vec![2],
+                aggregate_data: AggregateData::NoAggregateData,
+            }),
+            None,
+            BasicMerkNode,
+        )
+        .unwrap();
+        let balance_factor = tree.balance_factor();
+        assert_eq!(tree.child_height(true), u8::MAX);
+        assert_eq!(tree.height(), u8::MAX);
+        assert_eq!(balance_factor, i8::MIN + 1);
+        assert_eq!(balance_factor.abs(), i8::MAX);
+
+        let tree = TreeNode::from_fields(
+            vec![0],
+            vec![1],
+            NULL_HASH,
+            None,
+            Some(Link::Reference {
+                hash: NULL_HASH,
+                child_heights: (255, 0),
+                key: vec![2],
+                aggregate_data: AggregateData::NoAggregateData,
+            }),
+            BasicMerkNode,
+        )
+        .unwrap();
+        assert_eq!(tree.child_height(false), u8::MAX);
+        assert_eq!(tree.height(), u8::MAX);
+        assert_eq!(tree.balance_factor(), i8::MAX);
     }
 
     #[test]
