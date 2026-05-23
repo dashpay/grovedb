@@ -18,10 +18,18 @@ use super::{
     SqliteShardStoreError, SHARD_HEIGHT,
 };
 
+fn non_negative_i64_to_u64(value_name: &str, value: i64) -> Result<u64, SqliteShardStoreError> {
+    u64::try_from(value).map_err(|_| {
+        SqliteShardStoreError::Serialization(format!(
+            "invalid negative {value_name} in sqlite row: {value}"
+        ))
+    })
+}
+
 pub(crate) fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS commitment_tree_shards (
-            shard_index INTEGER PRIMARY KEY,
+            shard_index INTEGER PRIMARY KEY CHECK (shard_index >= 0),
             shard_data  BLOB NOT NULL
         );
         CREATE TABLE IF NOT EXISTS commitment_tree_cap (
@@ -30,11 +38,11 @@ pub(crate) fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreErr
         );
         CREATE TABLE IF NOT EXISTS commitment_tree_checkpoints (
             checkpoint_id INTEGER PRIMARY KEY,
-            position      INTEGER
+            position      INTEGER CHECK (position IS NULL OR position >= 0)
         );
         CREATE TABLE IF NOT EXISTS commitment_tree_checkpoint_marks_removed (
             checkpoint_id INTEGER NOT NULL,
-            position      INTEGER NOT NULL,
+            position      INTEGER NOT NULL CHECK (position >= 0),
             PRIMARY KEY (checkpoint_id, position),
             FOREIGN KEY (checkpoint_id) REFERENCES commitment_tree_checkpoints(checkpoint_id)
         );",
@@ -85,7 +93,8 @@ pub(crate) fn sql_last_shard(
     match row {
         None => Ok(None),
         Some((index, data)) => {
-            let addr = Address::from_parts(Level::from(SHARD_HEIGHT), index as u64);
+            let index = non_negative_i64_to_u64("shard_index", index)?;
+            let addr = Address::from_parts(Level::from(SHARD_HEIGHT), index);
             let mut pos = 0;
             let tree = deserialize_tree(&data, &mut pos)?;
             let located = LocatedTree::from_parts(addr, tree).map_err(|addr| {
@@ -116,13 +125,24 @@ pub(crate) fn sql_get_shard_roots(
 ) -> Result<Vec<Address>, SqliteShardStoreError> {
     let mut stmt =
         conn.prepare("SELECT shard_index FROM commitment_tree_shards ORDER BY shard_index")?;
-    let rows = stmt.query_map([], |row| {
-        let index: i64 = row.get(0)?;
-        Ok(Address::from_parts(Level::from(SHARD_HEIGHT), index as u64))
-    })?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|err| {
+            SqliteShardStoreError::Serialization(format!(
+                "failed to query shard roots from sqlite: {err}"
+            ))
+        })?;
     let mut result = Vec::new();
-    for addr in rows {
-        result.push(addr?);
+    for index in rows {
+        let index = index.map_err(|err| {
+            SqliteShardStoreError::Serialization(format!(
+                "failed to read shard root row from sqlite: {err}"
+            ))
+        })?;
+        result.push(Address::from_parts(
+            Level::from(SHARD_HEIGHT),
+            non_negative_i64_to_u64("shard_index", index)?,
+        ));
     }
     Ok(result)
 }
@@ -384,18 +404,32 @@ fn sql_load_checkpoint(
 ) -> Result<Checkpoint, SqliteShardStoreError> {
     let tree_state = match position {
         None => TreeState::Empty,
-        Some(p) => TreeState::AtPosition(Position::from(p as u64)),
+        Some(p) => TreeState::AtPosition(Position::from(non_negative_i64_to_u64("position", p)?)),
     };
 
     let mut stmt = conn.prepare(
         "SELECT position FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
     )?;
-    let marks: BTreeSet<Position> = stmt
-        .query_map(params![checkpoint_id], |row| {
-            let p: i64 = row.get(0)?;
-            Ok(Position::from(p as u64))
-        })?
-        .collect::<Result<BTreeSet<_>, _>>()?;
+    let rows = stmt
+        .query_map(params![checkpoint_id], |row| row.get::<_, i64>(0))
+        .map_err(|err| {
+            SqliteShardStoreError::Serialization(format!(
+                "failed to query checkpoint removed marks from sqlite for checkpoint \
+                 {checkpoint_id}: {err}"
+            ))
+        })?;
+    let mut marks = BTreeSet::new();
+    for position in rows {
+        let position = position.map_err(|err| {
+            SqliteShardStoreError::Serialization(format!(
+                "failed to read checkpoint removed mark row from sqlite for checkpoint \
+                 {checkpoint_id}: {err}"
+            ))
+        })?;
+        marks.insert(Position::from(non_negative_i64_to_u64(
+            "position", position,
+        )?));
+    }
 
     Ok(Checkpoint::from_parts(tree_state, marks))
 }

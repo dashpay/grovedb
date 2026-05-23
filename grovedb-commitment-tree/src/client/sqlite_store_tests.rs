@@ -23,6 +23,32 @@ mod tests {
         SqliteShardStore::new(conn).expect("create store")
     }
 
+    fn legacy_schema_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open legacy in-memory sqlite");
+        conn.execute_batch(
+            "CREATE TABLE commitment_tree_shards (
+                shard_index INTEGER PRIMARY KEY,
+                shard_data  BLOB NOT NULL
+            );
+            CREATE TABLE commitment_tree_cap (
+                id       INTEGER PRIMARY KEY CHECK (id = 0),
+                cap_data BLOB NOT NULL
+            );
+            CREATE TABLE commitment_tree_checkpoints (
+                checkpoint_id INTEGER PRIMARY KEY,
+                position      INTEGER
+            );
+            CREATE TABLE commitment_tree_checkpoint_marks_removed (
+                checkpoint_id INTEGER NOT NULL,
+                position      INTEGER NOT NULL,
+                PRIMARY KEY (checkpoint_id, position),
+                FOREIGN KEY (checkpoint_id) REFERENCES commitment_tree_checkpoints(checkpoint_id)
+            );",
+        )
+        .expect("create legacy schema");
+        conn
+    }
+
     fn test_hash(i: u8) -> MerkleHashOrchard {
         let empty = MerkleHashOrchard::empty_leaf();
         MerkleHashOrchard::combine(Level::from(i % 31 + 1), &empty, &empty)
@@ -78,6 +104,68 @@ mod tests {
             })
             .expect("direct query");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_schema_rejects_negative_shard_index() {
+        let store = test_store();
+        let data = serialize_tree(&Tree::leaf((test_hash(1), RetentionFlags::MARKED)));
+
+        let err = store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO commitment_tree_shards (shard_index, shard_data) VALUES (?1, ?2)",
+                    rusqlite::params![-1i64, data],
+                )
+            })
+            .expect_err("negative shard index should be rejected");
+
+        assert!(
+            err.to_string().contains("CHECK constraint failed"),
+            "unexpected sqlite error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_schema_rejects_negative_checkpoint_positions() {
+        let store = test_store();
+
+        let err = store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
+                    rusqlite::params![1u32, -1i64],
+                )
+            })
+            .expect_err("negative checkpoint position should be rejected");
+
+        assert!(
+            err.to_string().contains("CHECK constraint failed"),
+            "unexpected sqlite error: {err}"
+        );
+
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, NULL)",
+                    rusqlite::params![2u32],
+                )
+            })
+            .expect("insert empty checkpoint");
+
+        let err = store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) VALUES (?1, ?2)",
+                    rusqlite::params![2u32, -1i64],
+                )
+            })
+            .expect_err("negative mark position should be rejected");
+
+        assert!(
+            err.to_string().contains("CHECK constraint failed"),
+            "unexpected sqlite error: {err}"
+        );
     }
 
     // -- Serialization round-trip tests --
@@ -264,6 +352,48 @@ mod tests {
         assert_eq!(roots.last().expect("last root").index(), 2);
     }
 
+    #[test]
+    fn test_last_shard_rejects_negative_shard_index_from_legacy_schema() {
+        let conn = legacy_schema_conn();
+        let data = serialize_tree(&Tree::leaf((test_hash(7), RetentionFlags::MARKED)));
+        conn.execute(
+            "INSERT INTO commitment_tree_shards (shard_index, shard_data) VALUES (?1, ?2)",
+            rusqlite::params![-1i64, data],
+        )
+        .expect("insert corrupt shard");
+
+        let store = SqliteShardStore::new(conn).expect("open legacy store");
+        let err = store
+            .last_shard()
+            .expect_err("negative shard index should fail");
+        assert!(
+            err.to_string()
+                .contains("invalid negative shard_index in sqlite row: -1"),
+            "unexpected store error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_get_shard_roots_rejects_negative_shard_index_from_legacy_schema() {
+        let conn = legacy_schema_conn();
+        let data = serialize_tree(&Tree::leaf((test_hash(8), RetentionFlags::MARKED)));
+        conn.execute(
+            "INSERT INTO commitment_tree_shards (shard_index, shard_data) VALUES (?1, ?2)",
+            rusqlite::params![-1i64, data],
+        )
+        .expect("insert corrupt shard");
+
+        let store = SqliteShardStore::new(conn).expect("open legacy store");
+        let err = store
+            .get_shard_roots()
+            .expect_err("negative shard index should fail");
+        assert!(
+            err.to_string()
+                .contains("invalid negative shard_index in sqlite row: -1"),
+            "unexpected store error: {err}"
+        );
+    }
+
     // -- Cap tests --
 
     #[test]
@@ -368,6 +498,51 @@ mod tests {
 
         let retrieved = store.get_checkpoint(&1).expect("get").expect("exists");
         assert_eq!(retrieved.tree_state(), TreeState::Empty);
+    }
+
+    #[test]
+    fn test_get_checkpoint_rejects_negative_position_from_legacy_schema() {
+        let conn = legacy_schema_conn();
+        conn.execute(
+            "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
+            rusqlite::params![1u32, -1i64],
+        )
+        .expect("insert corrupt checkpoint");
+
+        let store = SqliteShardStore::new(conn).expect("open legacy store");
+        let err = store
+            .get_checkpoint(&1)
+            .expect_err("negative checkpoint position should fail");
+        assert!(
+            err.to_string()
+                .contains("invalid negative position in sqlite row: -1"),
+            "unexpected store error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_get_checkpoint_rejects_negative_mark_position_from_legacy_schema() {
+        let conn = legacy_schema_conn();
+        conn.execute(
+            "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
+            rusqlite::params![1u32, 10i64],
+        )
+        .expect("insert checkpoint");
+        conn.execute(
+            "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) VALUES (?1, ?2)",
+            rusqlite::params![1u32, -1i64],
+        )
+        .expect("insert corrupt mark");
+
+        let store = SqliteShardStore::new(conn).expect("open legacy store");
+        let err = store
+            .get_checkpoint(&1)
+            .expect_err("negative mark position should fail");
+        assert!(
+            err.to_string()
+                .contains("invalid negative position in sqlite row: -1"),
+            "unexpected store error: {err}"
+        );
     }
 
     #[test]
