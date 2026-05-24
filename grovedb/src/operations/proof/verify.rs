@@ -160,13 +160,6 @@ impl GroveDb {
             ))?;
         }
 
-        // must have no offset
-        if query.query.offset.is_some() {
-            return Err(Error::NotSupported(
-                "offsets in path queries are not supported for proofs".to_string(),
-            ));
-        }
-
         // Pre-decode query-shape gate — see `verify_query_with_options`.
         query.reject_unserved_per_instance_limits(grove_version)?;
         if options.absence_proofs_for_non_existing_searched_keys {
