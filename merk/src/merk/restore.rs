@@ -179,18 +179,12 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
         multi_chunk: Vec<ChunkOp>,
         grove_version: &GroveVersion,
     ) -> Result<Vec<Vec<u8>>, Error> {
-        let mut expect_chunk_id = true;
+        Self::validate_multi_chunk(&multi_chunk)?;
+
         let mut chunk_ids = vec![];
         let mut current_chunk_id = vec![];
 
         for chunk_op in multi_chunk {
-            if (matches!(chunk_op, ChunkOp::ChunkId(..)) && !expect_chunk_id)
-                || (matches!(chunk_op, ChunkOp::Chunk(..)) && expect_chunk_id)
-            {
-                return Err(Error::ChunkRestoringError(ChunkError::InvalidMultiChunk(
-                    "invalid multi chunk ordering",
-                )));
-            }
             match chunk_op {
                 ChunkOp::ChunkId(instructions) => {
                     current_chunk_id = traversal_instruction_as_vec_bytes(&instructions);
@@ -202,9 +196,29 @@ impl<'db, S: StorageContext<'db>> Restorer<S> {
                     chunk_ids.extend(next_chunk_ids);
                 }
             }
-            expect_chunk_id = !expect_chunk_id;
         }
         Ok(chunk_ids)
+    }
+
+    fn validate_multi_chunk(multi_chunk: &[ChunkOp]) -> Result<(), Error> {
+        let mut expect_chunk_id = true;
+
+        for chunk_op in multi_chunk {
+            if (matches!(chunk_op, ChunkOp::ChunkId(..)) && !expect_chunk_id)
+                || (matches!(chunk_op, ChunkOp::Chunk(..)) && expect_chunk_id)
+            {
+                return Err(Error::ChunkRestoringError(ChunkError::InvalidMultiChunk(
+                    "invalid multi chunk ordering",
+                )));
+            }
+            expect_chunk_id = !expect_chunk_id;
+        }
+        if !expect_chunk_id {
+            return Err(Error::ChunkRestoringError(ChunkError::InvalidMultiChunk(
+                "invalid multi chunk ordering",
+            )));
+        }
+        Ok(())
     }
 
     /// Verifies the structure of a chunk and ensures the chunk matches the
@@ -1585,6 +1599,79 @@ mod tests {
             restored_merk.root_hash().unwrap(),
             merk.root_hash().unwrap()
         );
+    }
+
+    #[test]
+    fn test_process_multi_chunk_rejects_dangling_chunk_id() {
+        let grove_version = GroveVersion::latest();
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut restorer = Restorer::new(restoration_merk, [0; 32], None);
+        let result =
+            restorer.process_multi_chunk(vec![ChunkOp::ChunkId(vec![true])], grove_version);
+
+        assert!(matches!(
+            result,
+            Err(ChunkRestoringError(ChunkError::InvalidMultiChunk(
+                "invalid multi chunk ordering",
+            )))
+        ));
+    }
+
+    #[test]
+    fn test_process_multi_chunk_rejects_trailing_chunk_id_after_valid_chunk() {
+        let grove_version = GroveVersion::latest();
+        let mut merk = TempMerk::new(grove_version);
+        let batch = make_batch_seq(0..15);
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+
+        let storage = TempStorage::new();
+        let tx = storage.start_transaction();
+        let restoration_merk = Merk::open_base(
+            storage
+                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .unwrap(),
+            TreeType::NormalTree,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
+        let chunk = chunk_producer
+            .multi_chunk_with_limit(vec![].as_slice(), Some(600), grove_version)
+            .expect("should generate multichunk");
+
+        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
+        let mut multi_chunk = chunk.chunk;
+        multi_chunk.push(ChunkOp::ChunkId(vec![false]));
+        let old_chunk_id_to_root_hash = restorer.chunk_id_to_root_hash.clone();
+        let old_parent_keys = restorer.parent_keys.clone();
+
+        let result = restorer.process_multi_chunk(multi_chunk, grove_version);
+
+        assert!(matches!(
+            result,
+            Err(ChunkRestoringError(ChunkError::InvalidMultiChunk(
+                "invalid multi chunk ordering",
+            )))
+        ));
+        assert_eq!(restorer.chunk_id_to_root_hash, old_chunk_id_to_root_hash);
+        assert_eq!(restorer.parent_keys, old_parent_keys);
     }
 
     // Builds a source merk with batch_size number of elements
