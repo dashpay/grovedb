@@ -97,13 +97,6 @@ impl GroveDb {
             ))?;
         }
 
-        // must have no offset
-        if query.query.offset.is_some() {
-            return Err(Error::NotSupported(
-                "offsets in path queries are not supported for proofs".to_string(),
-            ));
-        }
-
         let grovedb_proof = super::decode_grovedb_proof_canonical(proof)?;
 
         let (root_hash, tree_feature_type, result) =

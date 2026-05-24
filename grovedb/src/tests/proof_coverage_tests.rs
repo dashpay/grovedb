@@ -4740,8 +4740,9 @@ mod tests {
 
     #[test]
     fn verify_v0_get_parent_tree_info_with_offset_errors() {
-        // verify_query_get_parent_tree_info_with_options should error on offset
-        let grove_version = GroveVersion::latest();
+        // Pair a real V0 parent-tree-info proof with an offset-bearing
+        // query and confirm the shared offset gate still rejects it.
+        let grove_version = &GROVE_V2;
         let db = make_test_grovedb(grove_version);
 
         db.insert(
@@ -4755,25 +4756,30 @@ mod tests {
         .unwrap()
         .expect("should insert");
 
-        let mut query = Query::new();
-        query.insert_all();
-        let path_query = PathQuery::new(
-            vec![TEST_LEAF.to_vec()],
-            SizedQuery::new(query, None, Some(1)),
-        );
+        let mut q_no_offset = Query::new();
+        q_no_offset.insert_all();
+        let no_offset_path_query = PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], q_no_offset);
 
         let proof_bytes = db
-            .prove_query(
-                &PathQuery::new_unsized(vec![TEST_LEAF.to_vec()], {
-                    let mut q = Query::new();
-                    q.insert_all();
-                    q
-                }),
-                None,
-                grove_version,
-            )
+            .prove_query(&no_offset_path_query, None, grove_version)
             .unwrap()
             .expect("should prove");
+
+        let decoded = db
+            .prove_query_non_serialized(&no_offset_path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-serialized");
+        assert!(
+            matches!(decoded, GroveDBProof::V0(_)),
+            "proof should use a V0 envelope under GROVE_V2"
+        );
+
+        let mut q_with_offset = Query::new();
+        q_with_offset.insert_all();
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec()],
+            SizedQuery::new(q_with_offset, None, Some(1)),
+        );
 
         let result = GroveDb::verify_query_get_parent_tree_info_with_options(
             &proof_bytes,
@@ -4785,7 +4791,96 @@ mod tests {
             },
             grove_version,
         );
-        assert!(result.is_err(), "parent tree info with offset should error");
+        assert!(
+            matches!(result, Err(crate::Error::NotSupported(_))),
+            "V0 parent tree info verification must reject offsets, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn verify_v1_get_parent_tree_info_with_offset_succeeds() {
+        // Offset-paginated parent-tree-info verification should flow
+        // through the shared V1 envelope gate and succeed for
+        // ProvableCountTree proofs.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("should insert provable count tree");
+
+        for i in 0..15u8 {
+            let key = [b'a' + i];
+            db.insert(
+                [TEST_LEAF, b"counts"].as_ref(),
+                &key,
+                Element::new_item(format!("v_{}", char::from(key[0])).into_bytes()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("should insert count-tree item");
+        }
+
+        let mut query = Query::new();
+        query.insert_range_inclusive(b"a".to_vec()..=b"o".to_vec());
+        let path_query = PathQuery::new(
+            vec![TEST_LEAF.to_vec(), b"counts".to_vec()],
+            SizedQuery::new(query, Some(3), Some(5)),
+        );
+
+        let proof_bytes = db
+            .prove_query(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove offset-paginated parent-tree query");
+
+        let decoded = db
+            .prove_query_non_serialized(&path_query, None, grove_version)
+            .unwrap()
+            .expect("should prove non-serialized");
+        assert!(
+            matches!(decoded, GroveDBProof::V1(_)),
+            "offset-paginated proof should use a V1 envelope"
+        );
+
+        let (root_hash, feature_type, results) =
+            GroveDb::verify_query_get_parent_tree_info_with_options(
+                &proof_bytes,
+                &path_query,
+                VerifyOptions {
+                    absence_proofs_for_non_existing_searched_keys: false,
+                    verify_proof_succinctness: false,
+                    include_empty_trees_in_result: false,
+                },
+                grove_version,
+            )
+            .expect("V1 parent tree info verification with offset should succeed");
+
+        let expected_root = db.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(root_hash, expected_root);
+        assert!(
+            matches!(
+                feature_type,
+                grovedb_merk::TreeFeatureType::ProvableCountedMerkNode(15)
+            ),
+            "parent should be ProvableCountedMerkNode(15), got {:?}",
+            feature_type
+        );
+        let returned_keys: Vec<Vec<u8>> = results.iter().map(|(_, key, _)| key.clone()).collect();
+        assert_eq!(
+            returned_keys,
+            vec![b"f".to_vec(), b"g".to_vec(), b"h".to_vec()],
+            "offset 5 + limit 3 over a..=o should return f,g,h"
+        );
     }
 
     #[test]
