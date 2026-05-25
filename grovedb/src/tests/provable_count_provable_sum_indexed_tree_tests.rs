@@ -1815,4 +1815,49 @@ mod tests {
             other => panic!("expected PCPSIT, got {:?}", other),
         }
     }
+
+    /// Security regression (P1): the dedicated PCPSIT insert
+    /// short-circuits child subtree roots to NULL_HASH, so it must
+    /// reject a non-empty `CountSumTree(Some(root_key), ..)` child claim
+    /// — otherwise the serialized element persists a root_key that
+    /// disagrees with the empty merk node it is bound to.
+    #[test]
+    fn pcpsit_rejects_non_empty_count_sum_tree_child() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_pcpsit(
+            &db,
+            b"pcpsit",
+            &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+            v,
+        );
+
+        // A CountSumTree claiming a non-empty root must be rejected.
+        let res = db
+            .insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                b"k",
+                Element::CountSumTree(Some(vec![7u8; 32]), 0, 0, None),
+                None,
+                v,
+            )
+            .unwrap();
+        assert!(
+            matches!(res, Err(Error::NotSupported(_))),
+            "non-empty CountSumTree child must be rejected by the dedicated PCPSIT insert \
+             guard; got {res:?}"
+        );
+
+        // An EMPTY CountSumTree child is accepted.
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"k",
+            Element::CountSumTree(None, 0, 0, None),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("empty CountSumTree child accepted");
+        assert_verify_passes(&db, v);
+    }
 }

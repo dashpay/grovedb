@@ -671,6 +671,57 @@ fn verify_deepest_layer(
         execute_single_key_proof(&layer_proofs[last_idx], cidx_key, err_label)?;
     let actual_value_hash = value_hash(&cidx_value_bytes).value().to_owned();
 
+    // Bind the proved element's family to the requested axis.
+    //
+    // Without this, the H1-A chain check below passes for a *relabeled*
+    // proof: PCIT and PSIT both record
+    // `combine_hash_three(H(value), primary_root, secondary_root)` — the
+    // identical 3-input shape — so a PCIT count proof verified with
+    // `axis = Sum, target_is_pcpsit = false` reconstructs the same hash
+    // and "verifies", after which range/top-k/query decoding interprets
+    // the count secondary keys (`count_be ‖ key`) as sum keys
+    // (`sum_sortable_be ‖ key`) and returns garbage sum values under the
+    // authentic root hash.
+    //
+    // We read just the element discriminant (no `grove_version` needed)
+    // and normalize through any `NonCounted` wrapper via `base()`. For
+    // PCPSIT the per-axis `axes_digest` reconstruction already
+    // cryptographically binds each axis tag to its secondary root hash
+    // (a relabeled axis or a non-configured axis produces a different
+    // digest and fails the chain check below), so the family check is
+    // all that is additionally required.
+    {
+        let proved_family = grovedb_element::ElementType::from_serialized_value(&cidx_value_bytes)
+            .map_err(|e| {
+                Error::CorruptedData(format!(
+                    "{err_label}: cannot determine element type of proved value: {e}"
+                ))
+            })?
+            .base();
+        let expected_family = if target_is_pcpsit {
+            grovedb_element::ElementType::ProvableCountProvableSumIndexedTree
+        } else {
+            match axis {
+                IndexAxis::Count => grovedb_element::ElementType::ProvableCountIndexedTree,
+                IndexAxis::Sum => grovedb_element::ElementType::ProvableSumIndexedTree,
+                IndexAxis::Avg => {
+                    return Err(Error::CorruptedData(format!(
+                        "{err_label}: Avg axis is only valid on a \
+                         ProvableCountProvableSumIndexedTree (target_is_pcpsit=true); the \
+                         envelope claims a single-axis (PCIT/PSIT) target"
+                    )));
+                }
+            }
+        };
+        if proved_family != expected_family {
+            return Err(Error::CorruptedData(format!(
+                "{err_label}: proved element family {proved_family:?} does not match the \
+                 requested axis {axis:?} (expected {expected_family:?}); possible \
+                 axis-relabel forgery"
+            )));
+        }
+    }
+
     let queried_axis_digest = if target_is_pcpsit {
         // PCPSIT: rebuild the canonical axes list by combining
         // `other_axes_root_hashes` with the queried axis's actual root
@@ -1347,11 +1398,14 @@ impl GroveDb {
         );
         let serialized = match axis {
             IndexAxis::Count => {
-                // count_value ∈ u64. Range `[lo, hi]` is interpreted in u64
-                // space (clamped). If the entire range falls below 0 the
-                // result is an empty proof; otherwise normal degenerate
-                // handling applies inside the builder.
-                if hi < 0 {
+                // count_value ∈ [0, u64::MAX]. A range whose whole span is
+                // outside that domain (hi < 0 OR lo > u64::MAX) must commit
+                // an EMPTY (count = 0) proof — clamping the bounds into the
+                // domain would otherwise collapse the range onto a boundary
+                // key (e.g. lo = u64::MAX + 5, hi = u64::MAX + 10 → query
+                // `count == u64::MAX`) and erroneously count entries
+                // sitting exactly on the boundary.
+                if aggregate_range_out_of_domain(IndexAxis::Count, lo, hi) {
                     cost_return_on_error_no_add!(
                         cost,
                         build_empty_count_aggregate_proof(
@@ -1380,19 +1434,29 @@ impl GroveDb {
                 }
             }
             IndexAxis::Sum => {
-                // sum_value ∈ i64. Range `[lo, hi]` is clamped into i64.
-                let lo_i = lo.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
-                let hi_i = hi.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
-                cost_return_on_error_no_add!(
-                    cost,
-                    build_sum_aggregate_secondary_proof(
-                        &secondary_merk,
-                        lo_i,
-                        hi_i,
-                        grove_version,
-                        &mut cost,
+                // sum_value ∈ [i64::MIN, i64::MAX]. As with count, a range
+                // entirely above or below that domain must commit an EMPTY
+                // (sum = 0) proof rather than clamping onto i64::MAX /
+                // i64::MIN (which would count/sum boundary entries).
+                if aggregate_range_out_of_domain(IndexAxis::Sum, lo, hi) {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_empty_sum_aggregate_proof(&secondary_merk, grove_version, &mut cost)
                     )
-                )
+                } else {
+                    let lo_i = lo.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
+                    let hi_i = hi.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
+                    cost_return_on_error_no_add!(
+                        cost,
+                        build_sum_aggregate_secondary_proof(
+                            &secondary_merk,
+                            lo_i,
+                            hi_i,
+                            grove_version,
+                            &mut cost,
+                        )
+                    )
+                }
             }
             IndexAxis::Avg => unreachable!("avg axis rejected by public entry point"),
         };
@@ -1991,6 +2055,27 @@ where
     Ok(serialized)
 }
 
+/// True when the ordered-or-not aggregate value range `[lo, hi]` (i128)
+/// has no overlap with the axis's representable domain — count is
+/// `[0, u64::MAX]`, sum is `[i64::MIN, i64::MAX]`. Such a request must
+/// commit an EMPTY aggregate (0) rather than clamping the bounds into
+/// the domain, which would collapse an out-of-domain range onto a
+/// boundary key and erroneously include the entries sitting exactly on
+/// `u64::MAX` / `i64::MAX` / `i64::MIN`.
+///
+/// In-domain degenerate ranges (`lo > hi` with both bounds inside the
+/// domain) are intentionally NOT covered here — they flow through the
+/// existing clamped degenerate-range path, which emits a matching
+/// empty-range shape on both the prover and verifier sides.
+fn aggregate_range_out_of_domain(axis: IndexAxis, lo: i128, hi: i128) -> bool {
+    match axis {
+        IndexAxis::Count => hi < 0 || lo > u64::MAX as i128,
+        IndexAxis::Sum => hi < (i64::MIN as i128) || lo > (i64::MAX as i128),
+        // Avg has no aggregate form; rejected at the public entry point.
+        IndexAxis::Avg => true,
+    }
+}
+
 fn build_empty_count_aggregate_proof<'db, S>(
     secondary_merk: &grovedb_merk::Merk<S>,
     grove_version: &GroveVersion,
@@ -2060,25 +2145,53 @@ where
     Ok(serialized)
 }
 
+/// Canonical empty (sum = 0) aggregate proof for the sum axis. Emits a
+/// guaranteed-empty range `[encode(i64::MAX) .. encode(i64::MAX))` so
+/// the secondary root is still committed. Mirrors
+/// [`build_empty_count_aggregate_proof`] for the sum axis; the verifier
+/// reconstructs the identical range in [`sum_aggregate_inner_range`]'s
+/// out-of-domain branch.
+fn build_empty_sum_aggregate_proof<'db, S>(
+    secondary_merk: &grovedb_merk::Merk<S>,
+    grove_version: &GroveVersion,
+    cost: &mut OperationCost,
+) -> Result<Vec<u8>, Error>
+where
+    S: grovedb_storage::StorageContext<'db>,
+{
+    let bytes = encode_sum_sort_key(i64::MAX).to_vec();
+    let inner_range = MerkQueryItemForRange::Range(bytes.clone()..bytes);
+    let (ops, _) = secondary_merk
+        .prove_aggregate_sum_on_range(&inner_range, grove_version)
+        .unwrap_add_cost(cost)
+        .map_err(|e| {
+            Error::CorruptedData(format!("indexed-axis sum-aggregate empty-range proof: {e}"))
+        })?;
+    let mut serialized = Vec::with_capacity(128);
+    encode_into(ops.iter(), &mut serialized);
+    Ok(serialized)
+}
+
 // ===================================================================
 // Verifier-side inner-range reconstruction (matches the prover's
 // secondary keyspace mapping).
 // ===================================================================
 
 fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
+    // Out-of-domain (hi < 0 OR lo > u64::MAX): emit the canonical
+    // empty-range shape (`u64::MAX..u64::MAX`) the prover commits via
+    // `build_empty_count_aggregate_proof`. This must match exactly or
+    // the aggregate proof fails to verify.
+    if aggregate_range_out_of_domain(IndexAxis::Count, lo, hi) {
+        let bytes = u64::MAX.to_be_bytes().to_vec();
+        return MerkQueryItemForRange::Range(bytes.clone()..bytes);
+    }
     let lo_u = if lo < 0 {
         0u64
     } else {
         lo.min(u64::MAX as i128) as u64
     };
-    let hi_u = if hi < 0 {
-        // Empty range (clamped) — emit the same empty-range shape the
-        // prover used (`u64::MAX..u64::MAX`).
-        let bytes = u64::MAX.to_be_bytes().to_vec();
-        return MerkQueryItemForRange::Range(bytes.clone()..bytes);
-    } else {
-        hi.min(u64::MAX as i128) as u64
-    };
+    let hi_u = hi.min(u64::MAX as i128) as u64;
     if lo_u > hi_u {
         let bytes = hi_u.saturating_add(1).to_be_bytes().to_vec();
         return MerkQueryItemForRange::Range(bytes.clone()..bytes);
@@ -2093,6 +2206,13 @@ fn count_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
 }
 
 fn sum_aggregate_inner_range(lo: i128, hi: i128) -> MerkQueryItemForRange {
+    // Out-of-domain (hi < i64::MIN OR lo > i64::MAX): emit the canonical
+    // empty-range shape the prover commits via
+    // `build_empty_sum_aggregate_proof` (`encode(i64::MAX)..encode(i64::MAX)`).
+    if aggregate_range_out_of_domain(IndexAxis::Sum, lo, hi) {
+        let bytes = encode_sum_sort_key(i64::MAX).to_vec();
+        return MerkQueryItemForRange::Range(bytes.clone()..bytes);
+    }
     let lo_i = lo.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
     let hi_i = hi.max(i64::MIN as i128).min(i64::MAX as i128) as i64;
     if lo_i > hi_i {

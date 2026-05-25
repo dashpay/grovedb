@@ -1995,4 +1995,134 @@ mod tests {
         // when combined_limit = offset+k = 1001 covers everything.
         assert!(result.skipped <= 2);
     }
+
+    // -----------------------------------------------------------------
+    // Security regression: axis-relabel forgery (P1)
+    // -----------------------------------------------------------------
+
+    /// A PCIT count proof must NOT verify when relabeled as a Sum proof.
+    ///
+    /// PCIT and PSIT both bind their value_hash via the same 3-input
+    /// `combine_hash_three(H(value), primary_root, secondary_root)`, so
+    /// before `verify_deepest_layer` learned to bind the proved element
+    /// family to the requested axis, an attacker could flip the
+    /// envelope's `axis_tag` from Count to Sum and the H1-A chain check
+    /// would still pass — after which the count secondary keys
+    /// (`count_be ‖ key`) were decoded as sum keys (`sum_sortable_be ‖
+    /// key`), returning garbage sum values under the authentic root
+    /// hash.
+    #[test]
+    fn verify_rejects_count_proof_relabeled_as_sum() {
+        use crate::operations::proof::indexed_axis::IndexedAxisRangeProof;
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        build_pcit(&db, v, &[(b"a", 10), (b"b", 20), (b"c", 30)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+
+        let proof = db
+            .prove_indexed_count_top_k(path, 3, true, None, v)
+            .unwrap()
+            .expect("prove count top_k");
+        // Honest verification under the Count axis succeeds.
+        GroveDb::verify_indexed_axis_top_k(&proof, path, IndexAxis::Count, 3, true)
+            .expect("honest count verify");
+
+        // Relabel: decode the envelope, flip axis_tag to Sum, keep the
+        // PCIT element bytes and the count-secondary proof, re-encode.
+        let config = bincode::config::standard();
+        let (mut env, _): (IndexedAxisRangeProof, _) =
+            bincode::decode_from_slice(&proof, config).expect("decode envelope");
+        assert_eq!(env.axis_tag, IndexAxis::Count.tag());
+        assert!(!env.target_is_pcpsit);
+        env.axis_tag = IndexAxis::Sum.tag();
+        let forged = bincode::encode_to_vec(&env, config).expect("re-encode forged envelope");
+
+        let res = GroveDb::verify_indexed_axis_top_k(&forged, path, IndexAxis::Sum, 3, true);
+        assert!(
+            matches!(
+                res,
+                Err(Error::CorruptedData(ref m))
+                    if m.contains("does not match the requested axis")
+            ),
+            "relabeling a PCIT count proof as Sum must be rejected by the family-binding \
+             guard; got {res:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Correctness regression: out-of-domain aggregate ranges (P2)
+    // -----------------------------------------------------------------
+
+    /// A count aggregate range entirely above `u64::MAX` must return 0,
+    /// not clamp onto the `count == u64::MAX` boundary entry.
+    #[test]
+    fn aggregate_count_range_above_u64_max_returns_zero() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        // Single boundary entry whose secondary key sits at count =
+        // u64::MAX. A buggy clamp (RangeFrom(u64::MAX..)) would count it.
+        build_pcit(&db, v, &[(b"max", u64::MAX)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
+        let lo = u64::MAX as i128 + 5;
+        let hi = u64::MAX as i128 + 10;
+        let proof = db
+            .prove_indexed_axis_range_aggregate(path, IndexAxis::Count, lo, hi, None, v)
+            .unwrap()
+            .expect("prove out-of-domain count aggregate");
+        let result =
+            GroveDb::verify_indexed_axis_range_aggregate(&proof, path, IndexAxis::Count, lo, hi)
+                .expect("verify out-of-domain count aggregate");
+        assert_eq!(
+            result.aggregate, 0,
+            "count range entirely above u64::MAX must aggregate to 0, not count the \
+             boundary entry"
+        );
+    }
+
+    /// A sum aggregate range entirely above `i64::MAX` must return 0,
+    /// not clamp onto the `sum == i64::MAX` boundary entry.
+    #[test]
+    fn aggregate_sum_range_above_i64_max_returns_zero() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        build_psit(&db, v, &[(b"max", i64::MAX)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let lo = i64::MAX as i128 + 5;
+        let hi = i64::MAX as i128 + 10;
+        let proof = db
+            .prove_indexed_axis_range_aggregate(path, IndexAxis::Sum, lo, hi, None, v)
+            .unwrap()
+            .expect("prove out-of-domain sum aggregate");
+        let result =
+            GroveDb::verify_indexed_axis_range_aggregate(&proof, path, IndexAxis::Sum, lo, hi)
+                .expect("verify out-of-domain sum aggregate");
+        assert_eq!(
+            result.aggregate, 0,
+            "sum range entirely above i64::MAX must aggregate to 0, not sum the boundary entry"
+        );
+    }
+
+    /// A sum aggregate range entirely below `i64::MIN` must return 0,
+    /// not clamp onto the `sum == i64::MIN` boundary entry.
+    #[test]
+    fn aggregate_sum_range_below_i64_min_returns_zero() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        build_psit(&db, v, &[(b"min", i64::MIN)]);
+        let path: &[&[u8]] = &[TEST_LEAF, b"psit"];
+        let lo = i64::MIN as i128 - 10;
+        let hi = i64::MIN as i128 - 5;
+        let proof = db
+            .prove_indexed_axis_range_aggregate(path, IndexAxis::Sum, lo, hi, None, v)
+            .unwrap()
+            .expect("prove below-domain sum aggregate");
+        let result =
+            GroveDb::verify_indexed_axis_range_aggregate(&proof, path, IndexAxis::Sum, lo, hi)
+                .expect("verify below-domain sum aggregate");
+        assert_eq!(
+            result.aggregate, 0,
+            "sum range entirely below i64::MIN must aggregate to 0, not sum the boundary entry"
+        );
+    }
 }

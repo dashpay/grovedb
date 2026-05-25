@@ -1402,4 +1402,126 @@ mod tests {
             other => panic!("expected PSIT, got {:?}", other),
         }
     }
+
+    /// Security regression (P1): the dedicated PSIT insert short-circuits
+    /// child subtree roots to NULL_HASH, so it must reject a non-empty
+    /// `SumTree(Some(root_key), ..)` child claim — otherwise the
+    /// serialized element would persist a root_key that disagrees with
+    /// the empty merk node it is bound to.
+    #[test]
+    fn psit_rejects_non_empty_sum_tree_child() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create PSIT");
+
+        // A SumTree claiming a non-empty root must be rejected.
+        let res = db
+            .insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                b"k",
+                Element::SumTree(Some(vec![7u8; 32]), 0, None),
+                None,
+                v,
+            )
+            .unwrap();
+        assert!(
+            matches!(res, Err(Error::NotSupported(_))),
+            "non-empty SumTree child must be rejected by the dedicated PSIT insert guard; \
+             got {res:?}"
+        );
+
+        // An EMPTY SumTree child is accepted.
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"k",
+            Element::SumTree(None, 0, None),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("empty SumTree child accepted");
+        assert!(db
+            .verify_grovedb(None, true, true, v)
+            .expect("verify_grovedb after empty SumTree child")
+            .is_empty());
+    }
+
+    /// Correctness regression (P1): deleting a tree child from a PSIT
+    /// primary must run the orphan-cleanup path (find_subtrees + clear,
+    /// plus secondary-namespace clear for indexed children) that the PCIT
+    /// path has always had. Exercises the `is_layered_target` delete
+    /// branch on an empty `SumTree` child and confirms verify_grovedb
+    /// stays clean across delete + re-create.
+    ///
+    /// NOTE: populating a tree child *under* a PSIT primary via the
+    /// generic deep-insert path is a known Phase-2 deferral ("can only
+    /// propagate on tree items"), so a populated orphan cannot yet be
+    /// produced through the public API — the cleanup added here is the
+    /// forward-looking mirror of PCIT's behavior for when that nesting
+    /// lands. This test guards that the cleanup branch executes cleanly.
+    #[test]
+    fn psit_delete_tree_child_runs_cleanup_path() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create PSIT");
+
+        // Insert an empty SumTree child (is_layered_target on delete).
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"child",
+            Element::SumTree(None, 0, None),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty SumTree child");
+        assert!(db
+            .verify_grovedb(None, true, true, v)
+            .expect("verify after insert")
+            .is_empty());
+
+        // Delete it — exercises the cleanup branch.
+        let removed = db
+            .delete_from_provable_sum_indexed_tree([TEST_LEAF, b"psit"].as_ref(), b"child", None, v)
+            .unwrap()
+            .expect("delete child from PSIT");
+        assert!(removed);
+        assert!(db
+            .verify_grovedb(None, true, true, v)
+            .expect("verify after delete")
+            .is_empty());
+
+        // Re-create an empty SumTree at the same key; verify stays clean.
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"child",
+            Element::SumTree(None, 0, None),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("re-create empty SumTree child");
+        assert!(db
+            .verify_grovedb(None, true, true, v)
+            .expect("verify after re-create")
+            .is_empty());
+    }
 }

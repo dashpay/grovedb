@@ -329,6 +329,160 @@ mod tests {
         assert_verify_passes(&db, grove_version);
     }
 
+    /// Security/correctness regression (P2): a batch `DeleteTree` on a
+    /// PSIT primary must clear its *sum-axis secondary* namespace, not
+    /// just the primary. Before the collection gate was widened from
+    /// `is_count_indexed_primary()` to `is_indexed_primary()`, PSIT (and
+    /// PCPSIT) DeleteTree ops were never queued for the all-axis sweep,
+    /// so the secondary survived. We detect the orphan by re-creating an
+    /// empty PSIT at the same key (same derived secondary prefix) and
+    /// asserting its sum secondary is empty — stale entries would
+    /// resurface otherwise.
+    #[test]
+    fn batch_delete_tree_psit_clears_sum_secondary_namespace() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, s) in [(b"a".as_ref(), 10i64), (b"b", 20)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(s),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        // Sanity: the secondary has entries before the delete.
+        let before = db
+            .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 10, true, None, v)
+            .unwrap()
+            .expect("top_k before");
+        assert_eq!(before.len(), 2);
+
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"psit".to_vec(),
+                TreeType::ProvableSumIndexedTree,
+                SubelementsDeletionBehavior::DeleteChildren,
+            )],
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("batch delete psit");
+
+        // Re-create an empty PSIT at the same key (same secondary prefix).
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("re-create");
+        let after = db
+            .indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 10, true, None, v)
+            .unwrap()
+            .expect("top_k after");
+        assert!(
+            after.is_empty(),
+            "stale sum-secondary entries resurfaced after batch DeleteTree + re-create: {after:?}"
+        );
+        assert_verify_passes(&db, v);
+    }
+
+    /// PCPSIT analogue of the above: a batch `DeleteTree` must clear
+    /// *every configured axis* secondary. We populate count+sum axes,
+    /// DeleteTree via batch, re-create with the same axes, and assert
+    /// both the count and sum secondaries come back empty.
+    #[test]
+    fn batch_delete_tree_pcpsit_clears_all_axis_secondaries() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes.clone()).unwrap(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, s) in [(b"a".as_ref(), 10i64), (b"b", 20)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), s),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("insert");
+        }
+        assert_eq!(
+            db.indexed_count_top_k([TEST_LEAF, b"pcpsit"].as_ref(), 10, true, None, v)
+                .unwrap()
+                .expect("count top_k before")
+                .len(),
+            2
+        );
+
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::delete_tree_op(
+                vec![TEST_LEAF.to_vec()],
+                b"pcpsit".to_vec(),
+                TreeType::ProvableCountProvableSumIndexedTree,
+                SubelementsDeletionBehavior::DeleteChildren,
+            )],
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("batch delete pcpsit");
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("re-create");
+        let count_after = db
+            .indexed_count_top_k([TEST_LEAF, b"pcpsit"].as_ref(), 10, true, None, v)
+            .unwrap()
+            .expect("count top_k after");
+        let sum_after = db
+            .indexed_sum_top_k([TEST_LEAF, b"pcpsit"].as_ref(), 10, true, None, v)
+            .unwrap()
+            .expect("sum top_k after");
+        assert!(
+            count_after.is_empty() && sum_after.is_empty(),
+            "stale secondaries resurfaced after batch DeleteTree + re-create: count={count_after:?} sum={sum_after:?}"
+        );
+        assert_verify_passes(&db, v);
+    }
+
     // -----------------------------------------------------------------
     // inspect_cidx_overwrite paths
     // -----------------------------------------------------------------

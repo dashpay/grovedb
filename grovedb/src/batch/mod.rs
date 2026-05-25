@@ -4760,7 +4760,13 @@ impl GroveDb {
                         // primary cleanup is skipped, because the cidx's
                         // secondary metadata lives in a different
                         // namespace and is invisible to find_subtrees.
-                        if tree_type.is_count_indexed_primary() {
+                        // is_indexed_primary() (not is_count_indexed_primary):
+                        // PSIT and PCPSIT DeleteTree ops must also queue their
+                        // primary path for the all-axis secondary sweep below,
+                        // otherwise their sum/avg secondary namespaces survive
+                        // the DeleteTree. The sweep clears all three axis tags
+                        // unconditionally, so this is correct for every variant.
+                        if tree_type.is_indexed_primary() {
                             cidx_primary_delete_paths.push(child_path);
                         }
                         continue;
@@ -4870,7 +4876,9 @@ impl GroveDb {
                 if tree_type.uses_non_merk_data_storage() {
                     non_merk_delete_paths.push(child_path);
                 } else {
-                    if tree_type.is_count_indexed_primary() {
+                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
+                    // their path queued for the all-axis secondary sweep.
+                    if tree_type.is_indexed_primary() {
                         cidx_primary_delete_paths.push(child_path.clone());
                     }
                     merk_delete_paths.push(child_path);
@@ -5253,7 +5261,13 @@ impl GroveDb {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
                         // No emptiness check and no post-apply storage cleanup.
                         // The caller guarantees the subtree is already empty.
-                        if tree_type.is_count_indexed_primary() {
+                        // is_indexed_primary() (not is_count_indexed_primary):
+                        // PSIT and PCPSIT DeleteTree ops must also queue their
+                        // primary path for the all-axis secondary sweep below,
+                        // otherwise their sum/avg secondary namespaces survive
+                        // the DeleteTree. The sweep clears all three axis tags
+                        // unconditionally, so this is correct for every variant.
+                        if tree_type.is_indexed_primary() {
                             cidx_primary_delete_paths.push(child_path);
                         }
                         continue;
@@ -5358,7 +5372,9 @@ impl GroveDb {
                 if tree_type.uses_non_merk_data_storage() {
                     non_merk_delete_paths.push(child_path);
                 } else {
-                    if tree_type.is_count_indexed_primary() {
+                    // is_indexed_primary(): PSIT/PCPSIT primaries also need
+                    // their path queued for the all-axis secondary sweep.
+                    if tree_type.is_indexed_primary() {
                         cidx_primary_delete_paths.push(child_path.clone());
                     }
                     merk_delete_paths.push(child_path);

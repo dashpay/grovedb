@@ -84,7 +84,142 @@ fn make_axis_secondary_key(axis: IndexAxis, count: u64, sum: i64, item_key: &[u8
     }
 }
 
+/// Reject a non-empty tree / indexed `item` claim on the dedicated
+/// indexed-tree insert paths (PCIT / PSIT / PCPSIT).
+///
+/// These dedicated paths short-circuit child subtree roots to
+/// `NULL_HASH` (the child is created empty and populated by subsequent
+/// `insert_into_*` calls). A `Some(root_key)` / non-zero-aggregate /
+/// populated-secondary claim would persist a serialized element whose
+/// stored roots disagree with the empty merk node it is bound to —
+/// breaking the H1-A chain until a later deep write happens to repair
+/// it, and (the security-relevant case) letting a caller commit a node
+/// that references on-disk child data the dedicated path never
+/// validated. Non-empty claims must go through generic `db.insert`,
+/// which opens the child merks and validates the claimed roots.
+///
+/// Mirrors the inline guard the PCIT path has carried since the start;
+/// extends it to the PSIT and PCPSIT indexed claims.
+fn reject_non_empty_dedicated_indexed_child_claim(
+    item: &Element,
+    api_label: &str,
+) -> Result<(), Error> {
+    let non_empty = match item.underlying() {
+        Element::Tree(Some(_), _)
+        | Element::SumTree(Some(_), ..)
+        | Element::BigSumTree(Some(_), ..)
+        | Element::CountTree(Some(_), ..)
+        | Element::CountSumTree(Some(_), ..)
+        | Element::ProvableCountTree(Some(_), ..)
+        | Element::ProvableCountSumTree(Some(_), ..)
+        | Element::ProvableSumTree(Some(_), ..)
+        | Element::ProvableCountProvableSumTree(Some(_), ..) => true,
+        Element::ProvableCountIndexedTree(p, s, c, _) => p.is_some() || s.is_some() || *c != 0,
+        Element::ProvableSumIndexedTree(p, s, sum, _) => p.is_some() || s.is_some() || *sum != 0,
+        Element::ProvableCountProvableSumIndexedTree(p, c, sum, axes, _) => {
+            p.is_some() || *c != 0 || *sum != 0 || axes.iter().any(|(_, sk)| sk.is_some())
+        }
+        _ => false,
+    };
+    if non_empty {
+        return Err(Error::NotSupported(format!(
+            "{api_label} only accepts EMPTY tree/indexed child elements (all child root \
+             keys = None, aggregates = 0, no populated secondaries). The dedicated insert \
+             short-circuits child roots to NULL_HASH; a non-empty claim would persist a \
+             serialized element whose stored roots disagree with the empty merk node it is \
+             bound to. Use generic db.insert for non-empty claims, or insert empty here \
+             then populate via subsequent insert_into_*_tree calls"
+        )));
+    }
+    Ok(())
+}
+
 impl GroveDb {
+    /// Clear orphaned child-subtree storage (and any indexed-secondary
+    /// namespaces) for an existing tree/indexed entry that is about to
+    /// be overwritten or deleted at `entry_path`. No-op when `existing`
+    /// is not a tree.
+    ///
+    /// Shared by the PCIT/PSIT/PCPSIT dedicated insert (overwrite) and
+    /// delete paths. Without it, replacing or deleting a tree-typed
+    /// child orphans the child's storage namespace — the entry is gone
+    /// from the primary Merk but its descendants still occupy storage
+    /// and resurface to `verify_grovedb`'s raw_iter pass (and to a
+    /// future insert at the same key). For an indexed-tree child the
+    /// per-axis secondary namespaces at `Blake3(primary_prefix ‖
+    /// axis_tag)` must be cleared too.
+    fn cleanup_dedicated_indexed_child_storage<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        existing: &Element,
+        entry_path: SubtreePath<'b, B>,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        if !existing.is_any_tree() {
+            return Ok(()).wrap_with_cost(cost);
+        }
+        // Recursively clear all primary subtree storage under entry_path.
+        let subtrees_paths = cost_return_on_error!(
+            &mut cost,
+            self.find_subtrees(&entry_path, Some(transaction), grove_version)
+        );
+        for subtree_path in subtrees_paths {
+            let p: SubtreePath<_> = subtree_path.as_slice().into();
+            let mut storage = self
+                .db
+                .get_transactional_storage_context(p, Some(batch), transaction)
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up old subtree storage in dedicated indexed-tree \
+                         overwrite/delete: {e}",
+                    ))
+                })
+            );
+        }
+        // Clear the per-axis secondary namespaces for indexed primaries.
+        let axes: Vec<IndexAxis> = match existing.underlying() {
+            Element::ProvableCountIndexedTree(..) => vec![IndexAxis::Count],
+            Element::ProvableSumIndexedTree(..) => vec![IndexAxis::Sum],
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes_tlv, _) => axes_tlv
+                .iter()
+                .filter_map(|(tag, _)| IndexAxis::try_from_tag(*tag).ok())
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !axes.is_empty() {
+            let primary_prefix =
+                RocksDbStorage::build_prefix(entry_path.clone()).unwrap_add_cost(&mut cost);
+            for axis in axes {
+                let secondary_prefix =
+                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
+                        .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(batch),
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed secondary (axis {axis:?}) during \
+                             dedicated indexed-tree overwrite/delete: {e}",
+                        ))
+                    })
+                );
+            }
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
     /// Open the per-axis secondary Merk for any indexed-tree element
     /// (`ProvableCountIndexedTree`, `ProvableSumIndexedTree`, or
     /// `ProvableCountProvableSumIndexedTree`) at `path`. The secondary
@@ -2640,6 +2775,35 @@ impl GroveDb {
         let old_sum_for_secondary = existing_item.as_ref().map(|e| e.sum_value_or_default());
         let new_sum_for_secondary = item.sum_value_or_default();
 
+        // Guard: reject non-empty tree/indexed child claims. The PSIT
+        // insert short-circuits child subtree roots to NULL_HASH, so a
+        // Some(root_key) claim would persist a serialized element whose
+        // stored root disagrees with the empty merk node.
+        cost_return_on_error_no_add!(
+            cost,
+            reject_non_empty_dedicated_indexed_child_claim(
+                &item,
+                "insert_into_indexed_tree (ProvableSumIndexedTree)"
+            )
+        );
+
+        // Overwrite cleanup: if an existing entry at item_key is a tree,
+        // clear its orphaned child storage (and secondary namespaces for
+        // indexed children) before writing the replacement.
+        if let Some(existing) = existing_item.as_ref() {
+            let entry_path = path.derive_owned_with_child(item_key.to_vec());
+            cost_return_on_error!(
+                &mut cost,
+                self.cleanup_dedicated_indexed_child_storage(
+                    existing,
+                    SubtreePath::from(&entry_path),
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            );
+        }
+
         // Insert into primary. For PSIT we only accept sum-bearing
         // items (sum item, item-with-sum, references, or sum-bearing
         // trees). The merk Element::insert / insert_reference /
@@ -2928,6 +3092,24 @@ impl GroveDb {
             .map_err(Error::MerkError)
         );
 
+        // If the deleted entry was a tree, clear its orphaned child
+        // storage (and indexed-secondary namespaces) — otherwise the
+        // descendants remain in storage and resurface to verify_grovedb
+        // / a future insert at the same key.
+        if is_layered_target {
+            let entry_path = path.derive_owned_with_child(item_key.to_vec());
+            cost_return_on_error!(
+                &mut cost,
+                self.cleanup_dedicated_indexed_child_storage(
+                    &existing,
+                    SubtreePath::from(&entry_path),
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            );
+        }
+
         // Delete corresponding secondary entry.
         let mut secondary_merk = cost_return_on_error!(
             &mut cost,
@@ -3161,6 +3343,32 @@ impl GroveDb {
             .map(|(c, s)| (Some(c), Some(s)))
             .unwrap_or((None, None));
         let (new_count, new_sum) = item.count_sum_value_or_default();
+
+        // Guard: reject non-empty tree/indexed child claims (same reason
+        // as the PCIT/PSIT paths — the dedicated insert writes NULL_HASH
+        // child roots).
+        cost_return_on_error_no_add!(
+            cost,
+            reject_non_empty_dedicated_indexed_child_claim(
+                &item,
+                "insert_into_indexed_tree (ProvableCountProvableSumIndexedTree)"
+            )
+        );
+
+        // Overwrite cleanup for an existing tree/indexed child entry.
+        if let Some(existing) = existing_item.as_ref() {
+            let entry_path = path.derive_owned_with_child(item_key.to_vec());
+            cost_return_on_error!(
+                &mut cost,
+                self.cleanup_dedicated_indexed_child_storage(
+                    existing,
+                    SubtreePath::from(&entry_path),
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            );
+        }
 
         // Insert into primary.
         match item.underlying() {
@@ -3456,6 +3664,22 @@ impl GroveDb {
             )
             .map_err(Error::MerkError)
         );
+
+        // Clear orphaned child storage (and indexed-secondary namespaces)
+        // when the deleted entry was itself a tree.
+        if is_layered_target {
+            let entry_path = path.derive_owned_with_child(item_key.to_vec());
+            cost_return_on_error!(
+                &mut cost,
+                self.cleanup_dedicated_indexed_child_storage(
+                    &existing,
+                    SubtreePath::from(&entry_path),
+                    transaction,
+                    batch,
+                    grove_version,
+                )
+            );
+        }
 
         let mut new_axes: Vec<(u8, Option<Vec<u8>>)> = Vec::with_capacity(axes_before.len());
         let mut axis_root_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
