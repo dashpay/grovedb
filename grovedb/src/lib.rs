@@ -343,6 +343,31 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Bulk-ingest a single SST file (produced by `rocksdb::SstFileWriter`)
+    /// into the named column family of the underlying RocksDB.
+    ///
+    /// Delegates to
+    /// [`grovedb_storage::rocksdb_storage::RocksDbStorage::ingest_subtree_sst`].
+    /// Intended for snapshot-based bootstrap of a single subtree's storage
+    /// state — see that method's docs for safety contract.
+    ///
+    /// CF name for ordinary data storage is the default CF
+    /// (`rocksdb::DEFAULT_COLUMN_FAMILY_NAME`). Aux/roots/meta CFs are also
+    /// valid targets if a snapshot tool happens to cover them.
+    ///
+    /// This call bypasses any open transaction. The caller is responsible for
+    /// transaction semantics at a higher layer (e.g. only call when the
+    /// destination subtree is known empty, and rely on InitChain
+    /// abort = wipe-and-restart for failure recovery).
+    pub fn ingest_subtree_sst(
+        &self,
+        cf_name: &str,
+        sst_path: &std::path::Path,
+    ) -> Result<(), Error> {
+        self.db.ingest_subtree_sst(cf_name, sst_path)?;
+        Ok(())
+    }
+
     /// Opens the transactional Merk at the given path. Returns CostResult.
     fn open_transactional_merk_at_path<'db, 'b, B>(
         &'db self,
