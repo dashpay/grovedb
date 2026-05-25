@@ -1221,6 +1221,31 @@ mod tests {
         );
     }
 
+    /// Defense-in-depth: a forged proof whose returned value bytes do
+    /// not deserialize as any `Element` must be rejected as
+    /// `InvalidProof`, not silently surfaced to the caller.
+    ///
+    /// A truncated `Tree` discriminant (`[0x02]`) passes the merk-level
+    /// KV→KVValueHash guard (Tree has a combined value-hash, not a
+    /// simple one) but fails full `Element::deserialize`, exercising the
+    /// non-Element-bytes rejection in `run_count_offset_layer_dispatch`.
+    #[test]
+    fn verifier_rejects_non_element_returned_bytes() {
+        let v = GroveVersion::latest();
+        let (_db, honest, path_query) = forge_fixture();
+        // Valid Tree discriminant byte, but no fields → from_serialized_value
+        // succeeds (Tree, not simple-value) yet Element::deserialize fails.
+        let forged_bytes = vec![0x02u8];
+        let tampered = forge_count_offset_proof_replacing_value(honest, b"f", forged_bytes);
+        let result = GroveDb::verify_query_raw(&tampered, &path_query, v);
+        let err = result.expect_err("non-Element returned bytes must be rejected");
+        assert!(
+            matches!(err, crate::Error::InvalidProof(_, ref msg) if msg.contains("non-Element")),
+            "non-Element returned bytes should reject as InvalidProof mentioning non-Element; \
+             got {err:?}"
+        );
+    }
+
     /// Defense-in-depth: a forged proof that surfaces a Reference
     /// element in `returned_items` must be rejected as `NotSupported`
     /// mentioning "Reference" — the count-offset short-circuit doesn't
