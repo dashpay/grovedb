@@ -1142,6 +1142,44 @@ mod storage_tests {
 
     #[cfg(feature = "test-seeding")]
     #[test]
+    fn test_frontier_less_append_rejected_on_non_empty_frontier() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // Build a non-empty frontier via a normal append first.
+        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
+            .value
+            .expect("normal append should succeed");
+        assert_eq!(ct.tree_size(), 1, "frontier should be non-empty");
+        let total_before = ct.total_count();
+
+        // Both frontier-less entry points must refuse to advance the bulk tree.
+        let single = ct.append_raw_without_frontier(test_leaf(1), test_rho(1), &seed_payload(1));
+        assert!(
+            single.value.is_err(),
+            "single frontier-less append must be rejected on a non-empty frontier"
+        );
+
+        let bulk = ct.append_many_without_frontier(std::iter::once((
+            test_leaf(2),
+            test_rho(2),
+            seed_payload(2),
+        )));
+        assert!(
+            bulk.value.is_err(),
+            "bulk frontier-less seed must be rejected on a non-empty frontier"
+        );
+
+        assert_eq!(
+            ct.total_count(),
+            total_before,
+            "rejected frontier-less appends must not mutate the tree"
+        );
+    }
+
+    #[cfg(feature = "test-seeding")]
+    #[test]
     fn test_append_many_without_frontier_empty_input() {
         let ctx = MockDataStorageContext::new();
         let mut ct =
