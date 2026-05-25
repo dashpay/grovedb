@@ -1984,6 +1984,120 @@ mod tests {
         }
     }
 
+    /// Direct `db.insert` of a NON-EMPTY PCPSIT must validate the
+    /// claimed primary/axis-secondary root keys against on-disk state and
+    /// succeed when they match. Exercises the non-empty success path
+    /// (open each axis secondary, compare root keys, recompute
+    /// axes_digest). We populate a PCPSIT, read back its element (which
+    /// now carries real primary + per-axis secondary root keys), and
+    /// re-insert that exact element.
+    #[test]
+    fn pcpsit_direct_insert_non_empty_with_matching_roots_succeeds() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_pcpsit(
+            &db,
+            b"pcpsit",
+            &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+            v,
+        );
+        for (k, s) in [(b"a".as_ref(), 10i64), (b"b", 20)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), s),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        // Read back the populated element — it now carries Some(primary),
+        // non-zero count/sum, and per-axis Some(secondary_root_key).
+        let populated = db
+            .get([TEST_LEAF].as_ref(), b"pcpsit", None, v)
+            .unwrap()
+            .expect("get populated PCPSIT");
+        assert!(matches!(
+            populated,
+            Element::ProvableCountProvableSumIndexedTree(Some(_), 2, 30, _, _)
+        ));
+        // Re-insert the exact element via the generic db.insert — the
+        // non-empty validation opens each child merk and compares roots.
+        // Override must be allowed since the key already holds the PCPSIT.
+        let opts = crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        };
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            populated,
+            Some(opts),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("re-insert non-empty PCPSIT with matching roots");
+        assert_verify_passes(&db, v);
+    }
+
+    /// Direct `db.insert` of a non-empty PCPSIT with a mismatched axis
+    /// secondary root key must be rejected.
+    #[test]
+    fn pcpsit_direct_insert_non_empty_with_mismatched_axis_root_rejected() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_pcpsit(
+            &db,
+            b"pcpsit",
+            &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+            v,
+        );
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"a".to_vec(), 10),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("populate");
+        let populated = db
+            .get([TEST_LEAF].as_ref(), b"pcpsit", None, v)
+            .unwrap()
+            .expect("get");
+        let Element::ProvableCountProvableSumIndexedTree(primary, count, sum, mut axes, flags) =
+            populated
+        else {
+            panic!("expected PCPSIT");
+        };
+        // Corrupt the first axis's secondary root key.
+        axes[0].1 = Some(vec![0xAB; 32]);
+        let tampered =
+            Element::ProvableCountProvableSumIndexedTree(primary, count, sum, axes, flags);
+        let opts = crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        };
+        let res = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                tampered,
+                Some(opts),
+                None,
+                v,
+            )
+            .unwrap();
+        assert!(
+            matches!(res, Err(Error::InvalidInput(_))),
+            "mismatched axis secondary root key must be rejected; got {res:?}"
+        );
+    }
+
     /// Batch analogue of the above: the batch empty-creation path must
     /// also reject non-canonical axes (it previously checked only the
     /// 1..=3 count, not sortedness / duplicates / tag validity).
