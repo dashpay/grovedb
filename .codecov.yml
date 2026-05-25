@@ -1,5 +1,19 @@
 codecov:
   require_ci_to_pass: true
+  # The test suite runs in 3 disjoint nextest shards, each uploading its
+  # own coverage report under a distinct `shard-N` flag (see
+  # .github/workflows/grovedb.yml). Wait for all 3 before computing the
+  # commit status so the union is complete.
+  notify:
+    after_n_builds: 3
+
+# Per-shard flags. carryforward lets a shard's last-known coverage carry
+# over if it doesn't upload in a given run, and — critically — makes
+# codecov compute the commit total/patch coverage as the UNION across
+# the three shard flags rather than from a single (partial) upload.
+flag_management:
+  default_rules:
+    carryforward: true
 
 ignore:
   - "**/test_utils.rs"
