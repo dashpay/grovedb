@@ -519,6 +519,18 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     ) -> CostResult<FrontierLessAppendResult, CommitmentTreeError> {
         let mut cost = OperationCost::default();
 
+        // Frontier-less seeding only makes sense on an empty frontier. If the
+        // frontier already has leaves, advancing the bulk tree here would leave
+        // `frontier_size < total_count`, a mismatch `open` cannot tolerate
+        // (it only accepts an empty frontier) — i.e. unreopenable state. Reject
+        // it instead of silently corrupting the tree.
+        if self.frontier.tree_size() != 0 {
+            return Err(CommitmentTreeError::InvalidData(
+                "frontier-less seeding requires an empty frontier".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
         // Validate payload size — kept because it keeps stored entries
         // well-formed for chunk proofs and client deserialization. (cmx is
         // intentionally not validated as a Pallas field element here.)
@@ -576,6 +588,16 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         I: IntoIterator<Item = ([u8; 32], [u8; 32], Vec<u8>)>,
     {
         let mut cost = OperationCost::default();
+
+        // Fail fast before consuming the iterator: frontier-less seeding is only
+        // valid on an empty frontier (see `append_raw_without_frontier`).
+        if self.frontier.tree_size() != 0 {
+            return Err(CommitmentTreeError::InvalidData(
+                "frontier-less seeding requires an empty frontier".to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
         let mut appended: u64 = 0;
         let mut hash_count: u64 = 0;
         let mut compactions: u64 = 0;
