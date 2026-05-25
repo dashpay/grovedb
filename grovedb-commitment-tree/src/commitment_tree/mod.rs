@@ -623,6 +623,10 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         // Flush MMR nodes staged during compaction so the seeded state is
         // fully persisted; callers don't need a separate commit_mmr().
         if let Err(e) = self.commit_mmr() {
+            // codecov:ignore — commit_mmr only fails on a storage fault during
+            // the final MMR flush; this method always flushes within the same
+            // call after appending, so there's no way to leave a pending overlay
+            // and then fail only the flush via the test mocks.
             return Err(e).wrap_with_cost(cost);
         }
 

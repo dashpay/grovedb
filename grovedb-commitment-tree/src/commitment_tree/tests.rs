@@ -20,14 +20,22 @@ mod storage_tests {
     ///
     /// Only `get` and `put` are functional — the rest are stubs
     /// since `CommitmentTree` only uses data storage operations.
+    ///
+    /// `fail_get` / `fail_put` are shared toggles used by the fault-injection
+    /// tests to make storage reads/writes fail *after* construction, exercising
+    /// the otherwise-unreachable storage-error branches.
     struct MockDataStorageContext {
         data: std::cell::RefCell<BTreeMap<Vec<u8>, Vec<u8>>>,
+        fail_get: std::rc::Rc<std::cell::Cell<bool>>,
+        fail_put: std::rc::Rc<std::cell::Cell<bool>>,
     }
 
     impl MockDataStorageContext {
         fn new() -> Self {
             Self {
                 data: std::cell::RefCell::new(BTreeMap::new()),
+                fail_get: Default::default(),
+                fail_put: Default::default(),
             }
         }
 
@@ -37,7 +45,21 @@ mod storage_tests {
             data.insert(key.to_vec(), value);
             Self {
                 data: std::cell::RefCell::new(data),
+                fail_get: Default::default(),
+                fail_put: Default::default(),
             }
+        }
+
+        /// Clone the (get, put) failure toggles so a test can flip them after the
+        /// context has been moved into a `CommitmentTree`.
+        #[cfg(feature = "test-seeding-ct")]
+        fn fault_handles(
+            &self,
+        ) -> (
+            std::rc::Rc<std::cell::Cell<bool>>,
+            std::rc::Rc<std::cell::Cell<bool>>,
+        ) {
+            (self.fail_get.clone(), self.fail_put.clone())
         }
     }
 
@@ -163,6 +185,15 @@ mod storage_tests {
             _children_sizes: ChildrenSizesWithIsSumTree,
             _cost_info: Option<KeyValueStorageCost>,
         ) -> CostResult<(), grovedb_storage::Error> {
+            if self.fail_put.get() {
+                return Err(grovedb_storage::Error::StorageError(
+                    "injected put failure".to_string(),
+                ))
+                .wrap_with_cost(OperationCost {
+                    seek_count: 1,
+                    ..Default::default()
+                });
+            }
             self.data
                 .borrow_mut()
                 .insert(key.as_ref().to_vec(), value.to_vec());
@@ -176,6 +207,15 @@ mod storage_tests {
             &self,
             key: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
+            if self.fail_get.get() {
+                return Err(grovedb_storage::Error::StorageError(
+                    "injected get failure".to_string(),
+                ))
+                .wrap_with_cost(OperationCost {
+                    seek_count: 1,
+                    ..Default::default()
+                });
+            }
             let store = self.data.borrow();
             let val = store.get(key.as_ref()).cloned();
             let loaded = val.as_ref().map_or(0, |v| v.len() as u64);
@@ -1141,6 +1181,76 @@ mod storage_tests {
                 .expect("state root"),
             live_root,
             "bulk state root survives the round-trip"
+        );
+    }
+
+    #[cfg(feature = "test-seeding-ct")]
+    #[test]
+    fn test_append_raw_without_frontier_surfaces_bulk_storage_error() {
+        let ctx = MockDataStorageContext::new();
+        let (fail_get, fail_put) = ctx.fault_handles();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // Make the underlying BulkAppendTree append fail on storage I/O so the
+        // wrapped "bulk append" error branch is exercised.
+        fail_get.set(true);
+        fail_put.set(true);
+
+        let err = ct
+            .append_raw_without_frontier(test_leaf(0), test_rho(0), &seed_payload(0))
+            .value
+            .expect_err("bulk storage failure should surface");
+        assert!(
+            format!("{}", err).contains("bulk append"),
+            "error should be wrapped as a bulk append failure: {}",
+            err
+        );
+    }
+
+    #[cfg(feature = "test-seeding-ct")]
+    #[test]
+    fn test_append_many_without_frontier_propagates_entry_error() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // A wrong-size payload makes the per-entry append fail; the bulk loop
+        // must propagate that error rather than swallow it.
+        let bad_payload = vec![0u8; 1];
+        let err = ct
+            .append_many_without_frontier(std::iter::once((test_leaf(0), test_rho(0), bad_payload)))
+            .value
+            .expect_err("a bad entry must propagate out of the bulk loop");
+        assert!(
+            matches!(err, CommitmentTreeError::InvalidPayloadSize { .. }),
+            "expected the per-entry payload-size error to propagate, got: {}",
+            err
+        );
+    }
+
+    #[cfg(feature = "test-seeding-ct")]
+    #[test]
+    fn test_append_many_without_frontier_surfaces_state_root_error() {
+        let ctx = MockDataStorageContext::new();
+        let (fail_get, _fail_put) = ctx.fault_handles();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // Seed a few notes so the tree has persisted state to read back.
+        let notes = (0..3u8).map(|i| (test_leaf(i as u64), test_rho(i), seed_payload(i)));
+        ct.append_many_without_frontier(notes)
+            .value
+            .expect("seed should succeed");
+
+        // An empty follow-up call recomputes the current state root; with reads
+        // failing, that recomputation must surface the error.
+        fail_get.set(true);
+        let res =
+            ct.append_many_without_frontier(std::iter::empty::<([u8; 32], [u8; 32], Vec<u8>)>());
+        assert!(
+            res.value.is_err(),
+            "state-root recomputation read failure should surface"
         );
     }
 
