@@ -2276,7 +2276,17 @@ where
                         | GroveOp::InsertOrReplace { element }
                         | GroveOp::Replace { element }
                         | GroveOp::Patch { element, .. } => element,
-                        _ => unreachable!(),
+                        // Structurally unreachable: the enclosing arm already
+                        // constrained op_ref to exactly these five variants.
+                        // Fail gracefully instead of panicking if a refactor
+                        // ever widens the outer pattern.
+                        _ => {
+                            return Err(Error::CorruptedCodeExecution(
+                                "execute_ops_on_path: op matched an insert/replace/patch \
+                                 variant in the outer arm but not when extracting its element",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                     };
 
                     // Check tree-override protection for all non-reference elements.
@@ -4877,8 +4887,21 @@ impl GroveDb {
                                     skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
+                                // DontCheckWithNoCleanup / DeleteChildren never
+                                // reach the emptiness-check block above (they
+                                // either skip the check or delete children
+                                // unconditionally). Return a graceful error
+                                // rather than panicking if that invariant is
+                                // ever broken.
                                 SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
+                                | SubelementsDeletionBehavior::DeleteChildren => {
+                                    return Err(Error::CorruptedCodeExecution(
+                                        "batch delete: DontCheckWithNoCleanup / DeleteChildren \
+                                         behaviors are handled before the non-empty-tree check \
+                                         and must not reach this match arm",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
                             }
                         }
                     }
@@ -5373,8 +5396,21 @@ impl GroveDb {
                                     skipped_delete_paths.insert(child_path);
                                     continue;
                                 }
+                                // DontCheckWithNoCleanup / DeleteChildren never
+                                // reach the emptiness-check block above (they
+                                // either skip the check or delete children
+                                // unconditionally). Return a graceful error
+                                // rather than panicking if that invariant is
+                                // ever broken.
                                 SubelementsDeletionBehavior::DontCheckWithNoCleanup
-                                | SubelementsDeletionBehavior::DeleteChildren => unreachable!(),
+                                | SubelementsDeletionBehavior::DeleteChildren => {
+                                    return Err(Error::CorruptedCodeExecution(
+                                        "batch delete: DontCheckWithNoCleanup / DeleteChildren \
+                                         behaviors are handled before the non-empty-tree check \
+                                         and must not reach this match arm",
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
                             }
                         }
                     }

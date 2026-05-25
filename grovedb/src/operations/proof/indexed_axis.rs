@@ -353,7 +353,17 @@ fn build_ancestor_attestations<'db>(
                 let axis = match intermediate.underlying() {
                     Element::ProvableCountIndexedTree(..) => IndexAxis::Count,
                     Element::ProvableSumIndexedTree(..) => IndexAxis::Sum,
-                    _ => unreachable!(),
+                    // Structurally unreachable: the outer arm already
+                    // bound this value as PCIT or PSIT. Return a graceful
+                    // error rather than panicking if that invariant is
+                    // ever broken by a refactor.
+                    _ => {
+                        return Err(Error::CorruptedCodeExecution(
+                            "build_ancestor_attestations: element matched PCIT/PSIT in the \
+                             outer arm but neither in the inner axis match",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                 };
                 let ancestor_path_owned: SubtreePathBuilder<Vec<u8>> =
                     SubtreePathBuilder::owned_from_iter(path_keys[..=depth].iter().cloned());
