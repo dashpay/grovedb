@@ -145,4 +145,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/install-action@cargo-audit
+      - name: Generate lockfile for audit
+        run: cargo generate-lockfile
       - run: cargo audit
