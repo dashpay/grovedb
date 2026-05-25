@@ -42,7 +42,16 @@ tempfile = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 rand_core = "0.6"
+# For the `seeding` benchmark: a real RocksDB-backed storage context.
+grovedb-storage = { version = "4.0.0", path = "../storage", features = ["rocksdb_storage"] }
+grovedb-path = { version = "4.0.0", path = "../path" }
 
 [[bench]]
 name = "verification"
+harness = false
+
+# Frontier-less seeding throughput (test/devnet only). Run with:
+#   cargo bench -p grovedb-commitment-tree --bench seeding --features test-seeding-ct
+[[bench]]
+name = "seeding"
 harness = false
