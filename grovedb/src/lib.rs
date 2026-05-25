@@ -343,6 +343,22 @@ impl GroveDb {
         Ok(())
     }
 
+    /// Reborrow the underlying [`grovedb_storage::rocksdb_storage::RocksDbStorage`]
+    /// for callers that need to use the public [`grovedb_storage::Storage`]
+    /// trait directly — notably to open a [`grovedb_storage::StorageContext`]
+    /// at a path for raw iteration or low-level reads.
+    ///
+    /// This is intended for snapshot/replication tooling that needs to walk
+    /// a subtree's raw RocksDB state without going through GroveDb's typed
+    /// element API. Normal callers should NOT use this — go through GroveDb's
+    /// typed operations (`insert`, `get`, `commitment_tree_*`) instead.
+    ///
+    /// Stability: this is an escape hatch. The exact `RocksDbStorage` shape
+    /// is subject to change as grovedb's internals evolve.
+    pub fn raw_storage(&self) -> &grovedb_storage::rocksdb_storage::RocksDbStorage {
+        &self.db
+    }
+
     /// Bulk-ingest a single SST file (produced by `rocksdb::SstFileWriter`)
     /// into the named column family of the underlying RocksDB.
     ///
