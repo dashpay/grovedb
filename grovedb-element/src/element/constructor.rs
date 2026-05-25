@@ -545,7 +545,15 @@ impl Element {
     /// Validate a `ProvableCountProvableSumIndexedTree` axes TLV: sorted by
     /// tag ascending, no duplicate tags, 1..=3 entries, every tag in
     /// `0..=2` (matching [`crate::indexed::IndexAxis`]).
-    fn validate_pcpsit_axes(axes: &[(u8, Option<Vec<u8>>)]) -> Result<(), ElementError> {
+    ///
+    /// Public so write paths that accept a caller-supplied
+    /// `Element::ProvableCountProvableSumIndexedTree` (e.g. direct/batch
+    /// empty-tree creation, which would otherwise hash the axes via
+    /// `axes_digest` without validating them) can enforce the same
+    /// canonical-axes invariant the constructors do. The `Element` enum
+    /// is `pub`, so callers can build a PCPSIT with invalid / duplicate /
+    /// unsorted axes that the constructors would have rejected.
+    pub fn validate_pcpsit_axes(axes: &[(u8, Option<Vec<u8>>)]) -> Result<(), ElementError> {
         if axes.is_empty() {
             return Err(ElementError::InvalidInput(
                 "ProvableCountProvableSumIndexedTree axes must have at least one entry",

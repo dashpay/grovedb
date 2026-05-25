@@ -2620,13 +2620,24 @@ where
                                 ))
                                 .wrap_with_cost(cost);
                             }
-                            if axes.is_empty() || axes.len() > 3 {
-                                return Err(Error::InvalidBatchOperation(
-                                    "a ProvableCountProvableSumIndexedTree must have 1..=3 \
-                                     axes configured",
-                                ))
-                                .wrap_with_cost(cost);
-                            }
+                            // Full canonical-axes validation (1..=3 entries,
+                            // sorted ascending by tag, no duplicates, known
+                            // tags) — reuses the same check the Element
+                            // constructors run. Without this, a batch caller
+                            // could persist an empty PCPSIT whose axes are
+                            // unsorted / duplicated / out-of-range (the
+                            // axes_digest is computed over whatever TLV is
+                            // supplied; it does not validate).
+                            cost_return_on_error_no_add!(
+                                cost,
+                                Element::validate_pcpsit_axes(axes).map_err(|_| {
+                                    Error::InvalidBatchOperation(
+                                        "a ProvableCountProvableSumIndexedTree must have \
+                                         canonical axes (1..=3 entries, sorted ascending by \
+                                         tag, no duplicates, tags in 0..=2)",
+                                    )
+                                })
+                            );
                             if is_insert_if_not_exists
                                 || batch_apply_options.validate_insertion_does_not_override
                             {

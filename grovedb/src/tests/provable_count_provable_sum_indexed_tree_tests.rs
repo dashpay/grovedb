@@ -1860,4 +1860,159 @@ mod tests {
         .expect("empty CountSumTree child accepted");
         assert_verify_passes(&db, v);
     }
+
+    /// Security regression (P1): an avg-configured PCPSIT prepends a
+    /// 16-byte fixed-point average to its secondary key, so item keys
+    /// must be capped at 239 bytes (16 + 239 = 255, Merk's ceiling). A
+    /// 240-byte key would build a 256-byte avg-secondary key, exceeding
+    /// the limit (a silent corruption in release builds).
+    #[test]
+    fn pcpsit_avg_axis_enforces_239_byte_item_key_limit() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_pcpsit(&db, b"pcpsit", &[IndexAxis::Avg.tag()], v);
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+
+        // 240-byte key → rejected (avg secondary key would be 256 bytes).
+        let key_240 = vec![b'k'; 240];
+        let res = db
+            .insert_into_provable_count_provable_sum_indexed_tree(
+                path,
+                &key_240,
+                Element::new_item_with_sum_item(vec![1], 5),
+                None,
+                v,
+            )
+            .unwrap();
+        assert!(
+            matches!(res, Err(Error::InvalidInput(_))),
+            "240-byte item key under an Avg axis must be rejected; got {res:?}"
+        );
+
+        // 239-byte key → accepted (avg secondary key = 255 bytes exactly).
+        let key_239 = vec![b'k'; 239];
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            path,
+            &key_239,
+            Element::new_item_with_sum_item(vec![1], 5),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("239-byte item key under an Avg axis accepted");
+        assert_verify_passes(&db, v);
+    }
+
+    /// A count/sum-only PCPSIT (no avg axis) keeps the 247-byte item-key
+    /// limit (8-byte sort-key prefix), unaffected by the avg tightening.
+    #[test]
+    fn pcpsit_count_sum_only_keeps_247_byte_item_key_limit() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_pcpsit(
+            &db,
+            b"pcpsit",
+            &[IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+            v,
+        );
+        let path: &[&[u8]] = &[TEST_LEAF, b"pcpsit"];
+
+        let key_247 = vec![b'k'; 247];
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            path,
+            &key_247,
+            Element::new_item_with_sum_item(vec![1], 5),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("247-byte item key accepted for count/sum-only PCPSIT");
+
+        let key_248 = vec![b'k'; 248];
+        let res = db
+            .insert_into_provable_count_provable_sum_indexed_tree(
+                path,
+                &key_248,
+                Element::new_item_with_sum_item(vec![1], 5),
+                None,
+                v,
+            )
+            .unwrap();
+        assert!(
+            matches!(res, Err(Error::InvalidInput(_))),
+            "248-byte item key must be rejected even without an avg axis; got {res:?}"
+        );
+        assert_verify_passes(&db, v);
+    }
+
+    /// Security regression (P2): the direct empty-insert path must reject
+    /// non-canonical axes. The `Element` enum is public, so a caller can
+    /// build a PCPSIT with unsorted / duplicate / empty / unknown-tag
+    /// axes that the validating constructor would have refused; the
+    /// insert path must apply the same canonical-axes check.
+    #[test]
+    fn pcpsit_direct_empty_insert_rejects_non_canonical_axes() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        // Each malformed axes TLV, constructed directly (bypassing the
+        // validating constructor).
+        let cases: Vec<(&str, Vec<(u8, Option<Vec<u8>>)>)> = vec![
+            (
+                "unsorted",
+                vec![(IndexAxis::Sum.tag(), None), (IndexAxis::Count.tag(), None)],
+            ),
+            (
+                "duplicate",
+                vec![
+                    (IndexAxis::Count.tag(), None),
+                    (IndexAxis::Count.tag(), None),
+                ],
+            ),
+            ("empty", vec![]),
+            ("unknown_tag", vec![(99u8, None)]),
+        ];
+        for (i, (label, axes)) in cases.into_iter().enumerate() {
+            let key = format!("bad_{i}");
+            let bad = Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, None);
+            let res = db
+                .insert([TEST_LEAF].as_ref(), key.as_bytes(), bad, None, None, v)
+                .unwrap();
+            assert!(
+                res.is_err(),
+                "direct empty insert of PCPSIT with {label} axes must be rejected; got {res:?}"
+            );
+        }
+    }
+
+    /// Batch analogue of the above: the batch empty-creation path must
+    /// also reject non-canonical axes (it previously checked only the
+    /// 1..=3 count, not sortedness / duplicates / tag validity).
+    #[test]
+    fn pcpsit_batch_empty_insert_rejects_non_canonical_axes() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        let bad = Element::ProvableCountProvableSumIndexedTree(
+            None,
+            0,
+            0,
+            vec![(IndexAxis::Sum.tag(), None), (IndexAxis::Count.tag(), None)],
+            None,
+        );
+        let res = db
+            .apply_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"pcpsit".to_vec(),
+                    bad,
+                )],
+                None,
+                None,
+                v,
+            )
+            .unwrap();
+        assert!(
+            res.is_err(),
+            "batch empty insert of PCPSIT with unsorted axes must be rejected; got {res:?}"
+        );
+    }
 }

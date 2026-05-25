@@ -1334,8 +1334,10 @@ mod tests {
         match result {
             Err(Error::InvalidBatchOperation(msg)) => {
                 assert!(
-                    msg.contains("1..=3 axes") || msg.contains("must be empty"),
-                    "expected axes-count or empty-validation msg, got: {msg}"
+                    msg.contains("canonical axes")
+                        || msg.contains("1..=3 axes")
+                        || msg.contains("must be empty"),
+                    "expected axes-validation msg, got: {msg}"
                 );
             }
             other => panic!("expected InvalidBatchOperation, got {:?}", other),

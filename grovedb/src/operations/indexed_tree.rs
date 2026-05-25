@@ -3256,7 +3256,11 @@ impl GroveDb {
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
-        cost_return_on_error_no_add!(cost, validate_cidx_item_key_len(item_key));
+        // NOTE: the item-key length bound is axis-dependent for PCPSIT
+        // (the avg axis prepends 16 bytes, not 8), so the precise check
+        // is deferred to `validate_pcpsit_item_key_len` once the
+        // configured axes (`axes_before`) are known below. We do not run
+        // the 247-byte `validate_cidx_item_key_len` here.
 
         if !item.is_count_and_sum_bearing_child() {
             return Err(Error::InvalidInput(
@@ -3330,6 +3334,11 @@ impl GroveDb {
             ))
             .wrap_with_cost(cost);
         }
+
+        // Axis-aware item-key length bound: an avg-configured PCPSIT
+        // prepends a 16-byte fixed-point average to its secondary key, so
+        // the item key must be <= 239 bytes (vs 247 for count/sum-only).
+        cost_return_on_error_no_add!(cost, validate_pcpsit_item_key_len(item_key, &axes_before));
 
         // Read existing primary entry for (old_count, old_sum).
         let existing_item = cost_return_on_error!(
@@ -4022,6 +4031,44 @@ pub(crate) fn validate_cidx_item_key_len(item_key: &[u8]) -> Result<(), Error> {
         ));
     }
     Ok(())
+}
+
+/// Maximum item-key length for a `ProvableCountProvableSumIndexedTree`
+/// whose configured axes include `Avg`. The avg secondary is keyed by
+/// `avg_sortable_be (16 bytes) ‖ item_key`, so to keep the secondary key
+/// under Merk's 256-byte ceiling the item key must be `<= 239` bytes —
+/// 8 bytes tighter than the count/sum (`MAX_CIDX_ITEM_KEY_LEN`) limit.
+pub const MAX_AVG_INDEXED_ITEM_KEY_LEN: usize = 239;
+
+/// Validate an item key for a PCPSIT given its configured `axes`.
+///
+/// The binding constraint is the widest sort-key prefix among the
+/// configured axes: count/sum prepend 8 bytes, avg prepends 16. A PCPSIT
+/// that indexes the avg axis must therefore cap item keys at 239 bytes;
+/// otherwise the 247-byte cidx limit applies. Without this, an
+/// avg-configured PCPSIT would accept 240..=247-byte primary keys and
+/// build 256..=263-byte avg-secondary keys, violating Merk's key ceiling
+/// (a silent corruption in release builds where the debug-assert is
+/// compiled out).
+#[inline]
+pub(crate) fn validate_pcpsit_item_key_len(
+    item_key: &[u8],
+    axes: &[(u8, Option<Vec<u8>>)],
+) -> Result<(), Error> {
+    let has_avg = axes.iter().any(|(t, _)| *t == IndexAxis::Avg.tag());
+    if has_avg {
+        if item_key.len() > MAX_AVG_INDEXED_ITEM_KEY_LEN {
+            return Err(Error::InvalidInput(
+                "item key for a ProvableCountProvableSumIndexedTree that indexes the Avg axis \
+                 must be at most 239 bytes (the avg secondary prepends a 16-byte fixed-point \
+                 average, and Merk requires keys < 256 bytes)",
+            ));
+        }
+        Ok(())
+    } else {
+        // count/sum only → 8-byte prefix → 247-byte ceiling.
+        validate_cidx_item_key_len(item_key)
+    }
 }
 
 #[inline]

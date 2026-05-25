@@ -513,6 +513,22 @@ impl GroveDb {
                 axes,
                 _,
             ) => {
+                // Validate the axes TLV is canonical (sorted by tag, no
+                // duplicates, 1..=3 entries, known tags) for BOTH the
+                // empty and non-empty cases. The `Element` enum is public
+                // and `axes_digest` does not validate, so without this an
+                // empty PCPSIT with invalid/duplicate/unsorted axes could
+                // be persisted (its digest would be computed over the
+                // malformed TLV). Reuses the same check the constructors
+                // run.
+                cost_return_on_error_no_add!(
+                    cost,
+                    Element::validate_pcpsit_axes(axes).map_err(|_| Error::InvalidInput(
+                        "ProvableCountProvableSumIndexedTree direct insertion: axes must be \
+                         canonical (1..=3 entries, sorted ascending by tag, no duplicates, \
+                         tags in 0..=2)"
+                    ))
+                );
                 let axes_all_empty = axes.iter().all(|(_, sk)| sk.is_none());
                 let (primary_root_hash, second_hash) = if primary.is_none()
                     && axes_all_empty
@@ -533,28 +549,7 @@ impl GroveDb {
                         ))
                         .wrap_with_cost(cost);
                     }
-                    // Validate axes canonical form (sorted by tag,
-                    // 1..=3 entries, no duplicates).
-                    if axes.is_empty() || axes.len() > 3 {
-                        return Err(Error::InvalidInput(
-                            "ProvableCountProvableSumIndexedTree direct insertion: axes must \
-                             have 1..=3 entries",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                    let mut last_tag: Option<u8> = None;
-                    for (tag, _) in axes.iter() {
-                        if let Some(prev) = last_tag
-                            && *tag <= prev
-                        {
-                            return Err(Error::InvalidInput(
-                                "ProvableCountProvableSumIndexedTree direct insertion: axes \
-                                 must be sorted by tag with no duplicates",
-                            ))
-                            .wrap_with_cost(cost);
-                        }
-                        last_tag = Some(*tag);
-                    }
+                    // (Axes canonical form already validated above.)
                     let child_path_owned = path.derive_owned_with_child(key.to_vec());
                     let child_path = SubtreePath::from(&child_path_owned);
                     let primary_merk = cost_return_on_error!(
