@@ -67,6 +67,8 @@ pub use commitment_tree::{
     ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
     CommitmentTree, COMMITMENT_TREE_DATA_KEY,
 };
+#[cfg(feature = "test-seeding")]
+pub use commitment_tree::{BulkSeedSummary, FrontierLessAppendResult};
 pub use error::CommitmentTreeError;
 #[cfg(feature = "server")]
 pub use grovedb_bulk_append_tree::{
