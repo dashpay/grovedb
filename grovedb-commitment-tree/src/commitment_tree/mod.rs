@@ -198,13 +198,23 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         // Validate that the frontier and bulk tree agree on the number of
         // appended items. A mismatch indicates a partial commit or data
         // corruption.
+        //
+        // Exception: with the `test-seeding` feature, the frontier-less seeding
+        // methods (`append_*_without_frontier`) populate the BulkAppendTree
+        // while deliberately leaving the frontier empty. Tolerate exactly that
+        // shape — an empty frontier alongside a populated bulk tree — so seeded
+        // devnet state can be re-opened. Any other mismatch is still rejected.
         let frontier_size = frontier.tree_size();
         if frontier_size != total_count {
-            return Err(CommitmentTreeError::InvalidData(format!(
-                "frontier tree_size ({}) != bulk tree total_count ({})",
-                frontier_size, total_count
-            )))
-            .wrap_with_cost(cost);
+            let frontier_less_seed =
+                cfg!(feature = "test-seeding") && frontier_size == 0 && total_count > 0;
+            if !frontier_less_seed {
+                return Err(CommitmentTreeError::InvalidData(format!(
+                    "frontier tree_size ({}) != bulk tree total_count ({})",
+                    frontier_size, total_count
+                )))
+                .wrap_with_cost(cost);
+            }
         }
 
         Ok(Self {
@@ -424,5 +434,196 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// Number of completed chunks in the MMR.
     pub fn chunk_count(&self) -> u64 {
         self.bulk_tree.chunk_count()
+    }
+}
+
+/// Result of a single frontier-less append via
+/// [`CommitmentTree::append_raw_without_frontier`].
+///
+/// Mirrors [`CommitmentAppendResult`] but omits `sinsemilla_root`, because the
+/// Sinsemilla frontier is intentionally left untouched. Only available with the
+/// `test-seeding` feature.
+#[cfg(feature = "test-seeding")]
+#[derive(Debug, Clone)]
+pub struct FrontierLessAppendResult {
+    /// The BulkAppendTree state root after the append (the Merk child hash).
+    pub bulk_state_root: [u8; 32],
+    /// The 0-based global position of the appended value.
+    pub global_position: u64,
+    /// Number of blake3 hash calls performed during the bulk append.
+    pub hash_count: u32,
+    /// Whether compaction (epoch flush) occurred during this append.
+    pub compacted: bool,
+}
+
+/// Summary of a frontier-less bulk seed via
+/// [`CommitmentTree::append_many_without_frontier`].
+///
+/// Only available with the `test-seeding` feature.
+#[cfg(feature = "test-seeding")]
+#[derive(Debug, Clone)]
+pub struct BulkSeedSummary {
+    /// Number of notes appended during this call.
+    pub appended: u64,
+    /// The tree's total item count after the call.
+    pub total_count: u64,
+    /// The final BulkAppendTree state root (the Merk child hash). This binds
+    /// only the bulk data; a frontier-less seeded tree has no valid Orchard
+    /// anchor.
+    pub bulk_state_root: [u8; 32],
+    /// Total blake3 hash calls performed across all appends and compactions.
+    pub hash_count: u64,
+    /// Number of epoch compactions (chunk finalizations) triggered.
+    pub compactions: u64,
+}
+
+/// Frontier-less seeding API — **test / devnet only**.
+///
+/// These methods append note entries to the underlying [`BulkAppendTree`]
+/// WITHOUT updating the Sinsemilla [`CommitmentFrontier`]. They exist to
+/// pre-populate the shielded pool with a large number of filler notes for
+/// sync/scale benchmarking without paying the per-note Pallas/Sinsemilla
+/// hashing cost (or the full Drive insert path).
+///
+/// # Consequences
+///
+/// - The tree has **no valid Orchard anchor** afterwards: [`anchor`] and
+///   [`root_hash`] reflect an empty frontier, so notes seeded this way are
+///   **not spendable**. The BulkAppendTree chunk proofs — authenticated by the
+///   blake3 `bulk_state_root` rather than the frontier — are unaffected and
+///   still verify, which is exactly what client sync exercises.
+/// - `cmx` values are **not** validated as Pallas field elements (unlike
+///   [`append`] and [`append_raw`]), so arbitrary 32-byte filler is accepted.
+/// - A tree seeded this way can only be re-[`open`]ed by a build that also
+///   enables `test-seeding`, which relaxes the frontier/bulk consistency check
+///   for the empty-frontier case.
+///
+/// [`anchor`]: CommitmentTree::anchor
+/// [`root_hash`]: CommitmentTree::root_hash
+/// [`append`]: CommitmentTree::append
+/// [`append_raw`]: CommitmentTree::append_raw
+/// [`open`]: CommitmentTree::open
+#[cfg(feature = "test-seeding")]
+impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
+    /// Append a single note (`cmx || rho || payload`) to the BulkAppendTree
+    /// **without** updating the Sinsemilla frontier.
+    ///
+    /// The payload length must equal [`ciphertext_payload_size::<M>()`]. The
+    /// `cmx` is stored verbatim and is *not* validated as a Pallas field
+    /// element. See the impl-level docs for the consequences.
+    pub fn append_raw_without_frontier(
+        &mut self,
+        cmx: [u8; 32],
+        rho: [u8; 32],
+        payload: &[u8],
+    ) -> CostResult<FrontierLessAppendResult, CommitmentTreeError> {
+        let mut cost = OperationCost::default();
+
+        // Validate payload size — kept because it keeps stored entries
+        // well-formed for chunk proofs and client deserialization. (cmx is
+        // intentionally not validated as a Pallas field element here.)
+        let expected = ciphertext_payload_size::<M>();
+        if payload.len() != expected {
+            return Err(CommitmentTreeError::InvalidPayloadSize {
+                expected,
+                actual: payload.len(),
+            })
+            .wrap_with_cost(cost);
+        }
+
+        let mut item_value = Vec::with_capacity(64 + payload.len());
+        item_value.extend_from_slice(&cmx);
+        item_value.extend_from_slice(&rho);
+        item_value.extend_from_slice(payload);
+
+        let bulk_result = match self.bulk_tree.append(&item_value) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(CommitmentTreeError::InvalidData(format!(
+                    "bulk append: {}",
+                    e
+                )))
+                .wrap_with_cost(cost);
+            }
+        };
+        cost.hash_node_calls += bulk_result.hash_count;
+
+        Ok(FrontierLessAppendResult {
+            bulk_state_root: bulk_result.state_root,
+            global_position: bulk_result.global_position,
+            hash_count: bulk_result.hash_count,
+            compacted: bulk_result.compacted,
+        })
+        .wrap_with_cost(cost)
+    }
+
+    /// Bulk-append many notes to the BulkAppendTree **without** updating the
+    /// Sinsemilla frontier.
+    ///
+    /// Each item is `(cmx, rho, payload)`. The iterator is consumed lazily, so
+    /// a generator can stream a large `N` without materializing it. MMR nodes
+    /// buffered during compaction are flushed via [`commit_mmr`] before
+    /// returning, so the caller does not need a separate `commit_mmr()` call.
+    /// The frontier is left untouched; callers typically set the parent
+    /// `Element::CommitmentTree(total_count, ..)` from the returned summary.
+    ///
+    /// [`commit_mmr`]: CommitmentTree::commit_mmr
+    pub fn append_many_without_frontier<I>(
+        &mut self,
+        notes: I,
+    ) -> CostResult<BulkSeedSummary, CommitmentTreeError>
+    where
+        I: IntoIterator<Item = ([u8; 32], [u8; 32], Vec<u8>)>,
+    {
+        let mut cost = OperationCost::default();
+        let mut appended: u64 = 0;
+        let mut hash_count: u64 = 0;
+        let mut compactions: u64 = 0;
+        let mut bulk_state_root = [0u8; 32];
+
+        for (cmx, rho, payload) in notes {
+            let r = match self
+                .append_raw_without_frontier(cmx, rho, &payload)
+                .unwrap_add_cost(&mut cost)
+            {
+                Ok(r) => r,
+                Err(e) => return Err(e).wrap_with_cost(cost),
+            };
+            appended += 1;
+            hash_count += u64::from(r.hash_count);
+            if r.compacted {
+                compactions += 1;
+            }
+            bulk_state_root = r.bulk_state_root;
+        }
+
+        // Flush MMR nodes staged during compaction so the seeded state is
+        // fully persisted; callers don't need a separate commit_mmr().
+        if let Err(e) = self.commit_mmr() {
+            return Err(e).wrap_with_cost(cost);
+        }
+
+        if appended == 0 {
+            // Nothing appended — report the current (unchanged) state root.
+            bulk_state_root = match self.bulk_tree.compute_current_state_root() {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(CommitmentTreeError::InvalidData(format!(
+                        "state root: {}",
+                        e
+                    )))
+                    .wrap_with_cost(cost);
+                }
+            };
+        }
+
+        Ok(BulkSeedSummary {
+            appended,
+            total_count: self.bulk_tree.total_count,
+            bulk_state_root,
+            hash_count,
+            compactions,
+        })
+        .wrap_with_cost(cost)
     }
 }

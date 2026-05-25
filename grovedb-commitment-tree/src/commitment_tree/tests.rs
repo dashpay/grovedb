@@ -1021,4 +1021,146 @@ mod storage_tests {
             "tree should not have been mutated by invalid cmx"
         );
     }
+
+    // ── Frontier-less seeding (test-seeding feature) ──────────────────────
+
+    /// A correctly-sized DashMemo payload filled with a deterministic pattern.
+    #[cfg(feature = "test-seeding")]
+    fn seed_payload(index: u8) -> Vec<u8> {
+        let mut p = vec![0u8; ciphertext_payload_size::<DashMemo>()];
+        p[0] = index;
+        p[1] = 0x5D;
+        p
+    }
+
+    #[cfg(feature = "test-seeding")]
+    #[test]
+    fn test_append_raw_without_frontier_does_not_touch_frontier() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        let r = ct
+            .append_raw_without_frontier(test_leaf(0), test_rho(0), &seed_payload(0))
+            .value
+            .expect("frontier-less append should succeed");
+
+        assert_eq!(r.global_position, 0, "first append is position 0");
+        assert_eq!(ct.total_count(), 1, "bulk tree advanced");
+        // Frontier untouched: still empty.
+        assert_eq!(ct.tree_size(), 0, "frontier must remain empty");
+        assert_eq!(ct.position(), None, "frontier has no position");
+        assert_eq!(
+            ct.root_hash(),
+            CommitmentFrontier::new().root_hash(),
+            "anchor must equal the empty-frontier root"
+        );
+    }
+
+    #[cfg(feature = "test-seeding")]
+    #[test]
+    fn test_append_raw_without_frontier_rejects_wrong_payload_size() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        let result = ct.append_raw_without_frontier(test_leaf(0), test_rho(0), &[0u8; 7]);
+        assert!(
+            result.value.is_err(),
+            "should reject a payload of the wrong size"
+        );
+        assert_eq!(ct.total_count(), 0, "tree must not be mutated on rejection");
+    }
+
+    #[cfg(feature = "test-seeding")]
+    #[test]
+    fn test_append_raw_without_frontier_accepts_non_pallas_cmx() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // All-0xFF is NOT a valid Pallas field element; the frontier-less path
+        // accepts it anyway (no frontier validation).
+        let result = ct.append_raw_without_frontier([0xFF; 32], test_rho(1), &seed_payload(1));
+        assert!(
+            result.value.is_ok(),
+            "frontier-less append must accept arbitrary cmx filler"
+        );
+        assert_eq!(ct.total_count(), 1);
+    }
+
+    #[cfg(feature = "test-seeding")]
+    #[test]
+    fn test_append_many_without_frontier_seeds_and_reopens() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        const N: u64 = 12;
+        let notes = (0..N).map(|i| (test_leaf(i), test_rho(i as u8), seed_payload(i as u8)));
+        let summary = ct
+            .append_many_without_frontier(notes)
+            .value
+            .expect("bulk seed should succeed");
+
+        assert_eq!(summary.appended, N);
+        assert_eq!(summary.total_count, N);
+        assert_eq!(ct.total_count(), N);
+        // TEST_CHUNK_POWER=1 → epoch_size 2, so seeding 12 notes finalizes
+        // several chunks.
+        assert!(
+            summary.compactions > 0,
+            "small epoch size should trigger compactions"
+        );
+        assert!(summary.hash_count > 0, "appends perform blake3 hashes");
+        // Frontier left empty by design.
+        assert_eq!(ct.tree_size(), 0, "frontier must remain empty");
+
+        // The summary's bulk_state_root matches a fresh computation.
+        let live_root = ct
+            .bulk_tree
+            .compute_current_state_root()
+            .expect("state root");
+        assert_eq!(summary.bulk_state_root, live_root);
+
+        // Re-open the seeded (frontier-less) tree: tolerated under test-seeding.
+        let storage = ct.bulk_tree.dense_tree.storage;
+        let loaded = CommitmentTree::<_, DashMemo>::open(N, TEST_CHUNK_POWER, storage)
+            .value
+            .expect("open should tolerate empty frontier under test-seeding");
+        assert_eq!(loaded.total_count(), N, "reopened total_count matches");
+        assert_eq!(loaded.tree_size(), 0, "reopened frontier still empty");
+        assert_eq!(
+            loaded
+                .bulk_tree
+                .compute_current_state_root()
+                .expect("state root"),
+            live_root,
+            "bulk state root survives the round-trip"
+        );
+    }
+
+    #[cfg(feature = "test-seeding")]
+    #[test]
+    fn test_append_many_without_frontier_empty_input() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        let summary = ct
+            .append_many_without_frontier(std::iter::empty())
+            .value
+            .expect("empty seed should succeed");
+
+        assert_eq!(summary.appended, 0);
+        assert_eq!(summary.total_count, 0);
+        assert_eq!(summary.compactions, 0);
+        assert_eq!(
+            summary.bulk_state_root,
+            ct.bulk_tree
+                .compute_current_state_root()
+                .expect("state root"),
+            "empty seed reports the current state root"
+        );
+    }
 }
