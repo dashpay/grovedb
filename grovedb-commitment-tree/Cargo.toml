@@ -24,7 +24,7 @@ sqlite = ["client", "rusqlite"]
 # per-note Pallas/Sinsemilla hashing. The resulting tree has NO valid Orchard
 # anchor, so seeded notes are not spendable; chunk proofs (authenticated by the
 # blake3 bulk state root) still verify, which is what client sync exercises.
-test-seeding = ["server"]
+test-seeding-ct = ["server"]
 
 [dependencies]
 orchard = { git = "https://github.com/dashpay/orchard.git", rev = "898258d76aab2822249492aede59a02d49278fff", features = ["circuit"] }

@@ -199,16 +199,14 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         // appended items. A mismatch indicates a partial commit or data
         // corruption.
         //
-        // Exception: with the `test-seeding` feature, the frontier-less seeding
-        // methods (`append_*_without_frontier`) populate the BulkAppendTree
-        // while deliberately leaving the frontier empty. Tolerate exactly that
-        // shape — an empty frontier alongside a populated bulk tree — so seeded
-        // devnet state can be re-opened. Any other mismatch is still rejected.
-        let frontier_size = frontier.tree_size();
-        if frontier_size != total_count {
-            let frontier_less_seed =
-                cfg!(feature = "test-seeding") && frontier_size == 0 && total_count > 0;
-            if !frontier_less_seed {
+        // Skipped entirely under `test-seeding-ct`: the frontier-less seeding
+        // methods (`append_*_without_frontier`) deliberately leave the frontier
+        // out of sync with the bulk tree, and a seeded tree may then have notes
+        // added on top, so any `(frontier_size, total_count)` pair must reopen.
+        #[cfg(not(feature = "test-seeding-ct"))]
+        {
+            let frontier_size = frontier.tree_size();
+            if frontier_size != total_count {
                 return Err(CommitmentTreeError::InvalidData(format!(
                     "frontier tree_size ({}) != bulk tree total_count ({})",
                     frontier_size, total_count
@@ -442,8 +440,8 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
 ///
 /// Mirrors [`CommitmentAppendResult`] but omits `sinsemilla_root`, because the
 /// Sinsemilla frontier is intentionally left untouched. Only available with the
-/// `test-seeding` feature.
-#[cfg(feature = "test-seeding")]
+/// `test-seeding-ct` feature.
+#[cfg(feature = "test-seeding-ct")]
 #[derive(Debug, Clone)]
 pub struct FrontierLessAppendResult {
     /// The BulkAppendTree state root after the append (the Merk child hash).
@@ -459,8 +457,8 @@ pub struct FrontierLessAppendResult {
 /// Summary of a frontier-less bulk seed via
 /// [`CommitmentTree::append_many_without_frontier`].
 ///
-/// Only available with the `test-seeding` feature.
-#[cfg(feature = "test-seeding")]
+/// Only available with the `test-seeding-ct` feature.
+#[cfg(feature = "test-seeding-ct")]
 #[derive(Debug, Clone)]
 pub struct BulkSeedSummary {
     /// Number of notes appended during this call.
@@ -494,16 +492,19 @@ pub struct BulkSeedSummary {
 ///   still verify, which is exactly what client sync exercises.
 /// - `cmx` values are **not** validated as Pallas field elements (unlike
 ///   [`append`] and [`append_raw`]), so arbitrary 32-byte filler is accepted.
-/// - A tree seeded this way can only be re-[`open`]ed by a build that also
-///   enables `test-seeding`, which relaxes the frontier/bulk consistency check
-///   for the empty-frontier case.
+/// - A seeded tree can only be re-[`open`]ed by a build that also enables
+///   `test-seeding-ct`, which drops the frontier/bulk consistency check in
+///   [`open`] entirely. After seeding you may keep adding filler this way, or
+///   switch to the regular [`append`] / [`append_raw`] to add real,
+///   frontier-tracked notes on top (those build the frontier from where it is,
+///   i.e. over the post-seed notes only).
 ///
 /// [`anchor`]: CommitmentTree::anchor
 /// [`root_hash`]: CommitmentTree::root_hash
 /// [`append`]: CommitmentTree::append
 /// [`append_raw`]: CommitmentTree::append_raw
 /// [`open`]: CommitmentTree::open
-#[cfg(feature = "test-seeding")]
+#[cfg(feature = "test-seeding-ct")]
 impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// Append a single note (`cmx || rho || payload`) to the BulkAppendTree
     /// **without** updating the Sinsemilla frontier.
@@ -519,11 +520,11 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     ) -> CostResult<FrontierLessAppendResult, CommitmentTreeError> {
         let mut cost = OperationCost::default();
 
-        // Frontier-less seeding only makes sense on an empty frontier. If the
-        // frontier already has leaves, advancing the bulk tree here would leave
-        // `frontier_size < total_count`, a mismatch `open` cannot tolerate
-        // (it only accepts an empty frontier) — i.e. unreopenable state. Reject
-        // it instead of silently corrupting the tree.
+        // Frontier-less seeding is meant for a fresh tree whose frontier hasn't
+        // been built yet — the seeded filler is never reflected in the frontier.
+        // Reject seeding once the frontier has leaves so filler can only sit at
+        // the bottom of the tree, never interleaved under real,
+        // frontier-tracked notes added afterwards.
         if self.frontier.tree_size() != 0 {
             return Err(CommitmentTreeError::InvalidData(
                 "frontier-less seeding requires an empty frontier".to_string(),
