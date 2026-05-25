@@ -1524,4 +1524,110 @@ mod tests {
             .expect("verify after re-create")
             .is_empty());
     }
+
+    /// Direct `db.insert` of a NON-EMPTY PSIT validates the claimed
+    /// primary + secondary root keys against on-disk state and succeeds
+    /// when they match. Exercises the non-empty success path in
+    /// `operations/insert/mod.rs`.
+    #[test]
+    fn psit_direct_insert_non_empty_with_matching_roots_succeeds() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create PSIT");
+        for (k, s) in [(b"a".as_ref(), 10i64), (b"b", 20)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(s),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let populated = db
+            .get([TEST_LEAF].as_ref(), b"psit", None, v)
+            .unwrap()
+            .expect("get populated PSIT");
+        assert!(matches!(
+            populated,
+            Element::ProvableSumIndexedTree(Some(_), Some(_), 30, _)
+        ));
+        let opts = crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        };
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            populated,
+            Some(opts),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("re-insert non-empty PSIT with matching roots");
+        assert!(db
+            .verify_grovedb(None, true, true, v)
+            .expect("verify_grovedb")
+            .is_empty());
+    }
+
+    /// Direct `db.insert` of a non-empty PSIT with a mismatched primary
+    /// root key must be rejected.
+    #[test]
+    fn psit_direct_insert_non_empty_with_mismatched_primary_root_rejected() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create PSIT");
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"a",
+            Element::new_sum_item(10),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("populate");
+        let populated = db
+            .get([TEST_LEAF].as_ref(), b"psit", None, v)
+            .unwrap()
+            .expect("get");
+        let Element::ProvableSumIndexedTree(_primary, sec, sum, flags) = populated else {
+            panic!("expected PSIT");
+        };
+        // Wrong primary root key.
+        let tampered = Element::ProvableSumIndexedTree(Some(vec![0xEF; 32]), sec, sum, flags);
+        let opts = crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        };
+        let res = db
+            .insert([TEST_LEAF].as_ref(), b"psit", tampered, Some(opts), None, v)
+            .unwrap();
+        assert!(
+            matches!(res, Err(Error::InvalidInput(_))),
+            "mismatched primary root key must be rejected; got {res:?}"
+        );
+    }
 }

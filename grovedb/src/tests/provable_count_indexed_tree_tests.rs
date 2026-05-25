@@ -1540,4 +1540,111 @@ mod tests {
             other => panic!("expected PCIT, got {:?}", other),
         }
     }
+
+    /// Direct `db.insert` of a NON-EMPTY PCIT validates the claimed
+    /// primary + secondary root keys against on-disk state and succeeds
+    /// when they match. Exercises the non-empty success path in
+    /// `operations/insert/mod.rs`.
+    #[test]
+    fn pcit_direct_insert_non_empty_with_matching_roots_succeeds() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcit",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        for k in [b"a".as_ref(), b"b"] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"pcit"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("populate");
+        }
+        let populated = db
+            .get([TEST_LEAF].as_ref(), b"pcit", None, v)
+            .unwrap()
+            .expect("get populated PCIT");
+        assert!(matches!(
+            populated,
+            Element::ProvableCountIndexedTree(Some(_), Some(_), 2, _)
+        ));
+        let opts = crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        };
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcit",
+            populated,
+            Some(opts),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("re-insert non-empty PCIT with matching roots");
+        assert!(db
+            .verify_grovedb(None, true, true, v)
+            .expect("verify_grovedb")
+            .is_empty());
+    }
+
+    /// Direct `db.insert` of a non-empty PCIT with a mismatched secondary
+    /// root key must be rejected.
+    #[test]
+    fn pcit_direct_insert_non_empty_with_mismatched_secondary_root_rejected() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcit",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"pcit"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("populate");
+        let populated = db
+            .get([TEST_LEAF].as_ref(), b"pcit", None, v)
+            .unwrap()
+            .expect("get");
+        let Element::ProvableCountIndexedTree(primary, _sec, count, flags) = populated else {
+            panic!("expected PCIT");
+        };
+        // Wrong secondary root key.
+        let tampered =
+            Element::ProvableCountIndexedTree(primary, Some(vec![0xCD; 32]), count, flags);
+        let opts = crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        };
+        let res = db
+            .insert([TEST_LEAF].as_ref(), b"pcit", tampered, Some(opts), None, v)
+            .unwrap();
+        assert!(
+            matches!(res, Err(Error::InvalidInput(_))),
+            "mismatched secondary root key must be rejected; got {res:?}"
+        );
+    }
 }
