@@ -34,13 +34,14 @@ coverage:
         threshold: 2%
     patch:
       default:
-        # Default 85% — gives healthy buffer above the project's typical
-        # coverage drift while accommodating refactors that add large
-        # amounts of cryptographically-defensive proof code (Provable*
-        # tree families have a high ratio of `CorruptedData` /
-        # `InvalidProof` branches that are not practical to exercise
-        # via integration tests without contrived storage corruption).
-        target: 85%
+        # 82% — accommodates refactors that add large amounts of
+        # cryptographically-defensive proof code (Provable* tree families
+        # have a high ratio of `CorruptedData` / `InvalidProof` branches
+        # that are not practical to exercise via integration tests without
+        # contrived storage corruption), plus the known under-reporting of
+        # single-shard-covered lines by codecov's merge of the 3 nextest
+        # coverage shards (see flag_management / after_n_builds above).
+        target: 82%
 
 comment:
   layout: "condensed_header, diff, components, condensed_files"
