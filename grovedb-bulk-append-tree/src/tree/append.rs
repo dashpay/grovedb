@@ -20,6 +20,8 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             total_count: 0,
             dense_tree,
             mmr_overlay: Vec::new(),
+            // Empty tree → empty MMR → zero root.
+            last_mmr_root: Some([0u8; 32]),
         })
     }
 
@@ -44,6 +46,9 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             total_count,
             dense_tree,
             mmr_overlay: Vec::new(),
+            // Lazy: the restored MMR may not be readable until an append occurs,
+            // so don't compute the root here. The first append fills the cache.
+            last_mmr_root: None,
         })
     }
 
@@ -62,9 +67,20 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
 
         let (compacted, mmr_root, final_dense_root) = match try_result {
             Some((dense_root, _position)) => {
-                // Inserted successfully, no compaction needed
+                // Inserted successfully, no compaction needed. The MMR is
+                // untouched, so its root is unchanged — use the cached value
+                // instead of recomputing (which would clone the overlay). On the
+                // first append after an open the cache is empty, so compute it
+                // once and store it.
                 hash_count += self.dense_tree.count() as u32 * 2;
-                let root = self.get_mmr_root()?;
+                let root = match self.last_mmr_root {
+                    Some(root) => root,
+                    None => {
+                        let root = self.get_mmr_root()?;
+                        self.last_mmr_root = Some(root);
+                        root
+                    }
+                };
                 (false, root, dense_root)
             }
             None => {
@@ -73,6 +89,8 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 // self.mmr_size() reflects the pre-compaction state.
                 let (compact_hashes, mmr_root) = self.compact_with_value(value)?;
                 hash_count += compact_hashes;
+                // MMR mutated by the compaction — refresh the cached root.
+                self.last_mmr_root = Some(mmr_root);
                 (true, mmr_root, [0u8; 32]) // empty tree after reset
             }
         };

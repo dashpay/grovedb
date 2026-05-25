@@ -75,6 +75,21 @@ pub struct BulkAppendTree<S> {
     /// lifetimes (compaction cycles) so that reads can find recently-pushed
     /// nodes without a storage round-trip.
     pub(crate) mmr_overlay: Vec<(u64, Vec<MmrNode>)>,
+    /// Cached MMR root, refreshed only when a compaction mutates the MMR.
+    ///
+    /// The MMR is only touched on compaction (every `epoch_size` appends), so
+    /// its root is unchanged for the ~`epoch_size - 1` appends in between.
+    /// Caching it avoids recomputing the root — and cloning the (blob-bearing)
+    /// `mmr_overlay` — on every append, which would otherwise make bulk
+    /// appends O(N²) as the overlay grows across compaction cycles.
+    ///
+    /// `None` means "not yet known" (the state set by [`from_state`], which must
+    /// stay lazy: the MMR may not be readable until something is appended). It
+    /// is computed once on the first append after an open, then kept in sync by
+    /// compaction.
+    ///
+    /// [`from_state`]: BulkAppendTree::from_state
+    pub(crate) last_mmr_root: Option<[u8; 32]>,
 }
 
 impl<S> BulkAppendTree<S> {
