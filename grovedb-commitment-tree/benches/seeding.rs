@@ -9,12 +9,12 @@
 //!
 //! Run with:
 //! ```text
-//! cargo bench -p grovedb-commitment-tree --bench seeding
+//! cargo bench -p grovedb-commitment-tree --bench seeding --features server
 //! ```
 //!
 //! The note count defaults to 1,000,000 and can be overridden:
 //! ```text
-//! SEED_N=200000 cargo bench -p grovedb-commitment-tree --bench seeding
+//! SEED_N=200000 cargo bench -p grovedb-commitment-tree --bench seeding --features server
 //! ```
 
 #[cfg(feature = "server")]
