@@ -40,6 +40,42 @@ pub struct AppendResult {
     pub compacted: bool,
 }
 
+/// Result returned by [`BulkAppendTree::append_no_state_root`].
+///
+/// Same as [`AppendResult`] minus the state root, which the caller computes
+/// once at the end of a batch via
+/// [`BulkAppendTree::compute_current_state_root`].
+#[cfg(feature = "storage")]
+#[derive(Debug, Clone, Copy)]
+pub struct AppendNoStateRootResult {
+    /// The 0-based global position of the appended value.
+    pub global_position: u64,
+    /// Number of blake3 hash calls performed during this append (excludes the
+    /// deferred state-root computation).
+    pub hash_count: u32,
+    /// Whether compaction (epoch flush) occurred.
+    pub compacted: bool,
+}
+
+/// Result returned by [`BulkAppendTree::append_many`].
+#[cfg(feature = "storage")]
+#[derive(Debug, Clone)]
+pub struct AppendManyResult {
+    /// State root after all appends. Equal to what the final per-leaf
+    /// [`AppendResult::state_root`] would have been.
+    pub state_root: [u8; 32],
+    /// 0-based global position of the last appended value, or `None` if the
+    /// input iterator was empty.
+    pub last_global_position: Option<u64>,
+    /// Number of values actually appended (the iterator's length).
+    pub appended: u64,
+    /// Sum of blake3 hashes across the batch, including the single end-of-batch
+    /// state-root computation.
+    pub hash_count: u64,
+    /// Number of compactions (epoch flushes) that occurred during the batch.
+    pub compactions: u64,
+}
+
 /// Compute MMR size from leaf count: `2 * n - popcount(n)`.
 ///
 /// This is a well-known MMR property: the total number of nodes (leaves +

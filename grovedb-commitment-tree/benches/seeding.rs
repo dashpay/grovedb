@@ -1,27 +1,29 @@
-//! Frontier-less seeding throughput benchmark — **test / devnet only**.
+//! Batched commitment-tree seeding throughput benchmark.
 //!
 //! Pre-populates a real RocksDB-backed [`CommitmentTree`] with `N` random
-//! filler notes using [`CommitmentTree::append_many_without_frontier`] (the
-//! frontier-less path added for devnet shielded-pool seeding), and reports how
-//! long it takes. This is the bulk-append path that skips the per-note
-//! Pallas/Sinsemilla hashing, so it measures blake3 BulkAppendTree work +
-//! serialization + storage I/O only.
+//! notes via [`CommitmentTree::append_many_raw`] — the batched API that
+//! computes the Sinsemilla anchor and the BulkAppendTree state root once at
+//! the end of the batch instead of once per leaf. Byte-for-byte equivalent to
+//! `N × CommitmentTree::append_raw`, just without the per-leaf depth-32
+//! Sinsemilla root walk.
 //!
 //! Run with:
 //! ```text
-//! cargo bench -p grovedb-commitment-tree --bench seeding --features test-seeding-ct
+//! cargo bench -p grovedb-commitment-tree --bench seeding
 //! ```
 //!
 //! The note count defaults to 1,000,000 and can be overridden:
 //! ```text
-//! SEED_N=200000 cargo bench -p grovedb-commitment-tree --bench seeding --features test-seeding-ct
+//! SEED_N=200000 cargo bench -p grovedb-commitment-tree --bench seeding
 //! ```
 
-#[cfg(feature = "test-seeding-ct")]
+#[cfg(feature = "server")]
 fn main() {
     use std::time::Instant;
 
-    use grovedb_commitment_tree::{ciphertext_payload_size, CommitmentTree, DashMemo};
+    use grovedb_commitment_tree::{
+        ciphertext_payload_size, merkle_hash_from_bytes, CommitmentTree, DashMemo,
+    };
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
     use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -49,12 +51,19 @@ fn main() {
         CommitmentTree::<_, DashMemo>::new(chunk_power, ctx).expect("create commitment tree");
 
     // Deterministic, lazily-generated note stream — never materialized in full.
+    // The cmx is rejection-sampled to a valid Pallas field element so the
+    // batched anchor stays sound (matching what real notes do).
     let mut rng = StdRng::seed_from_u64(0xC0FFEE);
     let notes = std::iter::from_fn(move || {
         let mut cmx = [0u8; 32];
+        loop {
+            rng.fill_bytes(&mut cmx);
+            if merkle_hash_from_bytes(&cmx).is_some() {
+                break;
+            }
+        }
         let mut rho = [0u8; 32];
         let mut payload = vec![0u8; payload_len];
-        rng.fill_bytes(&mut cmx);
         rng.fill_bytes(&mut rho);
         rng.fill_bytes(&mut payload);
         Some((cmx, rho, payload))
@@ -62,16 +71,18 @@ fn main() {
     .take(n as usize);
 
     eprintln!(
-        "Seeding {n} notes (chunk_power={chunk_power}, payload={payload_len}B, entry={entry_len}B, ~{} MiB of note data)...",
+        "Seeding {n} notes via append_many_raw (chunk_power={chunk_power}, payload={payload_len}B, entry={entry_len}B, ~{} MiB of note data)...",
         (n as usize * entry_len) / (1024 * 1024)
     );
 
-    // 1. Frontier-less bulk append (compute + in-memory batch accumulation).
+    // 1. Batched bulk append — compute + in-memory batch accumulation.
+    //    Sinsemilla anchor + bulk state root are each computed exactly once
+    //    at the end, not per leaf.
     let t_seed = Instant::now();
-    let summary = ct
-        .append_many_without_frontier(notes)
+    let result = ct
+        .append_many_raw(notes)
         .value
-        .expect("frontier-less seeding");
+        .expect("batched commitment-tree seeding");
     let seed_elapsed = t_seed.elapsed();
 
     // Release the storage context's borrow of the batch before committing.
@@ -94,9 +105,9 @@ fn main() {
     let rate = |d: std::time::Duration| n as f64 / d.as_secs_f64();
 
     eprintln!("---------------------------------------------");
-    eprintln!("appended        : {}", summary.appended);
-    eprintln!("total_count     : {}", summary.total_count);
-    eprintln!("compactions     : {}", summary.compactions);
+    eprintln!("appended        : {}", n);
+    eprintln!("last position   : {}", result.global_position);
+    eprintln!("compacted       : {}", result.compacted);
     eprintln!(
         "seed (compute)  : {:.3?}   ({:.0} notes/s)",
         seed_elapsed,
@@ -111,10 +122,10 @@ fn main() {
     eprintln!("---------------------------------------------");
 }
 
-#[cfg(not(feature = "test-seeding-ct"))]
+#[cfg(not(feature = "server"))]
 fn main() {
     eprintln!(
-        "The `seeding` benchmark requires the `test-seeding-ct` feature.\n\
-         Run: cargo bench -p grovedb-commitment-tree --bench seeding --features test-seeding-ct"
+        "The `seeding` benchmark requires the `server` feature.\n\
+         Run: cargo bench -p grovedb-commitment-tree --bench seeding --features server"
     );
 }

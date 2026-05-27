@@ -43,6 +43,10 @@ impl CommitmentFrontier {
     /// Returns the new Sinsemilla root hash after the append. The returned
     /// [`OperationCost`] tracks `sinsemilla_hash_calls`: 32 hashes for the
     /// leaf-to-root path plus `trailing_ones(position)` ommer hashes.
+    ///
+    /// Prefer [`append_no_root`](Self::append_no_root) inside a batch — it
+    /// skips the per-leaf depth-32 root walk, which dominates the cost of
+    /// large bulk inserts.
     pub fn append(&mut self, cmx: [u8; 32]) -> CostResult<[u8; 32], CommitmentTreeError> {
         let mut cost = OperationCost::default();
         let leaf = match merkle_hash_from_bytes(&cmx) {
@@ -67,11 +71,58 @@ impl CommitmentFrontier {
         Ok(self.root_hash()).wrap_with_cost(cost)
     }
 
+    /// Append a commitment without recomputing the root.
+    ///
+    /// Cheaper than [`append`](Self::append) for batched inserts: defers the
+    /// depth-32 Sinsemilla root walk. The caller must call
+    /// [`root_hash`](Self::root_hash) (or [`anchor`](Self::anchor)) once after
+    /// the batch to get the post-batch state; intermediate roots are not
+    /// produced.
+    ///
+    /// Cost: amortized ~1 Sinsemilla hash per leaf (the carry chain inside
+    /// `Frontier::append`) vs ~33 for [`append`](Self::append).
+    pub fn append_no_root(&mut self, cmx: [u8; 32]) -> CostResult<(), CommitmentTreeError> {
+        let mut cost = OperationCost::default();
+        let leaf = match merkle_hash_from_bytes(&cmx) {
+            Some(l) => l,
+            None => {
+                return Err(CommitmentTreeError::InvalidFieldElement).wrap_with_cost(cost);
+            }
+        };
+
+        // Count only the carry-chain hashes performed by `Frontier::append`
+        // itself — the depth-32 root walk is *not* done here.
+        let ommer_hashes = self
+            .frontier
+            .value()
+            .map(|f| u64::from(f.position()).trailing_ones())
+            .unwrap_or(0);
+        cost.sinsemilla_hash_calls += ommer_hashes;
+
+        if !self.frontier.append(leaf) {
+            return Err(CommitmentTreeError::TreeFull).wrap_with_cost(cost);
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
     /// Get the current Sinsemilla root hash as 32 bytes.
     ///
     /// Returns the empty tree root if no leaves have been appended.
     pub fn root_hash(&self) -> [u8; 32] {
         self.frontier.root().to_bytes()
+    }
+
+    /// Same as [`root_hash`](Self::root_hash) but attributes the depth-32
+    /// Sinsemilla walk to the returned [`OperationCost`]. Used by batched
+    /// callers (e.g. [`CommitmentTree::append_many_raw`]) so the deferred
+    /// per-leaf cost is recovered at the single end-of-batch root computation.
+    ///
+    /// [`CommitmentTree::append_many_raw`]: crate::CommitmentTree::append_many_raw
+    pub fn root_hash_with_cost(&self) -> grovedb_costs::CostContext<[u8; 32]> {
+        let mut cost = OperationCost::default();
+        // The Frontier walks `FRONTIER_DEPTH` levels to derive the root.
+        cost.sinsemilla_hash_calls += FRONTIER_DEPTH as u32;
+        self.root_hash().wrap_with_cost(cost)
     }
 
     /// Get the current root as an Orchard `Anchor`.

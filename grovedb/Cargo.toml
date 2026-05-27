@@ -108,11 +108,6 @@ verify = [
 ]
 estimated_costs = ["full"]
 zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client"]
-# TEST / DEVNET ONLY — forwards `grovedb-commitment-tree/test-seeding-ct`.
-# Exposes the frontier-less commitment-tree seeding methods and relaxes the
-# frontier/bulk consistency check in `CommitmentTree::open` so a node can read
-# seeded (anchor-less) devnet state. Never enable in production.
-test-seeding-ct = ["minimal", "grovedb-commitment-tree/test-seeding-ct"]
 grovedbg = [
     "grovedbg-types",
     "tokio",
