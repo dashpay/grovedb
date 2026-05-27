@@ -5,7 +5,10 @@ use grovedb_merkle_mountain_range::{
 };
 use grovedb_storage::StorageContext;
 
-use super::{capacity_for_height, hash::compute_state_root, AppendResult, BulkAppendTree};
+use super::{
+    capacity_for_height, hash::compute_state_root, AppendManyResult, AppendNoStateRootResult,
+    AppendResult, BulkAppendTree,
+};
 use crate::{chunk::serialize_chunk_blob, BulkAppendError};
 
 impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
@@ -55,33 +58,54 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
     /// Append a value to the tree.
     ///
     /// Handles dense tree insert, auto-compaction when the buffer fills, and
-    /// state root computation.
+    /// state root computation. For batched inserts prefer
+    /// [`append_many`](Self::append_many) or [`append_no_state_root`](Self::append_no_state_root)
+    /// — they skip the per-leaf state-root blake3 call.
     pub fn append(&mut self, value: &[u8]) -> Result<AppendResult, BulkAppendError> {
+        let r = self.append_no_state_root(value)?;
+        let state_root = self.compute_current_state_root()?;
+        Ok(AppendResult {
+            state_root,
+            global_position: r.global_position,
+            // +1 for the blake3 state-root computation we just did.
+            hash_count: r.hash_count.saturating_add(1),
+            compacted: r.compacted,
+        })
+    }
+
+    /// Append a value without computing the per-leaf state root.
+    ///
+    /// Equivalent to [`append`](Self::append) minus the final
+    /// `compute_state_root` blake3 hash. Use inside a batch (typically via
+    /// [`append_many`](Self::append_many) or
+    /// [`CommitmentTree::append_many_raw`]) and recover the state root once at
+    /// the end via [`compute_current_state_root`](Self::compute_current_state_root).
+    /// Storage mutation is identical to [`append`](Self::append).
+    ///
+    /// [`CommitmentTree::append_many_raw`]: ../../grovedb_commitment_tree/struct.CommitmentTree.html#method.append_many_raw
+    pub fn append_no_state_root(
+        &mut self,
+        value: &[u8],
+    ) -> Result<AppendNoStateRootResult, BulkAppendError> {
         let mut hash_count: u32 = 0;
         let global_position = self.total_count;
 
-        // 1. Try to insert into the dense tree buffer
+        // 1. Try to insert into the dense tree buffer.
         let try_result = self.dense_tree.try_insert(value).unwrap().map_err(|e| {
             BulkAppendError::StorageError(format!("dense tree insert failed: {}", e))
         })?;
 
-        let (compacted, mmr_root, final_dense_root) = match try_result {
-            Some((dense_root, _position)) => {
+        let compacted = match try_result {
+            Some((_dense_root, _position)) => {
                 // Inserted successfully, no compaction needed. The MMR is
-                // untouched, so its root is unchanged — use the cached value
-                // instead of recomputing (which would clone the overlay). On the
-                // first append after an open the cache is empty, so compute it
-                // once and store it.
+                // untouched, so its root is unchanged — keep the cache as-is.
+                // (On the very first append after a lazy open the cache is
+                // `None`; we don't seed it here because we don't need it —
+                // the caller will recover the state root via
+                // `compute_current_state_root` at the end of the batch, which
+                // populates the cache then.)
                 hash_count += self.dense_tree.count() as u32 * 2;
-                let root = match self.last_mmr_root {
-                    Some(root) => root,
-                    None => {
-                        let root = self.get_mmr_root()?;
-                        self.last_mmr_root = Some(root);
-                        root
-                    }
-                };
-                (false, root, dense_root)
+                false
             }
             None => {
                 // Dense tree is full — compact existing entries + new value.
@@ -91,27 +115,77 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
                 hash_count += compact_hashes;
                 // MMR mutated by the compaction — refresh the cached root.
                 self.last_mmr_root = Some(mmr_root);
-                (true, mmr_root, [0u8; 32]) // empty tree after reset
+                true
             }
         };
 
         self.total_count += 1;
 
-        // 2. Compute state root (+1 hash)
-        let state_root = compute_state_root(&mmr_root, &final_dense_root);
-        hash_count += 1;
-
-        Ok(AppendResult {
-            state_root,
+        Ok(AppendNoStateRootResult {
             global_position,
             hash_count,
             compacted,
         })
     }
 
+    /// Batch-append a sequence of values, computing the state root **once** at
+    /// the end instead of once per leaf.
+    ///
+    /// Byte-for-byte equivalent to calling [`append`](Self::append) per value
+    /// (same dense-tree state, same MMR, same final `state_root`), but skips
+    /// the per-leaf blake3 state-root computation. Used by
+    /// [`CommitmentTree::append_many_raw`] to keep large bulk seeds linear.
+    ///
+    /// On error the tree is left partially mutated — discard the surrounding
+    /// transaction if you need all-or-nothing semantics.
+    ///
+    /// [`CommitmentTree::append_many_raw`]: ../../grovedb_commitment_tree/struct.CommitmentTree.html#method.append_many_raw
+    pub fn append_many<I>(&mut self, values: I) -> Result<AppendManyResult, BulkAppendError>
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
+        let mut appended: u64 = 0;
+        let mut hash_count: u64 = 0;
+        let mut compactions: u64 = 0;
+        let mut last_global_position: Option<u64> = None;
+
+        for value in values {
+            let r = self.append_no_state_root(&value)?;
+            last_global_position = Some(r.global_position);
+            hash_count = hash_count.saturating_add(u64::from(r.hash_count));
+            if r.compacted {
+                compactions += 1;
+            }
+            appended += 1;
+        }
+
+        // One blake3 for the final state root (matching the +1 each per-leaf
+        // `append` would have counted).
+        let state_root = self.compute_current_state_root()?;
+        if appended > 0 {
+            hash_count = hash_count.saturating_add(1);
+        }
+
+        Ok(AppendManyResult {
+            state_root,
+            last_global_position,
+            appended,
+            hash_count,
+            compactions,
+        })
+    }
+
     /// Compute the current state root without modifying the tree.
+    ///
+    /// Uses the cached MMR root when available, so this is O(1) on the
+    /// post-first-append fast path (no overlay clone). Falls back to a one-shot
+    /// `get_mmr_root` only when the cache is empty (e.g. immediately after a
+    /// lazy `from_state` with no appends yet).
     pub fn compute_current_state_root(&self) -> Result<[u8; 32], BulkAppendError> {
-        let mmr_root = self.get_mmr_root()?;
+        let mmr_root = match self.last_mmr_root {
+            Some(r) => r,
+            None => self.get_mmr_root()?,
+        };
         let dense_root = self.dense_tree.root_hash().unwrap().map_err(|e| {
             BulkAppendError::StorageError(format!("dense tree root_hash failed: {}", e))
         })?;

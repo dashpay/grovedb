@@ -15,16 +15,6 @@ default = []
 server = ["grovedb-storage", "grovedb-bulk-append-tree/storage"]
 client = ["shardtree"]
 sqlite = ["client", "rusqlite"]
-# TEST / DEVNET ONLY — do not enable in production.
-#
-# Adds frontier-less seeding methods (`append_raw_without_frontier`,
-# `append_many_without_frontier`) that populate the underlying BulkAppendTree
-# WITHOUT updating the Sinsemilla frontier. This lets benchmarks pre-populate a
-# shielded pool with a large N of filler notes at blake3 speed, skipping the
-# per-note Pallas/Sinsemilla hashing. The resulting tree has NO valid Orchard
-# anchor, so seeded notes are not spendable; chunk proofs (authenticated by the
-# blake3 bulk state root) still verify, which is what client sync exercises.
-test-seeding-ct = ["server"]
 
 [dependencies]
 orchard = { git = "https://github.com/dashpay/orchard.git", rev = "898258d76aab2822249492aede59a02d49278fff", features = ["circuit"] }
@@ -50,8 +40,9 @@ grovedb-path = { version = "4.0.0", path = "../path" }
 name = "verification"
 harness = false
 
-# Frontier-less seeding throughput (test/devnet only). Run with:
-#   cargo bench -p grovedb-commitment-tree --bench seeding --features test-seeding-ct
+# Batched commitment-tree seeding throughput. Run with:
+#   cargo bench -p grovedb-commitment-tree --bench seeding --features server
 [[bench]]
 name = "seeding"
 harness = false
+required-features = ["server"]
