@@ -22,12 +22,19 @@ mod storage_tests {
     /// since `CommitmentTree` only uses data storage operations.
     struct MockDataStorageContext {
         data: std::cell::RefCell<BTreeMap<Vec<u8>, Vec<u8>>>,
+        /// Toggle-able fault flags. Shared via `Rc` so a test can grab a handle
+        /// before the context is moved into `CommitmentTree`, then flip the
+        /// flag mid-test to exercise storage-error branches.
+        fail_get: std::rc::Rc<std::cell::Cell<bool>>,
+        fail_put: std::rc::Rc<std::cell::Cell<bool>>,
     }
 
     impl MockDataStorageContext {
         fn new() -> Self {
             Self {
                 data: std::cell::RefCell::new(BTreeMap::new()),
+                fail_get: Default::default(),
+                fail_put: Default::default(),
             }
         }
 
@@ -37,7 +44,20 @@ mod storage_tests {
             data.insert(key.to_vec(), value);
             Self {
                 data: std::cell::RefCell::new(data),
+                fail_get: Default::default(),
+                fail_put: Default::default(),
             }
+        }
+
+        /// Clone the (fail_get, fail_put) toggles so a test can flip them
+        /// after the context has been moved into a `CommitmentTree`.
+        fn fault_handles(
+            &self,
+        ) -> (
+            std::rc::Rc<std::cell::Cell<bool>>,
+            std::rc::Rc<std::cell::Cell<bool>>,
+        ) {
+            (self.fail_get.clone(), self.fail_put.clone())
         }
     }
 
@@ -163,6 +183,15 @@ mod storage_tests {
             _children_sizes: ChildrenSizesWithIsSumTree,
             _cost_info: Option<KeyValueStorageCost>,
         ) -> CostResult<(), grovedb_storage::Error> {
+            if self.fail_put.get() {
+                return Err(grovedb_storage::Error::StorageError(
+                    "injected put failure".to_string(),
+                ))
+                .wrap_with_cost(OperationCost {
+                    seek_count: 1,
+                    ..Default::default()
+                });
+            }
             self.data
                 .borrow_mut()
                 .insert(key.as_ref().to_vec(), value.to_vec());
@@ -176,6 +205,15 @@ mod storage_tests {
             &self,
             key: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
+            if self.fail_get.get() {
+                return Err(grovedb_storage::Error::StorageError(
+                    "injected get failure".to_string(),
+                ))
+                .wrap_with_cost(OperationCost {
+                    seek_count: 1,
+                    ..Default::default()
+                });
+            }
             let store = self.data.borrow();
             let val = store.get(key.as_ref()).cloned();
             let loaded = val.as_ref().map_or(0, |v| v.len() as u64);
@@ -1020,5 +1058,362 @@ mod storage_tests {
             0,
             "tree should not have been mutated by invalid cmx"
         );
+    }
+
+    // ── Batched append (append_many_raw) ────────────────────────────────
+
+    /// A correctly-sized DashMemo payload filled with a deterministic pattern.
+    fn seed_payload(index: u8) -> Vec<u8> {
+        let mut p = vec![0u8; ciphertext_payload_size::<DashMemo>()];
+        p[0] = index;
+        p[1] = 0x5D;
+        p
+    }
+
+    /// Build a fresh tree, append all `entries` one-by-one via [`append_raw`].
+    fn build_via_per_leaf_append(
+        entries: &[([u8; 32], [u8; 32], Vec<u8>)],
+    ) -> CommitmentTree<MockDataStorageContext, DashMemo> {
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
+                .expect("new should succeed");
+        for (cmx, rho, payload) in entries {
+            ct.append_raw(*cmx, *rho, payload)
+                .value
+                .expect("per-leaf append_raw should succeed");
+        }
+        ct
+    }
+
+    /// Build a fresh tree by passing all `entries` to [`append_many_raw`] in one call.
+    fn build_via_append_many_raw(
+        entries: Vec<([u8; 32], [u8; 32], Vec<u8>)>,
+    ) -> CommitmentTree<MockDataStorageContext, DashMemo> {
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
+                .expect("new should succeed");
+        ct.append_many_raw(entries)
+            .value
+            .expect("append_many_raw should succeed");
+        ct
+    }
+
+    /// Build a deterministic test sequence of `n` entries.
+    fn make_entries(n: u64) -> Vec<([u8; 32], [u8; 32], Vec<u8>)> {
+        (0..n)
+            .map(|i| {
+                (
+                    test_leaf(i),
+                    test_rho((i % 256) as u8),
+                    seed_payload((i % 256) as u8),
+                )
+            })
+            .collect()
+    }
+
+    /// Byte-for-byte equivalence: for the same input sequence, `append_many_raw`
+    /// must produce the same `CommitmentFrontier` state and the same
+    /// BulkAppendTree state root as N × `append_raw`. This is the core
+    /// invariant — if it ever fails, batched callers can produce anchors that
+    /// don't match what the per-leaf path would have produced.
+    #[test]
+    fn append_many_raw_byte_for_byte_matches_per_leaf() {
+        // 0 / 1 / 2 / 3 cover edge cases around the very-empty and pre-compaction
+        // shapes; 100 spans the buffer mid-range; 2048 fills exactly one epoch
+        // (with TEST_CHUNK_POWER=1 we hit MANY compactions, exercising the cache
+        // + MMR path); 10_000 spans several epochs at meaningful scale.
+        for n in [0u64, 1, 2, 3, 100, 2048, 10_000] {
+            let entries = make_entries(n);
+            let a = build_via_per_leaf_append(&entries);
+            let b = build_via_append_many_raw(entries);
+
+            assert_eq!(
+                a.root_hash(),
+                b.root_hash(),
+                "Sinsemilla root mismatch at N={}: per-leaf vs append_many_raw",
+                n
+            );
+            assert_eq!(
+                a.frontier.serialize(),
+                b.frontier.serialize(),
+                "frontier serialization mismatch at N={}: per-leaf vs append_many_raw",
+                n
+            );
+            let a_state = a.compute_current_state_root().expect("state root A");
+            let b_state = b.compute_current_state_root().expect("state root B");
+            assert_eq!(
+                a_state, b_state,
+                "bulk tree state_root mismatch at N={}: per-leaf vs append_many_raw",
+                n
+            );
+            assert_eq!(
+                a.total_count(),
+                b.total_count(),
+                "total_count mismatch at N={}: per-leaf vs append_many_raw",
+                n
+            );
+            assert_eq!(a.total_count(), n, "tree should hold exactly N={} items", n);
+        }
+    }
+
+    /// `CommitmentFrontier::append_no_root` is just the carry-chain part of the
+    /// upstream `Frontier::append`. Its [`OperationCost`] must therefore omit
+    /// the depth-32 root walk that the eager [`append`] would have counted.
+    ///
+    /// Pairing N × `append_no_root` with a single `root_hash_with_cost` recovers
+    /// the depth walk *once*, exactly as the batched API does in production —
+    /// so this is also the structural check that justifies the speedup.
+    #[test]
+    fn append_no_root_cost_omits_per_leaf_depth_walk() {
+        // We use a small N here to keep the test fast — the relationship is
+        // independent of N.
+        const N: u64 = 16;
+
+        let mut frontier_eager = CommitmentFrontier::new();
+        let mut frontier_lazy = CommitmentFrontier::new();
+        let mut eager_cost = OperationCost::default();
+        let mut lazy_cost = OperationCost::default();
+
+        for i in 0..N {
+            let cmx = test_leaf(i);
+            frontier_eager
+                .append(cmx)
+                .unwrap_add_cost(&mut eager_cost)
+                .expect("eager append");
+            frontier_lazy
+                .append_no_root(cmx)
+                .unwrap_add_cost(&mut lazy_cost)
+                .expect("lazy append");
+        }
+
+        // Both paths must produce identical frontier state.
+        assert_eq!(frontier_eager.root_hash(), frontier_lazy.root_hash());
+        assert_eq!(frontier_eager.serialize(), frontier_lazy.serialize());
+
+        // The eager path counts 32 Sinsemilla hashes per call for the depth
+        // walk; the lazy path counts only the carry chain. Difference is
+        // exactly 32 × N.
+        assert_eq!(
+            eager_cost.sinsemilla_hash_calls - lazy_cost.sinsemilla_hash_calls,
+            32 * N as u32,
+            "eager append must include 32 depth-walk hashes per leaf; lazy must not"
+        );
+
+        // Recover the depth walk *once* via root_hash_with_cost. The lazy
+        // path then matches the eager path minus the deferred walks
+        // (32 × (N − 1)).
+        let root_ctx = frontier_lazy.root_hash_with_cost();
+        let lazy_total = lazy_cost.sinsemilla_hash_calls + root_ctx.cost.sinsemilla_hash_calls;
+        assert_eq!(
+            eager_cost.sinsemilla_hash_calls,
+            lazy_total + 32 * (N as u32 - 1),
+            "N × append == N × append_no_root + 1 × root_hash + 32 × (N − 1)"
+        );
+
+        // Sanity: lazy carry-chain cost is bounded by N (much less than 32 × N).
+        assert!(
+            lazy_cost.sinsemilla_hash_calls < N as u32,
+            "carry-chain cost should be amortized ~O(1) per leaf, not 32"
+        );
+    }
+
+    /// The Sinsemilla anchor produced by `append_many_raw` must be **spend-
+    /// usable** — i.e. an Orchard Merkle auth path for a leaf at a known
+    /// position must verify against the batched-built anchor, exactly as it
+    /// would against an anchor built leaf-by-leaf.
+    ///
+    /// We compute the auth path independently (pairwise Sinsemilla combine to
+    /// the root, padding upper levels with `empty_root`), then use the orchard
+    /// `MerklePath` API to derive an anchor from `(position, path, cmx)` and
+    /// require equality with `ct.anchor()`.
+    #[test]
+    fn append_many_raw_anchor_is_spend_usable() {
+        use crate::{ExtractedNoteCommitment, MerkleHashOrchard, MerklePath};
+
+        // Modest N keeps the manual auth-path recomputation cheap; the
+        // verification property is N-agnostic, so a smaller N proves the
+        // anchor shape.
+        const N: u64 = 257;
+        const TARGET_POSITION: usize = 113;
+
+        let entries = make_entries(N);
+        let owned_cmx_bytes = entries[TARGET_POSITION].0;
+        let ct = build_via_append_many_raw(entries.clone());
+        let anchor = ct.anchor();
+
+        // Independent auth-path recomputation over the same leaf set.
+        let leaves: Vec<MerkleHashOrchard> = entries
+            .iter()
+            .map(|(cmx, _, _)| {
+                Option::from(MerkleHashOrchard::from_bytes(cmx))
+                    .expect("test_leaf produces valid Pallas elements")
+            })
+            .collect();
+
+        let auth_path = compute_orchard_auth_path(&leaves, TARGET_POSITION);
+        let target_cmx = Option::<ExtractedNoteCommitment>::from(
+            ExtractedNoteCommitment::from_bytes(&owned_cmx_bytes),
+        )
+        .expect("test_leaf produces valid Pallas elements");
+
+        let merkle_path = MerklePath::from_parts(TARGET_POSITION as u32, auth_path);
+        let computed = merkle_path.root(target_cmx);
+
+        assert_eq!(
+            computed, anchor,
+            "auth path against batched anchor failed — anchor is not spend-usable"
+        );
+    }
+
+    /// Build the Orchard Sinsemilla auth path for `position` over `leaves`,
+    /// padding upper levels with `MerkleHashOrchard::empty_root(level)` once
+    /// the tree thins beyond the leaf set.
+    fn compute_orchard_auth_path(
+        leaves: &[crate::MerkleHashOrchard],
+        position: usize,
+    ) -> [crate::MerkleHashOrchard; 32] {
+        use crate::{Hashable, Level, MerkleHashOrchard};
+
+        let mut current: Vec<MerkleHashOrchard> = leaves.to_vec();
+        let mut path: Vec<MerkleHashOrchard> = Vec::with_capacity(32);
+        let mut idx = position;
+
+        for level in 0..32u8 {
+            let l = Level::from(level);
+            let empty = MerkleHashOrchard::empty_root(l);
+
+            let sibling_idx = idx ^ 1;
+            let sibling = current.get(sibling_idx).copied().unwrap_or(empty);
+            path.push(sibling);
+
+            // Combine pairs up to the next level. Pad with `empty` so the
+            // upper-level positions align with `idx /= 2` regardless of how
+            // many leaves there are.
+            let next_len = current.len().div_ceil(2);
+            let mut next: Vec<MerkleHashOrchard> = Vec::with_capacity(next_len);
+            let mut i = 0;
+            while i < current.len() {
+                let left = current[i];
+                let right = current.get(i + 1).copied().unwrap_or(empty);
+                next.push(MerkleHashOrchard::combine(l, &left, &right));
+                i += 2;
+            }
+            current = next;
+            idx /= 2;
+        }
+
+        path.try_into()
+            .expect("32 levels of auth path produced from the loop above")
+    }
+
+    // ── append_many_raw error-branch coverage ───────────────────────────
+
+    /// Mid-batch invalid cmx must be rejected via the per-entry pre-validation.
+    #[test]
+    fn append_many_raw_rejects_invalid_cmx_mid_batch() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // First entry is valid; second has a non-Pallas cmx. The first must be
+        // accepted, then the batch errors with `InvalidFieldElement` — matching
+        // the per-leaf `append_raw` semantics.
+        let entries = vec![
+            (test_leaf(0), test_rho(0), seed_payload(0)),
+            ([0xFFu8; 32], test_rho(1), seed_payload(1)),
+        ];
+        let err = ct
+            .append_many_raw(entries)
+            .value
+            .expect_err("invalid cmx must propagate out of the batch");
+        assert!(
+            matches!(err, CommitmentTreeError::InvalidFieldElement),
+            "expected InvalidFieldElement, got {err}"
+        );
+        // The first (valid) entry was already applied.
+        assert_eq!(ct.total_count(), 1, "valid prefix entry was applied");
+    }
+
+    /// Mid-batch wrong-sized payload must be rejected via the per-entry
+    /// pre-validation.
+    #[test]
+    fn append_many_raw_rejects_wrong_payload_size_mid_batch() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        let entries = vec![
+            (test_leaf(0), test_rho(0), seed_payload(0)),
+            (test_leaf(1), test_rho(1), vec![0u8; 1]), // wrong size
+        ];
+        let err = ct
+            .append_many_raw(entries)
+            .value
+            .expect_err("bad payload size must propagate out of the batch");
+        assert!(
+            matches!(err, CommitmentTreeError::InvalidPayloadSize { .. }),
+            "expected InvalidPayloadSize, got {err}"
+        );
+    }
+
+    /// A storage fault during the bulk-tree side of `append_many_raw` must
+    /// surface as the wrapped `InvalidData("bulk append: …")` error.
+    #[test]
+    fn append_many_raw_surfaces_bulk_storage_error() {
+        let ctx = MockDataStorageContext::new();
+        let (fail_get, fail_put) = ctx.fault_handles();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // Make the underlying dense-tree storage fail on both reads and writes
+        // so `BulkAppendTree::append_no_state_root` errors out.
+        fail_get.set(true);
+        fail_put.set(true);
+
+        let entries = vec![(test_leaf(0), test_rho(0), seed_payload(0))];
+        let err = ct
+            .append_many_raw(entries)
+            .value
+            .expect_err("bulk storage failure should surface");
+        assert!(
+            format!("{err}").contains("bulk append"),
+            "error should be wrapped as a bulk-append failure: {err}"
+        );
+    }
+
+    /// `CommitmentFrontier::append_no_root` must reject a non-Pallas cmx with
+    /// `InvalidFieldElement` (mirrors the eager `append` behavior).
+    #[test]
+    fn frontier_append_no_root_rejects_invalid_cmx() {
+        let mut f = CommitmentFrontier::new();
+        let err = f
+            .append_no_root([0xFFu8; 32])
+            .value
+            .expect_err("a non-Pallas cmx must be rejected before any frontier mutation");
+        assert!(
+            matches!(err, CommitmentTreeError::InvalidFieldElement),
+            "expected InvalidFieldElement, got {err}"
+        );
+        assert_eq!(
+            f.tree_size(),
+            0,
+            "frontier must not have been mutated by the rejection"
+        );
+    }
+
+    /// `CommitmentTree::commit_mmr` must run the underlying bulk-tree commit
+    /// to completion (success path).
+    #[test]
+    fn commit_mmr_success() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // Append enough to trigger at least one compaction (TEST_CHUNK_POWER=1
+        // → epoch_size=2), so the MMR overlay has staged nodes.
+        let notes = (0..4u8).map(|i| (test_leaf(i as u64), test_rho(i), seed_payload(i)));
+        ct.append_many_raw(notes).value.expect("warmup");
+
+        ct.commit_mmr().expect("commit_mmr should flush cleanly");
     }
 }
