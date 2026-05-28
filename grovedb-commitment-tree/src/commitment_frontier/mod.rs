@@ -66,6 +66,8 @@ impl CommitmentFrontier {
         cost.sinsemilla_hash_calls += 32 + ommer_hashes;
 
         if !self.frontier.append(leaf) {
+            // codecov:ignore — requires 2^32 successful Sinsemilla appends to fill
+            // the depth-32 tree; never reachable in test or production runs.
             return Err(CommitmentTreeError::TreeFull).wrap_with_cost(cost);
         }
         Ok(self.root_hash()).wrap_with_cost(cost)
@@ -100,6 +102,8 @@ impl CommitmentFrontier {
         cost.sinsemilla_hash_calls += ommer_hashes;
 
         if !self.frontier.append(leaf) {
+            // codecov:ignore — requires 2^32 successful Sinsemilla appends to fill
+            // the depth-32 tree; never reachable in test or production runs.
             return Err(CommitmentTreeError::TreeFull).wrap_with_cost(cost);
         }
         Ok(()).wrap_with_cost(cost)

@@ -22,12 +22,19 @@ mod storage_tests {
     /// since `CommitmentTree` only uses data storage operations.
     struct MockDataStorageContext {
         data: std::cell::RefCell<BTreeMap<Vec<u8>, Vec<u8>>>,
+        /// Toggle-able fault flags. Shared via `Rc` so a test can grab a handle
+        /// before the context is moved into `CommitmentTree`, then flip the
+        /// flag mid-test to exercise storage-error branches.
+        fail_get: std::rc::Rc<std::cell::Cell<bool>>,
+        fail_put: std::rc::Rc<std::cell::Cell<bool>>,
     }
 
     impl MockDataStorageContext {
         fn new() -> Self {
             Self {
                 data: std::cell::RefCell::new(BTreeMap::new()),
+                fail_get: Default::default(),
+                fail_put: Default::default(),
             }
         }
 
@@ -37,7 +44,20 @@ mod storage_tests {
             data.insert(key.to_vec(), value);
             Self {
                 data: std::cell::RefCell::new(data),
+                fail_get: Default::default(),
+                fail_put: Default::default(),
             }
+        }
+
+        /// Clone the (fail_get, fail_put) toggles so a test can flip them
+        /// after the context has been moved into a `CommitmentTree`.
+        fn fault_handles(
+            &self,
+        ) -> (
+            std::rc::Rc<std::cell::Cell<bool>>,
+            std::rc::Rc<std::cell::Cell<bool>>,
+        ) {
+            (self.fail_get.clone(), self.fail_put.clone())
         }
     }
 
@@ -163,6 +183,15 @@ mod storage_tests {
             _children_sizes: ChildrenSizesWithIsSumTree,
             _cost_info: Option<KeyValueStorageCost>,
         ) -> CostResult<(), grovedb_storage::Error> {
+            if self.fail_put.get() {
+                return Err(grovedb_storage::Error::StorageError(
+                    "injected put failure".to_string(),
+                ))
+                .wrap_with_cost(OperationCost {
+                    seek_count: 1,
+                    ..Default::default()
+                });
+            }
             self.data
                 .borrow_mut()
                 .insert(key.as_ref().to_vec(), value.to_vec());
@@ -176,6 +205,15 @@ mod storage_tests {
             &self,
             key: K,
         ) -> CostResult<Option<Vec<u8>>, grovedb_storage::Error> {
+            if self.fail_get.get() {
+                return Err(grovedb_storage::Error::StorageError(
+                    "injected get failure".to_string(),
+                ))
+                .wrap_with_cost(OperationCost {
+                    seek_count: 1,
+                    ..Default::default()
+                });
+            }
             let store = self.data.borrow();
             let val = store.get(key.as_ref()).cloned();
             let loaded = val.as_ref().map_or(0, |v| v.len() as u64);
@@ -1266,5 +1304,116 @@ mod storage_tests {
 
         path.try_into()
             .expect("32 levels of auth path produced from the loop above")
+    }
+
+    // ── append_many_raw error-branch coverage ───────────────────────────
+
+    /// Mid-batch invalid cmx must be rejected via the per-entry pre-validation.
+    #[test]
+    fn append_many_raw_rejects_invalid_cmx_mid_batch() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // First entry is valid; second has a non-Pallas cmx. The first must be
+        // accepted, then the batch errors with `InvalidFieldElement` — matching
+        // the per-leaf `append_raw` semantics.
+        let entries = vec![
+            (test_leaf(0), test_rho(0), seed_payload(0)),
+            ([0xFFu8; 32], test_rho(1), seed_payload(1)),
+        ];
+        let err = ct
+            .append_many_raw(entries)
+            .value
+            .expect_err("invalid cmx must propagate out of the batch");
+        assert!(
+            matches!(err, CommitmentTreeError::InvalidFieldElement),
+            "expected InvalidFieldElement, got {err}"
+        );
+        // The first (valid) entry was already applied.
+        assert_eq!(ct.total_count(), 1, "valid prefix entry was applied");
+    }
+
+    /// Mid-batch wrong-sized payload must be rejected via the per-entry
+    /// pre-validation.
+    #[test]
+    fn append_many_raw_rejects_wrong_payload_size_mid_batch() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        let entries = vec![
+            (test_leaf(0), test_rho(0), seed_payload(0)),
+            (test_leaf(1), test_rho(1), vec![0u8; 1]), // wrong size
+        ];
+        let err = ct
+            .append_many_raw(entries)
+            .value
+            .expect_err("bad payload size must propagate out of the batch");
+        assert!(
+            matches!(err, CommitmentTreeError::InvalidPayloadSize { .. }),
+            "expected InvalidPayloadSize, got {err}"
+        );
+    }
+
+    /// A storage fault during the bulk-tree side of `append_many_raw` must
+    /// surface as the wrapped `InvalidData("bulk append: …")` error.
+    #[test]
+    fn append_many_raw_surfaces_bulk_storage_error() {
+        let ctx = MockDataStorageContext::new();
+        let (fail_get, fail_put) = ctx.fault_handles();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // Make the underlying dense-tree storage fail on both reads and writes
+        // so `BulkAppendTree::append_no_state_root` errors out.
+        fail_get.set(true);
+        fail_put.set(true);
+
+        let entries = vec![(test_leaf(0), test_rho(0), seed_payload(0))];
+        let err = ct
+            .append_many_raw(entries)
+            .value
+            .expect_err("bulk storage failure should surface");
+        assert!(
+            format!("{err}").contains("bulk append"),
+            "error should be wrapped as a bulk-append failure: {err}"
+        );
+    }
+
+    /// `CommitmentFrontier::append_no_root` must reject a non-Pallas cmx with
+    /// `InvalidFieldElement` (mirrors the eager `append` behavior).
+    #[test]
+    fn frontier_append_no_root_rejects_invalid_cmx() {
+        let mut f = CommitmentFrontier::new();
+        let err = f
+            .append_no_root([0xFFu8; 32])
+            .value
+            .expect_err("a non-Pallas cmx must be rejected before any frontier mutation");
+        assert!(
+            matches!(err, CommitmentTreeError::InvalidFieldElement),
+            "expected InvalidFieldElement, got {err}"
+        );
+        assert_eq!(
+            f.tree_size(),
+            0,
+            "frontier must not have been mutated by the rejection"
+        );
+    }
+
+    /// `CommitmentTree::commit_mmr` must run the underlying bulk-tree commit
+    /// to completion (success path).
+    #[test]
+    fn commit_mmr_success() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        // Append enough to trigger at least one compaction (TEST_CHUNK_POWER=1
+        // → epoch_size=2), so the MMR overlay has staged nodes.
+        let notes = (0..4u8).map(|i| (test_leaf(i as u64), test_rho(i), seed_payload(i)));
+        ct.append_many_raw(notes).value.expect("warmup");
+
+        ct.commit_mmr().expect("commit_mmr should flush cleanly");
     }
 }
