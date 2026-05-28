@@ -358,7 +358,25 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// matches the per-leaf behavior of calling [`append_raw`](Self::append_raw)
     /// in a loop.
     ///
-    /// Call [`save`](Self::save) afterwards to persist the updated frontier.
+    /// # Persistence — caller responsibilities
+    ///
+    /// Like [`append_raw`](Self::append_raw), this method does **not** flush
+    /// state to disk on its own. After your final batch — i.e. just before
+    /// committing the surrounding `StorageBatch` / transaction — the caller
+    /// **must** call:
+    ///
+    /// 1. [`commit_mmr`](Self::commit_mmr) to write MMR nodes staged in the
+    ///    overlay during compactions, and
+    /// 2. [`save`](Self::save) to persist the Sinsemilla frontier.
+    ///
+    /// **Do not call [`commit_mmr`](Self::commit_mmr) between chained
+    /// `append_many_raw` calls.** A GroveDB `StorageContext::get` does not see
+    /// writes that are sitting in its `StorageBatch` (reads go straight to the
+    /// underlying transaction). Flushing the overlay mid-session would put the
+    /// MMR peaks into the batch, where the *next* batch's compactions can't
+    /// read them, and the second batch would then fail with `InconsistentStore`.
+    /// Keeping the overlay alive across chained calls is what lets later
+    /// compactions resolve their sibling reads in memory.
     pub fn append_many_raw<I>(
         &mut self,
         entries: I,
@@ -454,14 +472,13 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         cost += root_ctx.cost;
         let sinsemilla_root = root_ctx.value;
 
-        // Flush MMR nodes staged during compaction so the seeded state is fully
-        // persisted; callers don't need a separate `commit_mmr` after this.
-        if let Err(e) = self.commit_mmr() {
-            // codecov:ignore — only reachable on a storage fault during the
-            // final MMR flush; the bench / seed path can't isolate that fault
-            // from the appends with our test mocks.
-            return Err(e).wrap_with_cost(cost);
-        }
+        // Intentionally do NOT call `commit_mmr` here. Any nodes staged in the
+        // MMR overlay during compactions must stay in memory until the caller
+        // finishes the whole session — see the "Persistence" section in the
+        // method docs. Flushing here would put the peaks into the surrounding
+        // `StorageBatch`, where the next chained `append_many_raw` would be
+        // unable to read them (GroveDB `get` does not see batched writes), and
+        // the next compaction would fail with `InconsistentStore`.
 
         Ok(CommitmentAppendResult {
             sinsemilla_root,

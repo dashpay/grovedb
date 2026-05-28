@@ -83,6 +83,11 @@ fn main() {
         .append_many_raw(notes)
         .value
         .expect("batched commitment-tree seeding");
+    // Flush the MMR overlay into the storage batch now that we're done
+    // appending. Must come before dropping `ct` (which would lose the overlay)
+    // and before committing the storage batch (which writes to disk).
+    ct.commit_mmr().expect("commit_mmr");
+
     let seed_elapsed = t_seed.elapsed();
 
     // Release the storage context's borrow of the batch before committing.
