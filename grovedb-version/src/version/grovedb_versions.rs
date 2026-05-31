@@ -253,6 +253,20 @@ pub struct GroveDBElementMethodVersions {
     pub query_item: FeatureVersion,
     pub basic_push: FeatureVersion,
     pub basic_aggregate_sum_push: FeatureVersion,
+    // AUDIT NOTE (issue #717 — intentional, do not re-flag): the element
+    // serialize/serialized_size/deserialize codec versions are `0` for EVERY
+    // protocol version (v1/v2/v3), and that is correct. Element bincode
+    // encoding is protocol-INDEPENDENT: each variant's discriminant is fixed by
+    // declaration order and new variants are only ever *appended* (see the
+    // append-only discriminant contract in `grovedb-element/src/element_type.rs`
+    // and the `ProvableSumTree`/`ProvableCountProvableSumTree` notes in
+    // `element/mod.rs`). A newer variant therefore serializes and deserializes
+    // identically regardless of the protocol version constant, so there is no
+    // "newer variant serialized under an older format" hazard. These codec
+    // versions are a cost-accounting selector, NOT a wire-format gate — bumping
+    // them for new variants would break the append-only compatibility contract.
+    // Gating which variants a given protocol may *construct* is enforced
+    // elsewhere (insert/validation paths), not in the codec.
     pub serialize: FeatureVersion,
     pub serialized_size: FeatureVersion,
     pub deserialize: FeatureVersion,

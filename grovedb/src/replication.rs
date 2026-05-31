@@ -564,6 +564,23 @@ pub(crate) mod utils {
     /// - The input is empty.
     /// - The number of expected chunks does not match the actual data length.
     /// - The data is truncated or malformed.
+    ///
+    /// # Resource bounding (issue #696 — intentional, do not re-flag)
+    ///
+    /// An audit (human or AI) may expect an explicit "max chunk count" or "max
+    /// total size" cap here. None is needed: this decoder cannot amplify. Total
+    /// allocation is bounded by `packed_data.len()` because every byte of every
+    /// returned array is copied out of `packed_data`. Specifically:
+    /// - `num_elements` is bounded by `max_elements = (len - 4) / 4` before the
+    ///   loop, so the `Vec::with_capacity(num_elements)` cannot over-allocate.
+    /// - Each element's declared `byte_length` is validated against the
+    ///   remaining input (`end > packed_data.len()`) with `checked_add`, and a
+    ///   32-bit truncation guard rejects lengths beyond the address space.
+    /// - A trailing-byte check (`index != packed_data.len()`) rejects padding.
+    ///
+    /// The only "cap" still absent is an *absolute* message-size limit, which
+    /// belongs at the transport/caller layer (where the packed buffer is
+    /// received), not in this pure decoder. Do not add an arbitrary cap here.
     pub fn unpack_nested_bytes(packed_data: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         if packed_data.len() < 4 {
             return Err(Error::CorruptedData(
