@@ -568,9 +568,10 @@ pub(crate) mod utils {
     /// # Resource bounding (issue #696 — intentional, do not re-flag)
     ///
     /// An audit (human or AI) may expect an explicit "max chunk count" or "max
-    /// total size" cap here. None is needed: this decoder cannot amplify. Total
-    /// allocation is bounded by `packed_data.len()` because every byte of every
-    /// returned array is copied out of `packed_data`. Specifically:
+    /// total size" cap here. This decoder is linear/constant-factor bounded by
+    /// the packed input and never copies more *payload* bytes than the input
+    /// contains, because every returned payload byte is copied out of
+    /// `packed_data`. Specifically:
     /// - `num_elements` is bounded by `max_elements = (len - 4) / 4` before the
     ///   loop, so the `Vec::with_capacity(num_elements)` cannot over-allocate.
     /// - Each element's declared `byte_length` is validated against the
@@ -578,9 +579,14 @@ pub(crate) mod utils {
     ///   32-bit truncation guard rejects lengths beyond the address space.
     /// - A trailing-byte check (`index != packed_data.len()`) rejects padding.
     ///
-    /// The only "cap" still absent is an *absolute* message-size limit, which
-    /// belongs at the transport/caller layer (where the packed buffer is
-    /// received), not in this pure decoder. Do not add an arbitrary cap here.
+    /// Note the bound is constant-factor, NOT `<= packed_data.len()`: the result
+    /// is a `Vec<Vec<u8>>`, so a buffer full of zero-length elements can still
+    /// allocate ~`(len - 4) / 4` inner `Vec` headers (~24 B each on 64-bit) —
+    /// several times the input in metadata. That is still O(input), but it means
+    /// a caller receiving UNTRUSTED peer data must enforce an absolute
+    /// packed-message-size cap at the transport/caller boundary. That cap
+    /// belongs there, not in this pure decoder — do not add an arbitrary one
+    /// here.
     pub fn unpack_nested_bytes(packed_data: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         if packed_data.len() < 4 {
             return Err(Error::CorruptedData(

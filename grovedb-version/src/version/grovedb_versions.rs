@@ -265,8 +265,9 @@ pub struct GroveDBElementMethodVersions {
     // "newer variant serialized under an older format" hazard. These codec
     // versions are a cost-accounting selector, NOT a wire-format gate — bumping
     // them for new variants would break the append-only compatibility contract.
-    // Gating which variants a given protocol may *construct* is enforced
-    // elsewhere (insert/validation paths), not in the codec.
+    // Whether a given protocol should *construct* a newer variant at all is a
+    // concern for the higher-level insert/validation logic, not for this codec,
+    // which deliberately stays version-agnostic.
     pub serialize: FeatureVersion,
     pub serialized_size: FeatureVersion,
     pub deserialize: FeatureVersion,
