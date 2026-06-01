@@ -295,8 +295,7 @@ impl GroveDb {
             )
         );
 
-        let updated_element =
-            Element::new_commitment_tree(new_total_count, chunk_power, flags);
+        let updated_element = Element::new_commitment_tree(new_total_count, chunk_power, flags);
 
         cost_return_on_error_into!(
             &mut cost,

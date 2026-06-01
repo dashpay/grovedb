@@ -513,11 +513,7 @@ impl RocksDbStorage {
     ///
     /// The ingest happens at the DB level and bypasses any open transaction.
     /// Callers must arrange for txn semantics at a higher layer.
-    pub fn ingest_subtree_sst(
-        &self,
-        cf_name: &str,
-        sst_path: &Path,
-    ) -> Result<(), Error> {
+    pub fn ingest_subtree_sst(&self, cf_name: &str, sst_path: &Path) -> Result<(), Error> {
         let cf_handle = self
             .db
             .cf_handle(cf_name)

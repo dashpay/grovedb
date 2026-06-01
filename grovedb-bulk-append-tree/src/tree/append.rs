@@ -7,8 +7,7 @@ use grovedb_storage::StorageContext;
 
 use super::{
     capacity_for_height, hash::compute_state_root, AppendManyResult, AppendNoStateRootResult,
-    AppendResult,
-    BulkAppendTree,
+    AppendResult, BulkAppendTree,
 };
 use crate::{chunk::serialize_chunk_blob, BulkAppendError};
 
