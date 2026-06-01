@@ -119,6 +119,17 @@ grovedbg = [
     "zip-extensions",
     "tempfile",
 ]
+# Snapshot-bootstrap primitives — escape hatches that bypass grovedb's normal
+# validation:
+#  - `GroveDb::raw_storage`            (escape hatch to StorageContext)
+#  - `RocksDbStorage::ingest_subtree_sst` (bulk-load SST into a CF)
+#  - `GroveDb::replace_subtree_root`   (caller-provided child hash, no
+#                                       cross-check against actual subtree state)
+# Enable ONLY for build-time tooling that needs to dump+restore a subtree
+# out-of-band (e.g. devnet shielded-pool snapshot bake/apply). Misuse will
+# produce an inconsistent Merk tree — there is no runtime check that the
+# caller-provided hash matches the underlying state.
+unsafe-dump-load = ["grovedb-storage/unsafe-dump-load"]
 
 [build-dependencies]
 hex-literal = "1.1.0"

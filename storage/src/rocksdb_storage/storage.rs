@@ -40,9 +40,11 @@ use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 use rocksdb::{
-    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, IngestExternalFileOptions,
-    OptimisticTransactionDB, Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
+    checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
+    Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
+#[cfg(feature = "unsafe-dump-load")]
+use rocksdb::IngestExternalFileOptions;
 
 use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
 use crate::{
@@ -513,6 +515,11 @@ impl RocksDbStorage {
     ///
     /// The ingest happens at the DB level and bypasses any open transaction.
     /// Callers must arrange for txn semantics at a higher layer.
+    ///
+    /// Gated behind the `unsafe-dump-load` feature — production builds (which
+    /// have no need to bulk-load precomputed subtree state) should leave it
+    /// off so this API isn't even compiled in.
+    #[cfg(feature = "unsafe-dump-load")]
     pub fn ingest_subtree_sst(&self, cf_name: &str, sst_path: &Path) -> Result<(), Error> {
         let cf_handle = self
             .db

@@ -355,6 +355,10 @@ impl GroveDb {
     ///
     /// Stability: this is an escape hatch. The exact `RocksDbStorage` shape
     /// is subject to change as grovedb's internals evolve.
+    ///
+    /// Gated behind the `unsafe-dump-load` feature — production builds should
+    /// leave it off so this escape hatch isn't even compiled in.
+    #[cfg(feature = "unsafe-dump-load")]
     pub fn raw_storage(&self) -> &grovedb_storage::rocksdb_storage::RocksDbStorage {
         &self.db
     }
@@ -375,6 +379,9 @@ impl GroveDb {
     /// transaction semantics at a higher layer (e.g. only call when the
     /// destination subtree is known empty, and rely on InitChain
     /// abort = wipe-and-restart for failure recovery).
+    ///
+    /// Gated behind the `unsafe-dump-load` feature.
+    #[cfg(feature = "unsafe-dump-load")]
     pub fn ingest_subtree_sst(
         &self,
         cf_name: &str,

@@ -26,3 +26,7 @@ thiserror = { workspace = true }
 
 [features]
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static", "tempfile", "blake3", "integer-encoding"]
+# See `grovedb`'s `unsafe-dump-load` feature for context. On this crate it
+# gates `RocksDbStorage::ingest_subtree_sst` — the RocksDB IngestExternalFile
+# wrapper used to bulk-load a precomputed subtree SST.
+unsafe-dump-load = ["rocksdb_storage"]

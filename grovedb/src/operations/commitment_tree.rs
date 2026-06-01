@@ -30,7 +30,7 @@ use grovedb_version::version::GroveVersion;
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
     util::TxRef,
-    Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg,
+    Element, Error, GroveDb, Transaction, TransactionArg,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -236,100 +236,6 @@ impl GroveDb {
         tx.commit_local()
             .map(|()| (new_sinsemilla_root, position))
             .wrap_with_cost(cost)
-    }
-
-    /// Replace the child hash of a CommitmentTree subtree leaf in its parent
-    /// Merk with a caller-provided `new_combined_root`, simultaneously
-    /// updating the leaf's `total_count` and `flags`.
-    ///
-    /// This is the parent-Merk tail of [`Self::commitment_tree_insert`]
-    /// extracted as a public method, intended for **snapshot-based bootstrap**
-    /// only (e.g. the shielded-pool genesis snapshot at devnet `InitChain`
-    /// time). Normal append flow MUST go through `commitment_tree_insert`.
-    ///
-    /// The caller is responsible for ensuring `new_combined_root` actually
-    /// matches the subtree's underlying state. The intended caller pattern:
-    /// 1. Ingest the subtree's storage state into the underlying RocksDB
-    ///    (typically via [`grovedb_storage::rocksdb_storage::RocksDbStorage::ingest_subtree_sst`]).
-    /// 2. Open a `StorageContext` at the subtree path and reconstruct
-    ///    `CommitmentTree` from it.
-    /// 3. Compute `combined_root` via
-    ///    `grovedb_commitment_tree::compute_commitment_tree_state_root`,
-    ///    binding the Sinsemilla anchor to the bulk-state root.
-    /// 4. Call this method with the verified `combined_root`.
-    ///
-    /// Mismatches between `new_combined_root` and what re-reading the subtree
-    /// would compute will produce an inconsistent Merk tree (parent's
-    /// recorded child hash diverges from actual subtree state). This method
-    /// does NOT detect such mismatches.
-    ///
-    /// `chunk_power` must match the value the BulkAppendTree state was built
-    /// with — same caveat: not validated here.
-    pub fn replace_commitment_tree_subtree_root<'b, B, P>(
-        &self,
-        path: P,
-        key: &[u8],
-        new_total_count: u64,
-        chunk_power: u8,
-        flags: Option<ElementFlags>,
-        new_combined_root: [u8; 32],
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        let path: SubtreePath<B> = path.into();
-        let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
-
-        let batch = StorageBatch::new();
-        let mut parent_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                path.clone(),
-                tx.as_ref(),
-                Some(&batch),
-                grove_version,
-            )
-        );
-
-        let updated_element = Element::new_commitment_tree(new_total_count, chunk_power, flags);
-
-        cost_return_on_error_into!(
-            &mut cost,
-            updated_element.insert_subtree(
-                &mut parent_merk,
-                key,
-                new_combined_root,
-                None,
-                grove_version,
-            )
-        );
-
-        let mut merk_cache = HashMap::new();
-        merk_cache.insert(path.clone(), parent_merk);
-
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                path,
-                tx.as_ref(),
-                &batch,
-                grove_version,
-            )
-        );
-
-        cost_return_on_error!(
-            &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
-        );
-
-        tx.commit_local().wrap_with_cost(cost)
     }
 
     /// Get the Orchard `Anchor` for a CommitmentTree subtree.
