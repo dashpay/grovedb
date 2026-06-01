@@ -392,6 +392,36 @@ impl BulkAppendTreeProof {
             (root, verified_leaves)
         };
 
+        // NOTE — intentionally NO "completed chunk length" check here.
+        //
+        // An audit (human or AI) may expect us to deserialize each completed
+        // chunk blob and reject any that does not hold exactly
+        // `chunk_item_count` entries (the concern raised in issue #688). That
+        // check is cryptographically redundant and is deliberately omitted; do
+        // not re-add it.
+        //
+        // A completed chunk's contents are fully bound to the root: the MMR
+        // recomputes `leaf_hash(blob)` from the blob bytes, that leaf feeds
+        // `mmr_root`, and `mmr_root` feeds `compute_state_root` below. So a
+        // short, truncated, or otherwise tampered chunk blob yields a
+        // *different* `computed_state_root`. Every caller binds that root to a
+        // trusted value — `verify` / `verify_against_query` compare it against
+        // `expected_state_root`, and the GroveDB lower-layer path folds it into
+        // the parent Merk hash up to the consensus root — so a bad blob is
+        // rejected by the root comparison, never reaching a length check. (The
+        // GroveDB path additionally runs an independent completeness check that
+        // rejects any queried position the proof omits.)
+        //
+        // Contrast with the `dense_count == 0` empty-buffer check below, which
+        // *is* required: unused buffer data is NOT hashed into the root, so it
+        // would be unbound and could be smuggled. Completed chunk bytes are
+        // bound, so they cannot be.
+        //
+        // The only situation a length check would add anything is a caller that
+        // trusts `total_count` yet verifies against an attacker-chosen root —
+        // which is outside the trust model (such a caller can be handed an
+        // entirely different, internally consistent tree). See PR #729 (closed).
+
         // 2. Verify dense tree buffer sub-proof
         let (dense_root, dense_entries) = if dense_count > 0 {
             self.buffer_proof
@@ -560,9 +590,20 @@ impl BulkAppendTreeProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>();
-        let (proof, _) = bincode::decode_from_slice(bytes, config).map_err(|e| {
-            BulkAppendError::CorruptedData(format!("failed to decode BulkAppendTreeProof: {}", e))
-        })?;
+        let (proof, consumed): (Self, usize) =
+            bincode::decode_from_slice(bytes, config).map_err(|e| {
+                BulkAppendError::CorruptedData(format!(
+                    "failed to decode BulkAppendTreeProof: {}",
+                    e
+                ))
+            })?;
+        if consumed != bytes.len() {
+            return Err(BulkAppendError::CorruptedData(format!(
+                "BulkAppendTreeProof decode did not consume all bytes: consumed {}, total {}",
+                consumed,
+                bytes.len()
+            )));
+        }
         Ok(proof)
     }
 }

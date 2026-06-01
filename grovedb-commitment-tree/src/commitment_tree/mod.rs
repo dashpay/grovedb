@@ -441,6 +441,9 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             //    root walk. Validation here is now redundant with the pre-check
             //    above but is cheap and keeps the cost accounting correct.
             if let Err(e) = self.frontier.append_no_root(cmx).unwrap_add_cost(&mut cost) {
+                // codecov:ignore — `append_no_root` can only error on
+                // `InvalidFieldElement` (already filtered by the pre-validation
+                // above) or `TreeFull` (2^32 leaves, unreachable).
                 return Err(e).wrap_with_cost(cost);
             }
 
@@ -454,8 +457,12 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         //   attributes its sinsemilla_hash_calls to `cost`.
         let bulk_state_root = match self.bulk_tree.compute_current_state_root() {
             Ok(r) => r,
-            // codecov:ignore — only reachable on a storage fault (same as the
-            // per-entry bulk-append failure above).
+            // codecov:ignore — reachable only when an upstream storage read
+            // fails for the dense-tree root or the cached MMR root. The
+            // dense-tree write-through cache and the in-session MMR cache
+            // mean a fault-injecting mock can't hit this from inside
+            // `append_many_raw` without a separately-opened (cache-cold) tree
+            // — out of scope for this unit-test fixture.
             Err(e) => {
                 return Err(CommitmentTreeError::InvalidData(format!(
                     "state root: {}",

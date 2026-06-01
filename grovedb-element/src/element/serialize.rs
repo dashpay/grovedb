@@ -126,11 +126,17 @@ impl Element {
             ));
         }
         let config = config::standard().with_big_endian().with_no_limit();
-        let elem: Element = bincode::decode_from_slice(bytes, config)
+        let (elem, consumed): (Element, usize) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| {
                 ElementError::CorruptedData(format!("unable to deserialize element {}", e))
-            })?
-            .0;
+            })?;
+        if consumed != bytes.len() {
+            return Err(ElementError::CorruptedData(format!(
+                "element deserialization did not consume all bytes: consumed {}, total {}",
+                consumed,
+                bytes.len()
+            )));
+        }
         // Defensive belt-and-braces post-check (guards against future
         // bincode/discriminant changes that could let a nested wrapper
         // sneak past the pre-check).
@@ -310,5 +316,31 @@ mod tests {
             reference.serialized_size(grove_version).unwrap()
         );
         assert_eq!(hex::encode(serialized), "010003010002abcd0105000103010203");
+    }
+
+    #[test]
+    fn deserialize_rejects_trailing_bytes() {
+        let grove_version = GroveVersion::latest();
+        let elements = [
+            Element::new_item(b"abc".to_vec()),
+            Element::empty_tree(),
+            Element::new_sum_item(5),
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"root".to_vec(),
+                b"leaf".to_vec(),
+            ])),
+        ];
+
+        for element in elements {
+            let mut serialized = element.serialize(grove_version).expect("serialize element");
+            serialized.push(0xff);
+
+            let err = Element::deserialize(&serialized, grove_version)
+                .expect_err("trailing bytes must be rejected");
+            assert!(
+                matches!(&err, ElementError::CorruptedData(message) if message.contains("did not consume all bytes")),
+                "unexpected error: {err:?}"
+            );
+        }
     }
 }
