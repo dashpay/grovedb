@@ -59,6 +59,10 @@ rand = { workspace = true }
 rand_distr = "0.6"
 assert_matches = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
+# For the `unsafe-dump-load` dump+ingest roundtrip test: writing the SST and
+# ingesting it both need direct rocksdb types. Pinned to the same revision
+# used by `grovedb-storage`'s optional dep.
+rocksdb = { git = "https://github.com/QuantumExplorer/rust-rocksdb.git", rev = "52772eea7bcd214d1d07d80aa538b1d24e5015b7" }
 
 [[bench]]
 name = "insertion_benchmark"
