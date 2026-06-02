@@ -39,6 +39,8 @@ use grovedb_costs::{
 use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
+#[cfg(feature = "unsafe-dump-load")]
+use rocksdb::IngestExternalFileOptions;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
@@ -492,6 +494,50 @@ impl RocksDbStorage {
                 .map_err(RocksDBError)
                 .wrap_with_cost(OperationCost::default())
         }
+    }
+
+    /// Bulk-ingest a single SST file (produced by `rocksdb::SstFileWriter`)
+    /// into the named column family.
+    ///
+    /// Used by snapshot-based bootstrap (e.g. the shielded-pool genesis
+    /// snapshot) to load a precomputed subtree's keys without paying the
+    /// per-write WAL + fsync cost. The SST must be sorted and its key range
+    /// must NOT overlap with any keys already in the CF — otherwise ingest
+    /// fails. For genesis-time usage this is satisfied by definition (the
+    /// target subtree is empty when this is called).
+    ///
+    /// Security notes (set by this method, not caller-configurable):
+    /// - `allow_global_seqno=false`: rejects ingests that would inject a
+    ///   global sequence number, preventing a malicious snapshot from
+    ///   reordering its writes relative to subsequent transactional writes.
+    /// - `snapshot_consistency=false`: snapshot-based bootstrap runs before
+    ///   any reader could hold a RocksDB snapshot of the empty state.
+    ///
+    /// The ingest happens at the DB level and bypasses any open transaction.
+    /// Callers must arrange for txn semantics at a higher layer.
+    ///
+    /// Gated behind the `unsafe-dump-load` feature — production builds (which
+    /// have no need to bulk-load precomputed subtree state) should leave it
+    /// off so this API isn't even compiled in.
+    #[cfg(feature = "unsafe-dump-load")]
+    pub fn ingest_subtree_sst(&self, cf_name: &str, sst_path: &Path) -> Result<(), Error> {
+        let cf_handle = self
+            .db
+            .cf_handle(cf_name)
+            .ok_or(Error::StorageError(format!(
+                "ingest_subtree_sst: missing CF {cf_name}"
+            )))?;
+        let mut opts = IngestExternalFileOptions::default();
+        opts.set_allow_global_seqno(false);
+        opts.set_snapshot_consistency(false);
+        self.db
+            .ingest_external_file_cf_opts(&cf_handle, &opts, vec![sst_path])
+            .map_err(|e| {
+                Error::StorageError(format!(
+                    "ingest_subtree_sst({cf_name}, {}) failed: {e}",
+                    sst_path.display()
+                ))
+            })
     }
 
     /// Clears all data from the database using range deletion on each

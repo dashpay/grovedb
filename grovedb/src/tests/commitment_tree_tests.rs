@@ -20,6 +20,17 @@ use crate::{
     Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
+#[cfg(feature = "unsafe-dump-load")]
+use grovedb_commitment_tree::CommitmentTree;
+#[cfg(feature = "unsafe-dump-load")]
+use grovedb_path::SubtreePath;
+#[cfg(feature = "unsafe-dump-load")]
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+#[cfg(feature = "unsafe-dump-load")]
+use rocksdb::{Options, SstFileWriter};
+#[cfg(feature = "unsafe-dump-load")]
+use tempfile::TempDir;
+
 /// Default chunk power for tests (2^10 = 1024, large enough that compaction
 /// doesn't happen in most tests with only a few items).
 const TEST_CHUNK_POWER: u8 = 10;
@@ -2494,5 +2505,179 @@ fn test_commitment_compaction_transaction_rollback() {
         anchor_after.to_bytes(),
         empty_anchor,
         "anchor should revert to empty tree after compaction + rollback"
+    );
+}
+
+// ===========================================================================
+// unsafe-dump-load: dump-then-restore subtree round-trip
+// ===========================================================================
+//
+// Exercises the three escape-hatch APIs gated behind `unsafe-dump-load`
+// (`GroveDb::raw_storage`, `RocksDbStorage::ingest_subtree_sst`,
+// `GroveDb::replace_subtree_root`) in a single end-to-end round-trip on a
+// real CommitmentTree subtree. The post-restore GroveDb root_hash must equal
+// the source's, byte-for-byte, demonstrating the snapshot-bootstrap contract
+// described in `replace_subtree_root.rs`'s module docs.
+
+#[cfg(feature = "unsafe-dump-load")]
+#[test]
+fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
+    let grove_version = GroveVersion::latest();
+    const N: u8 = 5;
+
+    // --- A: build a commitment-tree subtree, insert N items ---
+    let db_a = make_empty_grovedb();
+    db_a.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty ct on A");
+
+    for i in 0..N {
+        db_a.commitment_tree_insert(
+            EMPTY_PATH,
+            b"pool",
+            test_cmx(i + 1),
+            test_rho(i + 1),
+            test_ciphertext(i + 1),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert leaf on A");
+    }
+
+    let root_a = db_a
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("source root_hash");
+
+    // --- Compute combined_root by re-opening CommitmentTree on A's storage ---
+    let pool_segments: [&[u8]; 1] = [b"pool"];
+    let subtree_path = SubtreePath::from(pool_segments.as_slice());
+    let prefix: [u8; 32] = RocksDbStorage::build_prefix(subtree_path.clone()).value;
+
+    let tx_a = db_a.start_transaction();
+    let ctx_open = db_a
+        .raw_storage()
+        .get_transactional_storage_context(subtree_path.clone(), None, &tx_a)
+        .unwrap();
+    let ct_a = CommitmentTree::<_, DashMemo>::open(u64::from(N), TEST_CHUNK_POWER, ctx_open)
+        .value
+        .expect("CommitmentTree::open on A");
+    let combined_root = ct_a
+        .compute_current_state_root()
+        .expect("compute_current_state_root on A");
+    drop(ct_a);
+
+    // --- Dump A's subtree to an SST (re-prepending the prefix that raw_iter strips) ---
+    let pool_segments_iter: [&[u8]; 1] = [b"pool"];
+    let iter_path = SubtreePath::from(pool_segments_iter.as_slice());
+    let iter_ctx = db_a
+        .raw_storage()
+        .get_transactional_storage_context(iter_path, None, &tx_a)
+        .unwrap();
+    let sst_tmp = TempDir::new().expect("sst tempdir");
+    let sst_path = sst_tmp.path().join("dump.sst");
+
+    let opts = Options::default();
+    let mut sst = SstFileWriter::create(&opts);
+    sst.open(&sst_path).expect("SstFileWriter::open");
+
+    let mut iter = iter_ctx.raw_iter();
+    iter.seek_to_first().unwrap();
+    let mut key_count: u64 = 0;
+    while iter.valid().unwrap() {
+        let user_key = iter
+            .key()
+            .unwrap()
+            .expect("iter.key() during dump")
+            .to_vec();
+        let value = iter
+            .value()
+            .unwrap()
+            .expect("iter.value() during dump")
+            .to_vec();
+        let mut full_key = Vec::with_capacity(32 + user_key.len());
+        full_key.extend_from_slice(&prefix);
+        full_key.extend_from_slice(&user_key);
+        sst.put(&full_key, &value).expect("SstFileWriter::put");
+        key_count += 1;
+        iter.next().unwrap();
+    }
+    sst.finish().expect("SstFileWriter::finish");
+    assert!(key_count > 0, "dumped SST must contain at least one key");
+    drop(iter);
+    drop(iter_ctx);
+    drop(tx_a);
+    drop(db_a);
+
+    // --- B: fresh GroveDb with same empty commitment_tree skeleton ---
+    let db_b = make_empty_grovedb();
+    db_b.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert empty ct on B");
+
+    db_b.ingest_subtree_sst("default", &sst_path)
+        .expect("ingest_subtree_sst");
+
+    let restored_element = Element::new_commitment_tree(u64::from(N), TEST_CHUNK_POWER, None);
+    db_b.replace_subtree_root(
+        EMPTY_PATH,
+        b"pool",
+        restored_element,
+        combined_root,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("replace_subtree_root");
+
+    let root_b = db_b
+        .root_hash(None, grove_version)
+        .unwrap()
+        .expect("restored root_hash");
+
+    assert_eq!(
+        root_a, root_b,
+        "post-restore GroveDB root_hash must match source byte-for-byte"
+    );
+}
+
+#[cfg(feature = "unsafe-dump-load")]
+#[test]
+fn replace_subtree_root_rejects_non_tree_element() {
+    let grove_version = GroveVersion::latest();
+    let db = make_empty_grovedb();
+    db.insert(
+        EMPTY_PATH,
+        b"pool",
+        Element::empty_commitment_tree(TEST_CHUNK_POWER).expect("valid chunk_power"),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert ct");
+
+    let item = Element::new_item(b"not a tree".to_vec());
+    let result = db
+        .replace_subtree_root(EMPTY_PATH, b"pool", item, [0u8; 32], None, grove_version)
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::InvalidInput(_))),
+        "expected InvalidInput for non-tree element, got {result:?}"
     );
 }
