@@ -39,12 +39,12 @@ use grovedb_costs::{
 use grovedb_path::SubtreePath;
 use integer_encoding::VarInt;
 use lazy_static::lazy_static;
+#[cfg(feature = "unsafe-dump-load")]
+use rocksdb::IngestExternalFileOptions;
 use rocksdb::{
     checkpoint::Checkpoint, ColumnFamily, ColumnFamilyDescriptor, OptimisticTransactionDB,
     Transaction, WriteBatchWithTransaction, DEFAULT_COLUMN_FAMILY_NAME,
 };
-#[cfg(feature = "unsafe-dump-load")]
-use rocksdb::IngestExternalFileOptions;
 
 use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext};
 use crate::{
