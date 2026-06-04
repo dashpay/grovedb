@@ -414,6 +414,150 @@ mod tests {
         assert_eq!(root_v1, GOLDEN_V1, "v1 (layered / GROVE_V3) root drifted");
     }
 
+    /// Drives every match arm of `add_element_on_transaction` through the
+    /// non-batch insert path for a given grove version: the layered-tree arm
+    /// (all tree types), the commitment-tree arm, the append-tree arm
+    /// (MMR / bulk-append / dense), the item arm, the reference arm, plus the
+    /// override guards and the empty-tree-only (`value.is_some()`) guard. Run
+    /// under both a v0 version (`GROVE_V1`) and a v1 version (`GROVE_V3`) so
+    /// both frozen snapshots (`v0.rs` / `v1.rs`) are exercised.
+    fn exercise_all_add_element_arms(gv: &GroveVersion) {
+        use crate::reference_path::ReferencePathType;
+
+        let db = make_empty_grovedb();
+        let ins = |key: &[u8], el: Element| {
+            db.insert(EMPTY_PATH, key, el, None, None, gv)
+                .unwrap()
+                .unwrap_or_else(|e| panic!("insert {}: {e:?}", String::from_utf8_lossy(key)));
+        };
+
+        // Layered-tree arm — every tree type round-trips on the non-batch path.
+        ins(b"tree", Element::empty_tree());
+        ins(b"sum", Element::empty_sum_tree());
+        ins(b"bigsum", Element::empty_big_sum_tree());
+        ins(b"count", Element::empty_count_tree());
+        ins(b"countsum", Element::empty_count_sum_tree());
+        ins(b"pcount", Element::empty_provable_count_tree());
+        ins(b"pcountsum", Element::empty_provable_count_sum_tree());
+        ins(b"psum", Element::empty_provable_sum_tree());
+        ins(b"pcps", Element::empty_provable_count_provable_sum_tree());
+
+        // Append-tree arm.
+        ins(b"mmr", Element::empty_mmr_tree());
+        ins(
+            b"bulk",
+            Element::empty_bulk_append_tree(10).expect("valid chunk_power"),
+        );
+        ins(b"dense", Element::empty_dense_tree(4));
+
+        // Commitment-tree arm (its own non-NULL initial child hash).
+        ins(
+            b"commit",
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+        );
+
+        // Item arm.
+        ins(b"item", Element::new_item(b"v".to_vec()));
+        // Sum item must live in a sum-bearing tree.
+        db.insert(
+            [b"sum".as_slice()].as_ref(),
+            b"si",
+            Element::new_sum_item(7),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("sum_item into sum tree");
+
+        // Reference arm.
+        ins(
+            b"ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"item".to_vec()
+            ])),
+        );
+
+        // Override guard (tree): default options forbid overriding a tree.
+        let tree_override = db
+            .insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None, gv)
+            .unwrap();
+        assert!(
+            matches!(tree_override, Err(Error::OverrideNotAllowed(_))),
+            "overriding a tree must be rejected, got {tree_override:?}"
+        );
+
+        // Override guard (plain value): explicit option forbids any override.
+        let item_override = db
+            .insert(
+                EMPTY_PATH,
+                b"item",
+                Element::new_item(b"v2".to_vec()),
+                Some(InsertOptions {
+                    validate_insertion_does_not_override: true,
+                    validate_insertion_does_not_override_tree: true,
+                    base_root_storage_is_free: true,
+                }),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(item_override, Err(Error::OverrideNotAllowed(_))),
+            "overriding an item with validate_insertion_does_not_override must be rejected, got \
+             {item_override:?}"
+        );
+
+        // Empty-tree-only guard: a tree element carrying a root key is rejected
+        // on the non-batch path (trees must be empty at insertion time here).
+        let with_root_key = db
+            .insert(
+                EMPTY_PATH,
+                b"hasroot",
+                Element::Tree(Some(vec![1u8]), None),
+                None,
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(with_root_key, Err(Error::InvalidCodeExecution(_))),
+            "a non-empty tree must be rejected on the non-batch insert path, got {with_root_key:?}"
+        );
+    }
+
+    /// Coverage for the v0 (`Op::Put`) snapshot — `GROVE_V1`.
+    #[test]
+    fn add_element_on_transaction_v0_covers_all_arms() {
+        use grovedb_version::version::v1::GROVE_V1;
+        exercise_all_add_element_arms(&GROVE_V1);
+    }
+
+    /// Coverage for the v1 (layered) snapshot — `GROVE_V3` (latest).
+    #[test]
+    fn add_element_on_transaction_v1_covers_all_arms() {
+        exercise_all_add_element_arms(GroveVersion::latest());
+    }
+
+    /// The dispatcher rejects an unknown `add_element_on_transaction` version
+    /// slot rather than silently picking a behaviour.
+    #[test]
+    fn add_element_on_transaction_rejects_unknown_version() {
+        let mut bad = GroveVersion::latest().clone();
+        bad.grovedb_versions
+            .operations
+            .insert
+            .add_element_on_transaction = 2;
+        let db = make_empty_grovedb();
+        let err = db
+            .insert(EMPTY_PATH, b"x", Element::empty_tree(), None, None, &bad)
+            .unwrap();
+        assert!(
+            matches!(err, Err(Error::VersionError(_))),
+            "unknown add_element_on_transaction version must error, got {err:?}"
+        );
+    }
+
     #[test]
     fn test_non_root_insert_item_without_transaction() {
         let grove_version = GroveVersion::latest();
