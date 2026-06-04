@@ -285,13 +285,23 @@ impl GroveDb {
                     )
                 );
             }
+            // CONSENSUS-CRITICAL (protocol v11 / GROVE_V2). `CountSumTree`,
+            // `ProvableCountTree` and `ProvableCountSumTree` MUST be inserted via the
+            // plain-value path (`Op::Put`, in the `Item` arm below), NOT as a layered
+            // subtree. grovedb <= v4.1.0 routed them through `_ => element.insert()`
+            // (`Op::Put`), and that is the behavior frozen into the live v11 activation
+            // chain — e.g. testnet block 245,344's `transition_to_version_11`, which
+            // inserts an `empty_provable_count_sum_tree` (CLEAR_ADDRESS_POOL) and an
+            // `empty_count_sum_tree` (ADDRESS_BALANCES). Routing them through the
+            // layered-subtree arm changes the parent node's `value_hash` from
+            // `value_hash(serialized)` to `combine_hash(value_hash(serialized), NULL_HASH)`,
+            // which changes the grovedb root and breaks consensus on replay. The
+            // v12-only `ProvableSumTree` / `ProvableCountProvableSumTree` were never on
+            // consensus, so they keep the layered behavior here.
             Element::Tree(value, _)
             | Element::SumTree(value, ..)
             | Element::BigSumTree(value, ..)
             | Element::CountTree(value, ..)
-            | Element::CountSumTree(value, ..)
-            | Element::ProvableCountTree(value, ..)
-            | Element::ProvableCountSumTree(value, ..)
             | Element::ProvableSumTree(value, ..)
             | Element::ProvableCountProvableSumTree(value, ..) => {
                 if value.is_some() {
@@ -343,7 +353,15 @@ impl GroveDb {
                     )
                 );
             }
-            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
+            // `CountSumTree` / `ProvableCountTree` / `ProvableCountSumTree` are inserted
+            // via `Op::Put` here (NOT the layered-subtree arm above) to preserve grovedb
+            // v4.1.0 / protocol-v11 consensus — see the consensus-critical note above.
+            Element::Item(..)
+            | Element::SumItem(..)
+            | Element::ItemWithSumItem(..)
+            | Element::CountSumTree(..)
+            | Element::ProvableCountTree(..)
+            | Element::ProvableCountSumTree(..) => {
                 cost_return_on_error_into!(
                     &mut cost,
                     element.insert(
@@ -562,6 +580,70 @@ mod tests {
                 .unwrap()
                 .expect("successful get"),
             element
+        );
+    }
+
+    /// Consensus regression guard for protocol v11 / `GROVE_V2` — testnet block
+    /// 245,344. `transition_to_version_11` inserts an `empty_provable_count_sum_tree`
+    /// (CLEAR_ADDRESS_POOL) and an `empty_count_sum_tree` (ADDRESS_BALANCES) via the
+    /// non-batch insert path. grovedb <= v4.1.0 inserts these as a plain value
+    /// (`Op::Put`); grovedb PR #752 accidentally routed them through the layered
+    /// subtree path (`Op::PutLayeredReference`), which changes the parent node's
+    /// `value_hash` from `value_hash(serialized)` to
+    /// `combine_hash(value_hash(serialized), NULL_HASH)` and therefore the grovedb
+    /// root — breaking consensus when v11 is replayed. This test pins the v4.1.0
+    /// root so the regression cannot recur. (`empty_sum_tree` is the control: it is
+    /// in the layered arm in every version, so its root never changed.)
+    #[test]
+    fn provable_count_sum_tree_insert_preserves_v11_consensus_root() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+
+        // control — empty_sum_tree at root key [56] (AddressBalances). Unchanged
+        // across grovedb versions.
+        db.insert(
+            EMPTY_PATH,
+            &[56u8],
+            Element::empty_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert sum_tree at [56]");
+        let root_1 = db.root_hash(None, grove_version).unwrap().unwrap();
+
+        // regressed op — empty_provable_count_sum_tree at [56, 'c'] (CLEAR_ADDRESS_POOL).
+        db.insert(
+            [[56u8].as_slice()].as_ref(),
+            b"c",
+            Element::empty_provable_count_sum_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert provable_count_sum_tree at [56,'c']");
+        let root_2 = db.root_hash(None, grove_version).unwrap().unwrap();
+
+        eprintln!("root_1 (control sum_tree)            = {root_1:?}");
+        eprintln!("root_2 (provable_count_sum_tree ins) = {root_2:?}");
+
+        // v4.1.0 (Op::Put) golden roots. With the PR #752 regression
+        // (Op::PutLayeredReference) `root_2` differs and consensus breaks.
+        const GOLDEN_1: [u8; 32] = [
+            193, 62, 168, 151, 156, 164, 202, 8, 147, 137, 134, 209, 196, 32, 2, 85, 18, 100, 97,
+            227, 62, 160, 254, 196, 250, 171, 84, 176, 58, 38, 16, 116,
+        ];
+        const GOLDEN_2: [u8; 32] = [
+            35, 99, 15, 178, 25, 57, 206, 47, 187, 195, 100, 28, 97, 85, 113, 230, 135, 22, 34,
+            126, 72, 125, 158, 90, 116, 94, 214, 136, 96, 195, 235, 46,
+        ];
+        assert_eq!(root_1, GOLDEN_1, "control sum_tree root changed unexpectedly");
+        assert_eq!(
+            root_2, GOLDEN_2,
+            "ProvableCountSumTree insert no longer matches v4.1.0 (Op::Put) — \
+             protocol-v11 consensus regression (see block 245,344)"
         );
     }
 
