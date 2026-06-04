@@ -2,21 +2,17 @@
 
 use std::{collections::HashMap, option::Option::None};
 
-use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_into, cost_return_on_error_no_add, CostResult,
-    CostsExt, OperationCost,
-};
-use grovedb_element::reference_path::path_from_reference_path_type;
-use grovedb_merk::{
-    element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions, ElementExt},
-    tree::NULL_HASH,
-    Merk, MerkOptions,
-};
+use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_merk::{Merk, MerkOptions};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
+
+/// Versioned dispatch for `add_element_on_transaction` (the non-batch insert
+/// path). Consensus-critical — see the module docs.
+mod add_element_on_transaction;
 
 #[derive(Clone)]
 /// Insert options
@@ -164,209 +160,6 @@ impl GroveDb {
         );
 
         Ok(()).wrap_with_cost(cost)
-    }
-
-    /// Add subtree to another subtree.
-    /// We want to add a new empty merk to another merk at a key
-    /// first make sure other merk exist
-    /// if it exists, then create merk to be inserted, and get root hash
-    /// we only care about root hash of merk to be inserted
-    fn add_element_on_transaction<'db, B: AsRef<[u8]>>(
-        &'db self,
-        path: SubtreePath<B>,
-        key: &[u8],
-        element: Element,
-        options: InsertOptions,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error> {
-        check_grovedb_v0_with_cost!(
-            "add_element_on_transaction",
-            grove_version
-                .grovedb_versions
-                .operations
-                .insert
-                .add_element_on_transaction
-        );
-
-        let mut cost = OperationCost::default();
-
-        let mut subtree_to_insert_into = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        // if we don't allow a tree override then we should check
-
-        if options.checks_for_override() {
-            let maybe_element_bytes = cost_return_on_error!(
-                &mut cost,
-                subtree_to_insert_into
-                    .get(
-                        key,
-                        true,
-                        Some(&Element::value_defined_cost_for_serialized_value),
-                        grove_version,
-                    )
-                    .map_err(|e| Error::CorruptedData(e.to_string()))
-            );
-            if let Some(element_bytes) = maybe_element_bytes {
-                if options.validate_insertion_does_not_override {
-                    return Err(Error::OverrideNotAllowed(
-                        "insertion not allowed to override",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-                if options.validate_insertion_does_not_override_tree {
-                    let element = cost_return_on_error_no_add!(
-                        cost,
-                        Element::deserialize(element_bytes.as_slice(), grove_version).map_err(
-                            |_| {
-                                Error::CorruptedData(String::from("unable to deserialize element"))
-                            }
-                        )
-                    );
-                    if element.is_any_tree() {
-                        return Err(Error::OverrideNotAllowed(
-                            "insertion not allowed to override tree",
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                }
-            }
-        }
-
-        // Dispatch via the underlying element so a NonCounted wrapper takes
-        // the same path as its inner element. The actual `element.insert*`
-        // calls operate on the outer wrapper, which is what we want — the
-        // serialized wrapper bytes go to storage.
-        match element.underlying() {
-            // `ReferenceWithSumItem` shares the reference resolution + proof
-            // shape with `Reference`. The merk feature_type derived from the
-            // element's `sum_value_or_default()` already routes the sum into
-            // any sum-bearing parent; the call site is otherwise identical.
-            Element::Reference(reference_path, ..)
-            | Element::ReferenceWithSumItem(reference_path, ..) => {
-                let path = path.to_vec(); // TODO: need for support for references in path library
-                let reference_path = cost_return_on_error_into!(
-                    &mut cost,
-                    path_from_reference_path_type(reference_path.clone(), &path, Some(key))
-                        .wrap_with_cost(OperationCost::default())
-                );
-
-                let referenced_item = cost_return_on_error!(
-                    &mut cost,
-                    self.follow_reference(
-                        reference_path.as_slice().into(),
-                        false,
-                        Some(transaction),
-                        grove_version
-                    )
-                );
-
-                let referenced_element_value_hash = cost_return_on_error_into!(
-                    &mut cost,
-                    referenced_item.value_hash(grove_version)
-                );
-
-                cost_return_on_error_into!(
-                    &mut cost,
-                    element.insert_reference(
-                        &mut subtree_to_insert_into,
-                        key,
-                        referenced_element_value_hash,
-                        Some(options.as_merk_options()),
-                        grove_version,
-                    )
-                );
-            }
-            Element::Tree(value, _)
-            | Element::SumTree(value, ..)
-            | Element::BigSumTree(value, ..)
-            | Element::CountTree(value, ..)
-            | Element::CountSumTree(value, ..)
-            | Element::ProvableCountTree(value, ..)
-            | Element::ProvableCountSumTree(value, ..)
-            | Element::ProvableSumTree(value, ..)
-            | Element::ProvableCountProvableSumTree(value, ..) => {
-                if value.is_some() {
-                    return Err(Error::InvalidCodeExecution(
-                        "a tree should be empty at the moment of insertion when not using batches",
-                    ))
-                    .wrap_with_cost(cost);
-                } else {
-                    cost_return_on_error_into!(
-                        &mut cost,
-                        element.insert_subtree(
-                            &mut subtree_to_insert_into,
-                            key,
-                            NULL_HASH,
-                            Some(options.as_merk_options()),
-                            grove_version
-                        )
-                    );
-                }
-            }
-            // CommitmentTree uses BulkAppendTree internally; the initial child
-            // hash must include the empty sinsemilla root so V1 proof
-            // verification works even before the first append.
-            Element::CommitmentTree(..) => {
-                cost_return_on_error_into!(
-                    &mut cost,
-                    element.insert_subtree(
-                        &mut subtree_to_insert_into,
-                        key,
-                        grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
-                        Some(options.as_merk_options()),
-                        grove_version
-                    )
-                );
-            }
-            // MmrTree, BulkAppendTree, DenseAppendOnlyFixedSizeTree: initial
-            // insert uses NULL_HASH since these trees start empty.
-            Element::MmrTree(..)
-            | Element::BulkAppendTree(..)
-            | Element::DenseAppendOnlyFixedSizeTree(..) => {
-                cost_return_on_error_into!(
-                    &mut cost,
-                    element.insert_subtree(
-                        &mut subtree_to_insert_into,
-                        key,
-                        NULL_HASH,
-                        Some(options.as_merk_options()),
-                        grove_version
-                    )
-                );
-            }
-            Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
-                cost_return_on_error_into!(
-                    &mut cost,
-                    element.insert(
-                        &mut subtree_to_insert_into,
-                        key,
-                        Some(options.as_merk_options()),
-                        grove_version
-                    )
-                );
-            }
-            // `underlying()` only unwraps one level; nested wrappers are
-            // forbidden by the constructor and (de)serializer, but the public
-            // insert path can still receive a hand-built nested wrapper —
-            // return a typed error rather than panic.
-            Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
-                return Err(Error::InvalidInput(
-                    "nested element wrappers are not allowed",
-                ))
-                .wrap_with_cost(cost);
-            }
-        }
-
-        Ok(subtree_to_insert_into).wrap_with_cost(cost)
     }
 
     /// Insert if not exists
@@ -541,6 +334,229 @@ mod tests {
         tests::{common::EMPTY_PATH, make_empty_grovedb, make_test_grovedb, TEST_LEAF},
         Element, Error,
     };
+
+    /// Consensus version gate for `add_element_on_transaction` (the non-batch
+    /// insert path). `CountSumTree` / `ProvableCountTree` / `ProvableCountSumTree`
+    /// are written via the plain-value path (`Op::Put`) under **v0**
+    /// (`GROVE_V1` / `GROVE_V2` — the behaviour frozen into the live protocol-v11
+    /// activation chain, testnet block 245,344) and as **layered subtrees**
+    /// under **v1** (`GROVE_V3`+, consistent with the batch insert path).
+    ///
+    /// The two ops compute a different parent `value_hash`
+    /// (`value_hash(serialized)` vs `combine_hash(value_hash(serialized),
+    /// NULL_HASH)`), hence a different grovedb root. This test pins both roots
+    /// and asserts they differ, so the dispatch cannot silently collapse to a
+    /// single behaviour — which would either break v11 replay (if v0 became
+    /// layered) or revert the v3 change (if v1 became `Op::Put`).
+    ///
+    /// `empty_sum_tree` at `[56]` is the control: it is in the layered arm in
+    /// both versions, so it never changed.
+    #[test]
+    fn add_element_on_transaction_version_gate_provable_count_sum_tree_root() {
+        use grovedb_version::version::v1::GROVE_V1;
+
+        // Replays the `transition_to_version_11` shape: an `empty_sum_tree`
+        // (control) then an `empty_provable_count_sum_tree` (the regressed op).
+        let root = |gv: &GroveVersion| {
+            let db = make_empty_grovedb();
+            db.insert(
+                EMPTY_PATH,
+                &[56u8],
+                Element::empty_sum_tree(),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("insert sum_tree at [56]");
+            db.insert(
+                [[56u8].as_slice()].as_ref(),
+                b"c",
+                Element::empty_provable_count_sum_tree(),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("insert provable_count_sum_tree at [56,'c']");
+            db.root_hash(None, gv).unwrap().unwrap()
+        };
+
+        let root_v0 = root(&GROVE_V1); // Op::Put — protocol-v11 consensus root
+        let root_v1 = root(GroveVersion::latest()); // GROVE_V3 — layered
+
+        eprintln!("root_v0 (Op::Put / protocol-v11) = {root_v0:?}");
+        eprintln!("root_v1 (layered / GROVE_V3)     = {root_v1:?}");
+
+        assert_ne!(
+            root_v0, root_v1,
+            "version gate must change the ProvableCountSumTree root: v0 (Op::Put) \
+             vs v1 (layered)"
+        );
+
+        // v0 golden — the `Op::Put` root. Identical to PR #757's pinned root
+        // (its `GOLDEN_2`), i.e. the grovedb v4.1.0 / protocol-v11 root that the
+        // live activation chain (testnet block 245,344) committed. Locking it
+        // here makes the GROVE_V1 / GROVE_V2 dispatch un-regressable.
+        const GOLDEN_V0: [u8; 32] = [
+            35, 99, 15, 178, 25, 57, 206, 47, 187, 195, 100, 28, 97, 85, 113, 230, 135, 22, 34,
+            126, 72, 125, 158, 90, 116, 94, 214, 136, 96, 195, 235, 46,
+        ];
+        // v1 golden — the layered root produced under GROVE_V3.
+        const GOLDEN_V1: [u8; 32] = [
+            210, 14, 74, 67, 205, 240, 43, 174, 50, 154, 162, 90, 237, 45, 168, 42, 64, 155, 78,
+            123, 102, 237, 213, 101, 63, 227, 24, 105, 16, 215, 194, 54,
+        ];
+        assert_eq!(
+            root_v0, GOLDEN_V0,
+            "v0 root drifted — the protocol-v11 (Op::Put) consensus root MUST NOT change"
+        );
+        assert_eq!(root_v1, GOLDEN_V1, "v1 (layered / GROVE_V3) root drifted");
+    }
+
+    /// Drives every match arm of `add_element_on_transaction` through the
+    /// non-batch insert path for a given grove version: the layered-tree arm
+    /// (all tree types), the commitment-tree arm, the append-tree arm
+    /// (MMR / bulk-append / dense), the item arm, the reference arm, plus the
+    /// override guards and the empty-tree-only (`value.is_some()`) guard. Run
+    /// under both a v0 version (`GROVE_V1`) and a v1 version (`GROVE_V3`) so
+    /// both frozen snapshots (`v0.rs` / `v1.rs`) are exercised.
+    fn exercise_all_add_element_arms(gv: &GroveVersion) {
+        use crate::reference_path::ReferencePathType;
+
+        let db = make_empty_grovedb();
+        let ins = |key: &[u8], el: Element| {
+            db.insert(EMPTY_PATH, key, el, None, None, gv)
+                .unwrap()
+                .unwrap_or_else(|e| panic!("insert {}: {e:?}", String::from_utf8_lossy(key)));
+        };
+
+        // Layered-tree arm — every tree type round-trips on the non-batch path.
+        ins(b"tree", Element::empty_tree());
+        ins(b"sum", Element::empty_sum_tree());
+        ins(b"bigsum", Element::empty_big_sum_tree());
+        ins(b"count", Element::empty_count_tree());
+        ins(b"countsum", Element::empty_count_sum_tree());
+        ins(b"pcount", Element::empty_provable_count_tree());
+        ins(b"pcountsum", Element::empty_provable_count_sum_tree());
+        ins(b"psum", Element::empty_provable_sum_tree());
+        ins(b"pcps", Element::empty_provable_count_provable_sum_tree());
+
+        // Append-tree arm.
+        ins(b"mmr", Element::empty_mmr_tree());
+        ins(
+            b"bulk",
+            Element::empty_bulk_append_tree(10).expect("valid chunk_power"),
+        );
+        ins(b"dense", Element::empty_dense_tree(4));
+
+        // Commitment-tree arm (its own non-NULL initial child hash).
+        ins(
+            b"commit",
+            Element::empty_commitment_tree(10).expect("valid chunk_power"),
+        );
+
+        // Item arm.
+        ins(b"item", Element::new_item(b"v".to_vec()));
+        // Sum item must live in a sum-bearing tree.
+        db.insert(
+            [b"sum".as_slice()].as_ref(),
+            b"si",
+            Element::new_sum_item(7),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("sum_item into sum tree");
+
+        // Reference arm.
+        ins(
+            b"ref",
+            Element::new_reference(ReferencePathType::AbsolutePathReference(vec![
+                b"item".to_vec()
+            ])),
+        );
+
+        // Override guard (tree): default options forbid overriding a tree.
+        let tree_override = db
+            .insert(EMPTY_PATH, b"tree", Element::empty_tree(), None, None, gv)
+            .unwrap();
+        assert!(
+            matches!(tree_override, Err(Error::OverrideNotAllowed(_))),
+            "overriding a tree must be rejected, got {tree_override:?}"
+        );
+
+        // Override guard (plain value): explicit option forbids any override.
+        let item_override = db
+            .insert(
+                EMPTY_PATH,
+                b"item",
+                Element::new_item(b"v2".to_vec()),
+                Some(InsertOptions {
+                    validate_insertion_does_not_override: true,
+                    validate_insertion_does_not_override_tree: true,
+                    base_root_storage_is_free: true,
+                }),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(item_override, Err(Error::OverrideNotAllowed(_))),
+            "overriding an item with validate_insertion_does_not_override must be rejected, got \
+             {item_override:?}"
+        );
+
+        // Empty-tree-only guard: a tree element carrying a root key is rejected
+        // on the non-batch path (trees must be empty at insertion time here).
+        let with_root_key = db
+            .insert(
+                EMPTY_PATH,
+                b"hasroot",
+                Element::Tree(Some(vec![1u8]), None),
+                None,
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(with_root_key, Err(Error::InvalidCodeExecution(_))),
+            "a non-empty tree must be rejected on the non-batch insert path, got {with_root_key:?}"
+        );
+    }
+
+    /// Coverage for the v0 (`Op::Put`) snapshot — `GROVE_V1`.
+    #[test]
+    fn add_element_on_transaction_v0_covers_all_arms() {
+        use grovedb_version::version::v1::GROVE_V1;
+        exercise_all_add_element_arms(&GROVE_V1);
+    }
+
+    /// Coverage for the v1 (layered) snapshot — `GROVE_V3` (latest).
+    #[test]
+    fn add_element_on_transaction_v1_covers_all_arms() {
+        exercise_all_add_element_arms(GroveVersion::latest());
+    }
+
+    /// The dispatcher rejects an unknown `add_element_on_transaction` version
+    /// slot rather than silently picking a behaviour.
+    #[test]
+    fn add_element_on_transaction_rejects_unknown_version() {
+        let mut bad = GroveVersion::latest().clone();
+        bad.grovedb_versions
+            .operations
+            .insert
+            .add_element_on_transaction = 2;
+        let db = make_empty_grovedb();
+        let err = db
+            .insert(EMPTY_PATH, b"x", Element::empty_tree(), None, None, &bad)
+            .unwrap();
+        assert!(
+            matches!(err, Err(Error::VersionError(_))),
+            "unknown add_element_on_transaction version must error, got {err:?}"
+        );
+    }
 
     #[test]
     fn test_non_root_insert_item_without_transaction() {
