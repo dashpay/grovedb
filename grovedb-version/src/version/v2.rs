@@ -47,6 +47,8 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             value_defined_cost_for_serialized_value: 0,
             specialized_costs_for_key_value: 0,
             required_item_space: 0,
+            required_item_with_sum_item_space: 0,
+            required_reference_with_sum_item_space: 0,
             insert: 0,
             insert_into_batch_operations: 0,
             insert_if_not_exists: 0,
@@ -138,6 +140,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
                 query_aggregate_sums: 0,
                 query_aggregate_count_on_range: 0,
                 query_aggregate_sum_on_range: 0,
+                query_aggregate_count_and_sum_on_range: 0,
                 query_sums: 0,
                 query_raw: 0,
                 query_keys_optional: 0,
@@ -214,6 +217,9 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
         average_case_costs: MerkAverageCaseCostsVersions {
             add_average_case_merk_propagate: 1, // changed
             sum_tree_estimated_size: 1,         // changed
+            // grove v2 is consensus-locked to the legacy unweighted
+            // Mix average; v3 bumps this to 1 with the fixed formula.
+            value_with_feature_and_flags_size: 0,
         },
         // See the comment in v1.rs — `prove_count_offset_on_range` is
         // not reachable from v2's prove path (V0 envelope rejects

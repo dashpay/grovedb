@@ -266,6 +266,24 @@ mod proof_tests {
     }
 
     #[test]
+    fn test_bulk_proof_decode_rejects_trailing_bytes() {
+        let height = 2u8;
+        let values: Vec<Vec<u8>> = (0..4u32).map(|i| format!("r_{}", i).into_bytes()).collect();
+        let (_state_root, tree) = build_test_tree(height, &values);
+        let proof =
+            BulkAppendTreeProof::generate(&range_query(0, 4), &tree).expect("generate proof");
+
+        let mut bytes = proof.encode_to_vec().expect("encode proof");
+        bytes.push(0xff);
+
+        let err =
+            BulkAppendTreeProof::decode_from_slice(&bytes).expect_err("trailing bytes must fail");
+        assert!(
+            matches!(err, BulkAppendError::CorruptedData(message) if message.contains("did not consume all bytes"))
+        );
+    }
+
+    #[test]
     fn test_bytes_to_global_position_rejects_invalid_lengths() {
         assert_eq!(super::super::bytes_to_global_position(&[7]).unwrap(), 7);
         assert_eq!(

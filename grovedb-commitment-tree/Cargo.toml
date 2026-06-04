@@ -17,7 +17,7 @@ client = ["shardtree"]
 sqlite = ["client", "rusqlite"]
 
 [dependencies]
-orchard = { git = "https://github.com/dashpay/orchard.git", rev = "898258d76aab2822249492aede59a02d49278fff", features = ["circuit"] }
+orchard = { git = "https://github.com/dashpay/orchard.git", tag = "dashified-0.14.0", features = ["circuit"] }
 incrementalmerkletree = "0.8"
 shardtree = { version = "0.6", optional = true }
 rusqlite = { version = "0.38", features = ["bundled"], optional = true }
@@ -32,7 +32,17 @@ tempfile = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 rand_core = "0.6"
+# For the `seeding` benchmark: a real RocksDB-backed storage context.
+grovedb-storage = { version = "4.0.0", path = "../storage", features = ["rocksdb_storage"] }
+grovedb-path = { version = "4.0.0", path = "../path" }
 
 [[bench]]
 name = "verification"
 harness = false
+
+# Batched commitment-tree seeding throughput. Run with:
+#   cargo bench -p grovedb-commitment-tree --bench seeding --features server
+[[bench]]
+name = "seeding"
+harness = false
+required-features = ["server"]

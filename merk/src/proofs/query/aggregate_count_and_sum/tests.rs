@@ -9,7 +9,7 @@ use std::collections::LinkedList;
 
 use grovedb_version::version::GroveVersion;
 
-use super::verify_aggregate_count_and_sum_on_range_proof;
+use super::{prove::narrow_count_and_sum, verify_aggregate_count_and_sum_on_range_proof};
 use crate::{
     proofs::{
         encode_into,
@@ -18,7 +18,7 @@ use crate::{
     },
     test_utils::TempMerk,
     tree::{Op, TreeFeatureType::ProvableCountedAndProvableSummedMerkNode},
-    Error, TreeType,
+    Error, Merk, TreeType,
 };
 
 /// Encode a `LinkedList<ProofOp>` into the on-the-wire byte stream.
@@ -1116,5 +1116,320 @@ fn combined_verifier_narrow_gate_rejects_i128_overflow_via_crafted_proof() {
         }
         Ok(_) => panic!("synthetic i128-overflow proof must not verify"),
         Err(other) => panic!("unexpected error type: {:?}", other),
+    }
+}
+
+// ---------- no-proof variant: count_and_sum_aggregate_on_range ----------
+//
+// The no-proof entry point must return exactly the same `(count, sum)`
+// pair as the proof path for every range shape, without producing any
+// proof ops. These tests cross-check the two paths on the same merk
+// and also cover the failure modes unique to the no-proof variant
+// (wrong tree type, empty merk, overflow narrowing).
+
+/// Cross-check: assert `count_and_sum_aggregate_on_range` and the
+/// `(count, sum)` returned by `prove_aggregate_count_and_sum_on_range`
+/// agree for the given range, and that both equal the expected pair.
+fn no_proof_matches_prover(
+    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    inner_range: QueryItem,
+    expected_count: u64,
+    expected_sum: i64,
+    grove_version: &GroveVersion,
+) {
+    let (no_proof_count, no_proof_sum) = merk
+        .count_and_sum_aggregate_on_range(&inner_range, grove_version)
+        .unwrap()
+        .expect("count_and_sum_aggregate_on_range should succeed");
+    assert_eq!(
+        no_proof_count, expected_count,
+        "no-proof variant returned wrong count for range {:?}",
+        inner_range
+    );
+    assert_eq!(
+        no_proof_sum, expected_sum,
+        "no-proof variant returned wrong sum for range {:?}",
+        inner_range
+    );
+    let (_ops, prover_count, prover_sum) = merk
+        .prove_aggregate_count_and_sum_on_range(&inner_range, grove_version)
+        .unwrap()
+        .expect("prove should succeed");
+    assert_eq!(
+        no_proof_count, prover_count,
+        "no-proof count disagrees with prover for range {:?}",
+        inner_range
+    );
+    assert_eq!(
+        no_proof_sum, prover_sum,
+        "no-proof sum disagrees with prover for range {:?}",
+        inner_range
+    );
+}
+
+/// Compute the expected sum of the make_15_key_pcps fixture for keys
+/// in `[lo_idx ..= hi_idx]` (zero-based indices into 0..15).
+fn expected_pcps_sum_slice(lo_idx: u8, hi_idx: u8) -> i64 {
+    let mut sum: i64 = 0;
+    for i in lo_idx..=hi_idx {
+        let value: i64 = match i % 4 {
+            0 => -(i as i64) * 3,
+            2 => 0,
+            _ => (i as i64 + 1) * 2,
+        };
+        sum += value;
+    }
+    sum
+}
+
+#[test]
+fn no_proof_combined_matches_prover_closed_range_inclusive() {
+    let v = GroveVersion::latest();
+    let (merk, _root, _full) = make_15_key_pcps(v);
+    // c..=l → indices 2..=11 → 10 keys
+    let expected_sum = expected_pcps_sum_slice(2, 11);
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::RangeInclusive(b"c".to_vec()..=b"l".to_vec()),
+        10,
+        expected_sum,
+        v,
+    );
+}
+
+#[test]
+fn no_proof_combined_matches_prover_closed_range_exclusive() {
+    let v = GroveVersion::latest();
+    let (merk, _root, _full) = make_15_key_pcps(v);
+    // c..l → indices 2..=10 → 9 keys
+    let expected_sum = expected_pcps_sum_slice(2, 10);
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::Range(b"c".to_vec()..b"l".to_vec()),
+        9,
+        expected_sum,
+        v,
+    );
+}
+
+#[test]
+fn no_proof_combined_matches_prover_open_range_from() {
+    let v = GroveVersion::latest();
+    let (merk, _root, _full) = make_15_key_pcps(v);
+    // c..o → indices 2..=14 → 13 keys
+    let expected_sum = expected_pcps_sum_slice(2, 14);
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::RangeFrom(b"c".to_vec()..),
+        13,
+        expected_sum,
+        v,
+    );
+}
+
+#[test]
+fn no_proof_combined_matches_prover_range_after() {
+    // RangeAfter at the root pushes the left boundary exclusive to
+    // "b", exercising the right-child descent path of walk_count_and_sum.
+    let v = GroveVersion::latest();
+    let (merk, _root, _full) = make_15_key_pcps(v);
+    // After "b" → indices 2..=14 → 13 keys
+    let expected_sum = expected_pcps_sum_slice(2, 14);
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::RangeAfter(b"b".to_vec()..),
+        13,
+        expected_sum,
+        v,
+    );
+}
+
+#[test]
+fn no_proof_combined_matches_prover_range_to_inclusive() {
+    let v = GroveVersion::latest();
+    let (merk, _root, _full) = make_15_key_pcps(v);
+    // ..=e → indices 0..=4 → 5 keys
+    let expected_sum = expected_pcps_sum_slice(0, 4);
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::RangeToInclusive(..=b"e".to_vec()),
+        5,
+        expected_sum,
+        v,
+    );
+}
+
+#[test]
+fn no_proof_combined_matches_prover_range_below_all_keys() {
+    // Disjoint range: contributes (0, 0).
+    let v = GroveVersion::latest();
+    let (merk, _root, _full) = make_15_key_pcps(v);
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::RangeInclusive(vec![0x00]..=vec![0x10]),
+        0,
+        0,
+        v,
+    );
+}
+
+#[test]
+fn no_proof_combined_matches_prover_full_range_returns_full_aggregate() {
+    // Full range: should return the entire stored count and sum.
+    let v = GroveVersion::latest();
+    let (merk, _root, full_sum) = make_15_key_pcps(v);
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::RangeInclusive(b"a".to_vec()..=b"o".to_vec()),
+        15,
+        full_sum,
+        v,
+    );
+}
+
+#[test]
+fn no_proof_combined_empty_merk_returns_zero_zero() {
+    let v = GroveVersion::latest();
+    let merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountProvableSumTree);
+    let pair = merk
+        .count_and_sum_aggregate_on_range(&QueryItem::Range(b"a".to_vec()..b"z".to_vec()), v)
+        .unwrap()
+        .expect("count_and_sum_aggregate_on_range on empty merk should succeed");
+    assert_eq!(pair, (0u64, 0i64));
+}
+
+#[test]
+fn no_proof_combined_rejected_on_non_pcps_hosts() {
+    // The no-proof entry point must reject every non-PCPS tree type
+    // up front, mirroring the prover-side gate.
+    let v = GroveVersion::latest();
+    let inner_range = QueryItem::Range(b"a".to_vec()..b"z".to_vec());
+    for tt in [
+        TreeType::NormalTree,
+        TreeType::SumTree,
+        TreeType::CountTree,
+        TreeType::CountSumTree,
+        TreeType::BigSumTree,
+        TreeType::ProvableSumTree,
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+    ] {
+        let merk = TempMerk::new_with_tree_type(v, tt);
+        let err = merk
+            .count_and_sum_aggregate_on_range(&inner_range, v)
+            .unwrap()
+            .expect_err("must reject non-PCPS host");
+        match err {
+            Error::InvalidProofError(msg) => {
+                assert!(
+                    msg.contains("ProvableCountProvableSumTree"),
+                    "expected PCPS-only message, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected InvalidProofError for {:?}, got {:?}", tt, other),
+        }
+    }
+}
+
+#[test]
+fn no_proof_combined_negative_sums_match_prover() {
+    // A PCPS tree with mixed positive and negative sum items exercises
+    // the signed own_sum subtraction in walk_count_and_sum (own value
+    // may be negative even when child structural sums are positive).
+    let v = GroveVersion::latest();
+    let mut merk = TempMerk::new_with_tree_type(v, TreeType::ProvableCountProvableSumTree);
+    let entries: Vec<(Vec<u8>, Op)> = [(b'a', 50i64), (b'b', -100), (b'c', 30), (b'd', -50)]
+        .iter()
+        .map(|(k, s)| {
+            (
+                vec![*k],
+                Op::Put(vec![0], ProvableCountedAndProvableSummedMerkNode(1, *s)),
+            )
+        })
+        .collect();
+    merk.apply::<_, Vec<_>>(&entries, &[], None, v)
+        .unwrap()
+        .expect("apply mixed-sign PCPS entries");
+    merk.commit(v);
+
+    // Full range: count = 4, sum = 50 - 100 + 30 - 50 = -70.
+    no_proof_matches_prover(&merk, QueryItem::RangeFrom(b"a".to_vec()..), 4, -70, v);
+    // Subrange "b".."=c": count = 2, sum = -100 + 30 = -70.
+    no_proof_matches_prover(
+        &merk,
+        QueryItem::RangeInclusive(b"b".to_vec()..=b"c".to_vec()),
+        2,
+        -70,
+        v,
+    );
+}
+
+// ---------- narrow_count_and_sum unit tests ----------
+//
+// The narrowing helper isolates the defense-in-depth `(u128, i128) →
+// (u64, i64)` arms so they can be exercised without scaffolding a
+// corrupted merk. An honest walker never hits these arms because PCPS
+// maintains every aggregate inside `(u64, i64)` at every level — but if
+// the merk's in-memory state disagrees with its type contract (i.e.,
+// local corruption), the narrowing surfaces it as `CorruptedData`.
+
+#[test]
+fn narrow_count_and_sum_happy_path_preserves_values() {
+    let cases: &[(u128, i64, i64)] = &[
+        (0, 0, 0),
+        (1, 1, 1),
+        (u64::MAX as u128, i64::MAX, i64::MAX),
+        (u64::MAX as u128, i64::MIN, i64::MIN),
+    ];
+    for (c_in, s_in, expected_sum) in cases {
+        let (c, s) = narrow_count_and_sum(*c_in, *s_in as i128).expect("in-range narrow");
+        assert_eq!(c as u128, *c_in);
+        assert_eq!(s, *expected_sum);
+    }
+}
+
+#[test]
+fn narrow_count_and_sum_rejects_count_overflow() {
+    // count_u128 > u64::MAX → CorruptedData on the count axis.
+    let result = narrow_count_and_sum(u128::from(u64::MAX) + 1, 0);
+    match result {
+        Err(Error::CorruptedData(msg)) => assert!(
+            msg.contains("count overflowed u64"),
+            "unexpected error message: {msg}"
+        ),
+        other => panic!("expected CorruptedData for count overflow, got {:?}", other),
+    }
+}
+
+#[test]
+fn narrow_count_and_sum_rejects_sum_positive_overflow() {
+    // sum_i128 > i64::MAX → CorruptedData on the sum axis.
+    let result = narrow_count_and_sum(0, i128::from(i64::MAX) + 1);
+    match result {
+        Err(Error::CorruptedData(msg)) => assert!(
+            msg.contains("sum overflowed i64"),
+            "unexpected error message: {msg}"
+        ),
+        other => panic!(
+            "expected CorruptedData for sum positive overflow, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn narrow_count_and_sum_rejects_sum_negative_overflow() {
+    // sum_i128 < i64::MIN → CorruptedData on the sum axis.
+    let result = narrow_count_and_sum(0, i128::from(i64::MIN) - 1);
+    match result {
+        Err(Error::CorruptedData(msg)) => assert!(
+            msg.contains("sum overflowed i64"),
+            "unexpected error message: {msg}"
+        ),
+        other => panic!(
+            "expected CorruptedData for sum negative overflow, got {:?}",
+            other
+        ),
     }
 }

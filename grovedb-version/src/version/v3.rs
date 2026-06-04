@@ -47,6 +47,8 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             value_defined_cost_for_serialized_value: 0,
             specialized_costs_for_key_value: 0,
             required_item_space: 0,
+            required_item_with_sum_item_space: 0,
+            required_reference_with_sum_item_space: 0,
             insert: 0,
             insert_into_batch_operations: 0,
             insert_if_not_exists: 0,
@@ -102,7 +104,11 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 insert: 0,
                 insert_on_transaction: 0,
                 insert_without_transaction: 0,
-                add_element_on_transaction: 0,
+                // v1: non-batch insert writes CountSumTree / ProvableCountTree /
+                // ProvableCountSumTree as layered subtrees, consistent with the
+                // batch path. GROVE_V1 / GROVE_V2 keep v0 (Op::Put) to preserve
+                // the protocol-v11 consensus root (testnet block 245,344).
+                add_element_on_transaction: 1,
                 add_element_without_transaction: 0,
                 insert_if_not_exists: 0,
                 insert_if_not_exists_return_existing_element: 0,
@@ -138,6 +144,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 query_aggregate_sums: 0,
                 query_aggregate_count_on_range: 0,
                 query_aggregate_sum_on_range: 0,
+                query_aggregate_count_and_sum_on_range: 0,
                 query_sums: 0,
                 query_raw: 0,
                 query_keys_optional: 0,
@@ -212,8 +219,24 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
     merk_versions: MerkVersions {
         batch: MerkBatchVersions { commit: 1 }, // return accumulated batch costs
         average_case_costs: MerkAverageCaseCostsVersions {
-            add_average_case_merk_propagate: 1,
-            sum_tree_estimated_size: 1,
+            // Bumped from 1 → 2: v2 fixes the Mix-arm divisor on both
+            // `replaced_bytes` and `storage_loaded_bytes`. v1 computed
+            // `Σ(weight_i · cost_i) / (nodes_updated · total_weight)`
+            // (off by a factor of `nodes_updated²` vs the equivalent
+            // homogeneous-layer cost); v2 computes
+            // `nodes_updated · Σ(weight_i · cost_i) / total_weight`.
+            add_average_case_merk_propagate: 2,
+            // Bumped from 1 → 2: v2 folds the four `Provable*` tree-type
+            // weight fields on `EstimatedSumTrees::SomeSumTrees` into the
+            // weighted-average formula. v0/v1 outputs are preserved for
+            // already-shipped grove versions (v1 → v0 formula, v2 → v1
+            // formula).
+            sum_tree_estimated_size: 2,
+            // Bumped from 0 → 1: v1 fixes the Mix-arm "average" to a
+            // proper weighted average. v0 returned
+            // `Σ size_i / Σ weight_i` (low-biased and ignored weights);
+            // v1 returns `Σ (size_i · weight_i) / Σ weight_i`.
+            value_with_feature_and_flags_size: 1,
         },
         proof: MerkProofVersions {
             // Initial implementation; introduced alongside the V1

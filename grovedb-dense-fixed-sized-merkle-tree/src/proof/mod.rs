@@ -312,8 +312,15 @@ impl DenseTreeProof {
         let config = bincode::config::standard()
             .with_big_endian()
             .with_limit::<{ 100 * 1024 * 1024 }>(); // 100MB limit
-        let (proof, _): (Self, _) = bincode::decode_from_slice(bytes, config)
+        let (proof, consumed): (Self, usize) = bincode::decode_from_slice(bytes, config)
             .map_err(|e| DenseMerkleError::InvalidProof(format!("decode error: {}", e)))?;
+        if consumed != bytes.len() {
+            return Err(DenseMerkleError::InvalidProof(format!(
+                "DenseTreeProof decode did not consume all bytes: consumed {}, total {}",
+                consumed,
+                bytes.len()
+            )));
+        }
         Ok(proof)
     }
 }

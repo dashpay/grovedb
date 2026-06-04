@@ -453,6 +453,63 @@ where
             }
         })
     }
+
+    /// Execute an `AggregateCountAndSumOnRange` query without producing
+    /// a proof, returning the in-range `(count, sum)` pair from a
+    /// single merk-internal walk.
+    ///
+    /// This is the no-proof counterpart of
+    /// [`Self::prove_aggregate_count_and_sum_on_range`]. It walks the
+    /// same classification path the proof emitter does — using each
+    /// internal node's stored aggregate count and sum to short-circuit
+    /// Contained / Disjoint subtrees — but skips proof-op emission and
+    /// serialization. The merk-level cost is O(log n) in the number of
+    /// distinct keys, the same as the proof variant; consumers that
+    /// previously issued separate `count_aggregate_on_range` and
+    /// `sum_aggregate_on_range` calls collapse to one walk here.
+    ///
+    /// The merk's `tree_type` must be `ProvableCountProvableSumTree`;
+    /// any other tree type is rejected with `Error::InvalidProofError`
+    /// before any walking happens (PCPS is the only tree type whose
+    /// node hash binds BOTH aggregates, so it is the only valid
+    /// terminator for this query — single-axis hosts are rejected the
+    /// same way the proof-side primitive rejects them). On an empty
+    /// PCPS merk this returns `(0, 0)`.
+    ///
+    /// The accumulators carry `(u128, i128)` end-to-end and narrow to
+    /// `(u64, i64)` at the very last step (parallel to the prover and
+    /// verifier). An out-of-range result is treated as corruption — a
+    /// real PCPS tree maintains every aggregate as `(u64, i64)` at
+    /// every level, so an out-of-range wider-int result implies
+    /// inconsistent tree state.
+    ///
+    /// The returned pair is **not** independently verifiable —
+    /// callers trust the merk's reads. Use
+    /// `prove_aggregate_count_and_sum_on_range` +
+    /// `verify_aggregate_count_and_sum_on_range_proof` for a
+    /// verifiable result.
+    pub fn count_and_sum_aggregate_on_range(
+        &self,
+        inner_range: &QueryItem,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(u64, i64), Error> {
+        let tree_type = self.tree_type;
+        if !matches!(tree_type, crate::TreeType::ProvableCountProvableSumTree) {
+            return Err(Error::InvalidProofError(format!(
+                "AggregateCountAndSumOnRange is only valid against \
+                 ProvableCountProvableSumTree, got {:?}",
+                tree_type
+            )))
+            .wrap_with_cost(Default::default());
+        }
+        self.use_tree_mut(|maybe_tree| match maybe_tree {
+            None => Ok((0u64, 0i64)).wrap_with_cost(Default::default()),
+            Some(tree) => {
+                let mut ref_walker = RefWalker::new(tree, self.source());
+                ref_walker.count_and_sum_aggregate_on_range(inner_range, grove_version)
+            }
+        })
+    }
 }
 
 #[cfg(test)]

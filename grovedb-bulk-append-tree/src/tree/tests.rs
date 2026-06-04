@@ -40,6 +40,27 @@ fn from_state_invalid_height() {
 }
 
 #[test]
+fn cached_mmr_root_matches_recomputation_across_compactions() {
+    // The append fast-path uses a cached MMR root (`last_mmr_root`) instead of
+    // recomputing it — and cloning the blob-bearing overlay — on every append.
+    // This guards that the cache never diverges from a fresh recomputation,
+    // across both compaction and non-compaction appends.
+    //
+    // height=2 → epoch_size=4, so 20 appends span 5 compaction cycles.
+    let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
+    for i in 0..20u8 {
+        tree.append(&[i]).expect("append");
+        let fresh = tree.get_mmr_root().expect("recompute mmr root");
+        assert_eq!(
+            tree.last_mmr_root,
+            Some(fresh),
+            "cached MMR root diverged from recomputation after {} append(s)",
+            i + 1
+        );
+    }
+}
+
+#[test]
 fn single_append() {
     let mut tree = BulkAppendTree::new(2u8, MemStorageContext::new()).expect("create tree");
 

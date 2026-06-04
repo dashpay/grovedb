@@ -26,6 +26,12 @@ pub mod bulk_append_tree;
 #[cfg(feature = "minimal")]
 pub mod dense_tree;
 
+/// Caller-driven subtree-root replacement. Bypasses grovedb's normal
+/// "compute child hash from subtree state" invariant — see the module-level
+/// docs in `replace_subtree_root.rs` for the safety contract.
+#[cfg(all(feature = "minimal", feature = "unsafe-dump-load"))]
+pub mod replace_subtree_root;
+
 #[cfg(feature = "minimal")]
 pub mod indexed_tree;
 
