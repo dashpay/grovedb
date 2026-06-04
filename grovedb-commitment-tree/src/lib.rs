@@ -106,6 +106,8 @@ pub use orchard::builder::{Builder, BundleType};
 pub use orchard::bundle::BatchValidator;
 // Bundle/Action types
 pub use orchard::bundle::{Authorized, Flags};
+// Bundle reconstruction: proof-size policy for `Bundle::try_from_parts`
+pub use orchard::bundle::ProofSizeEnforcement;
 // Proof creation/verification (requires orchard "circuit" feature)
 pub use orchard::circuit::{ProvingKey, VerifyingKey};
 // Key management
@@ -135,7 +137,8 @@ pub use orchard::{
     zcash_note_encryption::{
         try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
     },
-    Action, Address as PaymentAddress, Bundle, Note, Proof, NOTE_COMMITMENT_TREE_DEPTH,
+    Action, ActionFromPartsError, Address as PaymentAddress, Bundle, Note, Proof,
+    NOTE_COMMITMENT_TREE_DEPTH,
 };
 #[cfg(feature = "sqlite")]
 pub use rusqlite;
