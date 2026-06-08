@@ -11,7 +11,8 @@
 //!   computation
 //! - Stores only the rightmost path (~1KB constant size) rather than the full
 //!   tree
-//! - Items (cmx || encrypted_note) are stored as GroveDB CountTree items
+//! - Items (cmx || rho || cv_net || encrypted_note) are stored as GroveDB
+//!   CountTree items
 //! - The frontier is serialized to data storage alongside the BulkAppendTree
 //! - Historical anchors are managed by Platform in a separate tree (not here)
 
@@ -49,8 +50,8 @@ pub const EMPTY_COMMITMENT_TREE_STATE_ROOT: [u8; 32] = [
 /// `ct_state_root = blake3("ct_state" || sinsemilla_root || bulk_state_root)`
 ///
 /// This ensures both the Orchard-compatible anchor (authenticating cmx values)
-/// and the BulkAppendTree root (authenticating cmx||payload entries) are
-/// cryptographically bound to the GroveDB root hash.
+/// and the BulkAppendTree root (authenticating cmx||rho||cv_net||payload
+/// entries) are cryptographically bound to the GroveDB root hash.
 pub fn compute_commitment_tree_state_root(
     sinsemilla_root: &[u8; 32],
     bulk_state_root: &[u8; 32],
@@ -65,7 +66,7 @@ pub fn compute_commitment_tree_state_root(
 #[cfg(feature = "server")]
 pub use commitment_tree::{
     ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
-    CommitmentTree, COMMITMENT_TREE_DATA_KEY,
+    CommitmentEntry, CommitmentTree, COMMITMENT_TREE_DATA_KEY,
 };
 pub use error::CommitmentTreeError;
 #[cfg(feature = "server")]

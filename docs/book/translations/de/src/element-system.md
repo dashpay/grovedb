@@ -284,14 +284,14 @@ graph TD
 **Architektur:**
 - Die *Frontier* (rechtester Pfad des Merkle-Baums, ~1KB konstante Größe) wird
   im **Daten-Namensraum** gespeichert, mit dem Schlüssel `COMMITMENT_TREE_DATA_KEY`
-- Die eigentlichen Notendaten (`cmx || ciphertext`) werden über einen **BulkAppendTree**
+- Die eigentlichen Notendaten (`cmx || rho || cv_net || ciphertext`) werden über einen **BulkAppendTree**
   im **Daten-Namensraum** gespeichert — chunk-kompaktiert, nach Position abrufbar
 - Historische Anker werden von der Platform in einem separaten beweisbaren Baum verfolgt
 - Die Sinsemilla-Wurzel wird NICHT im Element gespeichert — sie fließt als Merk-Kind-Hash
   durch die GroveDB-Hash-Hierarchie
 
 **Operationen:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Typisiertes Anhängen,
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Typisiertes Anhängen,
   akzeptiert `TransmittedNoteCiphertext<M>`; gibt `(new_root, position)` zurück
 - `commitment_tree_anchor(path, key, tx)` — Aktuellen Orchard-Anker abrufen
 - `commitment_tree_get_value(path, key, position, tx)` — Wert nach Position abrufen

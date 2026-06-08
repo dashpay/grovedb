@@ -22,7 +22,7 @@ fn main() {
     use std::time::Instant;
 
     use grovedb_commitment_tree::{
-        ciphertext_payload_size, merkle_hash_from_bytes, CommitmentTree, DashMemo,
+        ciphertext_payload_size, merkle_hash_from_bytes, CommitmentEntry, CommitmentTree, DashMemo,
     };
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
@@ -35,7 +35,7 @@ fn main() {
     // Production value: 2^11 = 2048 notes per completed chunk.
     let chunk_power: u8 = 11;
     let payload_len = ciphertext_payload_size::<DashMemo>();
-    let entry_len = 64 + payload_len; // cmx(32) + rho(32) + payload
+    let entry_len = 96 + payload_len; // cmx(32) + rho(32) + cv_net(32) + payload
 
     // Real on-disk RocksDB in a temp dir.
     let tmp = tempfile::TempDir::new().expect("create tempdir");
@@ -63,10 +63,17 @@ fn main() {
             }
         }
         let mut rho = [0u8; 32];
+        let mut cv_net = [0u8; 32];
         let mut payload = vec![0u8; payload_len];
         rng.fill_bytes(&mut rho);
+        rng.fill_bytes(&mut cv_net);
         rng.fill_bytes(&mut payload);
-        Some((cmx, rho, payload))
+        Some(CommitmentEntry {
+            cmx,
+            rho,
+            cv_net,
+            payload,
+        })
     })
     .take(n as usize);
 

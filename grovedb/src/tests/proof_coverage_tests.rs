@@ -5600,6 +5600,13 @@ mod tests {
             bytes
         }
 
+        fn ct_cv_net(index: u8) -> [u8; 32] {
+            let mut bytes = [0u8; 32];
+            bytes[0] = index;
+            bytes[1] = 0xCC;
+            bytes
+        }
+
         fn ct_ciphertext(index: u8) -> TransmittedNoteCiphertext<DashMemo> {
             let mut epk_bytes = [0u8; 32];
             epk_bytes[0] = index;
@@ -5622,6 +5629,7 @@ mod tests {
                 b"pool",
                 ct_cmx(i),
                 ct_rho(i),
+                ct_cv_net(i),
                 ct_ciphertext(i),
                 None,
                 grove_version,

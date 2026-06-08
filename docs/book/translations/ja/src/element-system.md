@@ -267,12 +267,12 @@ graph TD
 
 **アーキテクチャ：**
 - *フロンティア*（マークル木の最右パス、定数サイズ約1KB）は `COMMITMENT_TREE_DATA_KEY` をキーとして**データ名前空間**に格納されます
-- 実際のノートデータ（`cmx || ciphertext`）は**データ名前空間**内の **BulkAppendTree** 経由で格納されます — チャンク圧縮され、位置で検索可能
+- 実際のノートデータ（`cmx || rho || cv_net || ciphertext`）は**データ名前空間**内の **BulkAppendTree** 経由で格納されます — チャンク圧縮され、位置で検索可能
 - 過去のアンカーは Platform が別の証明可能なツリーで追跡
 - Sinsemilla ルートはエレメントに格納されません — GroveDB ハッシュ階層を通じて Merk 子ハッシュとして流れます
 
 **操作：**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — `TransmittedNoteCiphertext<M>` を受け取る型付き追加; `(new_root, position)` を返す
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — `TransmittedNoteCiphertext<M>` を受け取る型付き追加; `(new_root, position)` を返す
 - `commitment_tree_anchor(path, key, tx)` — 現在の Orchard Anchor を取得
 - `commitment_tree_get_value(path, key, position, tx)` — 位置による値の取得
 - `commitment_tree_count(path, key, tx)` — 合計アイテム数を取得
