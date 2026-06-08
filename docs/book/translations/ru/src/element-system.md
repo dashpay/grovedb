@@ -269,12 +269,12 @@ graph TD
 
 **Архитектура:**
 - *Фронтир* (крайний правый путь дерева Меркла, постоянный размер ~1КБ) хранится в **пространстве данных** с ключом `COMMITMENT_TREE_DATA_KEY`
-- Фактические данные нот (`cmx || ciphertext`) хранятся через **BulkAppendTree** в **пространстве данных** — с компактированием в чанки, извлекаемые по позиции
+- Фактические данные нот (`cmx || rho || cv_net || ciphertext`) хранятся через **BulkAppendTree** в **пространстве данных** — с компактированием в чанки, извлекаемые по позиции
 - Исторические якоря отслеживаются Platform в отдельном доказуемом дереве
 - Корень Sinsemilla НЕ хранится в элементе — он передаётся как дочерний хеш Merk через иерархию хешей GroveDB
 
 **Операции:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Типизированное добавление, принимающее `TransmittedNoteCiphertext<M>`; возвращает `(new_root, position)`
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Типизированное добавление, принимающее `TransmittedNoteCiphertext<M>`; возвращает `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — Получить текущий Orchard Anchor
 - `commitment_tree_get_value(path, key, position, tx)` — Извлечь значение по позиции
 - `commitment_tree_count(path, key, tx)` — Получить общее количество элементов

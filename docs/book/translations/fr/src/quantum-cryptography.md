@@ -146,7 +146,7 @@ immuables. L'adversaire attend un ordinateur quantique cryptographiquement perti
 
 ```text
 Étape 1: Lire l'enregistrement stocké du BulkAppendTree du CommitmentTree :
-         cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+         cmx (32) || rho (32) || cv_net (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
 
 Étape 2: Résoudre l'ECDLP sur Pallas via l'algorithme de Shor :
          epk = [esk] * g_d  →  récupérer esk
@@ -265,26 +265,27 @@ pour la récupération de l'expéditeur :
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│  Actuel (280 bytes)            Hybride (1,400 bytes)             │
+│  Actuel (312 bytes)            Hybride (1,432 bytes)             │
 │                                                                  │
 │  cmx:             32         cmx:              32               │
 │  rho:             32         rho:              32               │
+│  cv_net:          32         cv_net:           32               │
 │  epk:             32         epk:              32               │
 │  enc_ciphertext: 104         ct_pq:         1,088  ← NOUVEAU   │
 │  out_ciphertext:  80         enc_ciphertext:  104               │
 │                              out_ciphertext:  112  ← +32        │
 │  ─────────────────           ──────────────────────             │
-│  Total:          280         Total:          1,400  (5.0x)      │
+│  Total:          312         Total:          1,432  (4.6x)      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 **Stockage à grande échelle :**
 
-| Notes | Actuel (280 B) | Hybride (1,400 B) | Delta |
+| Notes | Actuel (312 B) | Hybride (1,432 B) | Delta |
 |-------|----------------|-------------------|-------|
-| 100,000 | 26.7 MB | 133 MB | +106 MB |
-| 1,000,000 | 267 MB | 1.33 GB | +1.07 GB |
-| 10,000,000 | 2.67 GB | 13.3 GB | +10.7 GB |
+| 100,000 | 29.8 MB | 137 MB | +107 MB |
+| 1,000,000 | 298 MB | 1.33 GB | +1.04 GB |
+| 10,000,000 | 2.91 GB | 13.3 GB | +10.4 GB |
 
 **Taille d'adresse :**
 

@@ -292,7 +292,7 @@ graph TD
   Merk przez hierarchie haszow GroveDB
 
 **Operacje:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` -- Typowane dopisywanie
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` -- Typowane dopisywanie
   akceptujace `TransmittedNoteCiphertext<M>`; zwraca `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` -- Pobierz biezace zakotwiczenie Orchard (Anchor)
 - `commitment_tree_get_value(path, key, position, tx)` -- Pobranie wartosci po pozycji

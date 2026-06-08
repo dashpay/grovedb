@@ -266,12 +266,12 @@ graph TD
 
 **สถาปัตยกรรม:**
 - *frontier* (เส้นทางด้านขวาสุดของ Merkle tree ขนาดคงที่ ~1KB) ถูกจัดเก็บใน **data namespace** ด้วย key `COMMITMENT_TREE_DATA_KEY`
-- ข้อมูล note จริง (`cmx || ciphertext`) ถูกจัดเก็บผ่าน **BulkAppendTree** ใน **data namespace** — บีบอัดเป็น chunk สามารถดึงข้อมูลตามตำแหน่ง
+- ข้อมูล note จริง (`cmx || rho || cv_net || ciphertext`) ถูกจัดเก็บผ่าน **BulkAppendTree** ใน **data namespace** — บีบอัดเป็น chunk สามารถดึงข้อมูลตามตำแหน่ง
 - anchor ในอดีตถูกติดตามโดย Platform ในต้นไม้ provable แยกต่างหาก
 - Sinsemilla root ไม่ได้ถูกเก็บใน Element — มันไหลเป็น Merk child hash ผ่านลำดับชั้นแฮชของ GroveDB
 
 **การดำเนินการ:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Typed append ที่รับ `TransmittedNoteCiphertext<M>`; คืนค่า `(new_root, position)`
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Typed append ที่รับ `TransmittedNoteCiphertext<M>`; คืนค่า `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — ดึง Orchard Anchor ปัจจุบัน
 - `commitment_tree_get_value(path, key, position, tx)` — ดึงค่าตามตำแหน่ง
 - `commitment_tree_count(path, key, tx)` — ดึงจำนวนรายการทั้งหมด

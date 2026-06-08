@@ -284,14 +284,14 @@ graph TD
 **البنية:**
 - *الواجهة* (المسار الأيمن لشجرة ميركل، بحجم ثابت ~1 كيلوبايت) مُخزَّنة
   في **فضاء اسم البيانات**، بالمفتاح `COMMITMENT_TREE_DATA_KEY`
-- بيانات الملاحظات الفعلية (`cmx || ciphertext`) مُخزَّنة عبر **BulkAppendTree**
+- بيانات الملاحظات الفعلية (`cmx || rho || cv_net || ciphertext`) مُخزَّنة عبر **BulkAppendTree**
   في **فضاء اسم البيانات** — مُضغوطة في شرائح، قابلة للاسترجاع بالموقع
 - المراسي التاريخية يتتبعها Platform في شجرة قابلة للإثبات منفصلة
 - جذر Sinsemilla لا يُخزَّن في العنصر — يتدفق كتجزئة Merk الابن
   عبر تسلسل تجزئة GroveDB
 
 **العمليات:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — إلحاق مُنمَّط
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — إلحاق مُنمَّط
   يقبل `TransmittedNoteCiphertext<M>`؛ يُرجع `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — الحصول على مرساة Orchard الحالية
 - `commitment_tree_get_value(path, key, position, tx)` — استرجاع قيمة بالموقع

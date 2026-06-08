@@ -16,7 +16,7 @@ pub enum GroveOp {
     DeleteTree(TreeType, SubelementsDeletionBehavior),  // Per-op deletion policy
 
     // Operacje dopisywania drzew nie-Merk (uzytkownika):
-    CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },
+    CommitmentTreeInsert { cmx: [u8; 32], rho: [u8; 32], cv_net: [u8; 32], payload: Vec<u8> },
     MmrTreeAppend { value: Vec<u8> },
     BulkAppend { value: Vec<u8> },
     DenseTreeInsert { value: Vec<u8> },
@@ -188,7 +188,7 @@ pub enum GroveOp {
     // ... standardowe operacje ...
 
     // Operacje drzew nie-Merk (uzytkownika):
-    CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },
+    CommitmentTreeInsert { cmx: [u8; 32], rho: [u8; 32], cv_net: [u8; 32], payload: Vec<u8> },
     MmrTreeAppend { value: Vec<u8> },
     BulkAppend { value: Vec<u8> },
     DenseTreeInsert { value: Vec<u8> },

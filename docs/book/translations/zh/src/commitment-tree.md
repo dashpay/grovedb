@@ -34,7 +34,8 @@ CommitmentTree 将**所有数据存储在同一子树路径的数据命名空间
 │  │                                                         │  │
 │  │  BulkAppendTree storage (Chapter 14):                   │  │
 │  │    Buffer entries → chunk blobs → chunk MMR             │  │
-│  │    value = cmx (32) || rho (32) || ciphertext (216)     │  │
+│  │    value = cmx (32) || rho (32) || cv_net (32)          │  │
+│  │            || ciphertext (216)                          │  │
 │  │                                                         │  │
 │  │  Sinsemilla Frontier (~1KB):                            │  │
 │  │    key: b"__ct_data__" (COMMITMENT_TREE_DATA_KEY)       │  │
@@ -211,7 +212,7 @@ CommitmentTree 将所有数据存储在子树路径的单个**数据命名空间
 │                                                                   │
 │  BulkAppendTree storage keys (see §14.7):                         │
 │    b"m" || pos (u64 BE)  → MMR node blobs                        │
-│    b"b" || index (u64 BE)→ buffer entries (cmx || rho || ciphertext) │
+│    b"b" || index (u64 BE)→ buffer entries (cmx||rho||cv_net||ciphertext) │
 │    b"e" || chunk (u64 BE)→ chunk blobs (compacted buffer)         │
 │    b"M"                  → BulkAppendTree metadata                │
 │                                                                   │
@@ -250,10 +251,10 @@ CommitmentTree 提供四个操作。插入操作对 `M: MemoSize`（来自 `orch
 ```rust
 // Insert a commitment (typed) — returns (sinsemilla_root, position)
 // M controls ciphertext size validation
-db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, ciphertext, tx, version)
+db.commitment_tree_insert::<_, _, M>(path, key, cmx, rho, cv_net, ciphertext, tx, version)
 
 // Insert a commitment (raw bytes) — validates payload.len() == ciphertext_payload_size::<DashMemo>()
-db.commitment_tree_insert_raw(path, key, cmx, rho, payload_vec, tx, version)
+db.commitment_tree_insert_raw(path, key, cmx, rho, cv_net, payload_vec, tx, version)
 
 // Get the current Orchard Anchor
 db.commitment_tree_anchor(path, key, tx, version)
@@ -280,7 +281,7 @@ Step 2: Build ct_path = path ++ [key]
 Step 3: Open data storage context at ct_path
         Load CommitmentTree (frontier + BulkAppendTree)
         Serialize ciphertext → validate payload size matches M
-        Append cmx||rho||ciphertext to BulkAppendTree
+        Append cmx||rho||cv_net||ciphertext to BulkAppendTree
         Append cmx to Sinsemilla frontier → get new sinsemilla_root
         Track Blake3 + Sinsemilla hash costs
 
@@ -299,10 +300,10 @@ Step 7: Commit storage batch and local transaction
 
 ```mermaid
 graph TD
-    A["commitment_tree_insert(path, key, cmx, rho, ciphertext)"] --> B["Validate: is CommitmentTree?"]
+    A["commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext)"] --> B["Validate: is CommitmentTree?"]
     B --> C["Open data storage, load CommitmentTree"]
     C --> D["Serialize & validate ciphertext size"]
-    D --> E["BulkAppendTree.append(cmx||rho||payload)"]
+    D --> E["BulkAppendTree.append(cmx||rho||cv_net||payload)"]
     E --> F["frontier.append(cmx)"]
     F --> G["Save frontier to data storage"]
     G --> H["Update parent CommitmentTree element<br/>new sinsemilla_root + total_count"]
@@ -333,7 +334,7 @@ Step 4: Return frontier.anchor() as orchard::tree::Anchor
 
 ### commitment_tree_get_value
 
-通过全局位置检索存储的值（cmx || rho || payload）：
+通过全局位置检索存储的值（cmx || rho || cv_net || payload）：
 
 ```text
 Step 1: Validate element at path/key is a CommitmentTree
@@ -366,6 +367,7 @@ CommitmentTree 通过 `GroveOp::CommitmentTreeInsert` 变体支持批量插入�
 GroveOp::CommitmentTreeInsert {
     cmx: [u8; 32],      // extracted note commitment
     rho: [u8; 32],      // nullifier of the spent note
+    cv_net: [u8; 32],   // value commitment (for outgoing/OVK recovery)
     payload: Vec<u8>,    // serialized ciphertext (216 bytes for DashMemo)
 }
 ```
@@ -374,10 +376,10 @@ GroveOp::CommitmentTreeInsert {
 
 ```rust
 // Raw constructor — caller serializes payload manually
-QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, payload_vec)
+QualifiedGroveDbOp::commitment_tree_insert_op(path, cmx, rho, cv_net, payload_vec)
 
 // Typed constructor — serializes TransmittedNoteCiphertext<M> internally
-QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, &ciphertext)
+QualifiedGroveDbOp::commitment_tree_insert_op_typed::<M>(path, cmx, rho, cv_net, &ciphertext)
 ```
 
 允许在单个批次中对同一棵树进行多次插入。由于 `execute_ops_on_path` 无法访问数据存储，所有 CommitmentTree 操作必须在 `apply_body` 之前进行预处理。
@@ -395,8 +397,8 @@ Step 2: For each group:
         a. Read existing element → verify CommitmentTree, extract chunk_power
         b. Open transactional storage context at ct_path
         c. Load CommitmentTree from data storage (frontier + BulkAppendTree)
-        d. For each (cmx, rho, payload):
-           - ct.append_raw(cmx, rho, payload) — validates size, appends to both
+        d. For each (cmx, rho, cv_net, payload):
+           - ct.append_raw(cmx, rho, cv_net, payload) — validates size, appends to both
         e. Save updated frontier to data storage
 
 Step 3: Replace all CTInsert ops with one ReplaceNonMerkTreeRoot per group
@@ -435,7 +437,7 @@ pub struct CommitmentTree<S, M: MemoSize = DashMemo> {
 
 **载荷验证**：`append_raw()` 方法验证 `payload.len() == ciphertext_payload_size::<M>()`，不匹配时返回 `CommitmentTreeError::InvalidPayloadSize`。类型化的 `append()` 方法在内部序列化，因此大小始终正确。
 
-### 存储记录布局（DashMemo 为 280 字节）
+### 存储记录布局（DashMemo 为 312 字节）
 
 BulkAppendTree 中的每个条目存储完整的加密笔记记录。完整布局（逐字节计算）：
 
@@ -445,11 +447,12 @@ BulkAppendTree 中的每个条目存储完整的加密笔记记录。完整布�
 ├─────────────────────────────────────────────────────────────────────┤
 │  0        32     cmx — extracted note commitment (Pallas base field)│
 │  32       32     rho — nullifier of the spent note                  │
-│  64       32     epk_bytes — ephemeral public key (Pallas point)    │
-│  96       104    enc_ciphertext — encrypted note plaintext + MAC    │
-│  200      80     out_ciphertext — encrypted outgoing data + MAC     │
+│  64       32     cv_net — value commitment (Pallas curve point)     │
+│  96       32     epk_bytes — ephemeral public key (Pallas point)    │
+│  128      104    enc_ciphertext — encrypted note plaintext + MAC    │
+│  232      80     out_ciphertext — encrypted outgoing data + MAC     │
 ├─────────────────────────────────────────────────────────────────────┤
-│  Total:   280 bytes                                                 │
+│  Total:   312 bytes                                                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -550,7 +553,7 @@ out_ciphertext = ChaCha20-Poly1305.Encrypt(ock, nonce=[0;12], aad=[], plaintext)
 | 笔记明文 | 88 字节 | 564 字节 | 52 固定 + 备忘录 |
 | enc_ciphertext | 104 字节 | 580 字节 | 明文 + 16 MAC |
 | 密文载荷（epk+enc+out） | 216 字节 | 692 字节 | 每个笔记传输 |
-| 完整存储记录（cmx+rho+payload） | **280 字节** | **756 字节** | BulkAppendTree 条目 |
+| 完整存储记录（cmx+rho+cv_net+payload） | **312 字节** | **788 字节** | BulkAppendTree 条目 |
 
 DashMemo 的较小备忘录（36 对 512 字节）使每条存储记录减少 476 字节 — 在存储数百万
 笔记时意义重大。
@@ -560,7 +563,7 @@ DashMemo 的较小备忘录（36 对 512 字节）使每条存储记录减少 47
 轻客户端扫描自己的笔记时，对每条存储记录执行以下序列：
 
 ```text
-1. Read record: cmx (32) || rho (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
+1. Read record: cmx (32) || rho (32) || cv_net (32) || epk (32) || enc_ciphertext (104) || out_ciphertext (80)
 
 2. Compute shared_secret = [ivk] * epk     (ECDH with incoming viewing key)
 
@@ -756,7 +759,7 @@ Note commitment at position P
 
 **2. 项检索证明（V1 路径）：**
 
-可以通过位置查询单个项（cmx || rho || payload）并使用 V1 证明（第 9.6 节）进行证明，这与独立 BulkAppendTree 使用的机制相同。V1 证明包含所请求位置的 BulkAppendTree 认证路径，链接到 CommitmentTree 元素的父 Merk 证明。
+可以通过位置查询单个项（cmx || rho || cv_net || payload）并使用 V1 证明（第 9.6 节）进行证明，这与独立 BulkAppendTree 使用的机制相同。V1 证明包含所请求位置的 BulkAppendTree 认证路径，链接到 CommitmentTree 元素的父 Merk 证明。
 
 ## 开销追踪
 

@@ -269,12 +269,12 @@ graph TD
 
 **아키텍처:**
 - *프론티어(frontier)*(머클 트리의 가장 오른쪽 경로, 약 1KB 고정 크기)는 `COMMITMENT_TREE_DATA_KEY`로 키가 지정된 **데이터 네임스페이스**에 저장됩니다
-- 실제 노트 데이터(`cmx || ciphertext`)는 **데이터 네임스페이스**에 **BulkAppendTree**를 통해 저장됩니다 -- 청크 압축, 위치별 조회 가능
+- 실제 노트 데이터(`cmx || rho || cv_net || ciphertext`)는 **데이터 네임스페이스**에 **BulkAppendTree**를 통해 저장됩니다 -- 청크 압축, 위치별 조회 가능
 - 히스토리 앵커는 Platform이 별도의 증명 가능한 트리에서 추적합니다
 - Sinsemilla 루트는 Element에 저장되지 않습니다 -- GroveDB 해시 계층 구조를 통해 Merk 자식 해시로 흐릅니다
 
 **연산:**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` -- `TransmittedNoteCiphertext<M>`를 받는 타입화된 추가; `(new_root, position)`을 반환
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` -- `TransmittedNoteCiphertext<M>`를 받는 타입화된 추가; `(new_root, position)`을 반환
 - `commitment_tree_anchor(path, key, tx)` -- 현재 Orchard Anchor 가져오기
 - `commitment_tree_get_value(path, key, position, tx)` -- 위치별 값 조회
 - `commitment_tree_count(path, key, tx)` -- 총 항목 수 가져오기

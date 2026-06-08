@@ -284,14 +284,14 @@ graph TD
 **Architecture :**
 - La *frontière* (chemin le plus à droite de l'arbre de Merkle, taille constante d'environ 1 Ko) est
   stockée dans l'**espace de noms data**, identifiée par `COMMITMENT_TREE_DATA_KEY`
-- Les données réelles des notes (`cmx || ciphertext`) sont stockées via un **BulkAppendTree**
+- Les données réelles des notes (`cmx || rho || cv_net || ciphertext`) sont stockées via un **BulkAppendTree**
   dans l'**espace de noms data** — compactées en chunks, récupérables par position
 - Les ancres historiques sont suivies par Platform dans un arbre prouvable séparé
 - La racine Sinsemilla n'est PAS stockée dans l'élément — elle circule comme le hachage
   enfant Merk à travers la hiérarchie de hachage de GroveDB
 
 **Opérations :**
-- `commitment_tree_insert(path, key, cmx, ciphertext, tx)` — Ajout typé
+- `commitment_tree_insert(path, key, cmx, rho, cv_net, ciphertext, tx)` — Ajout typé
   acceptant `TransmittedNoteCiphertext<M>` ; retourne `(new_root, position)`
 - `commitment_tree_anchor(path, key, tx)` — Obtenir l'Anchor Orchard actuel
 - `commitment_tree_get_value(path, key, position, tx)` — Récupérer une valeur par position
