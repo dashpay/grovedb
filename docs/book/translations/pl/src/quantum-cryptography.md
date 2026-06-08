@@ -276,11 +276,11 @@ secret ML-KEM dla odzyskiwania nadawcy:
 
 **Przechowywanie w skali:**
 
-| Notes | Obecne (312 B) | Hybrydowe (1 400 B) | Delta |
+| Notes | Obecne (312 B) | Hybrydowe (1 432 B) | Delta |
 |-------|---------------|---------------------|-------|
-| 100 000 | 26,7 MB | 133 MB | +106 MB |
-| 1 000 000 | 267 MB | 1,33 GB | +1,07 GB |
-| 10 000 000 | 2,67 GB | 13,3 GB | +10,7 GB |
+| 100 000 | 29,8 MB | 137 MB | +107 MB |
+| 1 000 000 | 298 MB | 1,33 GB | +1,04 GB |
+| 10 000 000 | 2,91 GB | 13,3 GB | +10,4 GB |
 
 **Rozmiar adresu:**
 
