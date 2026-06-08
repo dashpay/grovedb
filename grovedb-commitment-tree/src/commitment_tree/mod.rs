@@ -43,6 +43,27 @@ pub struct CommitmentAppendResult {
     pub compacted: bool,
 }
 
+/// A single entry for [`CommitmentTree::append_many_raw`].
+///
+/// Carries the same data as a per-leaf [`CommitmentTree::append_raw`] call.
+/// Named fields (instead of a bare `([u8; 32], [u8; 32], [u8; 32], Vec<u8>)`
+/// tuple) keep the three adjacent, type-identical 32-byte protocol fields from
+/// being silently transposed: `cmx`, `rho`, and `cv_net` are interchangeable to
+/// the type system but carry distinct meaning, and a swap would build an
+/// internally consistent tree while corrupting nullifier association and
+/// outgoing-note (OVK) recovery.
+#[derive(Debug, Clone)]
+pub struct CommitmentEntry {
+    /// Note commitment (must be a valid Pallas field element).
+    pub cmx: [u8; 32],
+    /// Nullifier (`rho`) of the spent note.
+    pub rho: [u8; 32],
+    /// Value commitment (`cv_net`) of the note — required for OVK recovery.
+    pub cv_net: [u8; 32],
+    /// Serialized ciphertext payload (`ciphertext_payload_size::<M>()` bytes).
+    pub payload: Vec<u8>,
+}
+
 // ── Ciphertext serialization helpers ─────────────────────────────────────
 
 /// Compute the expected ciphertext payload size (excluding the unencrypted
@@ -340,7 +361,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         .wrap_with_cost(cost)
     }
 
-    /// Batch-append a sequence of `(cmx, rho, cv_net, payload)` entries.
+    /// Batch-append a sequence of [`CommitmentEntry`] values.
     ///
     /// Byte-for-byte equivalent to calling [`append_raw`](Self::append_raw)
     /// once per entry — same dense-buffer state, same chunk MMR, same
@@ -399,7 +420,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         entries: I,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError>
     where
-        I: IntoIterator<Item = ([u8; 32], [u8; 32], [u8; 32], Vec<u8>)>,
+        I: IntoIterator<Item = CommitmentEntry>,
     {
         let mut cost = OperationCost::default();
         let expected_payload = ciphertext_payload_size::<M>();
@@ -413,7 +434,13 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         let starting_total = self.bulk_tree.total_count;
         let mut last_global_position: u64 = starting_total.saturating_sub(1);
 
-        for (cmx, rho, cv_net, payload) in entries {
+        for CommitmentEntry {
+            cmx,
+            rho,
+            cv_net,
+            payload,
+        } in entries
+        {
             // Pre-validate cmx (Pallas field element) and payload size *before*
             // any mutation for this entry — mirrors append_raw's ordering so a
             // bad entry doesn't leave a half-written row behind.

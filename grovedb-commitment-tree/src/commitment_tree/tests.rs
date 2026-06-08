@@ -1165,13 +1165,13 @@ mod storage_tests {
 
     /// Build a fresh tree, append all `entries` one-by-one via [`append_raw`].
     fn build_via_per_leaf_append(
-        entries: &[([u8; 32], [u8; 32], [u8; 32], Vec<u8>)],
+        entries: &[CommitmentEntry],
     ) -> CommitmentTree<MockDataStorageContext, DashMemo> {
         let mut ct =
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
                 .expect("new should succeed");
-        for (cmx, rho, cv_net, payload) in entries {
-            ct.append_raw(*cmx, *rho, *cv_net, payload)
+        for entry in entries {
+            ct.append_raw(entry.cmx, entry.rho, entry.cv_net, &entry.payload)
                 .value
                 .expect("per-leaf append_raw should succeed");
         }
@@ -1180,7 +1180,7 @@ mod storage_tests {
 
     /// Build a fresh tree by passing all `entries` to [`append_many_raw`] in one call.
     fn build_via_append_many_raw(
-        entries: Vec<([u8; 32], [u8; 32], [u8; 32], Vec<u8>)>,
+        entries: Vec<CommitmentEntry>,
     ) -> CommitmentTree<MockDataStorageContext, DashMemo> {
         let mut ct =
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
@@ -1192,15 +1192,13 @@ mod storage_tests {
     }
 
     /// Build a deterministic test sequence of `n` entries.
-    fn make_entries(n: u64) -> Vec<([u8; 32], [u8; 32], [u8; 32], Vec<u8>)> {
+    fn make_entries(n: u64) -> Vec<CommitmentEntry> {
         (0..n)
-            .map(|i| {
-                (
-                    test_leaf(i),
-                    test_rho((i % 256) as u8),
-                    test_cv_net((i % 256) as u8),
-                    seed_payload((i % 256) as u8),
-                )
+            .map(|i| CommitmentEntry {
+                cmx: test_leaf(i),
+                rho: test_rho((i % 256) as u8),
+                cv_net: test_cv_net((i % 256) as u8),
+                payload: seed_payload((i % 256) as u8),
             })
             .collect()
     }
@@ -1331,15 +1329,15 @@ mod storage_tests {
         const TARGET_POSITION: usize = 113;
 
         let entries = make_entries(N);
-        let owned_cmx_bytes = entries[TARGET_POSITION].0;
+        let owned_cmx_bytes = entries[TARGET_POSITION].cmx;
         let ct = build_via_append_many_raw(entries.clone());
         let anchor = ct.anchor();
 
         // Independent auth-path recomputation over the same leaf set.
         let leaves: Vec<MerkleHashOrchard> = entries
             .iter()
-            .map(|(cmx, _, _, _)| {
-                Option::from(MerkleHashOrchard::from_bytes(cmx))
+            .map(|entry| {
+                Option::from(MerkleHashOrchard::from_bytes(&entry.cmx))
                     .expect("test_leaf produces valid Pallas elements")
             })
             .collect();
@@ -1413,8 +1411,18 @@ mod storage_tests {
         // accepted, then the batch errors with `InvalidFieldElement` — matching
         // the per-leaf `append_raw` semantics.
         let entries = vec![
-            (test_leaf(0), test_rho(0), test_cv_net(0), seed_payload(0)),
-            ([0xFFu8; 32], test_rho(1), test_cv_net(1), seed_payload(1)),
+            CommitmentEntry {
+                cmx: test_leaf(0),
+                rho: test_rho(0),
+                cv_net: test_cv_net(0),
+                payload: seed_payload(0),
+            },
+            CommitmentEntry {
+                cmx: [0xFFu8; 32],
+                rho: test_rho(1),
+                cv_net: test_cv_net(1),
+                payload: seed_payload(1),
+            },
         ];
         let err = ct
             .append_many_raw(entries)
@@ -1437,8 +1445,18 @@ mod storage_tests {
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
 
         let entries = vec![
-            (test_leaf(0), test_rho(0), test_cv_net(0), seed_payload(0)),
-            (test_leaf(1), test_rho(1), test_cv_net(1), vec![0u8; 1]), // wrong size
+            CommitmentEntry {
+                cmx: test_leaf(0),
+                rho: test_rho(0),
+                cv_net: test_cv_net(0),
+                payload: seed_payload(0),
+            },
+            CommitmentEntry {
+                cmx: test_leaf(1),
+                rho: test_rho(1),
+                cv_net: test_cv_net(1),
+                payload: vec![0u8; 1], // wrong size
+            },
         ];
         let err = ct
             .append_many_raw(entries)
@@ -1464,7 +1482,12 @@ mod storage_tests {
         fail_get.set(true);
         fail_put.set(true);
 
-        let entries = vec![(test_leaf(0), test_rho(0), test_cv_net(0), seed_payload(0))];
+        let entries = vec![CommitmentEntry {
+            cmx: test_leaf(0),
+            rho: test_rho(0),
+            cv_net: test_cv_net(0),
+            payload: seed_payload(0),
+        }];
         let err = ct
             .append_many_raw(entries)
             .value
@@ -1505,13 +1528,11 @@ mod storage_tests {
 
         // Append enough to trigger at least one compaction (TEST_CHUNK_POWER=1
         // → epoch_size=2), so the MMR overlay has staged nodes.
-        let notes = (0..4u8).map(|i| {
-            (
-                test_leaf(i as u64),
-                test_rho(i),
-                test_cv_net(i),
-                seed_payload(i),
-            )
+        let notes = (0..4u8).map(|i| CommitmentEntry {
+            cmx: test_leaf(i as u64),
+            rho: test_rho(i),
+            cv_net: test_cv_net(i),
+            payload: seed_payload(i),
         });
         ct.append_many_raw(notes).value.expect("warmup");
 

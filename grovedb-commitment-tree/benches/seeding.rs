@@ -22,7 +22,7 @@ fn main() {
     use std::time::Instant;
 
     use grovedb_commitment_tree::{
-        ciphertext_payload_size, merkle_hash_from_bytes, CommitmentTree, DashMemo,
+        ciphertext_payload_size, merkle_hash_from_bytes, CommitmentEntry, CommitmentTree, DashMemo,
     };
     use grovedb_path::SubtreePath;
     use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch};
@@ -68,7 +68,12 @@ fn main() {
         rng.fill_bytes(&mut rho);
         rng.fill_bytes(&mut cv_net);
         rng.fill_bytes(&mut payload);
-        Some((cmx, rho, cv_net, payload))
+        Some(CommitmentEntry {
+            cmx,
+            rho,
+            cv_net,
+            payload,
+        })
     })
     .take(n as usize);
 

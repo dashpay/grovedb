@@ -66,7 +66,7 @@ pub fn compute_commitment_tree_state_root(
 #[cfg(feature = "server")]
 pub use commitment_tree::{
     ciphertext_payload_size, deserialize_ciphertext, serialize_ciphertext, CommitmentAppendResult,
-    CommitmentTree, COMMITMENT_TREE_DATA_KEY,
+    CommitmentEntry, CommitmentTree, COMMITMENT_TREE_DATA_KEY,
 };
 pub use error::CommitmentTreeError;
 #[cfg(feature = "server")]
