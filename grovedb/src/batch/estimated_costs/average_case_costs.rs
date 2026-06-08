@@ -222,8 +222,8 @@ impl GroveOp {
                 // Average frontier size with ~16 ommers:
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 16*32 = 554
                 const AVG_FRONTIER_SIZE: u32 = 554;
-                // Buffer entry: cmx (32 bytes) + payload
-                let buffer_entry_size = 32 + payload.len() as u32;
+                // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
+                let buffer_entry_size = 96 + payload.len() as u32;
                 // Average Sinsemilla hashes per append:
                 // 32 (root computation) + 1 (avg ommer updates) = 33
                 const AVG_SINSEMILLA_HASHES: u32 = 33;
@@ -1483,6 +1483,7 @@ mod tests {
         let op = GroveOp::CommitmentTreeInsert {
             cmx: [1u8; 32],
             rho: [2u8; 32],
+            cv_net: [3u8; 32],
             payload: vec![0u8; 100],
         };
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
@@ -1512,7 +1513,7 @@ mod tests {
             "expected hash_node_calls > 0, got {}",
             cost.hash_node_calls
         );
-        // Buffer entry size = 32 + payload.len() = 132
+        // Buffer entry size = 96 + payload.len() = 196
         // Frontier replaced bytes = 554
         assert!(
             cost.storage_cost.added_bytes > 0,

@@ -470,6 +470,14 @@ mod storage_tests {
         bytes
     }
 
+    /// Create a deterministic 32-byte cv_net (value commitment) from an index.
+    fn test_cv_net(index: u8) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[0] = index;
+        bytes[1] = 0xCC; // distinguishes cv_net from cmx/rho/ciphertext
+        bytes
+    }
+
     /// Default chunk_power for tests (height=1 → capacity=1, epoch_size=2).
     const TEST_CHUNK_POWER: u8 = 1;
 
@@ -502,9 +510,14 @@ mod storage_tests {
         let result = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx);
         let mut ct = result.value.expect("open should succeed");
         for i in 0..20u64 {
-            ct.append(test_leaf(i), test_rho(i as u8), &test_ciphertext(i as u8))
-                .value
-                .expect("append should succeed");
+            ct.append(
+                test_leaf(i),
+                test_rho(i as u8),
+                test_cv_net(i as u8),
+                &test_ciphertext(i as u8),
+            )
+            .value
+            .expect("append should succeed");
         }
         let expected_root = ct.root_hash();
         let expected_position = ct.position();
@@ -549,9 +562,14 @@ mod storage_tests {
         ct.save().value.expect("save empty should succeed");
 
         // Append and save again (overwrites)
-        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
-            .value
-            .expect("append should succeed");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+        )
+        .value
+        .expect("append should succeed");
         let expected_root = ct.root_hash();
         let total_count = ct.total_count();
         ct.save().value.expect("save non-empty should succeed");
@@ -647,9 +665,14 @@ mod storage_tests {
             .expect("open should succeed");
 
         for i in 0..500u64 {
-            ct.append(test_leaf(i), test_rho(i as u8), &test_ciphertext(i as u8))
-                .value
-                .expect("append should succeed");
+            ct.append(
+                test_leaf(i),
+                test_rho(i as u8),
+                test_cv_net(i as u8),
+                &test_ciphertext(i as u8),
+            )
+            .value
+            .expect("append should succeed");
         }
 
         let total_count = ct.total_count();
@@ -681,7 +704,12 @@ mod storage_tests {
             .expect("open should succeed");
 
         let r0 = ct
-            .append(test_leaf(0), test_rho(0), &test_ciphertext(0))
+            .append(
+                test_leaf(0),
+                test_rho(0),
+                test_cv_net(0),
+                &test_ciphertext(0),
+            )
             .value
             .expect("first append");
         assert_eq!(r0.global_position, 0, "first append should be position 0");
@@ -692,7 +720,12 @@ mod storage_tests {
         );
 
         let r1 = ct
-            .append(test_leaf(1), test_rho(1), &test_ciphertext(1))
+            .append(
+                test_leaf(1),
+                test_rho(1),
+                test_cv_net(1),
+                &test_ciphertext(1),
+            )
             .value
             .expect("second append");
         assert_eq!(r1.global_position, 1, "second append should be position 1");
@@ -721,7 +754,7 @@ mod storage_tests {
             .expect("open should succeed");
 
         // Too small
-        let result = ct.append_raw(test_leaf(0), test_rho(0), &[0u8; 10]);
+        let result = ct.append_raw(test_leaf(0), test_rho(0), test_cv_net(0), &[0u8; 10]);
         let err = result.value.expect_err("should reject wrong size");
         let msg = format!("{}", err);
         assert!(
@@ -731,7 +764,7 @@ mod storage_tests {
         );
 
         // Too large
-        let result = ct.append_raw(test_leaf(0), test_rho(0), &[0u8; 300]);
+        let result = ct.append_raw(test_leaf(0), test_rho(0), test_cv_net(0), &[0u8; 300]);
         assert!(
             result.value.is_err(),
             "should reject payload that is too large"
@@ -739,7 +772,12 @@ mod storage_tests {
 
         // Exact correct size should succeed
         let expected_size = ciphertext_payload_size::<DashMemo>();
-        let result = ct.append_raw(test_leaf(0), test_rho(0), &vec![0u8; expected_size]);
+        let result = ct.append_raw(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &vec![0u8; expected_size],
+        );
         assert!(result.value.is_ok(), "correct size should succeed");
     }
 
@@ -812,9 +850,14 @@ mod storage_tests {
             .expect("open should succeed");
 
         // Append one item (goes into buffer since epoch_size = 2 for chunk_power=1)
-        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
-            .value
-            .expect("append should succeed");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+        )
+        .value
+        .expect("append should succeed");
 
         let val = ct
             .get_buffer_value(0)
@@ -849,11 +892,21 @@ mod storage_tests {
             .expect("open should succeed");
 
         // chunk_power=1 → epoch_size=2. Append 2 items to trigger compaction.
-        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
-            .value
-            .expect("append 0");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+        )
+        .value
+        .expect("append 0");
         let r = ct
-            .append(test_leaf(1), test_rho(1), &test_ciphertext(1))
+            .append(
+                test_leaf(1),
+                test_rho(1),
+                test_cv_net(1),
+                &test_ciphertext(1),
+            )
             .value
             .expect("append 1");
         assert!(r.compacted, "second append should trigger compaction");
@@ -891,7 +944,12 @@ mod storage_tests {
             .expect("open should succeed");
 
         let r = ct
-            .append(test_leaf(0), test_rho(0), &test_ciphertext(0))
+            .append(
+                test_leaf(0),
+                test_rho(0),
+                test_cv_net(0),
+                &test_ciphertext(0),
+            )
             .value
             .expect("append 0");
 
@@ -917,22 +975,42 @@ mod storage_tests {
         assert_eq!(ct.chunk_count(), 0, "no chunks initially");
 
         // Fill one epoch
-        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
-            .value
-            .expect("append 0");
-        ct.append(test_leaf(1), test_rho(1), &test_ciphertext(1))
-            .value
-            .expect("append 1");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+        )
+        .value
+        .expect("append 0");
+        ct.append(
+            test_leaf(1),
+            test_rho(1),
+            test_cv_net(1),
+            &test_ciphertext(1),
+        )
+        .value
+        .expect("append 1");
 
         assert_eq!(ct.chunk_count(), 1, "one chunk after filling one epoch");
 
         // Fill another epoch
-        ct.append(test_leaf(2), test_rho(2), &test_ciphertext(2))
-            .value
-            .expect("append 2");
-        ct.append(test_leaf(3), test_rho(3), &test_ciphertext(3))
-            .value
-            .expect("append 3");
+        ct.append(
+            test_leaf(2),
+            test_rho(2),
+            test_cv_net(2),
+            &test_ciphertext(2),
+        )
+        .value
+        .expect("append 2");
+        ct.append(
+            test_leaf(3),
+            test_rho(3),
+            test_cv_net(3),
+            &test_ciphertext(3),
+        )
+        .value
+        .expect("append 3");
 
         assert_eq!(ct.chunk_count(), 2, "two chunks after filling two epochs");
     }
@@ -951,9 +1029,14 @@ mod storage_tests {
             "empty tree should have empty anchor"
         );
 
-        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
-            .value
-            .expect("append 0");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+        )
+        .value
+        .expect("append 0");
 
         let anchor = ct.anchor();
         assert_ne!(
@@ -980,9 +1063,14 @@ mod storage_tests {
         assert!(s.contains("frontier"), "should contain frontier field");
 
         // Debug after appending
-        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
-            .value
-            .expect("append should succeed");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+        )
+        .value
+        .expect("append should succeed");
         let s = format!("{:?}", ct);
         assert!(
             s.contains("CommitmentTree"),
@@ -1013,9 +1101,14 @@ mod storage_tests {
         let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
             .value
             .expect("open should succeed");
-        ct.append(test_leaf(0), test_rho(0), &test_ciphertext(0))
-            .value
-            .expect("append should succeed");
+        ct.append(
+            test_leaf(0),
+            test_rho(0),
+            test_cv_net(0),
+            &test_ciphertext(0),
+        )
+        .value
+        .expect("append should succeed");
         ct.save().value.expect("save should succeed");
 
         // 2. Re-open with total_count=0 but the frontier has tree_size=1
@@ -1041,7 +1134,7 @@ mod storage_tests {
 
         // All 0xFF is not a valid Pallas field element
         let payload = vec![0u8; ciphertext_payload_size::<DashMemo>()];
-        let result = ct.append_raw([0xFF; 32], test_rho(0), &payload);
+        let result = ct.append_raw([0xFF; 32], test_rho(0), test_cv_net(0), &payload);
         assert!(
             result.value.is_err(),
             "should reject invalid cmx field element"
@@ -1072,13 +1165,13 @@ mod storage_tests {
 
     /// Build a fresh tree, append all `entries` one-by-one via [`append_raw`].
     fn build_via_per_leaf_append(
-        entries: &[([u8; 32], [u8; 32], Vec<u8>)],
+        entries: &[([u8; 32], [u8; 32], [u8; 32], Vec<u8>)],
     ) -> CommitmentTree<MockDataStorageContext, DashMemo> {
         let mut ct =
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
                 .expect("new should succeed");
-        for (cmx, rho, payload) in entries {
-            ct.append_raw(*cmx, *rho, payload)
+        for (cmx, rho, cv_net, payload) in entries {
+            ct.append_raw(*cmx, *rho, *cv_net, payload)
                 .value
                 .expect("per-leaf append_raw should succeed");
         }
@@ -1087,7 +1180,7 @@ mod storage_tests {
 
     /// Build a fresh tree by passing all `entries` to [`append_many_raw`] in one call.
     fn build_via_append_many_raw(
-        entries: Vec<([u8; 32], [u8; 32], Vec<u8>)>,
+        entries: Vec<([u8; 32], [u8; 32], [u8; 32], Vec<u8>)>,
     ) -> CommitmentTree<MockDataStorageContext, DashMemo> {
         let mut ct =
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
@@ -1099,12 +1192,13 @@ mod storage_tests {
     }
 
     /// Build a deterministic test sequence of `n` entries.
-    fn make_entries(n: u64) -> Vec<([u8; 32], [u8; 32], Vec<u8>)> {
+    fn make_entries(n: u64) -> Vec<([u8; 32], [u8; 32], [u8; 32], Vec<u8>)> {
         (0..n)
             .map(|i| {
                 (
                     test_leaf(i),
                     test_rho((i % 256) as u8),
+                    test_cv_net((i % 256) as u8),
                     seed_payload((i % 256) as u8),
                 )
             })
@@ -1244,7 +1338,7 @@ mod storage_tests {
         // Independent auth-path recomputation over the same leaf set.
         let leaves: Vec<MerkleHashOrchard> = entries
             .iter()
-            .map(|(cmx, _, _)| {
+            .map(|(cmx, _, _, _)| {
                 Option::from(MerkleHashOrchard::from_bytes(cmx))
                     .expect("test_leaf produces valid Pallas elements")
             })
@@ -1319,8 +1413,8 @@ mod storage_tests {
         // accepted, then the batch errors with `InvalidFieldElement` — matching
         // the per-leaf `append_raw` semantics.
         let entries = vec![
-            (test_leaf(0), test_rho(0), seed_payload(0)),
-            ([0xFFu8; 32], test_rho(1), seed_payload(1)),
+            (test_leaf(0), test_rho(0), test_cv_net(0), seed_payload(0)),
+            ([0xFFu8; 32], test_rho(1), test_cv_net(1), seed_payload(1)),
         ];
         let err = ct
             .append_many_raw(entries)
@@ -1343,8 +1437,8 @@ mod storage_tests {
             CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
 
         let entries = vec![
-            (test_leaf(0), test_rho(0), seed_payload(0)),
-            (test_leaf(1), test_rho(1), vec![0u8; 1]), // wrong size
+            (test_leaf(0), test_rho(0), test_cv_net(0), seed_payload(0)),
+            (test_leaf(1), test_rho(1), test_cv_net(1), vec![0u8; 1]), // wrong size
         ];
         let err = ct
             .append_many_raw(entries)
@@ -1370,7 +1464,7 @@ mod storage_tests {
         fail_get.set(true);
         fail_put.set(true);
 
-        let entries = vec![(test_leaf(0), test_rho(0), seed_payload(0))];
+        let entries = vec![(test_leaf(0), test_rho(0), test_cv_net(0), seed_payload(0))];
         let err = ct
             .append_many_raw(entries)
             .value
@@ -1411,9 +1505,138 @@ mod storage_tests {
 
         // Append enough to trigger at least one compaction (TEST_CHUNK_POWER=1
         // → epoch_size=2), so the MMR overlay has staged nodes.
-        let notes = (0..4u8).map(|i| (test_leaf(i as u64), test_rho(i), seed_payload(i)));
+        let notes = (0..4u8).map(|i| {
+            (
+                test_leaf(i as u64),
+                test_rho(i),
+                test_cv_net(i),
+                seed_payload(i),
+            )
+        });
         ct.append_many_raw(notes).value.expect("warmup");
 
         ct.commit_mmr().expect("commit_mmr should flush cleanly");
+    }
+
+    // ── cv_net round-trip + anchor invariance ───────────────────────────
+
+    /// Round-trip: a note appended with a known `cv_net` must store it at the
+    /// fixed offset `[64..96]` — between `rho` and the ciphertext payload — and
+    /// the ciphertext must still deserialize from `[96..]`.
+    #[test]
+    fn append_preserves_cv_net_and_ciphertext_at_fixed_offsets() {
+        let ctx = MockDataStorageContext::new();
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, ctx).expect("new should succeed");
+
+        let cmx = test_leaf(7);
+        let rho = test_rho(7);
+        let cv_net = test_cv_net(7);
+        let ciphertext = test_ciphertext(7);
+        let payload = serialize_ciphertext(&ciphertext);
+
+        // A single append keeps the item in the dense buffer (epoch_size = 2 for
+        // TEST_CHUNK_POWER = 1), so we can read the raw item bytes straight back.
+        ct.append(cmx, rho, cv_net, &ciphertext)
+            .value
+            .expect("append should succeed");
+
+        let item = ct
+            .get_buffer_value(0)
+            .expect("get_buffer_value should not error")
+            .expect("item should exist at buffer position 0");
+
+        // Layout: cmx(32) || rho(32) || cv_net(32) || payload.
+        assert_eq!(
+            item.len(),
+            96 + payload.len(),
+            "standard item is 96-byte prefix + 216-byte DashMemo payload = 312 bytes"
+        );
+        assert_eq!(&item[0..32], &cmx, "cmx at [0..32]");
+        assert_eq!(&item[32..64], &rho, "rho at [32..64]");
+        assert_eq!(&item[64..96], &cv_net, "cv_net preserved at [64..96]");
+        assert_eq!(&item[96..], &payload[..], "ciphertext payload at [96..]");
+
+        // The ciphertext must still deserialize from the payload slice [96..]
+        // (NOT [64..], which would now collide with cv_net).
+        let decoded: TransmittedNoteCiphertext<DashMemo> =
+            deserialize_ciphertext(&item[96..]).expect("ciphertext should deserialize from [96..]");
+        assert_eq!(decoded.epk_bytes, ciphertext.epk_bytes);
+        assert_eq!(
+            decoded.enc_ciphertext.as_ref(),
+            ciphertext.enc_ciphertext.as_ref()
+        );
+        assert_eq!(decoded.out_ciphertext, ciphertext.out_ciphertext);
+    }
+
+    /// A fixed `cmx` vector used by the anchor-invariance test below. Keeping it
+    /// in one place makes the pinned constant's provenance explicit.
+    fn fixed_anchor_cmx_vector() -> [[u8; 32]; 6] {
+        [
+            test_leaf(0),
+            test_leaf(1),
+            test_leaf(2),
+            test_leaf(100),
+            test_leaf(255),
+            test_leaf(1_000_000),
+        ]
+    }
+
+    /// Anchor invariance — the load-bearing safety check for this change.
+    ///
+    /// Adding `cv_net` to the stored item must NOT change the Sinsemilla anchor:
+    /// the frontier only ever sees `cmx`, so for any fixed `cmx` sequence the
+    /// Orchard anchor (against which existing zk spend proofs verify
+    /// cmx-membership) must be byte-for-byte identical to what it was before
+    /// this change.
+    ///
+    /// Two independent assertions:
+    ///   1. The `CommitmentTree` root — built by appending full
+    ///      `cmx||rho||cv_net||payload` items — equals a pure
+    ///      `CommitmentFrontier` built from the SAME `cmx` values only. This
+    ///      proves `rho`/`cv_net`/`payload` never enter the frontier.
+    ///   2. The root equals a hard-coded constant pinned for the fixed `cmx`
+    ///      vector. The frontier code is untouched by this change, so this value
+    ///      is identical to the pre-`cv_net` anchor; if a future change ever
+    ///      perturbs the frontier, this catches it.
+    #[test]
+    fn append_does_not_change_sinsemilla_anchor() {
+        let fixed_cmx = fixed_anchor_cmx_vector();
+
+        // Build a CommitmentTree storing cmx||rho||cv_net||payload per item.
+        let mut ct =
+            CommitmentTree::<_, DashMemo>::new(TEST_CHUNK_POWER, MockDataStorageContext::new())
+                .expect("new should succeed");
+        for (i, cmx) in fixed_cmx.iter().enumerate() {
+            let idx = i as u8;
+            ct.append_raw(*cmx, test_rho(idx), test_cv_net(idx), &seed_payload(idx))
+                .value
+                .expect("append_raw should succeed");
+        }
+
+        // Build a pure frontier from the SAME cmx sequence (no rho/cv_net/payload).
+        let mut frontier = CommitmentFrontier::new();
+        for cmx in fixed_cmx.iter() {
+            frontier.append(*cmx).value.expect("frontier append");
+        }
+
+        assert_eq!(
+            ct.root_hash(),
+            frontier.root_hash(),
+            "rho/cv_net/payload must not affect the Sinsemilla anchor"
+        );
+
+        // Pinned anchor for the fixed cmx vector. Identical to the pre-cv_net
+        // anchor because the Sinsemilla frontier is unchanged by this feature.
+        const EXPECTED_ANCHOR: [u8; 32] = [
+            0xEA, 0x4D, 0x8D, 0xB0, 0xBB, 0x5B, 0x06, 0xDB, 0x39, 0xD1, 0x09, 0x69, 0x5D, 0x03,
+            0xDE, 0xB4, 0x31, 0xBE, 0x58, 0xD0, 0xB5, 0x7A, 0xB1, 0xA0, 0x29, 0x78, 0x97, 0x70,
+            0x78, 0x24, 0x90, 0x30,
+        ];
+        assert_eq!(
+            ct.root_hash(),
+            EXPECTED_ANCHOR,
+            "Sinsemilla anchor for the fixed cmx vector changed — frontier was perturbed"
+        );
     }
 }

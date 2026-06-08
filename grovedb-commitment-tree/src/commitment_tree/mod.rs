@@ -4,7 +4,8 @@
 //! Provides [`CommitmentTree`], which owns both the in-memory
 //! [`CommitmentFrontier`] and a [`BulkAppendTree`], combining the Sinsemilla
 //! frontier (for anchor computation) with the two-level append-only store (for
-//! `cmx||payload` persistence with epoch compaction) into a single struct.
+//! `cmx||rho||cv_net||payload` persistence with epoch compaction) into a single
+//! struct.
 //!
 //! All mutating operations return [`CostResult`] to propagate storage costs.
 
@@ -44,8 +45,9 @@ pub struct CommitmentAppendResult {
 
 // ── Ciphertext serialization helpers ─────────────────────────────────────
 
-/// Compute the expected ciphertext payload size (excluding the 32-byte cmx
-/// and 32-byte rho prefix) for a given `MemoSize`.
+/// Compute the expected ciphertext payload size (excluding the unencrypted
+/// protocol-level prefix `cmx (32) || rho (32) || cv_net (32)`) for a given
+/// `MemoSize`.
 ///
 /// Layout: `epk_bytes (32) || enc_ciphertext (variable) || out_ciphertext (80)`
 ///
@@ -96,8 +98,8 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 ///
 /// - [`open`](CommitmentTree::open) loads the frontier from storage (or starts
 ///   empty) and reconstructs the `BulkAppendTree` from persisted state
-/// - [`append`](CommitmentTree::append) appends `cmx||rho||ciphertext` to the
-///   bulk tree and `cmx` to the frontier
+/// - [`append`](CommitmentTree::append) appends `cmx||rho||cv_net||ciphertext`
+///   to the bulk tree and `cmx` to the frontier
 /// - [`save`](CommitmentTree::save) persists the frontier back to storage
 ///
 /// # Authentication model
@@ -107,8 +109,8 @@ pub fn deserialize_ciphertext<M: MemoSize>(data: &[u8]) -> Option<TransmittedNot
 /// payload** is not independently authenticated by the Sinsemilla root;
 /// instead, it is covered by the [`BulkAppendTree`]'s state root
 /// (`blake3(mmr_root || dense_tree_root)`), which includes the full
-/// `cmx||ciphertext` entries. Both roots flow up through GroveDB's Merk
-/// hierarchy, providing authentication for the entire data set.
+/// `cmx||rho||cv_net||ciphertext` entries. Both roots flow up through GroveDB's
+/// Merk hierarchy, providing authentication for the entire data set.
 ///
 /// # Atomicity
 ///
@@ -221,34 +223,48 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
     /// This is the primary typed API. It serializes the ciphertext internally
     /// and delegates to [`append_raw`](Self::append_raw).
     ///
+    /// `cv_net` is the note's value commitment, stored as an unencrypted
+    /// protocol-level field. It is required for outgoing-note (OVK) recovery —
+    /// it is an input to Orchard's `derive_ock(ovk, cv, cmx, epk)` key that
+    /// decrypts `out_ciphertext`, and it cannot be recomputed from the note.
+    ///
     /// Call [`save`](Self::save) afterwards to persist the updated frontier.
     pub fn append(
         &mut self,
         cmx: [u8; 32],
         rho: [u8; 32],
+        cv_net: [u8; 32],
         ciphertext: &TransmittedNoteCiphertext<M>,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let payload = serialize_ciphertext(ciphertext);
-        self.append_raw(cmx, rho, &payload)
+        self.append_raw(cmx, rho, cv_net, &payload)
     }
 
     /// Append a note commitment and raw payload bytes to the commitment tree.
     ///
     /// Validates that `payload.len() == ciphertext_payload_size::<M>()`.
+    /// `cv_net` is a separate fixed 32-byte field, inherently validated by its
+    /// `[u8; 32]` type.
     ///
-    /// 1. Appends `cmx || rho || payload` to the `BulkAppendTree` (data
-    ///    storage)
+    /// 1. Appends `cmx || rho || cv_net || payload` to the `BulkAppendTree`
+    ///    (data storage)
     /// 2. Appends `cmx` to the Sinsemilla frontier (in-memory)
     ///
-    /// The `rho` (nullifier) is stored as an unencrypted protocol-level field
-    /// between `cmx` and the ciphertext payload. This allows light clients to
-    /// recover the nullifier association without additional lookups.
+    /// The `rho` (nullifier) and `cv_net` (value commitment) are stored as
+    /// unencrypted protocol-level fields between `cmx` and the ciphertext
+    /// payload. `rho` lets light clients recover the nullifier association
+    /// without additional lookups; `cv_net` is required for outgoing-note (OVK)
+    /// recovery — it is an input to Orchard's `derive_ock(ovk, cv, cmx, epk)`
+    /// key that decrypts `out_ciphertext`, and it cannot be recomputed from the
+    /// note. Neither field enters the Sinsemilla frontier, so the Orchard anchor
+    /// is unaffected.
     ///
     /// Call [`save`](Self::save) afterwards to persist the updated frontier.
     pub fn append_raw(
         &mut self,
         cmx: [u8; 32],
         rho: [u8; 32],
+        cv_net: [u8; 32],
         payload: &[u8],
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError> {
         let mut cost = OperationCost::default();
@@ -270,10 +286,11 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
             .wrap_with_cost(cost);
         }
 
-        // 1. Build cmx||rho||payload and append to BulkAppendTree
-        let mut item_value = Vec::with_capacity(64 + payload.len());
+        // 1. Build cmx||rho||cv_net||payload and append to BulkAppendTree
+        let mut item_value = Vec::with_capacity(96 + payload.len());
         item_value.extend_from_slice(&cmx);
         item_value.extend_from_slice(&rho);
+        item_value.extend_from_slice(&cv_net);
         item_value.extend_from_slice(payload);
 
         let bulk_result = match self.bulk_tree.append(&item_value) {
@@ -323,7 +340,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         .wrap_with_cost(cost)
     }
 
-    /// Batch-append a sequence of `(cmx, rho, payload)` entries.
+    /// Batch-append a sequence of `(cmx, rho, cv_net, payload)` entries.
     ///
     /// Byte-for-byte equivalent to calling [`append_raw`](Self::append_raw)
     /// once per entry — same dense-buffer state, same chunk MMR, same
@@ -382,7 +399,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         entries: I,
     ) -> CostResult<CommitmentAppendResult, CommitmentTreeError>
     where
-        I: IntoIterator<Item = ([u8; 32], [u8; 32], Vec<u8>)>,
+        I: IntoIterator<Item = ([u8; 32], [u8; 32], [u8; 32], Vec<u8>)>,
     {
         let mut cost = OperationCost::default();
         let expected_payload = ciphertext_payload_size::<M>();
@@ -396,7 +413,7 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
         let starting_total = self.bulk_tree.total_count;
         let mut last_global_position: u64 = starting_total.saturating_sub(1);
 
-        for (cmx, rho, payload) in entries {
+        for (cmx, rho, cv_net, payload) in entries {
             // Pre-validate cmx (Pallas field element) and payload size *before*
             // any mutation for this entry — mirrors append_raw's ordering so a
             // bad entry doesn't leave a half-written row behind.
@@ -411,11 +428,12 @@ impl<'db, S: StorageContext<'db>, M: MemoSize> CommitmentTree<S, M> {
                 .wrap_with_cost(cost);
             }
 
-            // 1. Build cmx||rho||payload and append to BulkAppendTree, deferring
-            //    the per-leaf state_root blake3.
-            let mut item_value = Vec::with_capacity(64 + payload.len());
+            // 1. Build cmx||rho||cv_net||payload and append to BulkAppendTree,
+            //    deferring the per-leaf state_root blake3.
+            let mut item_value = Vec::with_capacity(96 + payload.len());
             item_value.extend_from_slice(&cmx);
             item_value.extend_from_slice(&rho);
+            item_value.extend_from_slice(&cv_net);
             item_value.extend_from_slice(&payload);
 
             let r = match self.bulk_tree.append_no_state_root(&item_value) {

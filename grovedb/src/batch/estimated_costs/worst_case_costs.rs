@@ -205,8 +205,8 @@ impl GroveOp {
                 // Worst-case frontier size with 32 ommers (max depth):
                 // 1 (flag) + 8 (position) + 32 (leaf) + 1 (count) + 32*32 = 1066
                 const MAX_FRONTIER_SIZE: u32 = 1066;
-                // Buffer entry: cmx (32 bytes) + payload
-                let buffer_entry_size = 32 + payload.len() as u32;
+                // Buffer entry: cmx (32) + rho (32) + cv_net (32) + payload
+                let buffer_entry_size = 96 + payload.len() as u32;
                 // Worst-case Sinsemilla hashes per append:
                 // 32 (root computation) + 32 (all ommers cascade) = 64
                 const MAX_SINSEMILLA_HASHES: u32 = 64;
@@ -1106,6 +1106,7 @@ mod tests {
         let op = GroveOp::CommitmentTreeInsert {
             cmx: [1u8; 32],
             rho: [2u8; 32],
+            cv_net: [3u8; 32],
             payload: vec![0u8; 100],
         };
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
@@ -1129,6 +1130,7 @@ mod tests {
         let op = GroveOp::CommitmentTreeInsert {
             cmx: [1u8; 32],
             rho: [2u8; 32],
+            cv_net: [3u8; 32],
             payload: vec![0u8; 50],
         };
         let key = KeyInfo::KnownKey(b"tree_key".to_vec());
