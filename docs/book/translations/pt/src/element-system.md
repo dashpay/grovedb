@@ -286,7 +286,7 @@ graph TD
   armazenada no **namespace de dados**, com chave `COMMITMENT_TREE_DATA_KEY`
 - Os dados reais das notas (`cmx || rho || cv_net || ciphertext`) sao armazenados via uma **BulkAppendTree**
   no **namespace de dados** — compactados em chunks, recuperaveis por posicao
-- Ancoras historicas sao rastreadas pela Platform em uma arvore provavel separada
+- Âncoras históricas são rastreadas pela Platform em uma árvore provável separada
 - A raiz Sinsemilla NAO e armazenada no Element — flui como o hash filho da Merk
   atraves da hierarquia de hash do GroveDB
 
