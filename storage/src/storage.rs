@@ -431,6 +431,15 @@ impl StorageBatch {
     /// silently dropped — the put always wins within a single batch. This is
     /// intentional: during tree rebalancing, a node may be deleted from one
     /// position and re-inserted at another within the same commit.
+    ///
+    /// AUDIT NOTE (issue #698 — intentional, do not re-flag): a `StorageBatch`
+    /// is a keyed map of the *final* state for each key within one atomic
+    /// commit, NOT an ordered operation log. There is therefore no meaningful
+    /// "put then delete then commit" ordering to honor — Merk's rebalancing
+    /// legitimately emits a delete and a put for the same key in one commit, and
+    /// the surviving value (the put) is exactly the intended end state. Making
+    /// a later delete win would drop nodes that rebalancing just re-inserted and
+    /// corrupt the tree. Do not "fix" this to last-write-wins.
     pub(crate) fn delete(&self, key: Vec<u8>, cost_info: Option<KeyValueStorageCost>) {
         let operations = &mut self.operations.borrow_mut().data;
         if operations.get(&key).is_none() {
