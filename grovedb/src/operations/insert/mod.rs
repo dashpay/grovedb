@@ -442,6 +442,18 @@ mod tests {
         ins(b"psum", Element::empty_provable_sum_tree());
         ins(b"pcps", Element::empty_provable_count_provable_sum_tree());
 
+        // Indexed-tree arms (PCIT / PSIT / PCPSIT). Each dispatcher (v0.rs /
+        // v1.rs) has a dedicated branch that wires the layered subtree
+        // (primary inline + dedicated indexed-child storage). PCPSIT requires
+        // canonical axes — a single tag-0 entry with no item-key is valid.
+        ins(b"pcit", Element::empty_provable_count_indexed_tree());
+        ins(b"psit", Element::empty_provable_sum_indexed_tree());
+        ins(
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![(0, None)])
+                .expect("canonical axes"),
+        );
+
         // Append-tree arm.
         ins(b"mmr", Element::empty_mmr_tree());
         ins(
