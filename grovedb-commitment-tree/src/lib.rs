@@ -138,10 +138,19 @@ pub use orchard::{
     primitives::redpallas,
     tree::{Anchor, MerkleHashOrchard, MerklePath},
     value::{NoteValue, ValueCommitTrapdoor, ValueCommitment},
+    // `try_output_recovery_with_ovk` (+ the `OutgoingCipherKey` it derives) lets the
+    // sender recover an outgoing note from an Orchard action using the outgoing viewing
+    // key, without a direct dependency on the orchard fork.
     zcash_note_encryption::{
-        try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
+        try_compact_note_decryption, try_note_decryption, try_output_recovery_with_ovk, Domain,
+        EphemeralKeyBytes, OutgoingCipherKey, ShieldedOutput,
     },
-    Action, ActionFromPartsError, Address as PaymentAddress, Bundle, Note, Proof,
+    Action,
+    ActionFromPartsError,
+    Address as PaymentAddress,
+    Bundle,
+    Note,
+    Proof,
     NOTE_COMMITMENT_TREE_DEPTH,
 };
 #[cfg(feature = "sqlite")]
