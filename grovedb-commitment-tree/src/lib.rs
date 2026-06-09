@@ -127,14 +127,17 @@ pub use orchard::note::TransmittedNoteCiphertext;
 // Orchard tree types
 pub use orchard::note::{ExtractedNoteCommitment, Nullifier};
 // Note encryption / trial decryption
-pub use orchard::note_encryption::{CompactAction, OrchardDomain};
+// `OrchardNoteEncryption` lets downstream crates construct real encrypted
+// Orchard outputs (e.g. for OVK-recovery round-trip tests) without taking a
+// direct dependency on the orchard fork.
+pub use orchard::note_encryption::{CompactAction, OrchardDomain, OrchardNoteEncryption};
 // Byte wrapper and trait for constructing note ciphertexts
 pub use orchard::zcash_note_encryption::note_bytes::{NoteBytes, NoteBytesData};
 pub use orchard::{
     note::Rho,
     primitives::redpallas,
     tree::{Anchor, MerkleHashOrchard, MerklePath},
-    value::{NoteValue, ValueCommitment},
+    value::{NoteValue, ValueCommitTrapdoor, ValueCommitment},
     zcash_note_encryption::{
         try_compact_note_decryption, try_note_decryption, Domain, EphemeralKeyBytes, ShieldedOutput,
     },
