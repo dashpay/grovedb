@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-dense-fixed-sized-merkle-tree"
-version = "4.0.0"
+version = "5.0.0"
 authors = ["Samuel Westrich <sam@dash.org>"]
 edition = "2024"
 license = "MIT"
@@ -16,6 +16,6 @@ storage = ["grovedb-storage"]
 blake3 = { workspace = true }
 bincode = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-grovedb-costs = { version = "4.0.0", path = "../costs" }
-grovedb-query = { version = "4.0.0", path = "../grovedb-query" }
-grovedb-storage = { version = "4.0.0", path = "../storage", optional = true }
+grovedb-costs = { version = "5.0.0", path = "../costs" }
+grovedb-query = { version = "5.0.0", path = "../grovedb-query" }
+grovedb-storage = { version = "5.0.0", path = "../storage", optional = true }
