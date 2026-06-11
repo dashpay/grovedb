@@ -2,13 +2,13 @@
 name = "grovedb-epoch-based-storage-flags"
 authors = ["Samuel Westrich <sam@dash.org>"]
 description = "Epoch based storage flags for GroveDB"
-version = "4.0.0"
+version = "5.0.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/dashpay/grovedb"
 
 [dependencies]
-grovedb-costs = { version = "4.0.0", path = "../costs" }
+grovedb-costs = { version = "5.0.0", path = "../costs" }
 
 hex = { workspace = true }
 integer-encoding = { workspace = true }
