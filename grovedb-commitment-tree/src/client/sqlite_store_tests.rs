@@ -15,7 +15,7 @@ mod tests {
 
     use crate::client::sqlite_store::{
         tree_serialization::{deserialize_tree, serialize_tree},
-        SqliteShardStore, SHARD_HEIGHT,
+        SqliteShardStore, SqliteShardStoreError, SHARD_HEIGHT,
     };
 
     fn test_store() -> SqliteShardStore {
@@ -52,6 +52,16 @@ mod tests {
     fn test_hash(i: u8) -> MerkleHashOrchard {
         let empty = MerkleHashOrchard::empty_leaf();
         MerkleHashOrchard::combine(Level::from(i % 31 + 1), &empty, &empty)
+    }
+
+    /// Assert that an error from a checked u64 -> i64 conversion mentions the
+    /// given value name and the standard "exceeds sqlite i64 range" fragment.
+    fn assert_overflow_error(err: &SqliteShardStoreError, value_name: &str) {
+        let msg = err.to_string();
+        assert!(
+            msg.contains(value_name) && msg.contains("exceeds sqlite i64 range"),
+            "expected overflow error mentioning {value_name:?}, got: {msg}"
+        );
     }
 
     // -- Schema tests --
@@ -650,11 +660,7 @@ mod tests {
         let err = store
             .truncate_shards(u64::MAX)
             .expect_err("u64::MAX shard index should overflow i64");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("shard_index") && msg.contains("exceeds sqlite i64 range"),
-            "unexpected store error: {msg}"
-        );
+        assert_overflow_error(&err, "shard_index");
     }
 
     #[test]
@@ -667,11 +673,7 @@ mod tests {
         let err = store
             .put_shard(located)
             .expect_err("u64 shard index above i64::MAX should overflow");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("shard_index") && msg.contains("exceeds sqlite i64 range"),
-            "unexpected store error: {msg}"
-        );
+        assert_overflow_error(&err, "shard_index");
     }
 
     #[test]
@@ -682,11 +684,7 @@ mod tests {
         let err = store
             .get_shard(addr)
             .expect_err("u64 shard index above i64::MAX should overflow");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("shard_index") && msg.contains("exceeds sqlite i64 range"),
-            "unexpected store error: {msg}"
-        );
+        assert_overflow_error(&err, "shard_index");
     }
 
     #[test]
@@ -697,11 +695,7 @@ mod tests {
         let err = store
             .add_checkpoint(1, cp)
             .expect_err("position above i64::MAX should overflow");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("position") && msg.contains("exceeds sqlite i64 range"),
-            "unexpected store error: {msg}"
-        );
+        assert_overflow_error(&err, "position");
 
         // The failed binding must not have persisted the row.
         assert_eq!(store.checkpoint_count().expect("count"), 0);
@@ -716,11 +710,7 @@ mod tests {
         let err = store
             .add_checkpoint(1, cp)
             .expect_err("mark position above i64::MAX should overflow");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("mark position") && msg.contains("exceeds sqlite i64 range"),
-            "unexpected store error: {msg}"
-        );
+        assert_overflow_error(&err, "mark position");
 
         // The failure must happen before any rows are written.
         assert_eq!(store.checkpoint_count().expect("count"), 0);
@@ -740,11 +730,7 @@ mod tests {
                 Ok(())
             })
             .expect_err("position above i64::MAX should overflow");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("position") && msg.contains("exceeds sqlite i64 range"),
-            "unexpected store error: {msg}"
-        );
+        assert_overflow_error(&err, "position");
 
         // The original checkpoint must be unchanged because the failure happens
         // before the rewrite transaction starts.

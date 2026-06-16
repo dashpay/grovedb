@@ -220,10 +220,11 @@ pub(crate) fn sql_add_checkpoint(
         TreeState::Empty => None,
         TreeState::AtPosition(pos) => Some(u64_to_i64("position", u64::from(pos))?),
     };
-    let mut mark_positions = Vec::with_capacity(checkpoint.marks_removed().len());
-    for mark_pos in checkpoint.marks_removed() {
-        mark_positions.push(u64_to_i64("mark position", u64::from(*mark_pos))?);
-    }
+    let mark_positions: Vec<i64> = checkpoint
+        .marks_removed()
+        .iter()
+        .map(|mark_pos| u64_to_i64("mark position", u64::from(*mark_pos)))
+        .collect::<Result<_, _>>()?;
 
     let tx = conn.unchecked_transaction()?;
     tx.execute(
@@ -340,10 +341,11 @@ where
                 TreeState::Empty => None,
                 TreeState::AtPosition(pos) => Some(u64_to_i64("position", u64::from(pos))?),
             };
-            let mut mark_positions = Vec::with_capacity(cp.marks_removed().len());
-            for mark_pos in cp.marks_removed() {
-                mark_positions.push(u64_to_i64("mark position", u64::from(*mark_pos))?);
-            }
+            let mark_positions: Vec<i64> = cp
+                .marks_removed()
+                .iter()
+                .map(|mark_pos| u64_to_i64("mark position", u64::from(*mark_pos)))
+                .collect::<Result<_, _>>()?;
 
             let tx = conn.unchecked_transaction()?;
             tx.execute(
