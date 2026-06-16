@@ -26,6 +26,14 @@ fn non_negative_i64_to_u64(value_name: &str, value: i64) -> Result<u64, SqliteSh
     })
 }
 
+fn u64_to_i64(value_name: &str, value: u64) -> Result<i64, SqliteShardStoreError> {
+    i64::try_from(value).map_err(|_| {
+        SqliteShardStoreError::Serialization(format!(
+            "{value_name} value {value} exceeds sqlite i64 range"
+        ))
+    })
+}
+
 pub(crate) fn create_tables(conn: &Connection) -> Result<(), SqliteShardStoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS commitment_tree_shards (
@@ -54,7 +62,7 @@ pub(crate) fn sql_get_shard(
     conn: &Connection,
     shard_root: Address,
 ) -> Result<Option<LocatedPrunableTree<MerkleHashOrchard>>, SqliteShardStoreError> {
-    let index = shard_root.index() as i64;
+    let index = u64_to_i64("shard_index", shard_root.index())?;
     let row: Option<Vec<u8>> = conn
         .query_row(
             "SELECT shard_data FROM commitment_tree_shards WHERE shard_index = ?1",
@@ -111,7 +119,7 @@ pub(crate) fn sql_put_shard(
     conn: &Connection,
     subtree: &LocatedPrunableTree<MerkleHashOrchard>,
 ) -> Result<(), SqliteShardStoreError> {
-    let index = subtree.root_addr().index() as i64;
+    let index = u64_to_i64("shard_index", subtree.root_addr().index())?;
     let data = serialize_tree(subtree.root());
     conn.execute(
         "INSERT OR REPLACE INTO commitment_tree_shards (shard_index, shard_data) VALUES (?1, ?2)",
@@ -141,9 +149,10 @@ pub(crate) fn sql_truncate_shards(
     conn: &Connection,
     shard_index: u64,
 ) -> Result<(), SqliteShardStoreError> {
+    let shard_index = u64_to_i64("shard_index", shard_index)?;
     conn.execute(
         "DELETE FROM commitment_tree_shards WHERE shard_index >= ?1",
-        params![shard_index as i64],
+        params![shard_index],
     )?;
     Ok(())
 }
@@ -207,21 +216,26 @@ pub(crate) fn sql_add_checkpoint(
     checkpoint_id: u32,
     checkpoint: &Checkpoint,
 ) -> Result<(), SqliteShardStoreError> {
-    let tx = conn.unchecked_transaction()?;
     let position: Option<i64> = match checkpoint.tree_state() {
         TreeState::Empty => None,
-        TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
+        TreeState::AtPosition(pos) => Some(u64_to_i64("position", u64::from(pos))?),
     };
+    let mut mark_positions = Vec::with_capacity(checkpoint.marks_removed().len());
+    for mark_pos in checkpoint.marks_removed() {
+        mark_positions.push(u64_to_i64("mark position", u64::from(*mark_pos))?);
+    }
+
+    let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO commitment_tree_checkpoints (checkpoint_id, position) VALUES (?1, ?2)",
         params![checkpoint_id, position],
     )?;
 
-    for mark_pos in checkpoint.marks_removed() {
+    for mark_pos in mark_positions {
         tx.execute(
             "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position) \
              VALUES (?1, ?2)",
-            params![checkpoint_id, u64::from(*mark_pos) as i64],
+            params![checkpoint_id, mark_pos],
         )?;
     }
     tx.commit()?;
@@ -322,24 +336,29 @@ where
         None => Ok(false),
         Some(mut cp) => {
             update(&mut cp)?;
+            let position: Option<i64> = match cp.tree_state() {
+                TreeState::Empty => None,
+                TreeState::AtPosition(pos) => Some(u64_to_i64("position", u64::from(pos))?),
+            };
+            let mut mark_positions = Vec::with_capacity(cp.marks_removed().len());
+            for mark_pos in cp.marks_removed() {
+                mark_positions.push(u64_to_i64("mark position", u64::from(*mark_pos))?);
+            }
+
             let tx = conn.unchecked_transaction()?;
             tx.execute(
                 "DELETE FROM commitment_tree_checkpoint_marks_removed WHERE checkpoint_id = ?1",
                 params![checkpoint_id],
             )?;
-            let position: Option<i64> = match cp.tree_state() {
-                TreeState::Empty => None,
-                TreeState::AtPosition(pos) => Some(u64::from(pos) as i64),
-            };
             tx.execute(
                 "UPDATE commitment_tree_checkpoints SET position = ?1 WHERE checkpoint_id = ?2",
                 params![position, checkpoint_id],
             )?;
-            for mark_pos in cp.marks_removed() {
+            for mark_pos in mark_positions {
                 tx.execute(
                     "INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, \
                      position) VALUES (?1, ?2)",
-                    params![checkpoint_id, u64::from(*mark_pos) as i64],
+                    params![checkpoint_id, mark_pos],
                 )?;
             }
             tx.commit()?;

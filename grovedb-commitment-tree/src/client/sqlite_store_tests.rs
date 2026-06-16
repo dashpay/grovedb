@@ -645,6 +645,117 @@ mod tests {
     }
 
     #[test]
+    fn test_truncate_shards_rejects_u64_overflow() {
+        let mut store = test_store();
+        let err = store
+            .truncate_shards(u64::MAX)
+            .expect_err("u64::MAX shard index should overflow i64");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("shard_index") && msg.contains("exceeds sqlite i64 range"),
+            "unexpected store error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_put_shard_rejects_u64_overflow_shard_index() {
+        let mut store = test_store();
+        let overflow_index = (i64::MAX as u64) + 1;
+        let addr = Address::from_parts(Level::from(SHARD_HEIGHT), overflow_index);
+        let tree = Tree::leaf((test_hash(1), RetentionFlags::MARKED));
+        let located = LocatedTree::from_parts(addr, tree).expect("create located");
+        let err = store
+            .put_shard(located)
+            .expect_err("u64 shard index above i64::MAX should overflow");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("shard_index") && msg.contains("exceeds sqlite i64 range"),
+            "unexpected store error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_get_shard_rejects_u64_overflow_shard_index() {
+        let store = test_store();
+        let overflow_index = (i64::MAX as u64) + 1;
+        let addr = Address::from_parts(Level::from(SHARD_HEIGHT), overflow_index);
+        let err = store
+            .get_shard(addr)
+            .expect_err("u64 shard index above i64::MAX should overflow");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("shard_index") && msg.contains("exceeds sqlite i64 range"),
+            "unexpected store error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_add_checkpoint_rejects_position_overflow() {
+        let mut store = test_store();
+        let overflow_pos = (i64::MAX as u64) + 1;
+        let cp = Checkpoint::at_position(Position::from(overflow_pos));
+        let err = store
+            .add_checkpoint(1, cp)
+            .expect_err("position above i64::MAX should overflow");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("position") && msg.contains("exceeds sqlite i64 range"),
+            "unexpected store error: {msg}"
+        );
+
+        // The failed binding must not have persisted the row.
+        assert_eq!(store.checkpoint_count().expect("count"), 0);
+    }
+
+    #[test]
+    fn test_add_checkpoint_rejects_mark_position_overflow() {
+        let mut store = test_store();
+        let mut marks = BTreeSet::new();
+        marks.insert(Position::from((i64::MAX as u64) + 1));
+        let cp = Checkpoint::from_parts(TreeState::AtPosition(Position::from(0)), marks);
+        let err = store
+            .add_checkpoint(1, cp)
+            .expect_err("mark position above i64::MAX should overflow");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mark position") && msg.contains("exceeds sqlite i64 range"),
+            "unexpected store error: {msg}"
+        );
+
+        // The failure must happen before any rows are written.
+        assert_eq!(store.checkpoint_count().expect("count"), 0);
+    }
+
+    #[test]
+    fn test_update_checkpoint_with_rejects_position_overflow() {
+        let mut store = test_store();
+        store
+            .add_checkpoint(1, Checkpoint::at_position(Position::from(10)))
+            .expect("add");
+
+        let overflow_pos = (i64::MAX as u64) + 1;
+        let err = store
+            .update_checkpoint_with(&1, |cp| {
+                *cp = Checkpoint::at_position(Position::from(overflow_pos));
+                Ok(())
+            })
+            .expect_err("position above i64::MAX should overflow");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("position") && msg.contains("exceeds sqlite i64 range"),
+            "unexpected store error: {msg}"
+        );
+
+        // The original checkpoint must be unchanged because the failure happens
+        // before the rewrite transaction starts.
+        let loaded = store.get_checkpoint(&1).expect("get").expect("exists");
+        assert_eq!(
+            loaded.tree_state(),
+            TreeState::AtPosition(Position::from(10))
+        );
+    }
+
+    #[test]
     fn test_update_checkpoint_with_replacement() {
         let mut store = test_store();
         let cp = Checkpoint::at_position(Position::from(10));
