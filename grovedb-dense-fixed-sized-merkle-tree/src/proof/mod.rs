@@ -64,11 +64,12 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                 }
             }
             QueryItem::RangeInclusive(r) => {
+                // Validate bounds first so malformed inputs still error on empty trees.
+                let start = bytes_to_position(r.start())?;
+                let end = bytes_to_position(r.end())?;
                 if count == 0 {
                     continue;
                 }
-                let start = bytes_to_position(r.start())?;
-                let end = bytes_to_position(r.end())?;
                 let clamped_end = end.min(count.saturating_sub(1));
                 for p in start..=clamped_end {
                     positions.insert(p);
@@ -92,10 +93,10 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                 }
             }
             QueryItem::RangeToInclusive(r) => {
+                let end = bytes_to_position(&r.end)?;
                 if count == 0 {
                     continue;
                 }
-                let end = bytes_to_position(&r.end)?;
                 let clamped_end = end.min(count.saturating_sub(1));
                 for p in 0..=clamped_end {
                     positions.insert(p);
@@ -115,11 +116,11 @@ pub(crate) fn query_to_positions(query: &Query, count: u16) -> Result<Vec<u16>, 
                 }
             }
             QueryItem::RangeAfterToInclusive(r) => {
+                let start = bytes_to_position(r.start())?;
+                let end = bytes_to_position(r.end())?;
                 if count == 0 {
                     continue;
                 }
-                let start = bytes_to_position(r.start())?;
-                let end = bytes_to_position(r.end())?;
                 let clamped_end = end.min(count.saturating_sub(1));
                 for p in start.saturating_add(1)..=clamped_end {
                     positions.insert(p);

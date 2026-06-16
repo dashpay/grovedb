@@ -721,6 +721,31 @@ mod proof_tests {
             .expect("should succeed");
             assert!(positions.is_empty());
         }
+
+        #[test]
+        fn empty_tree_malformed_bound_rejected() {
+            // Malformed inclusive bounds must still surface as InvalidData
+            // even when the tree is empty — the count==0 short-circuit must
+            // not skip bound validation.
+            use grovedb_query::QueryItem;
+            let mut q = Query::new();
+            q.items
+                .push(QueryItem::RangeInclusive(vec![0, 0, 0]..=vec![0]));
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive bound must error on empty tree");
+            assert!(
+                matches!(err, crate::DenseMerkleError::InvalidData(_)),
+                "expected InvalidData, got {:?}",
+                err
+            );
+
+            let mut q = Query::new();
+            q.items
+                .push(QueryItem::RangeInclusive(vec![0]..=vec![0, 0, 0]));
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive end must error on empty tree");
+            assert!(matches!(err, crate::DenseMerkleError::InvalidData(_)));
+        }
     }
 
     // =======================================================================
@@ -1025,6 +1050,21 @@ mod proof_tests {
             .expect("should succeed");
             assert!(positions.is_empty());
         }
+
+        #[test]
+        fn empty_tree_malformed_bound_rejected() {
+            // Malformed inclusive end must still surface as InvalidData even
+            // when the tree is empty.
+            let mut q = Query::new();
+            q.insert_range_to_inclusive(..=vec![0, 0, 0]);
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive end must error on empty tree");
+            assert!(
+                matches!(err, crate::DenseMerkleError::InvalidData(_)),
+                "expected InvalidData, got {:?}",
+                err
+            );
+        }
     }
 
     mod range_after {
@@ -1280,6 +1320,27 @@ mod proof_tests {
             )
             .expect("should succeed");
             assert!(positions.is_empty());
+        }
+
+        #[test]
+        fn empty_tree_malformed_bound_rejected() {
+            // Malformed inclusive bounds must still surface as InvalidData
+            // even when the tree is empty.
+            let mut q = Query::new();
+            q.insert_range_after_to_inclusive(vec![0, 0, 0]..=vec![0xff, 0xff]);
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive start must error on empty tree");
+            assert!(
+                matches!(err, crate::DenseMerkleError::InvalidData(_)),
+                "expected InvalidData, got {:?}",
+                err
+            );
+
+            let mut q = Query::new();
+            q.insert_range_after_to_inclusive(vec![0xff, 0xff]..=vec![0, 0, 0]);
+            let err = query_to_positions(&q, 0)
+                .expect_err("malformed inclusive end must error on empty tree");
+            assert!(matches!(err, crate::DenseMerkleError::InvalidData(_)));
         }
     }
 
