@@ -742,6 +742,36 @@ mod tests {
     }
 
     #[test]
+    fn test_update_checkpoint_with_rejects_mark_position_overflow() {
+        let mut store = test_store();
+        let mut original_marks = BTreeSet::new();
+        original_marks.insert(Position::from(5));
+        let cp = Checkpoint::from_parts(TreeState::AtPosition(Position::from(10)), original_marks);
+        store.add_checkpoint(1, cp).expect("add");
+
+        let overflow_pos = (i64::MAX as u64) + 1;
+        let err = store
+            .update_checkpoint_with(&1, |cp| {
+                let mut marks = BTreeSet::new();
+                marks.insert(Position::from(overflow_pos));
+                *cp = Checkpoint::from_parts(TreeState::AtPosition(Position::from(20)), marks);
+                Ok(())
+            })
+            .expect_err("mark position above i64::MAX should overflow");
+        assert_overflow_error(&err, "mark position");
+
+        // The original checkpoint must be unchanged because the failure happens
+        // before the rewrite transaction starts.
+        let loaded = store.get_checkpoint(&1).expect("get").expect("exists");
+        assert_eq!(
+            loaded.tree_state(),
+            TreeState::AtPosition(Position::from(10))
+        );
+        assert_eq!(loaded.marks_removed().len(), 1);
+        assert!(loaded.marks_removed().contains(&Position::from(5)));
+    }
+
+    #[test]
     fn test_update_checkpoint_with_replacement() {
         let mut store = test_store();
         let cp = Checkpoint::at_position(Position::from(10));
