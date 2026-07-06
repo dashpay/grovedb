@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_witness_survives_checkpoint_pruning() {
-        // Regression test: sql_list_checkpoints used to iterate DESC, which
+        // Regression test: checkpoint listing used to iterate DESC, which
         // violates the ShardStore contract (ascending checkpoint ID order).
         // shardtree's prune_excess_checkpoints assumes oldest-first, so the
         // wrong order made it delete the newest checkpoints and clear the
