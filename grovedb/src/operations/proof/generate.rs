@@ -1957,6 +1957,195 @@ impl GroveDb {
                                 lower_layers.insert(key.clone(), layer_proof);
                             }
 
+                            // Subquery into ProvableSumIndexedTree: identical
+                            // shape to the PCIT descent above. Descend into the
+                            // primary Merk, then re-wrap the primary proof bytes
+                            // with the 32-byte Sum-axis secondary root hash. The
+                            // verifier consumes ProofBytes::CountIndexedTree
+                            // (secondary ‖ primary_proof) and chains via
+                            // combine_hash_three(H(value), primary_root,
+                            // secondary_root). Only NON-EMPTY primaries
+                            // (Some(_)) descend; an empty PSIT primary is handled
+                            // by the empty-tree arm below (decrement limit, no
+                            // recursion, matching the empty-cidx terminal path in
+                            // the verifier).
+                            Ok(ref sidx_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
+                                if !done_with_results
+                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let mut layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path.clone(),
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )
+                                );
+
+                                // Capture the PSIT's current Sum-axis secondary
+                                // root hash for the verifier's combine_hash_three
+                                // attestation.
+                                let secondary_root_key = match sidx_elem {
+                                    Element::ProvableSumIndexedTree(_, s, ..) => s.clone(),
+                                    _ => unreachable!(),
+                                };
+                                let lower_path_owned: Vec<Vec<u8>> =
+                                    lower_path.iter().map(|p| p.to_vec()).collect();
+                                let lower_path_refs: Vec<&[u8]> =
+                                    lower_path_owned.iter().map(|v| v.as_slice()).collect();
+                                let sidx_subtree_path: grovedb_path::SubtreePath<&[u8]> =
+                                    lower_path_refs.as_slice().into();
+                                let secondary_merk = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_indexed_secondary_at_path(
+                                        sidx_subtree_path,
+                                        grovedb_element::indexed::IndexAxis::Sum,
+                                        secondary_root_key,
+                                        &tx,
+                                        None,
+                                        grove_version,
+                                    )
+                                );
+                                let (sec_root, _, _) = cost_return_on_error!(
+                                    &mut cost,
+                                    secondary_merk
+                                        .root_hash_key_and_aggregate_data()
+                                        .map_err(Error::MerkError)
+                                );
+
+                                let primary_bytes = match layer_proof.merk_proof {
+                                    crate::operations::proof::ProofBytes::Merk(b) => b,
+                                    _ => {
+                                        return Err(Error::CorruptedCodeExecution(
+                                            "expected Merk proof bytes from prove_subqueries_v1 \
+                                             for psit primary",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                };
+                                let mut wrapped = Vec::with_capacity(32 + primary_bytes.len());
+                                wrapped.extend_from_slice(&sec_root);
+                                wrapped.extend_from_slice(&primary_bytes);
+                                layer_proof.merk_proof =
+                                    crate::operations::proof::ProofBytes::CountIndexedTree(wrapped);
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+
+                            // Subquery into ProvableCountProvableSumIndexedTree:
+                            // same envelope as PCIT/PSIT, but the 32-byte
+                            // attestation prefix is the axes_digest — the
+                            // canonical digest over the element's axes list, each
+                            // axis carrying its secondary Merk's current root hash
+                            // (NULL_HASH for an empty axis). The verifier chains
+                            // via combine_hash_three(H(value), primary_root,
+                            // axes_digest), mirroring the insert commit path.
+                            // Only NON-EMPTY primaries (Some(_)) descend.
+                            Ok(
+                                ref pcpsit_elem @ Element::ProvableCountProvableSumIndexedTree(
+                                    Some(_),
+                                    ..,
+                                ),
+                            ) if !done_with_results
+                                && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            {
+                                let mut lower_path = path.clone();
+                                lower_path.push(key.as_slice());
+
+                                let previous_limit = *overall_limit;
+
+                                let mut layer_proof = cost_return_on_error!(
+                                    &mut cost,
+                                    self.prove_subqueries_v1(
+                                        lower_path.clone(),
+                                        path_query,
+                                        overall_limit,
+                                        prove_options,
+                                        current_depth + 1,
+                                        grove_version,
+                                    )
+                                );
+
+                                // Recompute the axes_digest over each axis's live
+                                // secondary root hash (NULL_HASH when empty),
+                                // exactly as the insert commit path does.
+                                let axes = match pcpsit_elem {
+                                    Element::ProvableCountProvableSumIndexedTree(_, _, _, a, _) => {
+                                        a.clone()
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                let lower_path_owned: Vec<Vec<u8>> =
+                                    lower_path.iter().map(|p| p.to_vec()).collect();
+                                let lower_path_refs: Vec<&[u8]> =
+                                    lower_path_owned.iter().map(|v| v.as_slice()).collect();
+                                let mut axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                                    Vec::with_capacity(axes.len());
+                                for (tag, sec_root_key) in axes.iter() {
+                                    let axis = cost_return_on_error_no_add!(
+                                        cost,
+                                        grovedb_element::indexed::IndexAxis::try_from_tag(*tag)
+                                            .map_err(|e| Error::CorruptedData(format!(
+                                                "invalid axis tag in PCPSIT during proof: {e}"
+                                            )))
+                                    );
+                                    let pcpsit_subtree_path: grovedb_path::SubtreePath<&[u8]> =
+                                        lower_path_refs.as_slice().into();
+                                    let secondary_merk = cost_return_on_error!(
+                                        &mut cost,
+                                        self.open_indexed_secondary_at_path(
+                                            pcpsit_subtree_path,
+                                            axis,
+                                            sec_root_key.clone(),
+                                            &tx,
+                                            None,
+                                            grove_version,
+                                        )
+                                    );
+                                    let (s_hash, _, _) = cost_return_on_error!(
+                                        &mut cost,
+                                        secondary_merk
+                                            .root_hash_key_and_aggregate_data()
+                                            .map_err(Error::MerkError)
+                                    );
+                                    axis_hashes.push((*tag, s_hash));
+                                }
+                                let digest = grovedb_merk::tree::axes_digest(&axis_hashes)
+                                    .unwrap_add_cost(&mut cost);
+
+                                let primary_bytes = match layer_proof.merk_proof {
+                                    crate::operations::proof::ProofBytes::Merk(b) => b,
+                                    _ => {
+                                        return Err(Error::CorruptedCodeExecution(
+                                            "expected Merk proof bytes from prove_subqueries_v1 \
+                                             for pcpsit primary",
+                                        ))
+                                        .wrap_with_cost(cost);
+                                    }
+                                };
+                                let mut wrapped = Vec::with_capacity(32 + primary_bytes.len());
+                                wrapped.extend_from_slice(&digest);
+                                wrapped.extend_from_slice(&primary_bytes);
+                                layer_proof.merk_proof =
+                                    crate::operations::proof::ProofBytes::CountIndexedTree(wrapped);
+
+                                if previous_limit != *overall_limit {
+                                    has_a_result_at_level |= true;
+                                }
+                                lower_layers.insert(key.clone(), layer_proof);
+                            }
+
                             // Other tree types with subqueries → recurse into Merk
                             Ok(Element::Tree(Some(_), _))
                             | Ok(Element::SumTree(Some(_), ..))

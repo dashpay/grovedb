@@ -127,6 +127,22 @@ impl GroveDb {
             let (chunk_prefix, root_key, tree_type, nested_chunk_ids) =
                 utils::decode_global_chunk_id(global_chunk_id.as_slice(), &root_app_hash)?;
 
+            // State sync does not yet support indexed trees. Reject on the
+            // source side too (target-side discovery also rejects) so a
+            // peer requesting an indexed-tree chunk gets a descriptive
+            // error rather than a chunk that would fail root-hash
+            // verification on apply (indexed primaries commit a
+            // three-input combine_hash_three the restorer cannot match,
+            // and their axis secondary namespaces are never enumerated).
+            if tree_type.is_indexed_primary() {
+                return Err(Error::NotSupported(
+                    "state sync does not yet support indexed trees \
+                     (ProvableCountIndexedTree / ProvableSumIndexedTree / \
+                     ProvableCountProvableSumIndexedTree)"
+                        .to_string(),
+                ));
+            }
+
             let mut local_chunk_bytes: Vec<Vec<u8>> = vec![];
 
             let merk = self

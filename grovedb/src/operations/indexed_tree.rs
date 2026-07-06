@@ -540,105 +540,42 @@ impl GroveDb {
         //
         // Applies to BRAND-NEW keys, replacements of non-tree keys
         // (e.g., Item → Tree(Some)), and overwrites of trees alike.
-        match item.underlying() {
-            Element::ProvableCountIndexedTree(p, s, c, _)
-                if p.is_some() || s.is_some() || *c != 0 =>
-            {
-                return Err(Error::NotSupported(
-                    "insert_into_count_indexed_tree only accepts an EMPTY cidx \
-                     element (primary_root_key = None, secondary_root_key = None, \
-                     count_value = 0). Non-empty cidx claims must use generic \
-                     db.insert which validates root keys against on-disk state, \
-                     or insert via this API then populate with subsequent \
-                     insert_into_count_indexed_tree calls"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-            Element::Tree(Some(_), _)
-            | Element::SumTree(Some(_), ..)
-            | Element::BigSumTree(Some(_), ..)
-            | Element::CountTree(Some(_), ..)
-            | Element::CountSumTree(Some(_), ..)
-            | Element::ProvableCountTree(Some(_), ..)
-            | Element::ProvableCountSumTree(Some(_), ..) => {
-                return Err(Error::NotSupported(
-                    "insert_into_count_indexed_tree only accepts EMPTY tree elements \
-                     (root_key = None) for tree variants. The dedicated cidx insert \
-                     short-circuits to NULL_HASH child roots; a non-None root_key \
-                     would persist a mismatched chain. Use generic db.insert for \
-                     non-empty tree claims, or insert empty here then populate"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-            _ => {}
-        }
+        //
+        // Use the shared guard so this path rejects the same set of
+        // non-empty claims as the PSIT / PCPSIT insert paths. The prior
+        // inline guard omitted `ProvableSumTree(Some(_), ..)`,
+        // `ProvableCountProvableSumTree(Some(_), ..)`, and the indexed
+        // variants (PSIT/PCPSIT) — a `ProvableSumTree(Some(rk), sum, _)`
+        // slipped through and persisted a forged-aggregate claim bound to
+        // a NULL_HASH child. The helper covers every dedicated tree /
+        // indexed variant.
+        cost_return_on_error_no_add!(
+            cost,
+            reject_non_empty_dedicated_indexed_child_claim(&item, "insert_into_count_indexed_tree")
+        );
 
-        let existing_is_tree = existing_item
-            .as_ref()
-            .map(|e| e.is_any_tree())
-            .unwrap_or(false);
-        if existing_is_tree {
-            let existing_is_cidx = matches!(
-                existing_item.as_ref().map(|e| e.underlying()),
-                Some(Element::ProvableCountIndexedTree(..))
-            );
-
-            // The unconditional check above already guarantees the new
-            // element is either non-tree OR an empty tree/cidx. Both
-            // are safe to allow with cleanup (existing tree's child
-            // storage cleared; cidx secondary cleared when applicable).
-
-            // ALLOW + cleanup. Walk find_subtrees on the existing
-            // entry's path and clear each subtree's storage. For cidx
-            // existing, also clear the secondary namespace.
+        // Overwrite cleanup: if an existing entry at item_key is a tree,
+        // clear its orphaned child storage (and per-axis secondary
+        // namespaces for indexed children) before writing the
+        // replacement. Uses the shared helper (identical to the PSIT /
+        // PCPSIT insert paths), which no-ops for non-tree existing and
+        // clears the correct per-axis secondary for whichever indexed
+        // variant the existing element is (PCIT→Count, PSIT→Sum,
+        // PCPSIT→per-axis). The prior inline copy cleared only the Count
+        // secondary and so would have orphaned a nested PSIT / PCPSIT
+        // existing entry's secondary namespace.
+        if let Some(existing) = existing_item.as_ref() {
             let entry_path = path.derive_owned_with_child(item_key.to_vec());
-            let entry_path_ref = SubtreePath::from(&entry_path);
-            let subtrees_paths = cost_return_on_error!(
+            cost_return_on_error!(
                 &mut cost,
-                self.find_subtrees(&entry_path_ref, Some(transaction), grove_version)
+                self.cleanup_dedicated_indexed_child_storage(
+                    existing,
+                    SubtreePath::from(&entry_path),
+                    transaction,
+                    batch,
+                    grove_version,
+                )
             );
-            for subtree_path in subtrees_paths {
-                let p: SubtreePath<_> = subtree_path.as_slice().into();
-                let mut storage = self
-                    .db
-                    .get_transactional_storage_context(p, Some(batch), transaction)
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up old subtree storage in \
-                             insert_into_count_indexed_tree overwrite: {e}",
-                        ))
-                    })
-                );
-            }
-            if existing_is_cidx {
-                let primary_prefix =
-                    RocksDbStorage::build_prefix(entry_path_ref.clone()).unwrap_add_cost(&mut cost);
-                let secondary_prefix =
-                    RocksDbStorage::secondary_prefix_for(&primary_prefix, IndexAxis::Count.tag())
-                        .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
-                    .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(batch),
-                        transaction,
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    secondary_storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up nested cidx secondary in \
-                             insert_into_count_indexed_tree overwrite: {e}",
-                        ))
-                    })
-                );
-            }
         }
 
         // 4. Insert into primary. Dispatch on element kind so tree
@@ -2406,70 +2343,26 @@ impl GroveDb {
         // staged Element::delete. The cleanup calls below only use
         // `&self` (via find_subtrees and get_transactional_storage_*),
         // which coexist with the owned primary_merk.
+        //
+        // Uses the shared helper (identical to the PCPSIT delete path):
+        // it no-ops for non-tree existing, walks find_subtrees to clear
+        // primary child storage, and clears the correct per-axis
+        // secondary namespace for whichever indexed variant the deleted
+        // entry is (PCIT→Count, PSIT→Sum, PCPSIT→per-axis). The prior
+        // inline copy cleared only the Count secondary and so would have
+        // orphaned a nested PSIT / PCPSIT entry's secondary namespace.
         if is_layered_target {
             let entry_path = path.derive_owned_with_child(item_key.to_vec());
-            let entry_path_ref = SubtreePath::from(&entry_path);
-
-            // Detect whether the deleted entry was itself a cidx
-            // primary (nested cidx). Use the existing element snapshot.
-            let deleted_was_cidx_primary =
-                matches!(existing.underlying(), Element::ProvableCountIndexedTree(..));
-
-            // Recursively clear all primary subtree storage under
-            // `entry_path` via the same find_subtrees walk used by
-            // db.delete.
-            let subtrees_paths = cost_return_on_error!(
+            cost_return_on_error!(
                 &mut cost,
-                self.find_subtrees(&entry_path_ref, Some(transaction), grove_version)
+                self.cleanup_dedicated_indexed_child_storage(
+                    &existing,
+                    SubtreePath::from(&entry_path),
+                    transaction,
+                    batch,
+                    grove_version,
+                )
             );
-            for subtree_path in subtrees_paths {
-                let p: SubtreePath<_> = subtree_path.as_slice().into();
-                let mut storage = self
-                    .db
-                    .get_transactional_storage_context(p, Some(batch), transaction)
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to cleanup subtree storage during cidx delete: {e}",
-                        ))
-                    })
-                );
-            }
-
-            // Nested cidx: also clear the deleted entry's secondary
-            // storage namespace at Blake3(primary_prefix ‖ count_tag).
-            if deleted_was_cidx_primary {
-                let primary_prefix =
-                    grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(
-                        entry_path_ref.clone(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                let secondary_prefix =
-                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                        &primary_prefix,
-                        IndexAxis::Count.tag(),
-                    )
-                    .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
-                    .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(batch),
-                        transaction,
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    secondary_storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to cleanup nested cidx secondary during \
-                             delete_from_count_indexed_tree: {e}",
-                        ))
-                    })
-                );
-            }
         }
 
         // Open and update secondary.
@@ -3854,6 +3747,19 @@ fn mirror_pcpsit_axis_to_secondary<'db, S: StorageContext<'db>>(
     let mut cost = OperationCost::default();
     let secondary_tree_type = axis_secondary_tree_type(axis);
 
+    // The per-axis secondary payload for an entry with the given
+    // aggregate values. Kept in lockstep with the insert branch below:
+    // - Count → constant empty Item (contributes count = 1)
+    // - Sum   → SumItem(sum)
+    // - Avg   → ItemWithSumItem(empty, sum) (contributes (1, sum))
+    let axis_payload = |sum: i64| -> Element {
+        match axis {
+            IndexAxis::Count => Element::new_item(Vec::new()),
+            IndexAxis::Sum => Element::new_sum_item(sum),
+            IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
+        }
+    };
+
     // Compute old and new sort keys. Either may be None (no entry).
     let old_key = match (old_count, old_sum) {
         (Some(c), Some(s)) => Some(make_axis_secondary_key(axis, c, s, item_key)),
@@ -3864,11 +3770,29 @@ fn mirror_pcpsit_axis_to_secondary<'db, S: StorageContext<'db>>(
         _ => None,
     };
 
+    // Fast path: skip the delete+insert only when BOTH the sort key AND
+    // the stored payload are unchanged.
+    //
+    // Equal sort keys do NOT imply equal payloads on the Avg axis: the
+    // avg key is floor(sum * 10^15 / count) while the payload carries the
+    // raw `sum`, so e.g. (count, sum) = (1, 5) and (2, 10) share a key
+    // (avg 5.0) but differ in payload sum (5 vs 10). Returning early on
+    // key-equality alone would leave a stale hash-committed sum in the
+    // avg secondary. On the Count / Sum axes the payload is a pure
+    // function of what the key already encodes, so this reduces to the
+    // former key-only check and preserves the fast path for the common
+    // case.
     if old_key == new_key && new_key.is_some() {
-        // The sort key didn't move and there's still an entry there;
-        // the previous insert already wrote the correct value, so
-        // nothing more is needed.
-        return Ok(()).wrap_with_cost(cost);
+        let payload_unchanged = match (old_sum, new_sum) {
+            (Some(os), Some(ns)) => axis_payload(os) == axis_payload(ns),
+            _ => false,
+        };
+        if payload_unchanged {
+            // The sort key didn't move and the stored value is identical;
+            // the previous insert already wrote the correct value, so
+            // nothing more is needed.
+            return Ok(()).wrap_with_cost(cost);
+        }
     }
 
     if let Some(ok) = &old_key {
@@ -3886,17 +3810,14 @@ fn mirror_pcpsit_axis_to_secondary<'db, S: StorageContext<'db>>(
         );
     }
     if let (Some(nk), Some(new_sum_val)) = (&new_key, new_sum) {
-        let entry = match axis {
-            // Count axis: secondary uses a ProvableCountTree, every
-            // entry contributes count = 1; a plain Item is sufficient.
-            IndexAxis::Count => Element::new_item(Vec::new()),
-            // Sum axis: secondary uses a ProvableSumTree, each entry
-            // contributes its own sum value.
-            IndexAxis::Sum => Element::new_sum_item(new_sum_val),
-            // Avg axis: secondary uses a ProvableCountProvableSumTree;
-            // an ItemWithSumItem(empty, sum) contributes (1, sum).
-            IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), new_sum_val),
-        };
+        // Derived by the same `axis_payload` closure the fast-path
+        // equality check above uses, so the two stay in lockstep:
+        // - Count → empty Item (secondary is a ProvableCountTree; every
+        //   entry contributes count = 1)
+        // - Sum   → SumItem(sum) (secondary is a ProvableSumTree)
+        // - Avg   → ItemWithSumItem(empty, sum) (secondary is a
+        //   ProvableCountProvableSumTree; contributes (1, sum))
+        let entry = axis_payload(new_sum_val);
         cost_return_on_error!(
             &mut cost,
             entry
@@ -4151,4 +4072,228 @@ fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error
         axis_sort_prefix_len(axis),
         secondary_key
     ))
+}
+
+#[cfg(test)]
+mod bug2_avg_axis_mirror_tests {
+    //! BUG 2 regression: `mirror_pcpsit_axis_to_secondary` must not
+    //! early-return on the Avg axis when the sort key is unchanged but
+    //! the stored payload sum differs.
+    //!
+    //! The avg sort key is `floor(sum * 10^15 / count)`, while the stored
+    //! payload is `ItemWithSumItem(_, sum)`. Two `(count, sum)` pairs can
+    //! share a key yet differ in payload sum — e.g. `(1, 5)` and `(2, 10)`
+    //! both encode avg `5.0` but carry payload sums `5` and `10`. The old
+    //! key-only early-return left the stale hash-committed sum `5` in the
+    //! avg secondary.
+    //!
+    //! This path is currently unreachable through the public dedicated
+    //! APIs (each child contributes count 0 or 1, so the mirror never sees
+    //! a `(1, 5) -> (2, 10)` transition for one item key), so we drive the
+    //! module-private mirror function directly against a real Avg
+    //! secondary Merk.
+
+    use grovedb_element::indexed::{compute_avg_fixed_point, IndexAxis};
+    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+    use grovedb_path::SubtreePath;
+    use grovedb_storage::StorageBatch;
+    use grovedb_version::version::GroveVersion;
+
+    use super::{make_axis_secondary_key, mirror_pcpsit_axis_to_secondary};
+    use crate::{
+        tests::{make_test_grovedb, TEST_LEAF},
+        Element,
+    };
+
+    /// Sanity: `(1, 5)` and `(2, 10)` share an avg sort key but produce
+    /// different payload sums — the precondition that made the old
+    /// key-only early-return unsound.
+    #[test]
+    fn avg_key_collision_with_distinct_payload_sums() {
+        let item_key = b"row";
+        let k_1_5 = make_axis_secondary_key(IndexAxis::Avg, 1, 5, item_key);
+        let k_2_10 = make_axis_secondary_key(IndexAxis::Avg, 2, 10, item_key);
+        assert_eq!(
+            k_1_5, k_2_10,
+            "(1,5) and (2,10) must map to the same avg sort key"
+        );
+        assert_eq!(
+            compute_avg_fixed_point(5, 1),
+            compute_avg_fixed_point(10, 2),
+            "avg fixed points must match"
+        );
+        // Payloads differ (the hash-committed sum the mirror stores).
+        assert_ne!(
+            Element::new_item_with_sum_item(Vec::new(), 5),
+            Element::new_item_with_sum_item(Vec::new(), 10),
+            "payload sums 5 and 10 must differ"
+        );
+    }
+
+    /// Drive the mirror directly: first write `(1, 5)`, then transition to
+    /// `(2, 10)` (same avg key). The stored avg-secondary payload sum must
+    /// update to `10`; the old key-only early-return would have left the
+    /// stale `5`.
+    #[test]
+    fn avg_axis_mirror_updates_stale_payload_when_key_unchanged() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        // Establish a PCPSIT with an Avg axis so the secondary namespace
+        // is valid.
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(IndexAxis::Avg.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("canonical axes"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("empty PCPSIT insert");
+
+        let tx = db.start_transaction();
+        let item_key = b"row";
+        let shared_key = make_axis_secondary_key(IndexAxis::Avg, 1, 5, item_key);
+        assert_eq!(
+            shared_key,
+            make_axis_secondary_key(IndexAxis::Avg, 2, 10, item_key),
+            "test setup: keys must collide"
+        );
+
+        // Open the Avg secondary (empty) and drive the mirror twice
+        // against the same in-memory Merk. A StorageBatch is required so
+        // the merk's Element::insert can stage its commit_batch.
+        let batch = StorageBatch::new();
+        let path_segments: [&[u8]; 2] = [TEST_LEAF, b"pcpsit".as_ref()];
+        let path: SubtreePath<_> = (&path_segments).into();
+        let mut secondary = db
+            .open_indexed_secondary_at_path(
+                path,
+                IndexAxis::Avg,
+                None,
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open empty avg secondary");
+
+        // 1) Insert (count=1, sum=5).
+        mirror_pcpsit_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Avg,
+            item_key,
+            None,
+            None,
+            Some(1),
+            Some(5),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert (1,5)");
+
+        let after_first = Element::get(&secondary, shared_key.as_slice(), true, grove_version)
+            .unwrap()
+            .expect("entry present after first mirror");
+        assert_eq!(
+            after_first.sum_value_or_default(),
+            5,
+            "payload sum after (1,5) must be 5"
+        );
+
+        // 2) Transition to (count=2, sum=10). Same avg key, new sum.
+        mirror_pcpsit_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Avg,
+            item_key,
+            Some(1),
+            Some(5),
+            Some(2),
+            Some(10),
+            grove_version,
+        )
+        .unwrap()
+        .expect("transition (1,5)->(2,10)");
+
+        let after_second = Element::get(&secondary, shared_key.as_slice(), true, grove_version)
+            .unwrap()
+            .expect("entry present after second mirror");
+        assert_eq!(
+            after_second.sum_value_or_default(),
+            10,
+            "payload sum must update to 10 even though the avg sort key did not \
+             move (BUG 2 regression: old key-only early-return left stale 5)"
+        );
+    }
+
+    /// The fast path must still short-circuit when BOTH the key and the
+    /// payload are unchanged (a genuine no-op transition). We verify the
+    /// stored payload is untouched for an identical (count, sum) rewrite.
+    #[test]
+    fn avg_axis_mirror_noop_when_key_and_payload_unchanged() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(IndexAxis::Avg.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("canonical axes"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("empty PCPSIT insert");
+
+        let tx = db.start_transaction();
+        let item_key = b"row";
+        let batch = StorageBatch::new();
+        let path_segments: [&[u8]; 2] = [TEST_LEAF, b"pcpsit".as_ref()];
+        let path: SubtreePath<_> = (&path_segments).into();
+        let mut secondary = db
+            .open_indexed_secondary_at_path(
+                path,
+                IndexAxis::Avg,
+                None,
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open empty avg secondary");
+
+        mirror_pcpsit_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Avg,
+            item_key,
+            None,
+            None,
+            Some(2),
+            Some(10),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert (2,10)");
+
+        // Identical (count, sum) rewrite: key AND payload unchanged.
+        mirror_pcpsit_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Avg,
+            item_key,
+            Some(2),
+            Some(10),
+            Some(2),
+            Some(10),
+            grove_version,
+        )
+        .unwrap()
+        .expect("noop rewrite");
+
+        let key = make_axis_secondary_key(IndexAxis::Avg, 2, 10, item_key);
+        let entry = Element::get(&secondary, key.as_slice(), true, grove_version)
+            .unwrap()
+            .expect("entry present");
+        assert_eq!(entry.sum_value_or_default(), 10, "payload must remain 10");
+    }
 }

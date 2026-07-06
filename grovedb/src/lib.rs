@@ -746,6 +746,48 @@ impl GroveDb {
                 ))
         );
 
+        // Reject generic (direct `db.insert` / `db.delete`) leaf mutations
+        // against an indexed-tree primary. Such a mutation starts
+        // propagation AT the primary's own path, so the initial
+        // `child_tree` IS the primary. The generic propagation path has no
+        // hook to mirror the mutated child's ordering value into the
+        // primary's per-axis secondary index(es); letting it proceed would
+        // commit an element whose secondary root_key / axes digest no
+        // longer matches on-disk secondary state (for PCIT this silently
+        // corrupts the index — `verify_grovedb` flags it — and for
+        // PSIT/PCPSIT the legacy `update_tree_item_preserve_flag` path
+        // errors with a misleading `InvalidPath("can only propagate on
+        // tree items")` because `reconstruct_with_root_key` returns None
+        // for indexed-tree elements). Fail closed with an accurate pointer
+        // to the dedicated indexed-tree APIs, which maintain the secondary
+        // inline.
+        //
+        // The dedicated APIs (`insert_into_provable_*_indexed_tree`,
+        // `delete_from_*`) never trip this: they handle the primary +
+        // secondary themselves and hand off propagation starting from the
+        // primary's PARENT path (so the initial `child_tree` is a regular
+        // tree, not the primary). Deep mutations UNDER a subtree of the
+        // primary also do not trip this: the primary is reached as a
+        // `parent_tree` mid-loop, never as the initial `child_tree`.
+        // `initial_deferred_secondary` is required to be None here as an
+        // extra guard against any future caller that legitimately seeds a
+        // pre-mirrored secondary while starting at the primary path.
+        if child_tree.tree_type.is_indexed_primary() && initial_deferred_secondary.is_none() {
+            return Err(Error::NotSupported(
+                "generic writes into an indexed-tree primary \
+                 (ProvableCountIndexedTree / ProvableSumIndexedTree / \
+                 ProvableCountProvableSumIndexedTree) are not supported via \
+                 db.insert/db.delete; use the dedicated indexed-tree APIs \
+                 (insert_into_provable_count_indexed_tree, \
+                 insert_into_provable_sum_indexed_tree, \
+                 insert_into_provable_count_provable_sum_indexed_tree, and their \
+                 delete_from_* counterparts), which maintain the secondary index \
+                 inline"
+                    .to_string(),
+            ))
+            .wrap_with_cost(cost);
+        }
+
         let mut current_path = path.clone();
 
         // Carries the secondary's new (root_hash, root_key) when the
@@ -1650,30 +1692,50 @@ impl GroveDb {
                     // "root" slot reuses the inner-Merk root hash for
                     // path-locality.
                     //
-                    // Cidx primary children: skip this check. Children of a
-                    // `CountIndexedTree` / `ProvableCountIndexedTree` primary
-                    // carry an explicit `count_value` field that encodes the
-                    // child's cidx index key (the count under which this child
-                    // sorts in the secondary index) — NOT the aggregate of
-                    // the child's own inner Merk. A `CountTree(None, 42, None)`
-                    // inserted at a cidx primary level legitimately has
-                    // recorded=42 with an empty inner Merk; the user-supplied
-                    // 42 is the cidx ordering key, not a self-consistency
-                    // claim about inner content. The cidx-specific check at
-                    // the primary-level (lines ~1380-1497) already validates
-                    // that each child's recorded count matches the secondary
-                    // index entry. Applying the generic aggregate-consistency
-                    // check here would emit false positives for every cidx
-                    // primary child whose recorded count is non-zero with an
-                    // empty inner Merk — and worse, the placeholder hashes
-                    // collide across children with the same Element variant
-                    // (the labels only mention the variant, not the value),
-                    // making the surfaced "issues" indistinguishable.
-                    if !element.uses_non_merk_data_storage() && !merk.tree_type.is_indexed_primary()
-                    {
+                    // Indexed-primary children with an EMPTY inner Merk: skip
+                    // this check (see the narrowed guard below). Children of a
+                    // `ProvableCountIndexedTree` / `ProvableSumIndexedTree` /
+                    // `ProvableCountProvableSumIndexedTree` primary may carry an
+                    // explicit aggregate field that encodes the child's
+                    // secondary ordering key (the count/sum under which this
+                    // child sorts) rather than a claim about the child's own
+                    // inner Merk. A `CountTree(None, 42, None)` inserted at an
+                    // indexed primary level legitimately has recorded=42 with an
+                    // empty inner Merk; the user-supplied 42 is the ordering
+                    // key, not a self-consistency claim. The primary-level
+                    // secondary-index check already validates that each child's
+                    // recorded aggregate matches the secondary index entry.
+                    // Applying the generic aggregate-consistency check to such a
+                    // child would false-positive (recorded=42 vs an empty inner
+                    // Merk's `NoAggregateData`), so it is skipped — but ONLY for
+                    // the empty-inner-Merk case. A POPULATED child under an
+                    // indexed primary keeps recorded == actual (propagation
+                    // maintains the invariant), so the check remains active and
+                    // still catches software-bug corruption that the hash chain
+                    // alone cannot detect.
+                    if !element.uses_non_merk_data_storage() {
                         let actual_aggregate = inner_merk.aggregate_data().map_err(MerkError)?;
-                        if let Some((recorded_label, actual_label)) =
-                            aggregate_consistency_labels(&element, &actual_aggregate)
+                        // Under an indexed-tree primary, a child element's
+                        // recorded aggregate (e.g. `CountTree(None, 42, None)`)
+                        // may legitimately be a user-supplied secondary
+                        // ordering key rather than a claim about the child's
+                        // own inner Merk — but ONLY when that inner Merk is
+                        // empty (`NoAggregateData`). In that empty case the
+                        // generic consistency check would false-positive (a
+                        // non-zero recorded value against `NoAggregateData`
+                        // falls through to the catch-all mismatch arm of
+                        // `aggregate_consistency_labels`); the primary-level
+                        // secondary-index check already validates the ordering
+                        // key, so skip here. For a POPULATED child the recorded
+                        // value must equal the inner Merk's actual aggregate
+                        // (propagation keeps them in lock-step), so the check
+                        // stays active and still catches software-bug
+                        // corruption that the hash chain alone cannot.
+                        let skip_indexed_primary_empty_child = merk.tree_type.is_indexed_primary()
+                            && actual_aggregate == AggregateData::NoAggregateData;
+                        if !skip_indexed_primary_empty_child
+                            && let Some((recorded_label, actual_label)) =
+                                aggregate_consistency_labels(&element, &actual_aggregate)
                         {
                             let expected_placeholder: CryptoHash =
                                 blake3::hash(recorded_label.as_bytes()).into();
@@ -1924,6 +1986,14 @@ impl GroveDb {
                             .unwrap()?;
                         axis_hashes.push((*tag, secondary_merk.root_hash().unwrap()));
                     }
+                    // `axes_digest` returns a `CostContext`; its
+                    // `hash_node_calls` cost is intentionally discarded here.
+                    // `verify_merk_and_submerks_in_transaction` is an
+                    // integrity-verification path with no cost accumulator in
+                    // scope (every hash/root-hash call in this function is
+                    // `.unwrap()`ed and its cost dropped), so we follow the
+                    // same convention rather than thread a cost through purely
+                    // for the verifier.
                     let axes_digest_value = grovedb_merk::tree::axes_digest(&axis_hashes).unwrap();
 
                     let actual_value_hash = value_hash(&kv_value).unwrap();

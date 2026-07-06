@@ -570,6 +570,325 @@ mod tests {
         );
     }
 
+    /// `InsertOptions` that permit overriding an existing tree in place — the
+    /// shape required to re-inject a populated indexed-tree element via the
+    /// public `db.insert` path.
+    fn override_tree_opts() -> InsertOptions {
+        InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        }
+    }
+
+    /// BUG 1 — forged aggregate on non-empty indexed-tree direct insert.
+    ///
+    /// Builds a populated PCIT via the dedicated `insert_into_count_indexed_tree`
+    /// API, reads the element back, then:
+    ///   (a) re-inserts it with a FORGED `count_value` (correct root keys but a
+    ///       bogus count) and asserts rejection with `InvalidInput` — before the
+    ///       fix the forged count was hash-committed and propagated into
+    ///       ancestor aggregates;
+    ///   (b) re-inserts the UNMODIFIED element and asserts success.
+    ///
+    /// Runs the whole thing under a caller-supplied grove version so both the
+    /// v0 (`GROVE_V1`, `Op::Put` snapshot) and v1 (latest, layered snapshot)
+    /// dispatch arms are exercised.
+    fn forged_pcit_count_is_rejected(gv: &GroveVersion) {
+        let db = make_test_grovedb(gv);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create empty PCIT");
+        for k in [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                k,
+                Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCIT entry");
+        }
+
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"cidx", None, gv)
+            .unwrap()
+            .expect("get PCIT");
+        let (real_primary, real_secondary, real_count) = match elem.underlying() {
+            Element::ProvableCountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected PCIT, got {other:?}"),
+        };
+        assert!(real_primary.is_some());
+        assert!(real_secondary.is_some());
+        assert_eq!(real_count, 3, "three entries were inserted");
+
+        // (a) Forged count — correct root keys, bogus count. Must be rejected.
+        let forged = Element::new_provable_count_indexed_tree_with_root_keys_and_count_value(
+            real_primary.clone(),
+            real_secondary.clone(),
+            1_000_000_000,
+            None,
+        );
+        let forged_result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                forged,
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(forged_result, Err(Error::InvalidInput(_))),
+            "forged PCIT count_value must be rejected, got {forged_result:?}"
+        );
+
+        // (b) Unmodified element still round-trips.
+        let honest = Element::new_provable_count_indexed_tree_with_root_keys_and_count_value(
+            real_primary,
+            real_secondary,
+            real_count,
+            None,
+        );
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            honest,
+            Some(override_tree_opts()),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("honest re-insert of the unmodified PCIT succeeds");
+
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// BUG 1 — same forgery test for PSIT: forge the `sum_value` while keeping
+    /// the real root keys, assert rejection, then assert the unmodified element
+    /// re-inserts cleanly.
+    fn forged_psit_sum_is_rejected(gv: &GroveVersion) {
+        let db = make_test_grovedb(gv);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create empty PSIT");
+        for (k, v) in [
+            (b"a".as_slice(), 5i64),
+            (b"b".as_slice(), 7),
+            (b"c".as_slice(), 11),
+        ] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(v),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PSIT entry");
+        }
+
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"psit", None, gv)
+            .unwrap()
+            .expect("get PSIT");
+        let (real_primary, real_secondary, real_sum) = match elem.underlying() {
+            Element::ProvableSumIndexedTree(p, s, sv, _) => (p.clone(), s.clone(), *sv),
+            other => panic!("expected PSIT, got {other:?}"),
+        };
+        assert!(real_primary.is_some());
+        assert!(real_secondary.is_some());
+        assert_eq!(real_sum, 23, "5 + 7 + 11");
+
+        // (a) Forged sum — must be rejected.
+        let forged = Element::ProvableSumIndexedTree(
+            real_primary.clone(),
+            real_secondary.clone(),
+            999_999_999,
+            None,
+        );
+        let forged_result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                forged,
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(forged_result, Err(Error::InvalidInput(_))),
+            "forged PSIT sum_value must be rejected, got {forged_result:?}"
+        );
+
+        // (b) Unmodified element still round-trips.
+        let honest = Element::ProvableSumIndexedTree(real_primary, real_secondary, real_sum, None);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            honest,
+            Some(override_tree_opts()),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("honest re-insert of the unmodified PSIT succeeds");
+
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// BUG 1 — PCPSIT forgery: independently forge the count and the sum while
+    /// keeping the real primary/axis root keys, asserting each is rejected, then
+    /// assert the unmodified element re-inserts cleanly.
+    fn forged_pcpsit_aggregate_is_rejected(gv: &GroveVersion) {
+        use grovedb_element::indexed::IndexAxis;
+
+        let db = make_test_grovedb(gv);
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create empty PCPSIT");
+        for (k, v) in [
+            (b"a".as_slice(), 5i64),
+            (b"b".as_slice(), 7),
+            (b"c".as_slice(), 11),
+        ] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), v),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCPSIT entry");
+        }
+
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"pcpsit", None, gv)
+            .unwrap()
+            .expect("get PCPSIT");
+        let (real_primary, real_count, real_sum, real_axes) = match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(p, c, s, ax, _) => {
+                (p.clone(), *c, *s, ax.clone())
+            }
+            other => panic!("expected PCPSIT, got {other:?}"),
+        };
+        assert!(real_primary.is_some());
+        assert_eq!(real_count, 3);
+        assert_eq!(real_sum, 23);
+
+        // (a1) Forged count — must be rejected.
+        let forged_count = Element::ProvableCountProvableSumIndexedTree(
+            real_primary.clone(),
+            1_000_000_000,
+            real_sum,
+            real_axes.clone(),
+            None,
+        );
+        let r = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                forged_count,
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(r, Err(Error::InvalidInput(_))),
+            "forged PCPSIT count must be rejected, got {r:?}"
+        );
+
+        // (a2) Forged sum — must be rejected.
+        let forged_sum = Element::ProvableCountProvableSumIndexedTree(
+            real_primary.clone(),
+            real_count,
+            999_999_999,
+            real_axes.clone(),
+            None,
+        );
+        let r = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                forged_sum,
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(r, Err(Error::InvalidInput(_))),
+            "forged PCPSIT sum must be rejected, got {r:?}"
+        );
+
+        // (b) Unmodified element still round-trips.
+        let honest = Element::ProvableCountProvableSumIndexedTree(
+            real_primary,
+            real_count,
+            real_sum,
+            real_axes,
+            None,
+        );
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            honest,
+            Some(override_tree_opts()),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("honest re-insert of the unmodified PCPSIT succeeds");
+
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    #[test]
+    fn forged_indexed_aggregate_rejected_v0() {
+        use grovedb_version::version::v1::GROVE_V1;
+        forged_pcit_count_is_rejected(&GROVE_V1);
+        forged_psit_sum_is_rejected(&GROVE_V1);
+        forged_pcpsit_aggregate_is_rejected(&GROVE_V1);
+    }
+
+    #[test]
+    fn forged_indexed_aggregate_rejected_v1() {
+        let gv = GroveVersion::latest();
+        forged_pcit_count_is_rejected(gv);
+        forged_psit_sum_is_rejected(gv);
+        forged_pcpsit_aggregate_is_rejected(gv);
+    }
+
     #[test]
     fn test_non_root_insert_item_without_transaction() {
         let grove_version = GroveVersion::latest();

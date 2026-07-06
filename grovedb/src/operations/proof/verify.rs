@@ -8,7 +8,7 @@ use grovedb_merk::{
         query::{PathKey, QueryProofVerify, VerifyOptions, PROOF_VERSION_LATEST},
         Decoder, Node, Op, Query,
     },
-    tree::{combine_hash, combine_hash_three, value_hash, NULL_HASH},
+    tree::{axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH},
     CryptoHash, TreeFeatureType,
 };
 use grovedb_version::{
@@ -596,16 +596,38 @@ impl GroveDb {
             // Skipped for non-empty trees and references — those are
             // already rejected above as NotSupported.
             if inner.is_any_tree() && !inner.is_non_empty_tree() {
-                use grovedb_merk::tree::{combine_hash, value_hash, NULL_HASH};
-                let expected =
-                    combine_hash(&value_hash(item.value.as_slice()).unwrap(), &NULL_HASH).unwrap();
+                use grovedb_merk::tree::{
+                    axes_digest, combine_hash, combine_hash_three, value_hash, NULL_HASH,
+                };
+                let value_h = value_hash(item.value.as_slice()).unwrap();
+                // Indexed trees (PCIT / PSIT / PCPSIT) commit a three-input
+                // combine_hash_three(H(value), NULL_HASH, second) even when
+                // empty — `second` is NULL_HASH for PCIT/PSIT and
+                // axes_digest(zero_axes) for PCPSIT. The two-input
+                // combine_hash form applies to every other empty tree. Mirror
+                // the terminal-path fix so honest empty-indexed returns pass.
+                let expected = match &inner {
+                    Element::ProvableCountIndexedTree(None, None, 0, _)
+                    | Element::ProvableSumIndexedTree(None, None, 0, _) => {
+                        combine_hash_three(&value_h, &NULL_HASH, &NULL_HASH).unwrap()
+                    }
+                    Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
+                        if axes.iter().all(|(_, sk)| sk.is_none()) =>
+                    {
+                        let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
+                            axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                        let digest = axes_digest(&zero_axes).unwrap();
+                        combine_hash_three(&value_h, &NULL_HASH, &digest).unwrap()
+                    }
+                    _ => combine_hash(&value_h, &NULL_HASH).unwrap(),
+                };
                 if expected != item.value_hash {
                     return Err(Error::InvalidProof(
                         query.clone(),
                         format!(
                             "count-offset paginated proof: empty-tree return at key {} \
-                             has value_hash {} but expected combine_hash(H(value), \
-                             NULL_HASH) = {} — possible KV→KVValueHash forgery",
+                             has value_hash {} but expected {} — possible KV→KVValueHash \
+                             forgery",
                             hex::encode(&item.key),
                             hex::encode(item.value_hash),
                             hex::encode(expected),
@@ -753,13 +775,22 @@ impl GroveDb {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
                         match element {
-                            // ProvableCountIndexedTree: descend into the
-                            // primary as if it were a standard Merk subtree,
-                            // then chain via combine_hash_three(value_hash,
-                            // primary_root, secondary_root) where
-                            // secondary_root is the attestation prefix on
-                            // the cidx ProofBytes.
-                            Element::ProvableCountIndexedTree(..) => {
+                            // Indexed-tree descent (PCIT / PSIT / PCPSIT):
+                            // descend into the primary as if it were a
+                            // standard Merk subtree, then chain via
+                            // combine_hash_three(value_hash, primary_root,
+                            // attestation) where `attestation` is the 32-byte
+                            // prefix on the ProofBytes::CountIndexedTree
+                            // envelope. For PCIT/PSIT the prefix is the single
+                            // secondary Merk root hash; for PCPSIT it is the
+                            // axes_digest over every axis's secondary root
+                            // hash. The verifier treats the prefix opaquely as
+                            // the third combine input, so the same descent
+                            // logic serves all three variants — matching the
+                            // shared prover envelope in generate.rs.
+                            Element::ProvableCountIndexedTree(..)
+                            | Element::ProvableSumIndexedTree(..)
+                            | Element::ProvableCountProvableSumIndexedTree(..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
@@ -1032,20 +1063,8 @@ impl GroveDb {
                                     "V1 proof has lower layer for a non-tree element.".to_string(),
                                 ));
                             }
-                            // Phase 1: descent into the new PSIT / PCPSIT
-                            // indexed-tree variants is not yet wired through
-                            // the V1 verifier. Phase 2 will add the
-                            // appropriate combine_hash_three chain for PSIT
-                            // and the axes_digest chain for PCPSIT.
-                            Element::ProvableSumIndexedTree(..)
-                            | Element::ProvableCountProvableSumIndexedTree(..) => {
-                                return Err(Error::NotSupported(
-                                    "V1 verifier descent into ProvableSumIndexedTree / \
-                                     ProvableCountProvableSumIndexedTree is not yet supported \
-                                     (Phase 2)"
-                                        .to_string(),
-                                ));
-                            }
+                            // PSIT / PCPSIT descent is handled together with
+                            // PCIT in the shared indexed-tree arm above.
                             Element::NonCounted(_)
                             | Element::NotSummed(_)
                             | Element::NotCountedOrSummed(_) => {
@@ -1065,26 +1084,55 @@ impl GroveDb {
                         // the merk proof, since the value bytes are not part of
                         // the KVValueHash tree hash computation.
                         //
-                        // Cidx elements have TWO child Merks (primary +
-                        // secondary), so empty cidx terminal proofs use
-                        // `combine_hash_three(H(value), NULL_HASH, NULL_HASH)`
-                        // instead. Without the cidx-specific arm, valid
-                        // empty-cidx terminal proofs fail verification.
-                        let is_empty_cidx =
-                            matches!(element, Element::ProvableCountIndexedTree(None, None, 0, _));
-                        if is_empty_cidx {
-                            let expected_value_hash = combine_hash_three(
-                                value_hash(value_bytes).value(),
-                                &NULL_HASH,
-                                &NULL_HASH,
-                            )
-                            .value()
-                            .to_owned();
+                        // Indexed-tree elements (PCIT / PSIT / PCPSIT) have TWO
+                        // (or more) child Merks — a primary and one-or-more
+                        // secondaries — so their empty terminal proofs commit
+                        // `combine_hash_three(H(value), NULL_HASH, second)`
+                        // rather than the two-input `combine_hash`.
+                        //   - Empty PCIT / PSIT: `second = NULL_HASH` (the lone
+                        //     secondary's root hash while empty).
+                        //   - Empty PCPSIT: `second = axes_digest(zero_axes)`,
+                        //     the digest over the element's own axes list with
+                        //     every axis's secondary root hash = NULL_HASH.
+                        // These mirror the insert commit path in
+                        // add_element_on_transaction/v1.rs. Without the
+                        // indexed-specific arms, honest empty-indexed terminal
+                        // proofs fail verification.
+                        let empty_indexed_expected: Option<CryptoHash> = match &element {
+                            Element::ProvableCountIndexedTree(None, None, 0, _)
+                            | Element::ProvableSumIndexedTree(None, None, 0, _) => Some(
+                                combine_hash_three(
+                                    value_hash(value_bytes).value(),
+                                    &NULL_HASH,
+                                    &NULL_HASH,
+                                )
+                                .value()
+                                .to_owned(),
+                            ),
+                            Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, _)
+                                if axes.iter().all(|(_, sk)| sk.is_none()) =>
+                            {
+                                let zero_axes: Vec<(u8, CryptoHash)> =
+                                    axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
+                                let digest = axes_digest(&zero_axes).value().to_owned();
+                                Some(
+                                    combine_hash_three(
+                                        value_hash(value_bytes).value(),
+                                        &NULL_HASH,
+                                        &digest,
+                                    )
+                                    .value()
+                                    .to_owned(),
+                                )
+                            }
+                            _ => None,
+                        };
+                        if let Some(expected_value_hash) = empty_indexed_expected {
                             if hash != &expected_value_hash {
                                 return Err(Error::InvalidProof(
                                     query.clone(),
                                     format!(
-                                        "V1 empty cidx value hash mismatch at key {}: \
+                                        "V1 empty indexed-tree value hash mismatch at key {}: \
                                          expected {}, got {}",
                                         hex::encode(key),
                                         hex::encode(hash),

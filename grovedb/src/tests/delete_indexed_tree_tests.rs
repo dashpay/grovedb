@@ -14,6 +14,10 @@
 #[cfg(test)]
 mod tests {
     use grovedb_element::indexed::IndexAxis;
+    use grovedb_path::SubtreePath;
+    use grovedb_storage::{
+        rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
+    };
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -21,6 +25,59 @@ mod tests {
         tests::{make_test_grovedb, TEST_LEAF},
         Element, Error,
     };
+
+    /// Seed a stale ("drifted") raw KV directly into an indexed tree's
+    /// per-axis secondary storage namespace, bypassing the primary. This
+    /// mirrors a bug where the secondary index fails to be mirror-cleaned
+    /// while the primary is emptied, leaving orphan rows at
+    /// `Blake3(primary_prefix ‖ axis_tag)`. Returns the secondary prefix
+    /// so the caller can scan it before/after delete.
+    fn seed_stale_secondary_row(
+        db: &crate::GroveDb,
+        primary_path: &[&[u8]],
+        axis: IndexAxis,
+    ) -> [u8; 32] {
+        let path_vec: Vec<&[u8]> = primary_path.to_vec();
+        let subtree: SubtreePath<&[u8]> = path_vec.as_slice().into();
+        let primary_prefix = RocksDbStorage::build_prefix(subtree).unwrap();
+        let secondary_prefix =
+            RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap();
+
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        {
+            let mut ctx = db
+                .db
+                .get_transactional_storage_context_by_subtree_prefix(
+                    secondary_prefix,
+                    Some(&batch),
+                    &tx,
+                )
+                .unwrap();
+            ctx.put(b"stale_orphan_key", b"stale_orphan_value", None, None)
+                .unwrap()
+                .expect("seed stale secondary row");
+        }
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit stale row");
+        tx.commit().expect("commit tx");
+        secondary_prefix
+    }
+
+    /// Assert whether the secondary namespace at `secondary_prefix` has
+    /// any rows.
+    fn secondary_namespace_non_empty(db: &crate::GroveDb, secondary_prefix: [u8; 32]) -> bool {
+        let tx = db.start_transaction();
+        let ctx = db
+            .db
+            .get_transactional_storage_context_by_subtree_prefix(secondary_prefix, None, &tx)
+            .unwrap();
+        let mut iter = ctx.raw_iter();
+        iter.seek_to_first().unwrap();
+        iter.valid().unwrap()
+    }
 
     fn delete_options_allow_non_empty() -> DeleteOptions {
         DeleteOptions {
@@ -489,5 +546,111 @@ mod tests {
         )
         .unwrap()
         .expect("delete outer tree containing nested PSIT");
+    }
+
+    // ---------- Drifted-secondary cleanup on empty-primary delete ----------
+    //
+    // These tests prove the defensive secondary-namespace clear in
+    // `delete/mod.rs` (`is_indexed_primary()` gate) sweeps ALL axis tags,
+    // not just Count. They seed a stale row directly into a per-axis
+    // secondary namespace (bypassing the primary, so the primary stays
+    // empty and the non-empty `find_subtrees` sweep is NOT reached), then
+    // delete the empty primary and assert the namespace is cleared. Before
+    // the fix (gate = `is_count_indexed_primary()`, axis = Count only) the
+    // Sum/Avg orphans on PSIT/PCPSIT would survive the delete.
+
+    #[test]
+    fn delete_empty_psit_clears_drifted_sum_secondary() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit_drift",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create empty PSIT");
+
+        // PSIT indexes on the Sum axis; seed a stale row there.
+        let secondary_prefix =
+            seed_stale_secondary_row(&db, &[TEST_LEAF, b"psit_drift"], IndexAxis::Sum);
+        assert!(
+            secondary_namespace_non_empty(&db, secondary_prefix),
+            "drift sanity: PSIT sum secondary must be non-empty before delete"
+        );
+
+        // Delete the (primary-)empty PSIT with default options.
+        db.delete(
+            [TEST_LEAF].as_ref(),
+            b"psit_drift",
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete empty (drifted) PSIT");
+
+        assert!(
+            !secondary_namespace_non_empty(&db, secondary_prefix),
+            "PSIT sum secondary must be empty after delete; drift cleared by is_indexed_primary \
+             sweep"
+        );
+    }
+
+    #[test]
+    fn delete_empty_pcpsit_clears_all_drifted_axis_secondaries() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![
+            (IndexAxis::Count.tag(), None),
+            (IndexAxis::Sum.tag(), None),
+            (IndexAxis::Avg.tag(), None),
+        ];
+        let elem =
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("axes canonical");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit_drift",
+            elem,
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create empty PCPSIT");
+
+        // Seed a stale row into EACH of the three axis secondaries.
+        let axes_to_test = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg];
+        let secondary_prefixes: Vec<[u8; 32]> = axes_to_test
+            .iter()
+            .map(|axis| seed_stale_secondary_row(&db, &[TEST_LEAF, b"pcpsit_drift"], *axis))
+            .collect();
+        for (axis, prefix) in axes_to_test.iter().zip(&secondary_prefixes) {
+            assert!(
+                secondary_namespace_non_empty(&db, *prefix),
+                "drift sanity: PCPSIT {axis:?} secondary must be non-empty before delete"
+            );
+        }
+
+        db.delete(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit_drift",
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete empty (drifted) PCPSIT");
+
+        for (axis, prefix) in axes_to_test.iter().zip(&secondary_prefixes) {
+            assert!(
+                !secondary_namespace_non_empty(&db, *prefix),
+                "PCPSIT {axis:?} secondary must be empty after delete; drift cleared by \
+                 is_indexed_primary sweep over all three axes"
+            );
+        }
     }
 }

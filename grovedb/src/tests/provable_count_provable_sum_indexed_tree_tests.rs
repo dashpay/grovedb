@@ -2129,4 +2129,275 @@ mod tests {
             "batch empty insert of PCPSIT with unsorted axes must be rejected; got {res:?}"
         );
     }
+
+    // -----------------------------------------------------------------
+    // V1 proof regression tests (PR #657 BUG 1 + BUG 2)
+    //
+    // Before the fix an empty PCPSIT selected by a V1 proof was rejected
+    // ("V1 empty tree value hash mismatch") because the verifier used the
+    // two-input combine_hash instead of combine_hash_three(H(value),
+    // NULL_HASH, axes_digest(zero_axes)) (BUG 2). A non-empty PCPSIT
+    // crossed by a subquery was silently dropped by the prover and the
+    // verifier rejected the descent as "Phase 2" NotSupported (BUG 1).
+    // These lock the fixed behavior.
+    // -----------------------------------------------------------------
+
+    fn pcpsit_key_query(key: &[u8]) -> crate::PathQuery {
+        use crate::{query::SizedQuery, PathQuery, QueryItem, SubqueryBranch};
+        PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: grovedb_merk::proofs::Query {
+                    items: vec![QueryItem::Key(key.to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
+    fn pcpsit_key_subquery(key: &[u8]) -> crate::PathQuery {
+        use crate::{query::SizedQuery, PathQuery, QueryItem, SubqueryBranch};
+        use grovedb_merk::proofs::Query;
+        let mut inner = Query::new();
+        inner.insert_all();
+        PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: grovedb_merk::proofs::Query {
+                    items: vec![QueryItem::Key(key.to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
+    #[test]
+    fn pcpsit_empty_v1_proof_terminal_verifies_all_axis_subsets() {
+        // BUG 2: an empty PCPSIT terminal proof must verify against
+        // combine_hash_three(H(value), NULL_HASH, axes_digest(zero_axes))
+        // for every axis subset — the digest depends on the axes list.
+        let v = GroveVersion::latest();
+        for axes in all_axis_subsets() {
+            let db = make_test_grovedb(v);
+            insert_empty_pcpsit(&db, b"pcp", &axes, v);
+            let pq = pcpsit_key_query(b"pcp");
+            let proof = db
+                .prove_query(&pq, None, v)
+                .unwrap()
+                .expect("prove empty pcpsit");
+            let (root, results) = crate::GroveDb::verify_query(&proof, &pq, v)
+                .unwrap_or_else(|e| panic!("verify empty pcpsit axes {axes:?}: {e:?}"));
+            assert_eq!(root, db.root_hash(None, v).unwrap().expect("root"));
+            assert_eq!(results.len(), 1, "empty PCPSIT is a single terminal result");
+        }
+    }
+
+    #[test]
+    fn pcpsit_non_empty_v1_subquery_verifies() {
+        // BUG 1: a non-empty PCPSIT crossed by a subquery must descend
+        // into the primary and verify via combine_hash_three(H(value),
+        // primary_root, axes_digest).
+        let v = GroveVersion::latest();
+        let axes = vec![
+            IndexAxis::Count.tag(),
+            IndexAxis::Sum.tag(),
+            IndexAxis::Avg.tag(),
+        ];
+        let db = make_test_grovedb(v);
+        insert_empty_pcpsit(&db, b"pcp", &axes, v);
+        for (k, val, s) in [
+            (b"a".as_ref(), b"x".to_vec(), 10i64),
+            (b"b", b"y".to_vec(), -3),
+            (b"c", b"z".to_vec(), 7),
+        ] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcp"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(val, s),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("populate pcpsit");
+        }
+        let pq = pcpsit_key_subquery(b"pcp");
+        let proof = db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove pcpsit subquery");
+        let (root, results) =
+            crate::GroveDb::verify_query(&proof, &pq, v).expect("verify pcpsit subquery");
+        assert_eq!(root, db.root_hash(None, v).unwrap().expect("root"));
+        assert_eq!(
+            results.len(),
+            3,
+            "subquery must return all three PCPSIT rows"
+        );
+    }
+
+    #[test]
+    fn pcpsit_non_empty_v1_subquery_single_axis_verifies() {
+        // Cover the single-axis case too — axes_digest over one entry has
+        // a distinct payload length from the three-axis case.
+        let v = GroveVersion::latest();
+        let axes = vec![IndexAxis::Sum.tag()];
+        let db = make_test_grovedb(v);
+        insert_empty_pcpsit(&db, b"pcp", &axes, v);
+        for (k, s) in [(b"a".as_ref(), 5i64), (b"b", -2), (b"c", 11), (b"d", 0)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcp"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(b"v".to_vec(), s),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("populate pcpsit");
+        }
+        let pq = pcpsit_key_subquery(b"pcp");
+        let proof = db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove pcpsit subquery");
+        let (_, results) =
+            crate::GroveDb::verify_query(&proof, &pq, v).expect("verify pcpsit subquery");
+        assert_eq!(results.len(), 4);
+    }
+
+    // -----------------------------------------------------------------
+    // Generic-write rejection into a PCPSIT primary (BUG 1 regression)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pcpsit_generic_db_insert_is_rejected_no_partial_write_all_subsets() {
+        // Regression: a generic `db.insert` of a leaf directly into a
+        // PCPSIT primary must fail closed with an accurate `NotSupported`
+        // (the multi-axis generic propagation path has no secondary-mirror
+        // hook) and must not partially write. Covered for every axis
+        // subset so the multi-axis element shape is exercised too.
+        let grove_version = GroveVersion::latest();
+        for (i, tags) in all_axis_subsets().iter().enumerate() {
+            let db = make_test_grovedb(grove_version);
+            let key = format!("pcp_{}", i);
+            insert_empty_pcpsit(&db, key.as_bytes(), tags, grove_version);
+
+            let result = db
+                .insert(
+                    [TEST_LEAF, key.as_bytes()].as_ref(),
+                    b"row",
+                    Element::new_item_with_sum_item(b"v".to_vec(), 42),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap();
+            match result {
+                Err(Error::NotSupported(msg)) => {
+                    assert!(
+                        msg.contains("indexed-tree primary")
+                            && msg.contains("insert_into_provable_count_provable_sum_indexed_tree"),
+                        "expected indexed-primary rejection with dedicated-API pointer for axes \
+                         {tags:?}, got: {msg}"
+                    );
+                }
+                other => panic!("expected NotSupported for axes {tags:?}, got {:?}", other),
+            }
+
+            // No partial write: primary still empty, leaf absent.
+            let parent = db
+                .get([TEST_LEAF].as_ref(), key.as_bytes(), None, grove_version)
+                .unwrap()
+                .expect("get PCPSIT");
+            match parent {
+                Element::ProvableCountProvableSumIndexedTree(None, 0, 0, _, _) => {}
+                other => panic!(
+                    "PCPSIT primary must be unchanged after rejected generic insert (axes \
+                     {tags:?}), got {:?}",
+                    other
+                ),
+            }
+            assert!(db
+                .get(
+                    [TEST_LEAF, key.as_bytes()].as_ref(),
+                    b"row",
+                    None,
+                    grove_version
+                )
+                .unwrap()
+                .is_err());
+            assert_verify_passes(&db, grove_version);
+        }
+    }
+
+    #[test]
+    fn pcpsit_generic_db_insert_after_populated_is_rejected() {
+        // A later generic `db.insert` into a populated PCPSIT primary is
+        // still refused, leaving the dedicated-API-built state intact.
+        let grove_version = GroveVersion::latest();
+        let tags = [
+            IndexAxis::Count.tag(),
+            IndexAxis::Sum.tag(),
+            IndexAxis::Avg.tag(),
+        ];
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcpsit(&db, b"pcp", &tags, grove_version);
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcp"].as_ref(),
+            b"row1",
+            Element::new_item_with_sum_item(b"v".to_vec(), 42),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dedicated insert");
+
+        let result = db
+            .insert(
+                [TEST_LEAF, b"pcp"].as_ref(),
+                b"row2",
+                Element::new_item_with_sum_item(b"w".to_vec(), 8),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::NotSupported(_))),
+            "expected NotSupported, got {:?}",
+            result
+        );
+
+        let parent = db
+            .get([TEST_LEAF].as_ref(), b"pcp", None, grove_version)
+            .unwrap()
+            .expect("get PCPSIT");
+        match parent {
+            Element::ProvableCountProvableSumIndexedTree(_, c, s, _, _) => {
+                assert_eq!(c, 1);
+                assert_eq!(s, 42);
+            }
+            other => panic!("expected PCPSIT, got {:?}", other),
+        }
+        assert!(db
+            .get([TEST_LEAF, b"pcp"].as_ref(), b"row2", None, grove_version)
+            .unwrap()
+            .is_err());
+        assert_verify_passes(&db, grove_version);
+    }
 }

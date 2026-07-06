@@ -267,7 +267,7 @@ impl GroveDb {
                                 grove_version,
                             )
                         );
-                        let (p_hash, p_root_key, _) = cost_return_on_error!(
+                        let (p_hash, p_root_key, p_aggregate) = cost_return_on_error!(
                             &mut cost,
                             primary_merk
                                 .root_hash_key_and_aggregate_data()
@@ -278,6 +278,19 @@ impl GroveDb {
                                 "CountIndexedTree direct insertion: provided \
                                  primary_root_key does not match the existing \
                                  primary Merk's root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Also bind the claimed count_value to the primary's
+                        // actual aggregate. Without this, a caller could
+                        // supply correct root keys but a forged count that
+                        // then gets hash-committed and propagated into
+                        // ancestor aggregates.
+                        if p_aggregate.as_count_u64() != *count_value {
+                            return Err(Error::InvalidInput(
+                                "CountIndexedTree direct insertion: provided \
+                                 count_value does not match the existing \
+                                 primary Merk's aggregate count",
                             ))
                             .wrap_with_cost(cost);
                         }
@@ -343,7 +356,7 @@ impl GroveDb {
                                 grove_version,
                             )
                         );
-                        let (p_hash, p_root_key, _) = cost_return_on_error!(
+                        let (p_hash, p_root_key, p_aggregate) = cost_return_on_error!(
                             &mut cost,
                             primary_merk
                                 .root_hash_key_and_aggregate_data()
@@ -354,6 +367,17 @@ impl GroveDb {
                                 "ProvableSumIndexedTree direct insertion: provided \
                                  primary_root_key does not match the existing primary Merk's \
                                  root key",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
+                        // Bind the claimed sum_value to the primary's actual
+                        // aggregate so a forged sum cannot be hash-committed
+                        // and propagated into ancestor aggregates.
+                        if p_aggregate.as_sum_i64() != *sum_value {
+                            return Err(Error::InvalidInput(
+                                "ProvableSumIndexedTree direct insertion: provided \
+                                 sum_value does not match the existing primary Merk's \
+                                 aggregate sum",
                             ))
                             .wrap_with_cost(cost);
                         }
@@ -428,7 +452,8 @@ impl GroveDb {
                     // Every axis slot is NULL_HASH for the empty case.
                     let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
                         axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
-                    let digest = grovedb_merk::tree::axes_digest(&zero_axes).unwrap();
+                    let digest =
+                        grovedb_merk::tree::axes_digest(&zero_axes).unwrap_add_cost(&mut cost);
                     (NULL_HASH, digest)
                 } else {
                     if primary.is_none() {
@@ -451,7 +476,7 @@ impl GroveDb {
                             grove_version,
                         )
                     );
-                    let (p_hash, p_root_key, _) = cost_return_on_error!(
+                    let (p_hash, p_root_key, p_aggregate) = cost_return_on_error!(
                         &mut cost,
                         primary_merk
                             .root_hash_key_and_aggregate_data()
@@ -462,6 +487,25 @@ impl GroveDb {
                             "ProvableCountProvableSumIndexedTree direct insertion: provided \
                              primary_root_key does not match the existing primary Merk's root \
                              key",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    // Bind BOTH the claimed count_value and sum_value to the
+                    // primary's actual aggregate so forged count/sum cannot be
+                    // hash-committed and propagated into ancestor aggregates.
+                    if p_aggregate.as_count_u64() != *count_value {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableSumIndexedTree direct insertion: provided \
+                             count_value does not match the existing primary Merk's aggregate \
+                             count",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
+                    if p_aggregate.as_sum_i64() != *sum_value {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableSumIndexedTree direct insertion: provided \
+                             sum_value does not match the existing primary Merk's aggregate \
+                             sum",
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -502,7 +546,8 @@ impl GroveDb {
                         }
                         axis_hashes.push((*tag, s_hash));
                     }
-                    let digest = grovedb_merk::tree::axes_digest(&axis_hashes).unwrap();
+                    let digest =
+                        grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost);
                     (p_hash, digest)
                 };
                 cost_return_on_error_into!(

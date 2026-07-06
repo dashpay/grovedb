@@ -1630,4 +1630,308 @@ mod tests {
             "mismatched primary root key must be rejected; got {res:?}"
         );
     }
+
+    // -----------------------------------------------------------------
+    // V1 proof regression tests (PR #657 BUG 1 + BUG 2)
+    //
+    // Before the fix:
+    //   - An empty PSIT selected by a V1 proof was rejected with
+    //     "V1 empty tree value hash mismatch" because the verifier used
+    //     the two-input combine_hash form instead of the three-input
+    //     combine_hash_three(H(value), NULL_HASH, NULL_HASH) that the
+    //     insert path commits for indexed trees (BUG 2a / 2b).
+    //   - A non-empty PSIT crossed by a subquery was silently skipped by
+    //     the prover (fell through to `=> continue`) so the honest proof
+    //     was missing the lower layer and the verifier rejected it
+    //     (BUG 1). The verifier also rejected PSIT descent outright with
+    //     a "Phase 2" NotSupported error.
+    //
+    // These lock the fixed behavior at full parity with PCIT.
+    // -----------------------------------------------------------------
+
+    fn key_query(key: &[u8]) -> crate::PathQuery {
+        use crate::{query::SizedQuery, PathQuery, QueryItem, SubqueryBranch};
+        PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: grovedb_merk::proofs::Query {
+                    items: vec![QueryItem::Key(key.to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
+    fn key_subquery(key: &[u8]) -> crate::PathQuery {
+        use crate::{query::SizedQuery, PathQuery, QueryItem, SubqueryBranch};
+        use grovedb_merk::proofs::Query;
+        let mut inner = Query::new();
+        inner.insert_all();
+        PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: grovedb_merk::proofs::Query {
+                    items: vec![QueryItem::Key(key.to_vec())],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: Some(inner.into()),
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
+    #[test]
+    fn psit_empty_v1_proof_terminal_verifies() {
+        // BUG 2: empty PSIT selected as a terminal V1 result must verify
+        // against combine_hash_three(H(value), NULL_HASH, NULL_HASH).
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_psit_at_test_leaf(&db, b"psit", v);
+        let pq = key_query(b"psit");
+        let proof = db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove empty psit");
+        let (root, results) =
+            crate::GroveDb::verify_query(&proof, &pq, v).expect("verify empty psit terminal");
+        assert_eq!(root, db.root_hash(None, v).unwrap().expect("root"));
+        assert_eq!(
+            results.len(),
+            1,
+            "empty PSIT should be a single terminal result"
+        );
+    }
+
+    #[test]
+    fn psit_non_empty_v1_subquery_verifies_and_matches_pcit() {
+        // BUG 1: a non-empty PSIT crossed by a subquery must descend into
+        // the primary and verify via combine_hash_three(H(value),
+        // primary_root, secondary_root) — the same envelope PCIT uses.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_psit_at_test_leaf(&db, b"psit", v);
+        psit_populate_known_set(&db, v); // 6 rows
+
+        let pq = key_subquery(b"psit");
+        let proof = db
+            .prove_query(&pq, None, v)
+            .unwrap()
+            .expect("prove psit subquery");
+        let (root, results) =
+            crate::GroveDb::verify_query(&proof, &pq, v).expect("verify psit subquery");
+        assert_eq!(root, db.root_hash(None, v).unwrap().expect("root"));
+        assert_eq!(results.len(), 6, "subquery must return all six PSIT rows");
+
+        // Parity check: the equivalent PCIT query returns the same shape.
+        let db2 = make_test_grovedb(v);
+        db2.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcit",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("pcit");
+        for k in [b"a".as_ref(), b"b", b"c", b"d", b"e", b"f"] {
+            db2.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"pcit"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                v,
+            )
+            .unwrap()
+            .expect("pop pcit");
+        }
+        let pq2 = key_subquery(b"pcit");
+        let proof2 = db2
+            .prove_query(&pq2, None, v)
+            .unwrap()
+            .expect("prove pcit subquery");
+        let (_, results2) =
+            crate::GroveDb::verify_query(&proof2, &pq2, v).expect("verify pcit subquery");
+        assert_eq!(
+            results.len(),
+            results2.len(),
+            "PSIT subquery result count must match PCIT"
+        );
+    }
+
+    #[test]
+    fn psit_non_empty_v1_direct_key_matches_pcit_limitation() {
+        // Parity: a non-empty indexed tree selected by a direct key with
+        // NO subquery is rejected identically for PSIT and PCIT (both need
+        // KVValueHashFeatureTypeWithChildHash, which the terminal arm does
+        // not emit for indexed trees). This documents the shared,
+        // by-design limitation — PSIT is not more restricted than PCIT.
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_psit_at_test_leaf(&db, b"psit", v);
+        psit_populate_known_set(&db, v);
+        let pq = key_query(b"psit");
+        let proof = db.prove_query(&pq, None, v).unwrap().expect("prove");
+        let psit_res = crate::GroveDb::verify_query(&proof, &pq, v);
+
+        let db2 = make_test_grovedb(v);
+        db2.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcit",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("pcit");
+        db2.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"pcit"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("pop pcit");
+        let pq2 = key_query(b"pcit");
+        let proof2 = db2.prove_query(&pq2, None, v).unwrap().expect("prove pcit");
+        let pcit_res = crate::GroveDb::verify_query(&proof2, &pq2, v);
+
+        assert_eq!(
+            psit_res.is_err(),
+            pcit_res.is_err(),
+            "PSIT and PCIT direct-key non-empty verification must agree"
+        );
+        assert!(
+            psit_res.is_err(),
+            "non-empty direct-key indexed tree is rejected"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Generic-write rejection into a PSIT primary (BUG 1 regression)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn psit_generic_db_insert_of_sum_item_is_rejected_no_partial_write() {
+        // Regression for the bug where a generic `db.insert` of a leaf
+        // (sum) item directly into a PSIT primary failed with a
+        // misleading `InvalidPath("can only propagate on tree items")`.
+        // The generic path has no secondary-mirror hook, so it must fail
+        // closed with an accurate `NotSupported` pointing at the dedicated
+        // API — and must NOT partially write (the batch is discarded on
+        // the propagation error before commit).
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+
+        let result = db
+            .insert(
+                [TEST_LEAF, b"psit"].as_ref(),
+                b"a",
+                Element::new_sum_item(5),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::NotSupported(msg)) => {
+                assert!(
+                    msg.contains("indexed-tree primary")
+                        && msg.contains("insert_into_provable_sum_indexed_tree"),
+                    "expected indexed-primary rejection with dedicated-API pointer, got: {msg}"
+                );
+            }
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+
+        // No partial write: the PSIT is still empty and the leaf is absent.
+        let elem = db
+            .get([TEST_LEAF].as_ref(), b"psit", None, grove_version)
+            .unwrap()
+            .expect("get PSIT");
+        assert!(
+            matches!(elem, Element::ProvableSumIndexedTree(None, None, 0, _)),
+            "PSIT primary must be unchanged after rejected generic insert, got {:?}",
+            elem
+        );
+        let leaf = db
+            .get([TEST_LEAF, b"psit"].as_ref(), b"a", None, grove_version)
+            .unwrap();
+        assert!(
+            matches!(leaf, Err(Error::PathKeyNotFound(_))),
+            "leaf must not have been written, got {:?}",
+            leaf
+        );
+
+        // verify_grovedb stays clean after the rejected insert.
+        assert_verify_passes(&db, grove_version);
+    }
+
+    #[test]
+    fn psit_generic_db_insert_after_populated_is_rejected() {
+        // Same rejection holds when the PSIT already has entries (inserted
+        // via the dedicated API): a later generic `db.insert` into the
+        // primary is still refused, and the existing (correct) state is
+        // untouched.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_psit_at_test_leaf(&db, b"psit", grove_version);
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"row1",
+            Element::new_sum_item(42),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("dedicated insert");
+
+        let result = db
+            .insert(
+                [TEST_LEAF, b"psit"].as_ref(),
+                b"row2",
+                Element::new_sum_item(8),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::NotSupported(_))),
+            "expected NotSupported, got {:?}",
+            result
+        );
+
+        // Existing state unchanged: sum still 42, row2 absent.
+        let parent = db
+            .get([TEST_LEAF].as_ref(), b"psit", None, grove_version)
+            .unwrap()
+            .expect("get PSIT");
+        match parent {
+            Element::ProvableSumIndexedTree(_, _, s, _) => assert_eq!(s, 42),
+            other => panic!("expected PSIT, got {:?}", other),
+        }
+        assert!(db
+            .get([TEST_LEAF, b"psit"].as_ref(), b"row2", None, grove_version)
+            .unwrap()
+            .is_err());
+        assert_verify_passes(&db, grove_version);
+    }
 }

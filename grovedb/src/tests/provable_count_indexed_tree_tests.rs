@@ -393,8 +393,8 @@ mod tests {
             .unwrap();
         match result {
             Err(Error::NotSupported(msg)) => assert!(
-                msg.contains("EMPTY cidx"),
-                "expected EMPTY cidx requirement, got: {msg}"
+                msg.contains("EMPTY tree/indexed child elements"),
+                "expected EMPTY tree/indexed requirement, got: {msg}"
             ),
             other => panic!("expected NotSupported, got {:?}", other),
         }
@@ -1646,5 +1646,109 @@ mod tests {
             matches!(res, Err(Error::InvalidInput(_))),
             "mismatched secondary root key must be rejected; got {res:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // BUG 1 regression: the PCIT insert non-empty-child guard must reject
+    // the same set of variants the shared helper covers. The prior inline
+    // guard omitted `ProvableSumTree(Some(_), ..)` and
+    // `ProvableCountProvableSumTree(Some(_), ..)`, letting a
+    // forged-aggregate claim (root_key + sum bound to a NULL_HASH child)
+    // persist. These tests pin every previously-missed variant.
+    // -----------------------------------------------------------------
+
+    /// The confirmed repro from the audit: a `ProvableSumTree` with a
+    /// `Some(root_key)` and a non-zero sum used to slip through the PCIT
+    /// insert guard and persist a provable forged-aggregate claim. It must
+    /// now be rejected via the shared helper.
+    #[test]
+    fn pcit_insert_rejects_non_empty_provable_sum_tree_child() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        let bogus = Element::ProvableSumTree(Some(b"rk".to_vec()), 500, None);
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"nested",
+                bogus,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::NotSupported(msg)) => assert!(
+                msg.contains("EMPTY tree/indexed child elements"),
+                "expected EMPTY tree/indexed requirement, got: {msg}"
+            ),
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+    }
+
+    /// A `ProvableCountProvableSumTree` with a `Some(root_key)` and
+    /// non-zero aggregates was the other variant the old inline guard
+    /// omitted. It must be rejected too.
+    #[test]
+    fn pcit_insert_rejects_non_empty_provable_count_provable_sum_tree_child() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        let bogus = Element::ProvableCountProvableSumTree(Some(b"rk".to_vec()), 3, 500, None);
+        let result = db
+            .insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"nested",
+                bogus,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        match result {
+            Err(Error::NotSupported(msg)) => assert!(
+                msg.contains("EMPTY tree/indexed child elements"),
+                "expected EMPTY tree/indexed requirement, got: {msg}"
+            ),
+            other => panic!("expected NotSupported, got {:?}", other),
+        }
+    }
+
+    /// The helper's contract: EMPTY (root_key = None, zero aggregate)
+    /// variants of the previously-missed tree types must still be
+    /// ACCEPTED by the PCIT insert path (the dedicated API creates the
+    /// child empty and populates it via subsequent inserts).
+    #[test]
+    fn pcit_insert_accepts_empty_provable_sum_tree_child() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"nested",
+            Element::ProvableSumTree(None, 0, None),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("empty ProvableSumTree child must be accepted");
+        assert_verify_passes(&db, grove_version);
+    }
+
+    /// Empty `ProvableCountProvableSumTree` (None root key, zero
+    /// count/sum) must also be accepted per the helper's contract.
+    #[test]
+    fn pcit_insert_accepts_empty_provable_count_provable_sum_tree_child() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        insert_empty_pcit(&db, b"cidx", grove_version);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"nested",
+            Element::ProvableCountProvableSumTree(None, 0, 0, None),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("empty ProvableCountProvableSumTree child must be accepted");
+        assert_verify_passes(&db, grove_version);
     }
 }

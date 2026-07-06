@@ -1656,4 +1656,74 @@ mod tests {
         .expect("pct");
         assert_verify_passes(&db, grove_version);
     }
+
+    // -----------------------------------------------------------------
+    // BUG 2 regression: the aggregate-consistency check under an indexed
+    // primary must stay ACTIVE for POPULATED tree children (recorded ==
+    // actual), and only be skipped for EMPTY-inner-Merk children whose
+    // recorded aggregate is a user-supplied secondary ordering key.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn verify_grovedb_pcit_populated_tree_child_verifies_clean() {
+        // A CountTree child under a PCIT primary that has been POPULATED
+        // via generic sub-inserts (so its inner Merk carries real
+        // aggregate data) keeps recorded == actual through propagation.
+        // With BUG 2 fixed, the aggregate-consistency check is active for
+        // this populated child (not skipped) and must report no issues.
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create cidx");
+        // Insert an EMPTY CountTree child via the dedicated API.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"ct",
+            Element::empty_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("empty count tree child");
+        // Empty child: aggregate check is skipped (ordering-key case).
+        assert_verify_passes(&db, grove_version);
+
+        // Populate the CountTree child through the generic path (this is
+        // a sub-tree UNDER the primary, so it propagates through Role A and
+        // is supported). After this the child's recorded count == its
+        // actual inner aggregate.
+        for k in [b"x".as_slice(), b"y", b"z"] {
+            db.insert(
+                [TEST_LEAF, b"cidx", b"ct"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate count tree child");
+        }
+
+        // The child element's recorded count is now 3 (propagated), and
+        // the inner Merk actually holds 3 entries. The now-active
+        // aggregate-consistency check must agree → clean verify.
+        let child = db
+            .get([TEST_LEAF, b"cidx"].as_ref(), b"ct", None, grove_version)
+            .unwrap()
+            .expect("get ct child");
+        match child.underlying() {
+            Element::CountTree(_, c, _) => assert_eq!(*c, 3, "recorded count must be 3"),
+            other => panic!("expected CountTree child, got {:?}", other),
+        }
+        assert_verify_passes(&db, grove_version);
+    }
 }

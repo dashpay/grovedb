@@ -2692,8 +2692,8 @@ where
                             // hash (axes_digest in this case).
                             let zero_axes: Vec<(u8, grovedb_merk::CryptoHash)> =
                                 axes.iter().map(|(t, _)| (*t, NULL_HASH)).collect();
-                            let empty_axes_digest =
-                                grovedb_merk::tree::axes_digest(&zero_axes).unwrap();
+                            let empty_axes_digest = grovedb_merk::tree::axes_digest(&zero_axes)
+                                .unwrap_add_cost(&mut cost);
                             cost_return_on_error_into!(
                                 &mut cost,
                                 element.insert_count_indexed_subtree_into_batch_operations(
