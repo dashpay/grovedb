@@ -220,6 +220,167 @@ impl GroveDb {
         Ok(()).wrap_with_cost(cost)
     }
 
+    /// Resolve a reference child and insert it into an indexed-tree
+    /// primary Merk with the correct layered value hash.
+    ///
+    /// Shared by the PCIT / PSIT / PCPSIT dedicated insert paths: each
+    /// resolves `reference_path_type` against the primary Merk's own
+    /// `path` (+ `item_key`), fetches the target's `value_hash`, and
+    /// inserts via [`Element::insert_reference`] so the merk node carries
+    /// `combine_hash(value_hash(serialized), referenced_value_hash)`.
+    /// `item` still owns the serialized reference bytes (including any
+    /// wrapper byte) that go to storage.
+    fn insert_reference_into_indexed_primary<'db, 'b, B: AsRef<[u8]>, S>(
+        &'db self,
+        primary_merk: &mut Merk<S>,
+        path: &SubtreePath<'b, B>,
+        item_key: &[u8],
+        item: &Element,
+        reference_path_type: &grovedb_element::reference_path::ReferencePathType,
+        transaction: &'db Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>
+    where
+        S: grovedb_storage::StorageContext<'db>,
+    {
+        let mut cost = OperationCost::default();
+        let primary_path_vec = path.to_vec();
+        let resolved_path = cost_return_on_error_no_add!(
+            cost,
+            grovedb_element::reference_path::path_from_reference_path_type(
+                reference_path_type.clone(),
+                &primary_path_vec,
+                Some(item_key)
+            )
+            .map_err(Error::from)
+        );
+        let referenced_item = cost_return_on_error!(
+            &mut cost,
+            self.follow_reference(
+                resolved_path.as_slice().into(),
+                false,
+                Some(transaction),
+                grove_version,
+            )
+        );
+        let referenced_value_hash = cost_return_on_error!(
+            &mut cost,
+            referenced_item
+                .value_hash(grove_version)
+                .map_err(Error::from)
+        );
+        cost_return_on_error!(
+            &mut cost,
+            item.insert_reference(
+                primary_merk,
+                item_key,
+                referenced_value_hash,
+                None,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
+        );
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Seed the upstream `deferred_secondary` when the just-modified
+    /// indexed-tree element lives inside a **nested** `CountIndexedTree`
+    /// primary (`parent_merk` is itself a cidx primary).
+    ///
+    /// In that case the parent element's `count_value` changed, so the
+    /// parent's own count-ordered secondary must be re-mirrored and the
+    /// resulting `(root_hash, root_key)` handed to
+    /// [`Self::propagate_changes_with_transaction_with_initial_deferred`].
+    /// Returns `None` when `parent_merk` is not a cidx primary (no
+    /// nested mirror needed).
+    ///
+    /// **Only the PCIT insert/delete paths call this** — PSIT / PCPSIT
+    /// primaries do not yet nest under another indexed-tree primary, so
+    /// their propagation runs without an initial deferred secondary.
+    /// Preserving that asymmetry is deliberate: extracting this shared
+    /// block does not enable it for PSIT / PCPSIT.
+    ///
+    /// `new_count_in_parent` is `primary_aggregate_data.as_count_u64()`
+    /// captured from the primary's post-mutation snapshot;
+    /// `old_count_in_parent` is the parent element's count before the
+    /// rewrite. `indexed_key` is the just-rewritten element's key inside
+    /// `parent_merk`.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_nested_cidx_deferred_secondary<'db, 'b, B: AsRef<[u8]>, S>(
+        &'db self,
+        parent_merk: &Merk<S>,
+        parent_path: &SubtreePath<'b, B>,
+        indexed_key: &[u8],
+        old_count_in_parent: u64,
+        new_count_in_parent: u64,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<(grovedb_merk::CryptoHash, Option<Vec<u8>>)>, Error>
+    where
+        S: grovedb_storage::StorageContext<'db>,
+    {
+        let mut cost = OperationCost::default();
+        if !parent_merk.tree_type.is_count_indexed_primary() {
+            return Ok(None).wrap_with_cost(cost);
+        }
+        let (gp_path, parent_cidx_key) = match parent_path.derive_parent() {
+            Some(p) => p,
+            None => {
+                return Err(Error::CorruptedCodeExecution(
+                    "nested CountIndexedTree primary requires a grandparent",
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        let gp_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(gp_path, transaction, Some(batch), grove_version,)
+        );
+        let gp_element = cost_return_on_error!(
+            &mut cost,
+            Element::get(&gp_merk, parent_cidx_key, true, grove_version).map_err(Error::MerkError)
+        );
+        let parent_secondary_root_key_before = match gp_element.underlying() {
+            Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
+            _ => {
+                return Err(Error::CorruptedData(
+                    "expected ProvableCountIndexedTree element in grandparent for nested mirror"
+                        .to_string(),
+                ))
+                .wrap_with_cost(cost);
+            }
+        };
+        let mut parent_secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_indexed_secondary_at_path(
+                parent_path.clone(),
+                IndexAxis::Count,
+                parent_secondary_root_key_before,
+                transaction,
+                Some(batch),
+                grove_version,
+            )
+        );
+        cost_return_on_error!(
+            &mut cost,
+            mirror_to_secondary(
+                &mut parent_secondary_merk,
+                indexed_key,
+                Some(old_count_in_parent),
+                new_count_in_parent,
+                grove_version,
+            )
+        );
+        let (sh, sk, _) = cost_return_on_error!(
+            &mut cost,
+            parent_secondary_merk
+                .root_hash_key_and_aggregate_data()
+                .map_err(Error::MerkError)
+        );
+        Ok(Some((sh, sk))).wrap_with_cost(cost)
+    }
+
     /// Open the per-axis secondary Merk for any indexed-tree element
     /// (`ProvableCountIndexedTree`, `ProvableSumIndexedTree`, or
     /// `ProvableCountProvableSumIndexedTree`) at `path`. The secondary
@@ -572,46 +733,22 @@ impl GroveDb {
             Element::Reference(reference_path_type, ..)
             | Element::ReferenceWithSumItem(reference_path_type, ..) => {
                 // Resolve the reference, fetch the target's value_hash,
-                // and insert via Element::insert_reference so the merk
-                // node carries combine_hash(value_hash(serialized),
+                // and insert via the shared helper so the merk node
+                // carries combine_hash(value_hash(serialized),
                 // referenced_value_hash). NonCounted is unwrapped above
                 // by underlying(); the outer `item` still owns the
                 // wrapper byte that goes to storage.
-                let cidx_primary_path_vec = path.to_vec();
-                let resolved_path = cost_return_on_error_no_add!(
-                    cost,
-                    grovedb_element::reference_path::path_from_reference_path_type(
-                        reference_path_type.clone(),
-                        &cidx_primary_path_vec,
-                        Some(item_key)
-                    )
-                    .map_err(Error::from)
-                );
-                let referenced_item = cost_return_on_error!(
-                    &mut cost,
-                    self.follow_reference(
-                        resolved_path.as_slice().into(),
-                        false,
-                        Some(transaction),
-                        grove_version,
-                    )
-                );
-                let referenced_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_item
-                        .value_hash(grove_version)
-                        .map_err(Error::from)
-                );
                 cost_return_on_error!(
                     &mut cost,
-                    item.insert_reference(
+                    self.insert_reference_into_indexed_primary(
                         &mut primary_merk,
+                        &path,
                         item_key,
-                        referenced_value_hash,
-                        None,
+                        &item,
+                        reference_path_type,
+                        transaction,
                         grove_version,
                     )
-                    .map_err(Error::MerkError)
                 );
             }
             Element::Tree(..)
@@ -768,73 +905,22 @@ impl GroveDb {
         //     in parent_merk's primary changed. Mirror this in
         //     parent_merk's secondary, capture the post-mirror state,
         //     and seed `deferred_secondary` for the upstream propagate.
-        let initial_deferred_secondary = if parent_merk.tree_type.is_count_indexed_primary() {
-            let new_count_in_parent = primary_aggregate_data.as_count_u64();
-            let (gp_path, parent_cidx_key) = match parent_path.derive_parent() {
-                Some(p) => p,
-                None => {
-                    return Err(Error::CorruptedCodeExecution(
-                        "nested CountIndexedTree primary requires a grandparent",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            };
-            let gp_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(
-                    gp_path,
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            let gp_element = cost_return_on_error!(
-                &mut cost,
-                Element::get(&gp_merk, parent_cidx_key, true, grove_version)
-                    .map_err(Error::MerkError)
-            );
-            let parent_secondary_root_key_before = match gp_element.underlying() {
-                Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
-                _ => {
-                    return Err(Error::CorruptedData(
-                        "expected ProvableCountIndexedTree element in grandparent for nested \
-                         mirror"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            };
-            let mut parent_secondary_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_indexed_secondary_at_path(
-                    parent_path.clone(),
-                    IndexAxis::Count,
-                    parent_secondary_root_key_before,
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            cost_return_on_error!(
-                &mut cost,
-                mirror_to_secondary(
-                    &mut parent_secondary_merk,
-                    count_indexed_key,
-                    Some(old_count_in_parent),
-                    new_count_in_parent,
-                    grove_version,
-                )
-            );
-            let (sh, sk, _) = cost_return_on_error!(
-                &mut cost,
-                parent_secondary_merk
-                    .root_hash_key_and_aggregate_data()
-                    .map_err(Error::MerkError)
-            );
-            Some((sh, sk))
-        } else {
-            None
-        };
+        //     This nested-cidx propagation is PCIT-only (see the helper's
+        //     doc); the PSIT / PCPSIT paths deliberately propagate
+        //     without an initial deferred secondary.
+        let initial_deferred_secondary = cost_return_on_error!(
+            &mut cost,
+            self.capture_nested_cidx_deferred_secondary(
+                &parent_merk,
+                &parent_path,
+                count_indexed_key,
+                old_count_in_parent,
+                primary_aggregate_data.as_count_u64(),
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
 
         // 8. Hand off to `propagate_changes_with_transaction` from
         //    `parent_path`. The shared propagation logic understands
@@ -1169,6 +1255,195 @@ impl GroveDb {
     // `verify_*_indexed_*` families in the proof submodule.
     // -----------------------------------------------------------------
 
+    // -----------------------------------------------------------------
+    // Generic per-axis query cores.
+    //
+    // The three `indexed_axis_*_generic` methods below carry the ONE
+    // implementation of each direct-query shape (top_k, top_k_paginated,
+    // range). The per-axis public wrappers (`indexed_count_*`,
+    // `indexed_sum_*`, `indexed_avg_*`) differ only in the [`IndexAxis`]
+    // passed, the typed value `T` each secondary key decodes to, and —
+    // for range — the bound-encoding of `T`. Each core takes:
+    //   - `axis`: which per-axis secondary to open + validate.
+    //   - `decode`: split a secondary key into `(T, original_key)`,
+    //     returning `None` on a malformed (too-short) key so the core
+    //     can surface `corrupted_secondary_key_error(axis, ..)`
+    //     identically to the former per-axis clones.
+    // The range core additionally takes the resolved byte bounds.
+    //
+    // Mirrors the generic-core-plus-thin-wrapper shape the proof side
+    // already uses in `operations/proof/indexed_axis.rs`.
+    // -----------------------------------------------------------------
+
+    /// One implementation of the `indexed_<axis>_top_k` shape. See the
+    /// per-axis wrappers for the public contract.
+    fn indexed_axis_top_k_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        k: u16,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => match decode(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(axis, &secondary_key))
+                            .wrap_with_cost(cost);
+                    }
+                },
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// One implementation of the `indexed_<axis>_top_k_paginated` shape.
+    fn indexed_axis_top_k_paginated_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+        );
+
+        let mut all_query = Query::new();
+        all_query.left_to_right = !descending;
+        all_query.insert_all();
+
+        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
+            .unwrap_add_cost(&mut cost);
+
+        // Skip `offset` entries; surface corruption defensively.
+        let mut skipped: u64 = 0;
+        while skipped < offset {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    if decode(&secondary_key).is_none() {
+                        return Err(corrupted_secondary_key_error(axis, &secondary_key))
+                            .wrap_with_cost(cost);
+                    }
+                    skipped += 1;
+                }
+                None => return Ok(Vec::new()).wrap_with_cost(cost),
+            }
+        }
+
+        let mut results = Vec::with_capacity(k as usize);
+        while results.len() < k as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => match decode(&secondary_key) {
+                    Some(decoded) => results.push(decoded),
+                    None => {
+                        return Err(corrupted_secondary_key_error(axis, &secondary_key))
+                            .wrap_with_cost(cost);
+                    }
+                },
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
+    /// One implementation of the `indexed_<axis>_range` shape. The
+    /// per-axis wrapper resolves `lo`/`hi` into the secondary keyspace
+    /// bounds `lo_bytes` (inclusive lower) and `upper_bytes` (exclusive
+    /// upper, `None` for an unbounded `RangeFrom` when `hi` is the axis
+    /// maximum) and passes them here. `decode` returns the typed value
+    /// per matched key.
+    #[allow(clippy::too_many_arguments)]
+    fn indexed_axis_range_generic<'b, B, T>(
+        &self,
+        path: SubtreePath<'b, B>,
+        axis: IndexAxis,
+        lo_bytes: Vec<u8>,
+        upper_bytes: Option<Vec<u8>>,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+        decode: impl Fn(&[u8]) -> Option<(T, Vec<u8>)>,
+    ) -> CostResult<Vec<(T, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let mut cost = OperationCost::default();
+        let tx = TxRef::new(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, axis, tx_ref, grove_version)
+        );
+
+        let mut q = Query::new();
+        q.left_to_right = !descending;
+        match upper_bytes {
+            Some(upper) => q.insert_range(lo_bytes..upper),
+            None => q.insert_range_from(lo_bytes..),
+        }
+
+        let mut iter =
+            KVIterator::new(secondary_merk.storage.raw_iter(), &q).unwrap_add_cost(&mut cost);
+
+        let mut results = Vec::new();
+        while results.len() < limit as usize {
+            match iter.next_kv().unwrap_add_cost(&mut cost) {
+                Some((secondary_key, _)) => {
+                    let Some(decoded) = decode(&secondary_key) else {
+                        return Err(corrupted_secondary_key_error(axis, &secondary_key))
+                            .wrap_with_cost(cost);
+                    };
+                    results.push(decoded);
+                }
+                None => break,
+            }
+        }
+
+        Ok(results).wrap_with_cost(cost)
+    }
+
     // ---- count axis ----
 
     /// Iterate the count-axis secondary in count-order and return the
@@ -1200,54 +1475,15 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        self.indexed_axis_top_k_count(path.into(), k, descending, transaction, grove_version)
-    }
-
-    fn indexed_axis_top_k_count<'b, B>(
-        &self,
-        path: SubtreePath<'b, B>,
-        k: u16,
-        descending: bool,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        let mut cost = OperationCost::default();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version,)
-        );
-
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
-
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode_secondary_key(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Count,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_top_k_generic(
+            path.into(),
+            IndexAxis::Count,
+            k,
+            descending,
+            transaction,
+            grove_version,
+            decode_secondary_key,
+        )
     }
 
     /// Paginated form of [`Self::indexed_count_top_k`]. Skips `offset`
@@ -1274,59 +1510,16 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version,)
-        );
-
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
-
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        // Skip `offset` entries; surface corruption defensively.
-        let mut skipped: u64 = 0;
-        while skipped < offset {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => {
-                    if decode_secondary_key(&secondary_key).is_none() {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Count,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                    skipped += 1;
-                }
-                None => return Ok(Vec::new()).wrap_with_cost(cost),
-            }
-        }
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode_secondary_key(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Count,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_top_k_paginated_generic(
+            path.into(),
+            IndexAxis::Count,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_secondary_key,
+        )
     }
 
     /// Iterate the count-axis secondary over a count range `[lo_count,
@@ -1350,18 +1543,10 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
         if lo_count > hi_count {
             return Ok(Vec::new()).wrap_with_cost(cost);
         }
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Count, tx_ref, grove_version,)
-        );
 
         // Seek directly to the encoded count bounds in the secondary's
         // keyspace instead of doing a full scan with post-filtering. The
@@ -1377,35 +1562,22 @@ impl GroveDb {
             Some((hi_count + 1).to_be_bytes().to_vec())
         };
 
-        let mut q = Query::new();
-        q.left_to_right = !descending;
-        match upper_bytes {
-            Some(upper) => q.insert_range(lo_bytes..upper),
-            None => q.insert_range_from(lo_bytes..),
-        }
-
-        let mut iter =
-            KVIterator::new(secondary_merk.storage.raw_iter(), &q).unwrap_add_cost(&mut cost);
-
-        let mut results = Vec::new();
-        while results.len() < limit as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => {
-                    let Some((count, original_key)) = decode_secondary_key(&secondary_key) else {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Count,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    };
-                    debug_assert!(count >= lo_count && count <= hi_count);
-                    results.push((count, original_key));
-                }
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_range_generic(
+            path.into(),
+            IndexAxis::Count,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            |sk| {
+                decode_secondary_key(sk).inspect(|(count, _)| {
+                    debug_assert!(*count >= lo_count && *count <= hi_count);
+                })
+            },
+        )
+        .add_cost(cost)
     }
 
     /// Count the number of indexed entries whose `count_value` falls in
@@ -1503,41 +1675,15 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
-        );
-
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
-
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode_sum_secondary_key(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Sum,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_top_k_generic(
+            path.into(),
+            IndexAxis::Sum,
+            k,
+            descending,
+            transaction,
+            grove_version,
+            decode_sum_secondary_key,
+        )
     }
 
     /// Paginated form of [`Self::indexed_sum_top_k`]. Skips `offset`
@@ -1558,58 +1704,16 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
-        );
-
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
-
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        let mut skipped: u64 = 0;
-        while skipped < offset {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => {
-                    if decode_sum_secondary_key(&secondary_key).is_none() {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Sum,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                    skipped += 1;
-                }
-                None => return Ok(Vec::new()).wrap_with_cost(cost),
-            }
-        }
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode_sum_secondary_key(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Sum,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_top_k_paginated_generic(
+            path.into(),
+            IndexAxis::Sum,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_sum_secondary_key,
+        )
     }
 
     /// Iterate the sum-axis secondary over a sum range `[lo_sum,
@@ -1633,18 +1737,10 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
         if lo_sum > hi_sum {
             return Ok(Vec::new()).wrap_with_cost(cost);
         }
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Sum, tx_ref, grove_version)
-        );
 
         // Encoded sum bounds: secondary keys are
         // `encode_sum_sort_key(sum) ‖ original_key`. The encoding is
@@ -1654,37 +1750,28 @@ impl GroveDb {
         // `hi == i64::MAX` no representable next-sum exists, so we use
         // an unbounded `RangeFrom`.
         let lo_bytes = encode_sum_sort_key(lo_sum).to_vec();
-        let mut q = Query::new();
-        q.left_to_right = !descending;
-        if hi_sum == i64::MAX {
-            q.insert_range_from(lo_bytes..);
+        let upper_bytes = if hi_sum == i64::MAX {
+            None
         } else {
-            let upper_bytes = encode_sum_sort_key(hi_sum + 1).to_vec();
-            q.insert_range(lo_bytes..upper_bytes);
-        }
+            Some(encode_sum_sort_key(hi_sum + 1).to_vec())
+        };
 
-        let mut iter =
-            KVIterator::new(secondary_merk.storage.raw_iter(), &q).unwrap_add_cost(&mut cost);
-
-        let mut results = Vec::new();
-        while results.len() < limit as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => {
-                    let Some((sum, original_key)) = decode_sum_secondary_key(&secondary_key) else {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Sum,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    };
-                    debug_assert!(sum >= lo_sum && sum <= hi_sum);
-                    results.push((sum, original_key));
-                }
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_range_generic(
+            path.into(),
+            IndexAxis::Sum,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            |sk| {
+                decode_sum_secondary_key(sk).inspect(|(sum, _)| {
+                    debug_assert!(*sum >= lo_sum && *sum <= hi_sum);
+                })
+            },
+        )
+        .add_cost(cost)
     }
 
     /// Sum the `sum_value`s of indexed entries whose sum falls in
@@ -1775,41 +1862,15 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Avg, tx_ref, grove_version)
-        );
-
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
-
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode_avg_secondary_key(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Avg,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_top_k_generic(
+            path.into(),
+            IndexAxis::Avg,
+            k,
+            descending,
+            transaction,
+            grove_version,
+            decode_avg_secondary_key,
+        )
     }
 
     /// Paginated form of [`Self::indexed_avg_top_k`]. Skips `offset`
@@ -1828,58 +1889,16 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Avg, tx_ref, grove_version)
-        );
-
-        let mut all_query = Query::new();
-        all_query.left_to_right = !descending;
-        all_query.insert_all();
-
-        let mut iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query)
-            .unwrap_add_cost(&mut cost);
-
-        let mut skipped: u64 = 0;
-        while skipped < offset {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => {
-                    if decode_avg_secondary_key(&secondary_key).is_none() {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Avg,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                    skipped += 1;
-                }
-                None => return Ok(Vec::new()).wrap_with_cost(cost),
-            }
-        }
-
-        let mut results = Vec::with_capacity(k as usize);
-        while results.len() < k as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => match decode_avg_secondary_key(&secondary_key) {
-                    Some(decoded) => results.push(decoded),
-                    None => {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Avg,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    }
-                },
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_top_k_paginated_generic(
+            path.into(),
+            IndexAxis::Avg,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_avg_secondary_key,
+        )
     }
 
     /// Iterate the avg-axis secondary over an avg range `[lo_avg,
@@ -1912,54 +1931,37 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
+        let cost = OperationCost::default();
         if lo_avg > hi_avg {
             return Ok(Vec::new()).wrap_with_cost(cost);
         }
-        let path: SubtreePath<B> = path.into();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_validated_axis_secondary(path, IndexAxis::Avg, tx_ref, grove_version)
-        );
 
         let lo_bytes = encode_avg_sort_key(lo_avg).to_vec();
-        let mut q = Query::new();
-        q.left_to_right = !descending;
-        if hi_avg == i128::MAX {
-            q.insert_range_from(lo_bytes..);
+        let upper_bytes = if hi_avg == i128::MAX {
+            None
         } else {
             // `hi_avg + 1` is the exclusive upper boundary at the next
             // representable avg; safe because we already returned for
             // `hi_avg == i128::MAX` above.
-            let upper_bytes = encode_avg_sort_key(hi_avg + 1).to_vec();
-            q.insert_range(lo_bytes..upper_bytes);
-        }
+            Some(encode_avg_sort_key(hi_avg + 1).to_vec())
+        };
 
-        let mut iter =
-            KVIterator::new(secondary_merk.storage.raw_iter(), &q).unwrap_add_cost(&mut cost);
-
-        let mut results = Vec::new();
-        while results.len() < limit as usize {
-            match iter.next_kv().unwrap_add_cost(&mut cost) {
-                Some((secondary_key, _)) => {
-                    let Some((avg, original_key)) = decode_avg_secondary_key(&secondary_key) else {
-                        return Err(corrupted_secondary_key_error(
-                            IndexAxis::Avg,
-                            &secondary_key,
-                        ))
-                        .wrap_with_cost(cost);
-                    };
-                    debug_assert!(avg >= lo_avg && avg <= hi_avg);
-                    results.push((avg, original_key));
-                }
-                None => break,
-            }
-        }
-
-        Ok(results).wrap_with_cost(cost)
+        self.indexed_axis_range_generic(
+            path.into(),
+            IndexAxis::Avg,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            |sk| {
+                decode_avg_secondary_key(sk).inspect(|(avg, _)| {
+                    debug_assert!(*avg >= lo_avg && *avg <= hi_avg);
+                })
+            },
+        )
+        .add_cost(cost)
     }
 
     /// Shared scaffolding for the per-axis direct query APIs: validate
@@ -2333,74 +2335,21 @@ impl GroveDb {
 
         // 7b (nested case). Mirror parent's secondary if parent_merk is
         //     itself a CountIndexedTree primary, then seed
-        //     `deferred_secondary` for upstream propagate.
-        let initial_deferred_secondary = if parent_merk.tree_type.is_count_indexed_primary() {
-            let new_count_in_parent = primary_aggregate_data.as_count_u64();
-            let (gp_path, parent_cidx_key) = match parent_path.derive_parent() {
-                Some(p) => p,
-                None => {
-                    return Err(Error::CorruptedCodeExecution(
-                        "nested CountIndexedTree primary requires a grandparent",
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            };
-            let gp_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_transactional_merk_at_path(
-                    gp_path,
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            let gp_element = cost_return_on_error!(
-                &mut cost,
-                Element::get(&gp_merk, parent_cidx_key, true, grove_version)
-                    .map_err(Error::MerkError)
-            );
-            let parent_secondary_root_key_before = match gp_element.underlying() {
-                Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
-                _ => {
-                    return Err(Error::CorruptedData(
-                        "expected ProvableCountIndexedTree element in grandparent for nested \
-                         mirror"
-                            .to_string(),
-                    ))
-                    .wrap_with_cost(cost);
-                }
-            };
-            let mut parent_secondary_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_indexed_secondary_at_path(
-                    parent_path.clone(),
-                    IndexAxis::Count,
-                    parent_secondary_root_key_before,
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            cost_return_on_error!(
-                &mut cost,
-                mirror_to_secondary(
-                    &mut parent_secondary_merk,
-                    count_indexed_key,
-                    Some(old_count_in_parent),
-                    new_count_in_parent,
-                    grove_version,
-                )
-            );
-            let (sh, sk, _) = cost_return_on_error!(
-                &mut cost,
-                parent_secondary_merk
-                    .root_hash_key_and_aggregate_data()
-                    .map_err(Error::MerkError)
-            );
-            Some((sh, sk))
-        } else {
-            None
-        };
+        //     `deferred_secondary` for upstream propagate. PCIT-only
+        //     asymmetry (see the helper doc).
+        let initial_deferred_secondary = cost_return_on_error!(
+            &mut cost,
+            self.capture_nested_cidx_deferred_secondary(
+                &parent_merk,
+                &parent_path,
+                count_indexed_key,
+                old_count_in_parent,
+                primary_aggregate_data.as_count_u64(),
+                transaction,
+                batch,
+                grove_version,
+            )
+        );
 
         // Hand off to shared propagation (CountIndexedTree-aware).
         let mut merk_cache: std::collections::HashMap<
@@ -2607,41 +2556,17 @@ impl GroveDb {
                 );
             }
             Element::ReferenceWithSumItem(reference_path_type, ..) => {
-                let psit_primary_path_vec = path.to_vec();
-                let resolved_path = cost_return_on_error_no_add!(
-                    cost,
-                    grovedb_element::reference_path::path_from_reference_path_type(
-                        reference_path_type.clone(),
-                        &psit_primary_path_vec,
-                        Some(item_key)
-                    )
-                    .map_err(Error::from)
-                );
-                let referenced_item = cost_return_on_error!(
-                    &mut cost,
-                    self.follow_reference(
-                        resolved_path.as_slice().into(),
-                        false,
-                        Some(transaction),
-                        grove_version,
-                    )
-                );
-                let referenced_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_item
-                        .value_hash(grove_version)
-                        .map_err(Error::from)
-                );
                 cost_return_on_error!(
                     &mut cost,
-                    item.insert_reference(
+                    self.insert_reference_into_indexed_primary(
                         &mut primary_merk,
+                        &path,
                         item_key,
-                        referenced_value_hash,
-                        None,
+                        &item,
+                        reference_path_type,
+                        transaction,
                         grove_version,
                     )
-                    .map_err(Error::MerkError)
                 );
             }
             // Sum-bearing trees: write with NULL_HASH (empty subtree
@@ -3179,41 +3104,17 @@ impl GroveDb {
                 );
             }
             Element::ReferenceWithSumItem(reference_path_type, ..) => {
-                let primary_path_vec = path.to_vec();
-                let resolved_path = cost_return_on_error_no_add!(
-                    cost,
-                    grovedb_element::reference_path::path_from_reference_path_type(
-                        reference_path_type.clone(),
-                        &primary_path_vec,
-                        Some(item_key)
-                    )
-                    .map_err(Error::from)
-                );
-                let referenced_item = cost_return_on_error!(
-                    &mut cost,
-                    self.follow_reference(
-                        resolved_path.as_slice().into(),
-                        false,
-                        Some(transaction),
-                        grove_version,
-                    )
-                );
-                let referenced_value_hash = cost_return_on_error!(
-                    &mut cost,
-                    referenced_item
-                        .value_hash(grove_version)
-                        .map_err(Error::from)
-                );
                 cost_return_on_error!(
                     &mut cost,
-                    item.insert_reference(
+                    self.insert_reference_into_indexed_primary(
                         &mut primary_merk,
+                        &path,
                         item_key,
-                        referenced_value_hash,
-                        None,
+                        &item,
+                        reference_path_type,
+                        transaction,
                         grove_version,
                     )
-                    .map_err(Error::MerkError)
                 );
             }
             Element::CountSumTree(..)
@@ -3579,6 +3480,13 @@ impl GroveDb {
 /// secondary stores entries at `(sum_sort_key ‖ item_key)` whose value
 /// is a `SumItem(sum)` so the secondary's sum aggregate matches the
 /// primary's.
+///
+/// This is the [`IndexAxis::Sum`] special case of
+/// [`mirror_pcpsit_axis_to_secondary`]: a PSIT always writes a fresh
+/// entry, so `new_sum` is present (count is irrelevant to the Sum-axis
+/// key/payload and is threaded as `1`). Delegating keeps the Sum-axis
+/// mirror byte-for-byte in one place. The Sum-axis key ignores count, so
+/// the count values passed here never affect the produced bytes.
 fn mirror_psit_to_secondary<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
     item_key: &[u8],
@@ -3586,36 +3494,16 @@ fn mirror_psit_to_secondary<'db, S: StorageContext<'db>>(
     new_sum: i64,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
-    let mut cost = OperationCost::default();
-    if let Some(old) = old_sum
-        && old == new_sum
-    {
-        return Ok(()).wrap_with_cost(cost);
-    }
-    if let Some(old) = old_sum {
-        let old_secondary_key = make_axis_secondary_key(IndexAxis::Sum, 0, old, item_key);
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                secondary,
-                old_secondary_key.as_slice(),
-                None,
-                false,
-                TreeType::ProvableSumTree,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-    }
-    let new_secondary_key = make_axis_secondary_key(IndexAxis::Sum, 0, new_sum, item_key);
-    let secondary_entry = Element::new_sum_item(new_sum);
-    cost_return_on_error!(
-        &mut cost,
-        secondary_entry
-            .insert(secondary, new_secondary_key.as_slice(), None, grove_version)
-            .map_err(Error::MerkError)
-    );
-    Ok(()).wrap_with_cost(cost)
+    mirror_pcpsit_axis_to_secondary(
+        secondary,
+        IndexAxis::Sum,
+        item_key,
+        old_sum.map(|_| 1u64),
+        old_sum,
+        Some(1u64),
+        Some(new_sum),
+        grove_version,
+    )
 }
 
 /// Apply a PCPSIT axis secondary mirror covering insert, update, and
@@ -3733,6 +3621,14 @@ fn mirror_pcpsit_axis_to_secondary<'db, S: StorageContext<'db>>(
 /// - `(Some(c), None)`: delete the secondary entry at count `c`.
 /// - `(Some(o), Some(n))`: update — delete entry at `o` and insert at `n`
 ///   (skips both if `o == n`).
+///
+/// This is the [`IndexAxis::Count`] special case of
+/// [`mirror_pcpsit_axis_to_secondary`]: the Count-axis key and payload
+/// ignore the sum entirely, so the sum values threaded below never affect
+/// the produced bytes and each Option pair maps to the same delete/insert
+/// as the explicit table above. (For the Count axis the pcpsit fast-path
+/// payload check is always `Item(empty) == Item(empty)`, so it reduces to
+/// the former `old_count == new_count` no-op.)
 pub(crate) fn mirror_to_secondary_for_batch<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
     item_key: &[u8],
@@ -3740,42 +3636,26 @@ pub(crate) fn mirror_to_secondary_for_batch<'db, S: StorageContext<'db>>(
     new_count: Option<u64>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
-    let mut cost = OperationCost::default();
-    if old_count == new_count {
-        // (None, None) and (Some(o) == Some(o)) are no-ops.
-        return Ok(()).wrap_with_cost(cost);
-    }
-    if let Some(old) = old_count {
-        let old_secondary_key = make_secondary_key(old, item_key);
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                secondary,
-                old_secondary_key.as_slice(),
-                None,
-                false,
-                TreeType::ProvableCountTree,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-    }
-    if let Some(new) = new_count {
-        let new_secondary_key = make_secondary_key(new, item_key);
-        let secondary_entry = Element::new_item(Vec::new());
-        cost_return_on_error!(
-            &mut cost,
-            secondary_entry
-                .insert(secondary, new_secondary_key.as_slice(), None, grove_version)
-                .map_err(Error::MerkError)
-        );
-    }
-    Ok(()).wrap_with_cost(cost)
+    mirror_pcpsit_axis_to_secondary(
+        secondary,
+        IndexAxis::Count,
+        item_key,
+        old_count,
+        old_count.map(|_| 0i64),
+        new_count,
+        new_count.map(|_| 0i64),
+        grove_version,
+    )
 }
 
 /// Apply the secondary-mirror update for a primary insert/update.
 ///
 /// `old_count` is `None` for a fresh insert, `Some(c)` for an update.
+///
+/// The [`IndexAxis::Count`], always-present-`new_count` special case of
+/// [`mirror_pcpsit_axis_to_secondary`] — see
+/// [`mirror_to_secondary_for_batch`] for why the threaded sum values are
+/// irrelevant on the Count axis.
 pub(crate) fn mirror_to_secondary<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
     item_key: &[u8],
@@ -3783,41 +3663,16 @@ pub(crate) fn mirror_to_secondary<'db, S: StorageContext<'db>>(
     new_count: u64,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
-    let mut cost = OperationCost::default();
-
-    if let Some(old) = old_count
-        && old == new_count
-    {
-        // The secondary entry is already at the right position.
-        return Ok(()).wrap_with_cost(cost);
-    }
-
-    if let Some(old) = old_count {
-        let old_secondary_key = make_secondary_key(old, item_key);
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                secondary,
-                old_secondary_key.as_slice(),
-                None,
-                false,
-                TreeType::ProvableCountTree,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-    }
-
-    let new_secondary_key = make_secondary_key(new_count, item_key);
-    let secondary_entry = Element::new_item(Vec::new());
-    cost_return_on_error!(
-        &mut cost,
-        secondary_entry
-            .insert(secondary, new_secondary_key.as_slice(), None, grove_version)
-            .map_err(Error::MerkError)
-    );
-
-    Ok(()).wrap_with_cost(cost)
+    mirror_pcpsit_axis_to_secondary(
+        secondary,
+        IndexAxis::Count,
+        item_key,
+        old_count,
+        old_count.map(|_| 0i64),
+        Some(new_count),
+        Some(0i64),
+        grove_version,
+    )
 }
 
 /// Maximum allowed length for a key inserted directly into a cidx
