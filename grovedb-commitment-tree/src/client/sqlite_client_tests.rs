@@ -6,7 +6,9 @@ mod tests {
     use orchard::tree::Anchor;
     use rusqlite::Connection;
 
-    use crate::{test_utils::test_leaf, ClientPersistentCommitmentTree};
+    use crate::{
+        test_utils::test_leaf, ClientMemoryCommitmentTree, ClientPersistentCommitmentTree,
+    };
 
     fn memory_tree() -> ClientPersistentCommitmentTree {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -181,6 +183,66 @@ mod tests {
         assert!(
             msg.contains("invalid Pallas field element"),
             "error should mention field element: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_witness_survives_checkpoint_pruning() {
+        // Regression test: sql_list_checkpoints used to iterate DESC, which
+        // violates the ShardStore contract (ascending checkpoint ID order).
+        // shardtree's prune_excess_checkpoints assumes oldest-first, so the
+        // wrong order made it delete the newest checkpoints and clear the
+        // retention flags on leaves that surviving checkpoints still need,
+        // destroying witness data once max_checkpoints was exceeded. Drive
+        // both stores through enough checkpoints to force pruning and assert
+        // they stay in lockstep.
+        const MAX_CHECKPOINTS: usize = 2;
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let mut sqlite_tree =
+            ClientPersistentCommitmentTree::open(conn, MAX_CHECKPOINTS).expect("open sqlite tree");
+        let mut memory_tree = ClientMemoryCommitmentTree::new(MAX_CHECKPOINTS);
+
+        // A marked note early in the tree, whose witness must survive.
+        sqlite_tree
+            .append(test_leaf(0), Retention::Marked)
+            .expect("append marked");
+        memory_tree
+            .append(test_leaf(0), Retention::Marked)
+            .expect("append marked");
+
+        // Enough checkpoints to trigger pruning several times over.
+        for i in 1..=6u32 {
+            sqlite_tree
+                .append(test_leaf(i as u64), Retention::Ephemeral)
+                .expect("append");
+            memory_tree
+                .append(test_leaf(i as u64), Retention::Ephemeral)
+                .expect("append");
+            assert!(sqlite_tree.checkpoint(i).expect("sqlite checkpoint"));
+            assert!(memory_tree.checkpoint(i).expect("memory checkpoint"));
+        }
+
+        assert_eq!(
+            sqlite_tree.anchor().expect("sqlite anchor"),
+            memory_tree.anchor().expect("memory anchor"),
+            "anchors should match after pruning"
+        );
+
+        let sqlite_witness = sqlite_tree
+            .witness(Position::from(0), 0)
+            .expect("sqlite witness")
+            .expect("sqlite witness should exist for marked leaf after pruning");
+        let memory_witness = memory_tree
+            .witness(Position::from(0), 0)
+            .expect("memory witness")
+            .expect("memory witness should exist for marked leaf after pruning");
+
+        assert_eq!(sqlite_witness.position(), memory_witness.position());
+        assert_eq!(
+            sqlite_witness.auth_path(),
+            memory_witness.auth_path(),
+            "witness auth paths should match after pruning"
         );
     }
 
