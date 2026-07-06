@@ -733,7 +733,7 @@ impl GroveDb {
             reconstruct::ElementReconstructExtensions,
         };
 
-        use crate::operations::count_indexed_tree::mirror_to_secondary;
+        use crate::operations::indexed_tree::mirror_to_secondary;
 
         let mut cost = OperationCost::default();
 
@@ -870,8 +870,9 @@ impl GroveDb {
                     };
                     let secondary_merk = cost_return_on_error!(
                         &mut cost,
-                        self.open_count_indexed_secondary_at_path(
+                        self.open_indexed_secondary_at_path(
                             current_path.clone(),
+                            grovedb_element::indexed::IndexAxis::Count,
                             secondary_root_key_before,
                             transaction,
                             Some(batch),
@@ -969,8 +970,9 @@ impl GroveDb {
 
                 let mut secondary_merk = cost_return_on_error!(
                     &mut cost,
-                    self.open_count_indexed_secondary_at_path(
+                    self.open_indexed_secondary_at_path(
                         parent_path.clone(),
+                        grovedb_element::indexed::IndexAxis::Count,
                         secondary_root_key_before,
                         transaction,
                         Some(batch),
@@ -1406,8 +1408,9 @@ impl GroveDb {
                         _ => unreachable!("matched cidx variant above"),
                     };
                     let secondary_merk = self
-                        .open_count_indexed_secondary_at_path(
+                        .open_indexed_secondary_at_path(
                             new_path_ref.clone(),
+                            grovedb_element::indexed::IndexAxis::Count,
                             secondary_root_key,
                             transaction,
                             batch,
@@ -1473,9 +1476,7 @@ impl GroveDb {
                         // (legacy data, corruption, external storage
                         // injection). Flag explicitly via a sentinel
                         // path so the cause is visible.
-                        if p_key.len()
-                            > crate::operations::count_indexed_tree::MAX_CIDX_ITEM_KEY_LEN
-                        {
+                        if p_key.len() > crate::operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN {
                             let mut p = new_path.to_vec();
                             p.push(b"__cidx_primary_key_oversize__".to_vec());
                             p.push(p_key.clone());

@@ -1305,58 +1305,6 @@ mod tests {
         }
     }
 
-    // ---- legacy alias: count_indexed_top_k delegates to indexed_count_top_k ----
-
-    #[test]
-    #[allow(deprecated)]
-    fn legacy_count_indexed_top_k_alias_matches_new_indexed_count_top_k() {
-        let grove_version = GroveVersion::latest();
-        let db = make_test_grovedb(grove_version);
-        insert_empty_pcit(&db, b"cidx", grove_version);
-        pcit_populate_known_set(&db, grove_version);
-
-        let new_api = db
-            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
-            .unwrap()
-            .expect("new");
-        let legacy = db
-            .count_indexed_top_k([TEST_LEAF, b"cidx"].as_ref(), 3, true, None, grove_version)
-            .unwrap()
-            .expect("legacy");
-        assert_eq!(new_api, legacy);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn legacy_count_indexed_range_aggregate_alias_matches_new() {
-        let grove_version = GroveVersion::latest();
-        let db = make_test_grovedb(grove_version);
-        insert_empty_pcit(&db, b"cidx", grove_version);
-        pcit_populate_known_set(&db, grove_version);
-
-        let new_api = db
-            .indexed_count_range_aggregate(
-                [TEST_LEAF, b"cidx"].as_ref(),
-                5,
-                12,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("new");
-        let legacy = db
-            .count_indexed_count_range_aggregate(
-                [TEST_LEAF, b"cidx"].as_ref(),
-                5,
-                12,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("legacy");
-        assert_eq!(new_api, legacy);
-    }
-
     // -----------------------------------------------------------------
     // Depth > 1 propagation paths
     // -----------------------------------------------------------------

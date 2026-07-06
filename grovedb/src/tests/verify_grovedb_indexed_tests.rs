@@ -74,8 +74,9 @@ mod tests {
 
         {
             let mut secondary_merk = db
-                .open_count_indexed_secondary_at_path(
+                .open_indexed_secondary_at_path(
                     path,
+                    IndexAxis::Count,
                     secondary_root_key,
                     &tx,
                     Some(&batch),
@@ -131,8 +132,9 @@ mod tests {
 
         {
             let mut secondary_merk = db
-                .open_count_indexed_secondary_at_path(
+                .open_indexed_secondary_at_path(
                     path,
+                    IndexAxis::Count,
                     secondary_root_key,
                     &tx,
                     Some(&batch),

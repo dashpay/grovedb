@@ -744,7 +744,7 @@ impl GroveDb {
                             // V0 is a frozen wire format. Adding cidx
                             // descent to it would change the proof bytes,
                             // so V0 will not learn cidx subqueries. Use
-                            // V1 (or the dedicated `prove_count_indexed_*`
+                            // V1 (or the dedicated `prove_indexed_count_*`
                             // entry points) for cidx queries.
                             Ok(Element::ProvableCountIndexedTree(..))
                             | Ok(Element::ProvableSumIndexedTree(..))
@@ -755,7 +755,7 @@ impl GroveDb {
                                 return Err(Error::NotSupported(
                                     "V0 proofs do not support subqueries into \
                                      CountIndexedTree / ProvableCountIndexedTree; \
-                                     use prove_query_v1 or prove_count_indexed_top_k"
+                                     use prove_query_v1 or prove_indexed_count_top_k"
                                         .to_string(),
                                 ))
                                 .wrap_with_cost(cost);
@@ -1870,7 +1870,7 @@ impl GroveDb {
                             // primary_proof) and chains via
                             // combine_hash_three at this layer. Callers who
                             // want secondary-ordered output should use
-                            // prove_count_indexed_top_k.
+                            // prove_indexed_count_top_k.
                             // Cidx descent only for NON-EMPTY primary
                             // (Some(_)): mirrors the regular-tree
                             // pattern above. An empty cidx primary
@@ -1918,8 +1918,9 @@ impl GroveDb {
                                     lower_path_refs.as_slice().into();
                                 let secondary_merk = cost_return_on_error!(
                                     &mut cost,
-                                    self.open_count_indexed_secondary_at_path(
+                                    self.open_indexed_secondary_at_path(
                                         cidx_subtree_path,
+                                        grovedb_element::indexed::IndexAxis::Count,
                                         secondary_root_key,
                                         &tx,
                                         None,

@@ -283,30 +283,6 @@ impl GroveDb {
         }
     }
 
-    /// Backward-compatible alias for callers still using the
-    /// count-only entrypoint. Forwards to [`open_indexed_secondary_at_path`]
-    /// with `IndexAxis::Count`.
-    pub(crate) fn open_count_indexed_secondary_at_path<'db, 'b, B>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        secondary_root_key: Option<Vec<u8>>,
-        tx: &'db Transaction,
-        batch: Option<&'db StorageBatch>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        self.open_indexed_secondary_at_path(
-            path,
-            IndexAxis::Count,
-            secondary_root_key,
-            tx,
-            batch,
-            grove_version,
-        )
-    }
-
     /// Helper used by the batch path: open the secondary Merk for the cidx
     /// primary at `path`. Reads the parent merk's cidx element to discover
     /// the secondary's current root_key, then opens the secondary at the
@@ -350,8 +326,9 @@ impl GroveDb {
                 .wrap_with_cost(cost);
             }
         };
-        self.open_count_indexed_secondary_at_path(
+        self.open_indexed_secondary_at_path(
             path,
+            IndexAxis::Count,
             secondary_root_key,
             tx,
             Some(batch),
@@ -709,8 +686,9 @@ impl GroveDb {
         // 5. Open secondary and apply the mirror update.
         let mut secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_count_indexed_secondary_at_path(
+            self.open_indexed_secondary_at_path(
                 path,
+                IndexAxis::Count,
                 secondary_root_key_before,
                 transaction,
                 Some(batch),
@@ -828,8 +806,9 @@ impl GroveDb {
             };
             let mut parent_secondary_merk = cost_return_on_error!(
                 &mut cost,
-                self.open_count_indexed_secondary_at_path(
+                self.open_indexed_secondary_at_path(
                     parent_path.clone(),
+                    IndexAxis::Count,
                     parent_secondary_root_key_before,
                     transaction,
                     Some(batch),
@@ -1046,8 +1025,9 @@ impl GroveDb {
 
         let mut secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_count_indexed_secondary_at_path(
+            self.open_indexed_secondary_at_path(
                 path.clone(),
+                IndexAxis::Count,
                 secondary_root_key_before,
                 transaction,
                 Some(batch),
@@ -1206,8 +1186,8 @@ impl GroveDb {
     /// primary value is the caller's responsibility (use
     /// `db.get(path, original_key, ...)`).
     ///
-    /// For a verifiable variant, see [`Self::prove_count_indexed_top_k`]
-    /// and [`Self::verify_count_indexed_top_k`].
+    /// For a verifiable variant, see [`Self::prove_indexed_count_top_k`]
+    /// and [`Self::verify_indexed_count_top_k`].
     pub fn indexed_count_top_k<'b, B, P>(
         &self,
         path: P,
@@ -1278,7 +1258,7 @@ impl GroveDb {
     /// skip is performed at the secondary's storage iterator level —
     /// this is not a verifiable / proof-bounded skip; for the provable
     /// variant use
-    /// [`Self::prove_count_indexed_top_k_paginated`] which relies on the
+    /// [`Self::prove_indexed_count_top_k_paginated`] which relies on the
     /// merk-level count-offset proof to commit the skipped count via
     /// `HashWithCount`.
     pub fn indexed_count_top_k_paginated<'b, B, P>(
@@ -1447,8 +1427,8 @@ impl GroveDb {
     /// indexed-tree have?". This call has no cryptographic guarantee —
     /// the returned count is whatever the merk reports. For a
     /// verifiable count, use
-    /// [`Self::prove_count_indexed_count_range_aggregate`] +
-    /// [`Self::verify_count_indexed_count_range_aggregate`].
+    /// [`Self::prove_indexed_count_range_aggregate`] +
+    /// [`Self::verify_indexed_count_range_aggregate`].
     pub fn indexed_count_range_aggregate<'b, B, P>(
         &self,
         path: P,
@@ -2023,91 +2003,6 @@ impl GroveDb {
         .add_cost(cost)
     }
 
-    // -----------------------------------------------------------------
-    // Legacy `count_indexed_*` aliases — kept as deprecated wrappers
-    // delegating to the axis-agnostic `indexed_count_*` family.
-    // -----------------------------------------------------------------
-
-    /// Deprecated alias for [`Self::indexed_count_top_k`]. Identical
-    /// behavior; callers should migrate to the new name.
-    #[deprecated(note = "use indexed_count_top_k instead")]
-    pub fn count_indexed_top_k<'b, B, P>(
-        &self,
-        path: P,
-        k: u16,
-        descending: bool,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        self.indexed_count_top_k(path, k, descending, transaction, grove_version)
-    }
-
-    /// Deprecated alias for [`Self::indexed_count_top_k_paginated`].
-    #[deprecated(note = "use indexed_count_top_k_paginated instead")]
-    pub fn count_indexed_top_k_paginated<'b, B, P>(
-        &self,
-        path: P,
-        k: u16,
-        offset: u64,
-        descending: bool,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        self.indexed_count_top_k_paginated(path, k, offset, descending, transaction, grove_version)
-    }
-
-    /// Deprecated alias for [`Self::indexed_count_range`].
-    #[deprecated(note = "use indexed_count_range instead")]
-    pub fn count_indexed_count_range<'b, B, P>(
-        &self,
-        path: P,
-        lo_count: u64,
-        hi_count: u64,
-        descending: bool,
-        limit: u16,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Vec<(u64, Vec<u8>)>, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        self.indexed_count_range(
-            path,
-            lo_count,
-            hi_count,
-            descending,
-            limit,
-            transaction,
-            grove_version,
-        )
-    }
-
-    /// Deprecated alias for [`Self::indexed_count_range_aggregate`].
-    #[deprecated(note = "use indexed_count_range_aggregate instead")]
-    pub fn count_indexed_count_range_aggregate<'b, B, P>(
-        &self,
-        path: P,
-        lo_count: u64,
-        hi_count: u64,
-        transaction: TransactionArg,
-        grove_version: &GroveVersion,
-    ) -> CostResult<u64, Error>
-    where
-        B: AsRef<[u8]> + 'b,
-        P: Into<SubtreePath<'b, B>>,
-    {
-        self.indexed_count_range_aggregate(path, lo_count, hi_count, transaction, grove_version)
-    }
-
     /// Read the per-axis `secondary_root_key` from the indexed-tree
     /// element at the given `path`, validating that the requested `axis`
     /// is supported by the variant at the path's last segment.
@@ -2368,8 +2263,9 @@ impl GroveDb {
         // Open and update secondary.
         let mut secondary_merk = cost_return_on_error!(
             &mut cost,
-            self.open_count_indexed_secondary_at_path(
+            self.open_indexed_secondary_at_path(
                 path,
+                IndexAxis::Count,
                 secondary_root_key_before,
                 transaction,
                 Some(batch),
@@ -2476,8 +2372,9 @@ impl GroveDb {
             };
             let mut parent_secondary_merk = cost_return_on_error!(
                 &mut cost,
-                self.open_count_indexed_secondary_at_path(
+                self.open_indexed_secondary_at_path(
                     parent_path.clone(),
+                    IndexAxis::Count,
                     parent_secondary_root_key_before,
                     transaction,
                     Some(batch),

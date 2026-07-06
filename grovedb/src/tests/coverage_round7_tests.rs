@@ -192,7 +192,7 @@ mod tests {
         // The cidx now has 2 entries; outer's view of cidx must reflect
         // the new (primary, secondary) root state.
         let top = db
-            .count_indexed_top_k(
+            .indexed_count_top_k(
                 [TEST_LEAF, b"outer", b"cidx"].as_ref(),
                 10,
                 true,
@@ -1329,8 +1329,9 @@ mod tests {
         };
         {
             let mut secondary_merk = db
-                .open_count_indexed_secondary_at_path(
+                .open_indexed_secondary_at_path(
                     path,
+                    IndexAxis::Count,
                     secondary_root_key,
                     &tx,
                     Some(&batch),
@@ -1466,8 +1467,9 @@ mod tests {
         };
         {
             let mut secondary_merk = db
-                .open_count_indexed_secondary_at_path(
+                .open_indexed_secondary_at_path(
                     path,
+                    IndexAxis::Count,
                     secondary_root_key,
                     &tx,
                     Some(&batch),

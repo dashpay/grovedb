@@ -9,8 +9,6 @@ mod aggregate_count_and_sum;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod aggregate_sum;
 #[cfg(feature = "minimal")]
-pub mod count_indexed;
-#[cfg(feature = "minimal")]
 mod generate;
 #[cfg(feature = "minimal")]
 pub mod indexed_axis;
@@ -238,7 +236,7 @@ pub enum ProofBytes {
     /// covering the subquery result set; subqueries into cidx via the
     /// generic V1 envelope use the primary as the descent target. Callers
     /// who want secondary-ordered output should use the dedicated
-    /// `prove_count_indexed_top_k` proof shape instead.
+    /// `prove_indexed_count_top_k` proof shape instead.
     CountIndexedTree(Vec<u8>),
 }
 

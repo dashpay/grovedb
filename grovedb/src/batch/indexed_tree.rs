@@ -44,7 +44,7 @@ use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use super::{GroveOp, KeyInfo, QualifiedGroveDbOp};
-use crate::{operations::count_indexed_tree::MAX_CIDX_ITEM_KEY_LEN, Element, Error};
+use crate::{operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN, Element, Error};
 
 /// Capture, *before* batch ops are applied to the primary merk, the
 /// pre-apply `count_value` for each key this level's ops will mutate.
@@ -194,7 +194,7 @@ pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>
     for (key, old_count, new_count) in deltas {
         cost_return_on_error!(
             &mut cost,
-            crate::operations::count_indexed_tree::mirror_to_secondary_for_batch(
+            crate::operations::indexed_tree::mirror_to_secondary_for_batch(
                 secondary_merk,
                 key.as_slice(),
                 old_count,

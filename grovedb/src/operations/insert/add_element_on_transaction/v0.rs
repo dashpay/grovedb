@@ -296,8 +296,9 @@ impl GroveDb {
                         }
                         let secondary_merk = cost_return_on_error!(
                             &mut cost,
-                            self.open_count_indexed_secondary_at_path(
+                            self.open_indexed_secondary_at_path(
                                 child_path,
+                                grovedb_element::indexed::IndexAxis::Count,
                                 secondary.clone(),
                                 transaction,
                                 Some(batch),

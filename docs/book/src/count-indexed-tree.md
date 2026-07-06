@@ -427,14 +427,14 @@ Merk is not touched. The verifier receives the primary's root hash plus a
 ```rust
 // Shipped API on `GroveDb`:
 let entries: Vec<(u64, Vec<u8>)> = db
-    .count_indexed_top_k(path, k, /* descending: */ true, transaction, grove_version)?
+    .indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("top-k");
 
 // Verifiable variant — proof + verification:
 let proof_bytes = db
-    .prove_count_indexed_top_k(path, k, /* descending: */ true, transaction, grove_version)?
+    .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("prove");
-let result = GroveDb::verify_count_indexed_top_k(&proof_bytes, &path)?;
+let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path)?;
 // result.entries: Vec<(u64, Vec<u8>)>, result.root_hash: [u8; 32]
 ```
 
@@ -465,7 +465,7 @@ data they wouldn't read.
 
 ```rust
 let entries: Vec<(u64, Vec<u8>)> = db
-    .count_indexed_count_range(
+    .indexed_count_range(
         path,
         min,                       // u64, inclusive
         max,                       // u64, inclusive
@@ -494,23 +494,23 @@ q.insert_range(3u64.to_be_bytes().to_vec()..6u64.to_be_bytes().to_vec());
 q.left_to_right = true;
 
 let proof_bytes = db
-    .prove_count_indexed_query(path, q.clone(), Some(limit), tx, grove_version)?
+    .prove_indexed_count_query(path, q.clone(), Some(limit), tx, grove_version)?
     .expect("prove");
 
 // Verify with the SAME query (positional binding):
-let result = GroveDb::verify_count_indexed_query(&proof_bytes, q, &path)?;
+let result = GroveDb::verify_indexed_count_query(&proof_bytes, q, &path)?;
 ```
 
-`prove_count_indexed_top_k` is just a thin wrapper around
-`prove_count_indexed_query` with a full-range query and the requested
+`prove_indexed_count_top_k` is just a thin wrapper around
+`prove_indexed_count_query` with a full-range query and the requested
 `descending` flag.
 
 ### How many entries have count in `[a, b]`?
 
 Because the secondary is a `ProvableCountTree`, this is answered in
 `O(log n + k)` via the existing range query against the secondary,
-using the same `prove_count_indexed_query` /
-`verify_count_indexed_query` shape as count-range reads — the
+using the same `prove_indexed_count_query` /
+`verify_indexed_count_query` shape as count-range reads — the
 returned entry list's length is the count, and the proof binds it to
 the GroveDB root hash. No per-entry enumeration is needed beyond
 what the secondary Merk's range proof already encodes.
@@ -519,8 +519,8 @@ what the secondary Merk's range proof already encodes.
 let mut q = MerkQuery::new();
 q.insert_range(a.to_be_bytes().to_vec()..=b.to_be_bytes().to_vec());
 
-let proof = db.prove_count_indexed_query(path, q.clone(), None, tx, grove_version)?;
-let result = GroveDb::verify_count_indexed_query(&proof, q, &path)?;
+let proof = db.prove_indexed_count_query(path, q.clone(), None, tx, grove_version)?;
+let result = GroveDb::verify_indexed_count_query(&proof, q, &path)?;
 
 let count = result.entries.len();
 let root_hash = result.root_hash;
@@ -563,7 +563,7 @@ secondary keys are `(count_be ‖ key)`, an internal index. Use this
 route when the cidx is just one of several layers in a larger query
 shape and you don't need count-ordered output.
 
-**2. Dedicated `prove_count_indexed_query` → arbitrary `MerkQuery`
+**2. Dedicated `prove_indexed_count_query` → arbitrary `MerkQuery`
 over the secondary keyspace.** Use this when you do want
 count-ordered output (top-k, count ranges, count-equality predicates).
 Subquery composition with the dedicated proof shape is not exposed —
@@ -580,7 +580,7 @@ let (root_hash, results) = GroveDb::verify_query(&proof, &path_query, grove_vers
 
 V0 generic prove/verify do **not** support cidx descent — V0 is a
 frozen wire format. Callers on V0 paths must use the dedicated
-`prove_count_indexed_top_k` / `prove_count_indexed_query` entry
+`prove_indexed_count_top_k` / `prove_indexed_count_query` entry
 points.
 
 ### Proof shape
@@ -690,7 +690,7 @@ ordering. Top-k descending iteration encounters them last.
   batch, recreate in a follow-up batch).
 - **V0 generic prove/verify do not support cidx descents.** V0 is a
   frozen wire format. Use V1 generic proofs or the dedicated
-  `prove_count_indexed_*` entry points.
+  `prove_indexed_count_*` entry points.
 
 ## Implementation-detail items
 

@@ -8,10 +8,6 @@ mod batch_structure;
 /// `ProvableCountProvableSumIndexedTree`. Extracted from `mod.rs` to
 /// keep the propagation pattern self-contained.
 mod indexed_tree;
-// Backward-compatible alias for callers that referenced the old module
-// name before Phase 2 generalized this module for all three indexed-tree
-// variants.
-use indexed_tree as count_indexed_tree;
 
 #[cfg(feature = "estimated_costs")]
 pub mod estimated_costs;
@@ -2246,11 +2242,7 @@ where
                 let merk = self.merks.get(path).expect("the Merk is cached");
                 Some(cost_return_on_error!(
                     &mut cost,
-                    count_indexed_tree::capture_cidx_pre_state(
-                        merk,
-                        &ops_at_path_by_key,
-                        grove_version,
-                    )
+                    indexed_tree::capture_cidx_pre_state(merk, &ops_at_path_by_key, grove_version,)
                 ))
             } else {
                 None
@@ -2343,7 +2335,7 @@ where
                         let merk = self.merks.get(path).expect("the Merk is cached");
                         let maybe_cleanup_path = cost_return_on_error!(
                             &mut cost,
-                            count_indexed_tree::inspect_cidx_overwrite(
+                            indexed_tree::inspect_cidx_overwrite(
                                 merk,
                                 path,
                                 &key_info,
@@ -3513,7 +3505,7 @@ where
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
             let (sec_hash, sec_root_key) = cost_return_on_error!(
                 &mut cost,
-                count_indexed_tree::apply_cidx_secondary_mirror_post_apply(
+                indexed_tree::apply_cidx_secondary_mirror_post_apply(
                     primary_merk,
                     pre,
                     &mut secondary_merk,
@@ -4716,7 +4708,7 @@ impl GroveDb {
 
         cost_return_on_error_no_add!(
             cost,
-            count_indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
+            indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
         );
 
         // `StorageBatch` collects all operations (preprocessing + apply_body)
@@ -5255,7 +5247,7 @@ impl GroveDb {
 
         cost_return_on_error_no_add!(
             cost,
-            count_indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
+            indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
         );
 
         // `StorageBatch` collects all operations (preprocessing + apply_body)

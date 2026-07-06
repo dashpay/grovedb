@@ -62,7 +62,6 @@ mod not_counted_or_summed_tests;
 mod not_summed_tests;
 mod operations_coverage_tests;
 mod partial_batch_consistency_tests;
-mod pcit_proof_tests;
 mod proof_advanced_tests;
 mod proof_coverage_tests;
 mod proof_depth_limit_tests;

@@ -2010,7 +2010,7 @@ impl GroveDb {
                                      element (ProvableSumIndexedTree / \
                                      ProvableCountIndexedTree / \
                                      ProvableCountProvableSumIndexedTree); use V1 or the \
-                                     dedicated verify_count_indexed_top_k API"
+                                     dedicated verify_indexed_count_top_k API"
                                         .to_string(),
                                 ));
                             }
