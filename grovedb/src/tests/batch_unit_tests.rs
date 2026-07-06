@@ -138,6 +138,7 @@ mod tests {
                 // 11
                 cmx: dummy_hash,
                 rho: dummy_hash,
+                cv_net: dummy_hash,
                 payload: vec![],
             },
             GroveOp::MmrTreeAppend { value: vec![] },   // 12
@@ -421,6 +422,7 @@ mod tests {
                     vec![b"pool".to_vec()],
                     hash,
                     hash,
+                    hash,
                     vec![],
                 ),
                 "Commitment Tree Insert",
@@ -580,6 +582,7 @@ mod tests {
                 append_path.clone(),
                 [1; 32],
                 [2; 32],
+                [3; 32],
                 vec![],
             ),
             QualifiedGroveDbOp::mmr_tree_append_op(append_path.clone(), b"data".to_vec()),
@@ -721,11 +724,13 @@ mod tests {
             bytes
         };
         let rho = [2u8; 32];
+        let cv_net = [3u8; 32];
 
         let ops = vec![QualifiedGroveDbOp::commitment_tree_insert_op(
             vec![b"ct".to_vec()],
             cmx,
             rho,
+            cv_net,
             vec![0u8; 216],
         )];
 

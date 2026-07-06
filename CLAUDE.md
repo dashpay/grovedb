@@ -207,6 +207,15 @@ cost_return_on_error!(&mut cost, result);
 4. **Input Validation**: Validate all paths and keys before operations
 5. **Transaction Safety**: Use transactions for multi-step operations
 
+### Auditing This Codebase
+
+Before filing any security or correctness finding, read
+`docs/audit-non-issues.md`. It records findings that were adversarially
+verified and rejected (unreachable arithmetic overflows, by-design behavior,
+verified-unreachable proof/encoding claims) together with the invariant that
+makes each safe. Do not re-file an entry from that list unless you can show
+its "becomes real if" condition now holds.
+
 ## Workspace Structure
 
 ```

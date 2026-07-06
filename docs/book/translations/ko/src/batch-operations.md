@@ -16,7 +16,7 @@ pub enum GroveOp {
     DeleteTree(TreeType, SubelementsDeletionBehavior),  // Per-op deletion policy
 
     // 비-Merk 트리 추가 연산 (사용자 대면):
-    CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },
+    CommitmentTreeInsert { cmx: [u8; 32], rho: [u8; 32], cv_net: [u8; 32], payload: Vec<u8> },
     MmrTreeAppend { value: Vec<u8> },
     BulkAppend { value: Vec<u8> },
     DenseTreeInsert { value: Vec<u8> },
@@ -178,7 +178,7 @@ pub enum GroveOp {
     // ... 표준 연산 ...
 
     // 비-Merk 트리 연산 (사용자 대면):
-    CommitmentTreeInsert { cmx: [u8; 32], payload: Vec<u8> },
+    CommitmentTreeInsert { cmx: [u8; 32], rho: [u8; 32], cv_net: [u8; 32], payload: Vec<u8> },
     MmrTreeAppend { value: Vec<u8> },
     BulkAppend { value: Vec<u8> },
     DenseTreeInsert { value: Vec<u8> },

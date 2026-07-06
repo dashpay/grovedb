@@ -19,6 +19,8 @@ use crate::{
     Error, Merk, MerkBatch, MerkOptions,
 };
 
+const MAX_KEY_LENGTH: usize = u8::MAX as usize;
+
 impl<'db, S> Merk<S>
 where
     S: StorageContext<'db>,
@@ -344,6 +346,15 @@ where
         ) -> Result<(bool, Option<ValueDefinedCostType>), Error>,
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     {
+        for (key, ..) in batch.iter() {
+            if key.as_ref().len() > MAX_KEY_LENGTH {
+                return Err(Error::InvalidInputError(
+                    "key length must be at most 255 bytes",
+                ))
+                .wrap_with_cost(Default::default());
+            }
+        }
+
         let maybe_walker = self
             .tree
             .take()

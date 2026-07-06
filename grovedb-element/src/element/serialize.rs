@@ -28,6 +28,13 @@ impl Element {
     /// `new_not_counted_or_summed` constructors these are impossible, but a
     /// caller could build them directly.
     pub fn serialize(&self, grove_version: &GroveVersion) -> Result<Vec<u8>, ElementError> {
+        // AUDIT NOTE (issue #717 — intentional, do not re-flag): the
+        // `element.serialize` feature version is `0` on every protocol version.
+        // Element bincode encoding is protocol-independent (append-only
+        // discriminants), so newer variants encode identically across versions
+        // — the constant is a cost selector, not a wire-format gate. See the
+        // doc on `GroveDBElementMethodVersions::serialize` for the full
+        // rationale.
         check_grovedb_v0!(
             "Element::serialize",
             grove_version.grovedb_versions.element.serialize

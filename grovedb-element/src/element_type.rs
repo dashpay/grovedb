@@ -177,7 +177,7 @@ pub enum ProofNodeType {
 
 /// Element type discriminants.
 ///
-/// Base types (0..=14, 18, 19) match the bincode serialization order of
+/// Base types (0..=14, 18..=20) match the bincode serialization order of
 /// the `Element` enum. The `Element` enum has indices 15, 16, and 17
 /// reserved for the `NonCounted`, `NotSummed`, and `NotCountedOrSummed`
 /// wrapper variants respectively (none has a direct `ElementType`
@@ -228,7 +228,7 @@ pub enum ProofNodeType {
 /// and `from_serialized_value` resolves `[16, inner_byte]` to the matching
 /// twin via an explicit `inner_byte → twin` match.
 ///
-/// IMPORTANT: Base values (0..=14, 18, 19) must match the order of
+/// IMPORTANT: Base values (0..=14, 18..=20) must match the order of
 /// variants in the `Element` enum. The
 /// `test_element_serialization_discriminants_match_element_type` test
 /// catches drift.
@@ -1847,7 +1847,7 @@ mod tests {
 
         let grove_version = GroveVersion::latest();
 
-        // Build vector of (Element, ElementType, variant_name) for all 10 variants
+        // Build vector of (Element, ElementType, variant_name) for all base variants.
         let test_cases: Vec<(Element, ElementType, &str)> = vec![
             // discriminant 0
             (

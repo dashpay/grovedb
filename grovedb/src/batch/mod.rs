@@ -442,6 +442,9 @@ pub enum GroveOp {
         cmx: [u8; 32],
         /// 32-byte nullifier (rho) of the spent note
         rho: [u8; 32],
+        /// 32-byte value commitment (cv_net) of the note. Stored unencrypted;
+        /// required for outgoing-note (OVK) recovery.
+        cv_net: [u8; 32],
         /// Payload data (typically encrypted note)
         payload: Vec<u8>,
     },
@@ -1166,13 +1169,19 @@ impl QualifiedGroveDbOp {
         path: Vec<Vec<u8>>,
         cmx: [u8; 32],
         rho: [u8; 32],
+        cv_net: [u8; 32],
         payload: Vec<u8>,
     ) -> Self {
         let path = KeyInfoPath::from_known_owned_path(path);
         Self {
             path,
             key: None,
-            op: GroveOp::CommitmentTreeInsert { cmx, rho, payload },
+            op: GroveOp::CommitmentTreeInsert {
+                cmx,
+                rho,
+                cv_net,
+                payload,
+            },
         }
     }
 
@@ -1183,10 +1192,11 @@ impl QualifiedGroveDbOp {
         path: Vec<Vec<u8>>,
         cmx: [u8; 32],
         rho: [u8; 32],
+        cv_net: [u8; 32],
         ciphertext: &grovedb_commitment_tree::TransmittedNoteCiphertext<M>,
     ) -> Self {
         let payload = grovedb_commitment_tree::serialize_ciphertext(ciphertext);
-        Self::commitment_tree_insert_op(path, cmx, rho, payload)
+        Self::commitment_tree_insert_op(path, cmx, rho, cv_net, payload)
     }
 
     /// An MMR tree append op. `path` includes the tree key as its last segment.
@@ -4385,7 +4395,12 @@ impl GroveDb {
                         )
                     );
                 }
-                GroveOp::CommitmentTreeInsert { cmx, rho, payload } => {
+                GroveOp::CommitmentTreeInsert {
+                    cmx,
+                    rho,
+                    cv_net,
+                    payload,
+                } => {
                     let mut path_vec: Vec<Vec<u8>> = op.path.to_path();
                     let key = cost_return_on_error_no_add!(
                         cost,
@@ -4401,6 +4416,7 @@ impl GroveDb {
                             &key,
                             cmx,
                             rho,
+                            cv_net,
                             payload.clone(),
                             transaction,
                             grove_version,
@@ -7174,6 +7190,7 @@ mod tests {
             b"ct",
             [1u8; 32],
             [2u8; 32],
+            [5u8; 32],
             vec![0u8; 216],
             Some(&tx),
             grove_version,
@@ -7223,6 +7240,7 @@ mod tests {
             b"ct",
             [3u8; 32],
             [4u8; 32],
+            [6u8; 32],
             vec![0u8; 216],
             Some(&tx),
             grove_version,
