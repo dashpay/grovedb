@@ -21,6 +21,24 @@ use crate::HASH_LENGTH_U32;
 // TODO: optimize memory footprint
 
 #[cfg(feature = "minimal")]
+fn invalid_key_length_error() -> ed::Error {
+    ed::Error::IOError(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "key length must be at most 255 bytes",
+    ))
+}
+
+#[cfg(feature = "minimal")]
+fn key_len_u8(key: &[u8]) -> Result<u8> {
+    u8::try_from(key.len()).map_err(|_| invalid_key_length_error())
+}
+
+#[cfg(feature = "minimal")]
+fn validate_key_length(key: &[u8]) -> Result<()> {
+    key_len_u8(key).map(|_| ())
+}
+
+#[cfg(feature = "minimal")]
 /// Represents a reference to a child tree node. Links may or may not contain
 /// the child's `Tree` instance (storing its key if not).
 #[derive(Clone, Debug, PartialEq)]
@@ -303,7 +321,7 @@ impl Link {
     /// sizes would be a breaking change to cost/fee computations.
     #[inline]
     pub fn encoding_cost(&self) -> Result<usize> {
-        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+        validate_key_length(self.key())?;
 
         Ok(match self {
             Link::Reference {
@@ -407,9 +425,9 @@ impl Encode for Link {
             }
         };
 
-        debug_assert!(key.len() < 256, "Key length must be less than 256");
+        let key_len = key_len_u8(key)?;
 
-        out.write_all(&[key.len() as u8])?;
+        out.write_all(&[key_len])?;
         out.write_all(key)?;
 
         out.write_all(hash)?;
@@ -473,7 +491,7 @@ impl Encode for Link {
 
     #[inline]
     fn encoding_length(&self) -> Result<usize> {
-        debug_assert!(self.key().len() < 256, "Key length must be less than 256");
+        validate_key_length(self.key())?;
 
         Ok(match self {
             Link::Reference {
@@ -931,7 +949,6 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
     fn encode_link_long_key() {
         let link = Link::Reference {
             key: vec![123; 300],
@@ -940,7 +957,9 @@ mod test {
             hash: [55; 32],
         };
         let mut bytes = vec![];
-        link.encode_into(&mut bytes).unwrap();
+        assert!(link.encode_into(&mut bytes).is_err());
+        assert!(link.encoding_length().is_err());
+        assert!(link.encoding_cost().is_err());
     }
 
     #[test]
