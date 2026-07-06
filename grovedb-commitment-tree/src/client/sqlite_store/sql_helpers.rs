@@ -270,13 +270,22 @@ pub(crate) fn sql_get_checkpoint(
     }
 }
 
-pub(crate) fn sql_list_checkpoints(
+/// Lists the first `limit` checkpoints in ascending checkpoint ID order
+/// (oldest first).
+///
+/// The order is load-bearing and encoded in the name: the
+/// `ShardStore::with_checkpoints` / `for_each_checkpoint` contract requires
+/// iteration in checkpoint ID order, and shardtree's checkpoint pruning
+/// relies on oldest-first to decide which checkpoints to delete and which
+/// leaf retention flags to preserve. (`sql_get_checkpoint_at_depth` is the
+/// opposite — depth 0 is the most recent checkpoint, so it orders DESC.)
+pub(crate) fn sql_list_checkpoints_ascending(
     conn: &Connection,
     limit: usize,
 ) -> Result<Vec<(u32, Checkpoint)>, SqliteShardStoreError> {
     let mut stmt = conn.prepare(
         "SELECT checkpoint_id, position FROM commitment_tree_checkpoints ORDER BY checkpoint_id \
-         DESC LIMIT ?1",
+         ASC LIMIT ?1",
     )?;
     let rows: Vec<(u32, Option<i64>)> = stmt
         .query_map(params![limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))?
