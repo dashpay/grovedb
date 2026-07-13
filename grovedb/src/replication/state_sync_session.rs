@@ -214,7 +214,7 @@ impl<'db> MultiStateSyncSession<'db> {
             return false;
         }
 
-        for (_, subtree_state_info) in self.current_prefixes.iter() {
+        for subtree_state_info in self.current_prefixes.values() {
             if !subtree_state_info.pending_chunks.is_empty() {
                 return false;
             }

@@ -94,11 +94,9 @@ impl DenseTreeProof {
     {
         let (root, entries) = self.verify_inner::<Vec<(u16, Vec<u8>)>>(height, count)?;
 
-        let expected_positions: BTreeSet<u16> = match crate::proof::query_to_positions(query, count)
-        {
-            Ok(p) => p.into_iter().collect(),
-            Err(e) => return Err(e),
-        };
+        let expected_positions: BTreeSet<u16> = crate::proof::query_to_positions(query, count)?
+            .into_iter()
+            .collect();
 
         let proved_positions: BTreeSet<u16> = entries.iter().map(|(pos, _)| *pos).collect();
 
