@@ -1,6 +1,6 @@
 [package]
 name = "grovedb-path"
-version = "5.0.0"
+version = "5.0.1"
 edition = "2024"
 license = "MIT"
 description = "Path extension crate for GroveDB"
