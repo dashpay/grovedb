@@ -3,9 +3,7 @@ name: Deploy Book
 on:
   push:
     branches:
-      - master
       - develop
-      - 'v[0-9]*.[0-9]*-dev'
     paths:
       - 'docs/book/**'
       - '.github/workflows/book.yml'
@@ -64,7 +62,8 @@ jobs:
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # The github-pages environment only permits deployments from develop
+    if: github.ref == 'refs/heads/develop' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-24.04
     environment:
