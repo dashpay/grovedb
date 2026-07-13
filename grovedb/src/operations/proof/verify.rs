@@ -2036,7 +2036,7 @@ impl GroveDb {
                                     {
                                         println!(
                                             "pushing {} limit left after is {:?}",
-                                            &path_key_optional_value, limit_left
+                                            path_key_optional_value, limit_left
                                         );
                                     }
                                     result.push(
@@ -2211,7 +2211,7 @@ impl GroveDb {
                         {
                             println!(
                                 "pushing {} limit left after is {:?}",
-                                &path_key_optional_value, limit_left
+                                path_key_optional_value, limit_left
                             );
                         }
                         result.push(path_key_optional_value.try_into_versioned(grove_version)?);
