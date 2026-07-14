@@ -815,7 +815,6 @@ impl GroveDb {
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
             | Element::ProvableCountProvableSumTree(..)
-            | Element::CommitmentTree(..)
             | Element::MmrTree(..)
             | Element::BulkAppendTree(..)
             | Element::DenseAppendOnlyFixedSizeTree(..) => {
@@ -827,6 +826,19 @@ impl GroveDb {
                         grovedb_merk::tree::NULL_HASH,
                         None,
                         grove_version
+                    )
+                    .map_err(Error::MerkError)
+                );
+            }
+            Element::CommitmentTree(..) => {
+                cost_return_on_error!(
+                    &mut cost,
+                    item.insert_subtree(
+                        &mut primary_merk,
+                        item_key,
+                        grovedb_commitment_tree::EMPTY_COMMITMENT_TREE_STATE_ROOT,
+                        None,
+                        grove_version,
                     )
                     .map_err(Error::MerkError)
                 );
@@ -2444,10 +2456,10 @@ impl GroveDb {
     /// stored element bytes (primary_root_key, secondary_root_key,
     /// sum_value) via the H1-A three-input value hash.
     ///
-    /// `path` is the path to the PSIT element (its primary Merk's
-    /// path). The child element must be sum-bearing (see
-    /// [`Element::is_sum_bearing_child`]); otherwise an
-    /// `InvalidInputError` is returned.
+    /// `path` is the path to the PSIT element (its primary Merk's path). The
+    /// child element must carry an `i64` sum (see
+    /// [`Element::is_sum_bearing_child`]); `BigSumTree` is excluded because
+    /// its aggregate is `i128`. Unsupported children return `InvalidInput`.
     pub fn insert_into_provable_sum_indexed_tree<'b, B, P>(
         &self,
         path: P,
@@ -2511,6 +2523,17 @@ impl GroveDb {
             return Err(Error::InvalidInput(
                 "ProvableSumIndexedTree only accepts sum-bearing children (SumItem, \
                  ItemWithSumItem, ReferenceWithSumItem, or any sum-bearing tree variant)",
+            ))
+            .wrap_with_cost(cost);
+        }
+
+        // PSIT is an i64 sum index. BigSumTree carries an i128 aggregate and
+        // `sum_value_or_default` intentionally has no narrowing conversion;
+        // accepting it here would silently mirror zero into authenticated
+        // state. A future i128 index requires a distinct typed/versioned axis.
+        if matches!(item.underlying(), Element::BigSumTree(..)) {
+            return Err(Error::InvalidInput(
+                "ProvableSumIndexedTree does not accept BigSumTree children; its sum axis is i64",
             ))
             .wrap_with_cost(cost);
         }
@@ -2631,10 +2654,10 @@ impl GroveDb {
                     )
                 );
             }
-            // Sum-bearing trees: write with NULL_HASH (empty subtree
-            // assumption); same restriction as the PCIT path.
+            // i64 sum-bearing trees: write with NULL_HASH (empty subtree
+            // assumption); same restriction as the PCIT path. BigSumTree is
+            // rejected before this dispatch because it has an i128 aggregate.
             Element::SumTree(..)
-            | Element::BigSumTree(..)
             | Element::CountSumTree(..)
             | Element::ProvableCountSumTree(..)
             | Element::ProvableSumTree(..)
@@ -3675,49 +3698,13 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     Ok(()).wrap_with_cost(cost)
 }
 
-/// Apply the secondary-mirror update for a primary mutation in the
-/// generic batch path. Handles all four cases (insert / update / delete
-/// / no-op) by combining `old_count` and `new_count` Options:
-/// - `(None, None)`: no-op (key was absent before and after).
-/// - `(None, Some(c))`: insert at count `c`.
-/// - `(Some(c), None)`: delete the secondary entry at count `c`.
-/// - `(Some(o), Some(n))`: update — delete entry at `o` and insert at `n`
-///   (skips both if `o == n`).
-///
-/// This is the [`IndexAxis::Count`] special case of
-/// [`mirror_indexed_axis_to_secondary`]: the Count-axis key and payload
-/// ignore the sum entirely, so the sum values threaded below never affect
-/// the produced bytes and each Option pair maps to the same delete/insert
-/// as the explicit table above. (For the Count axis the pcpsit fast-path
-/// payload check is always `Item(empty) == Item(empty)`, so it reduces to
-/// the former `old_count == new_count` no-op.)
-pub(crate) fn mirror_to_secondary_for_batch<'db, S: StorageContext<'db>>(
-    secondary: &mut Merk<S>,
-    item_key: &[u8],
-    old_count: Option<u64>,
-    new_count: Option<u64>,
-    grove_version: &GroveVersion,
-) -> CostResult<(), Error> {
-    mirror_indexed_axis_to_secondary(
-        secondary,
-        IndexAxis::Count,
-        item_key,
-        old_count,
-        old_count.map(|_| 0i64),
-        new_count,
-        new_count.map(|_| 0i64),
-        grove_version,
-    )
-}
-
 /// Apply the secondary-mirror update for a primary insert/update.
 ///
 /// `old_count` is `None` for a fresh insert, `Some(c)` for an update.
 ///
 /// The [`IndexAxis::Count`], always-present-`new_count` special case of
-/// [`mirror_indexed_axis_to_secondary`] — see
-/// [`mirror_to_secondary_for_batch`] for why the threaded sum values are
-/// irrelevant on the Count axis.
+/// [`mirror_indexed_axis_to_secondary`]. The Count-axis key and payload
+/// ignore the threaded sum values.
 pub(crate) fn mirror_to_secondary<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
     item_key: &[u8],

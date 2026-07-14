@@ -63,10 +63,10 @@ pub fn decode_sum_sort_key(bytes: &[u8; 8]) -> i64 {
 ///   magnitude beyond any realistic `i64` aggregation. Saturation is
 ///   therefore a defensive last line of defense; in practice the operation
 ///   never saturates.
-/// - Integer division floors toward negative infinity for negative
-///   results because the operands have the same sign after the
-///   saturating multiplication; for positive results division is
-///   ordinary truncation toward zero, equivalent to floor.
+/// - Euclidean division is used explicitly so negative fractional results
+///   round toward negative infinity. Rust's `/` operator truncates signed
+///   integers toward zero and would place negative averages one fixed-point
+///   bucket too high.
 #[inline]
 pub fn compute_avg_fixed_point(sum: i64, count: u64) -> i128 {
     if count == 0 {
@@ -74,7 +74,9 @@ pub fn compute_avg_fixed_point(sum: i64, count: u64) -> i128 {
     }
     let sum_i128 = sum as i128;
     let count_i128 = count as i128;
-    sum_i128.saturating_mul(AVG_FIXED_POINT_SCALE) / count_i128
+    sum_i128
+        .saturating_mul(AVG_FIXED_POINT_SCALE)
+        .div_euclid(count_i128)
 }
 
 /// `i128` big-endian with the sign bit flipped (bit 127). Lexicographic
@@ -286,5 +288,18 @@ mod tests {
         // i128::MAX ≈ 1.7e38), so the multiplication does NOT saturate.
         let expected = (max_sum as i128) * AVG_FIXED_POINT_SCALE;
         assert_eq!(v, expected);
+    }
+
+    #[test]
+    fn negative_average_uses_floor_bucket() {
+        let expected_floor = (-AVG_FIXED_POINT_SCALE).div_euclid(3);
+        let computed = compute_avg_fixed_point(-1, 3);
+
+        assert_eq!(computed, expected_floor);
+        assert_eq!(
+            encode_avg_sort_key(computed),
+            encode_avg_sort_key(expected_floor),
+            "negative fractional averages must remain in the mathematical floor bucket"
+        );
     }
 }

@@ -319,6 +319,105 @@ type OpenedMerkForReplication<'tx> = (
     TreeType,
 );
 
+/// Verify that an indexed tree's secondary projection is exactly derivable
+/// from its primary entries. Root-hash binding alone only proves that both
+/// Merks are internally authenticated; it does not prove their relationship.
+#[cfg(feature = "minimal")]
+fn verify_indexed_axis_relation<'db, P, S>(
+    primary_merk: &Merk<P>,
+    secondary_merk: &Merk<S>,
+    axis: grovedb_element::indexed::IndexAxis,
+    indexed_path: &[Vec<u8>],
+    primary_root_hash: CryptoHash,
+    all_query: &Query,
+    issues: &mut VerificationIssues,
+    grove_version: &GroveVersion,
+) -> Result<(), Error>
+where
+    P: StorageContext<'db>,
+    S: StorageContext<'db>,
+{
+    let mut expected: HashMap<Vec<u8>, (Vec<u8>, Element)> = HashMap::new();
+    let mut primary_iter = KVIterator::new(primary_merk.storage.raw_iter(), all_query).unwrap();
+    while let Some((primary_key, primary_value)) = primary_iter.next_kv().unwrap() {
+        let primary_element = Element::raw_decode(&primary_value, grove_version)?;
+        let (count, sum) = primary_element.count_sum_value_or_default();
+        let secondary_key = crate::operations::indexed_tree::make_axis_secondary_key(
+            axis,
+            count,
+            sum,
+            &primary_key,
+        );
+        let secondary_element = match axis {
+            grovedb_element::indexed::IndexAxis::Count => Element::new_item(Vec::new()),
+            grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(sum),
+            grovedb_element::indexed::IndexAxis::Avg => {
+                Element::new_item_with_sum_item(Vec::new(), sum)
+            }
+        };
+        expected.insert(secondary_key, (primary_key, secondary_element));
+    }
+    drop(primary_iter);
+
+    let mut secondary_iter = KVIterator::new(secondary_merk.storage.raw_iter(), all_query).unwrap();
+    while let Some((secondary_key, actual_value)) = secondary_iter.next_kv().unwrap() {
+        let actual_element = Element::raw_decode(&actual_value, grove_version)?;
+        match expected.remove(&secondary_key) {
+            Some((primary_key, expected_element)) if expected_element != actual_element => {
+                let expected_value = expected_element.serialize(grove_version)?;
+                let actual_value = actual_element.serialize(grove_version)?;
+                let mut issue_path = indexed_path.to_vec();
+                issue_path.push(b"__indexed_secondary_value_mismatch__".to_vec());
+                issue_path.push(vec![axis.tag()]);
+                issue_path.push(primary_key);
+                issues.insert(
+                    issue_path,
+                    (
+                        primary_root_hash,
+                        value_hash(&expected_value).unwrap(),
+                        value_hash(&actual_value).unwrap(),
+                    ),
+                );
+            }
+            Some(_) => {}
+            None => {
+                let actual_value = actual_element.serialize(grove_version)?;
+                let mut issue_path = indexed_path.to_vec();
+                issue_path.push(b"__indexed_secondary_orphan__".to_vec());
+                issue_path.push(vec![axis.tag()]);
+                issue_path.push(secondary_key);
+                issues.insert(
+                    issue_path,
+                    (
+                        primary_root_hash,
+                        [0u8; 32],
+                        value_hash(&actual_value).unwrap(),
+                    ),
+                );
+            }
+        }
+    }
+    drop(secondary_iter);
+
+    for (_secondary_key, (primary_key, expected_element)) in expected {
+        let expected_value = expected_element.serialize(grove_version)?;
+        let mut issue_path = indexed_path.to_vec();
+        issue_path.push(b"__indexed_primary_orphan__".to_vec());
+        issue_path.push(vec![axis.tag()]);
+        issue_path.push(primary_key);
+        issues.insert(
+            issue_path,
+            (
+                primary_root_hash,
+                value_hash(&expected_value).unwrap(),
+                [0u8; 32],
+            ),
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(feature = "minimal")]
 impl GroveDb {
     /// Opens a given path
@@ -2109,6 +2208,22 @@ impl GroveDb {
                         grove_version,
                     )?;
 
+                    // Also validate the axis payload. The content walk above
+                    // catches missing, duplicate, orphaned, and mis-bucketed
+                    // rows; this relation check additionally proves that the
+                    // secondary element stored at the right key is the one
+                    // canonically derived from the primary element.
+                    verify_indexed_axis_relation(
+                        &primary_merk,
+                        &secondary_merk,
+                        grovedb_element::indexed::IndexAxis::Sum,
+                        &new_path.to_vec(),
+                        primary_root_hash,
+                        &all_query,
+                        &mut issues,
+                        grove_version,
+                    )?;
+
                     issues.extend(self.verify_merk_and_submerks_in_transaction(
                         primary_merk,
                         &new_path_ref,
@@ -2178,6 +2293,16 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
+                        verify_indexed_axis_relation(
+                            &primary_merk,
+                            &secondary_merk,
+                            axis,
+                            &new_path.to_vec(),
+                            primary_root_hash,
+                            &all_query,
+                            &mut issues,
+                            grove_version,
+                        )?;
                         axis_hashes.push((*tag, secondary_merk.root_hash().unwrap()));
                         // Per-axis content walk while this axis's secondary
                         // is open (see `verify_indexed_axis_content`).
