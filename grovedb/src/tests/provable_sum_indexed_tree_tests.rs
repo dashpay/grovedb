@@ -2057,4 +2057,98 @@ mod tests {
             .is_err());
         assert_verify_passes(&db, grove_version);
     }
+
+    // -----------------------------------------------------------------
+    // Writes BELOW a child of a PSIT / PCPSIT primary
+    // -----------------------------------------------------------------
+
+    /// A sum-bearing tree child is explicitly accepted into a PSIT primary,
+    /// so writing into that child must work. Change propagation used to gate its
+    /// indexed handling on `is_count_indexed_primary()` (PCIT only), so the
+    /// PSIT element fell through to `update_tree_item_preserve_flag` ->
+    /// `reconstruct_with_root_key`, which has no indexed arm, and every such
+    /// write died with `InvalidPath("can only propagate on tree items")` —
+    /// making an accepted child shape a permanent dead end.
+    #[test]
+    fn writes_below_a_tree_child_of_a_psit_propagate() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_psit_at_test_leaf(&db, b"psit", v);
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"child",
+            Element::empty_sum_tree(),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("sum-tree child under PSIT");
+
+        db.insert(
+            [TEST_LEAF, b"psit", b"child"].as_ref(),
+            b"k",
+            Element::new_sum_item(5),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("writing below a PSIT child must propagate");
+
+        let fetched = db
+            .get([TEST_LEAF, b"psit", b"child"].as_ref(), b"k", None, v)
+            .unwrap()
+            .expect("value round-trips");
+        assert_eq!(fetched, Element::new_sum_item(5));
+
+        let issues = db.verify_grovedb(None, true, false, v).unwrap();
+        assert!(issues.is_empty(), "verify_grovedb reported: {issues:?}");
+    }
+
+    /// Same for PCPSIT, whose element rebuilds through `reconstruct_with_axes`
+    /// and re-derives the axes digest over every configured axis.
+    #[test]
+    fn writes_below_a_tree_child_of_a_pcpsit_propagate() {
+        use grovedb_element::indexed::IndexAxis;
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (IndexAxis::Count.tag(), None),
+                (IndexAxis::Sum.tag(), None),
+            ])
+            .expect("canonical axes"),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("create PCPSIT");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"child",
+            Element::empty_count_sum_tree(),
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("count-sum-tree child under PCPSIT");
+
+        db.insert(
+            [TEST_LEAF, b"pcpsit", b"child"].as_ref(),
+            b"k",
+            Element::new_item_with_sum_item(b"v".to_vec(), 7),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("writing below a PCPSIT child must propagate");
+
+        let issues = db.verify_grovedb(None, true, false, v).unwrap();
+        assert!(issues.is_empty(), "verify_grovedb reported: {issues:?}");
+    }
 }

@@ -3206,7 +3206,7 @@ impl GroveDb {
             );
             cost_return_on_error!(
                 &mut cost,
-                mirror_pcpsit_axis_to_secondary(
+                mirror_indexed_axis_to_secondary(
                     &mut secondary_merk,
                     axis,
                     item_key,
@@ -3444,7 +3444,7 @@ impl GroveDb {
             );
             cost_return_on_error!(
                 &mut cost,
-                mirror_pcpsit_axis_to_secondary(
+                mirror_indexed_axis_to_secondary(
                     &mut secondary_merk,
                     axis,
                     item_key,
@@ -3522,7 +3522,7 @@ impl GroveDb {
 /// primary's.
 ///
 /// This is the [`IndexAxis::Sum`] special case of
-/// [`mirror_pcpsit_axis_to_secondary`]: a PSIT always writes a fresh
+/// [`mirror_indexed_axis_to_secondary`]: a PSIT always writes a fresh
 /// entry, so `new_sum` is present (count is irrelevant to the Sum-axis
 /// key/payload and is threaded as `1`). Delegating keeps the Sum-axis
 /// mirror byte-for-byte in one place. The Sum-axis key ignores count, so
@@ -3534,7 +3534,7 @@ fn mirror_psit_to_secondary<'db, S: StorageContext<'db>>(
     new_sum: i64,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
-    mirror_pcpsit_axis_to_secondary(
+    mirror_indexed_axis_to_secondary(
         secondary,
         IndexAxis::Sum,
         item_key,
@@ -3559,7 +3559,7 @@ fn mirror_psit_to_secondary<'db, S: StorageContext<'db>>(
 /// secondary's `ProvableCountProvableSumTree`. For the count axis the
 /// secondary entry is a plain `Item` (count = 1, no sum).
 #[allow(clippy::too_many_arguments)]
-fn mirror_pcpsit_axis_to_secondary<'db, S: StorageContext<'db>>(
+pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     secondary: &mut Merk<S>,
     axis: IndexAxis,
     item_key: &[u8],
@@ -3663,7 +3663,7 @@ fn mirror_pcpsit_axis_to_secondary<'db, S: StorageContext<'db>>(
 ///   (skips both if `o == n`).
 ///
 /// This is the [`IndexAxis::Count`] special case of
-/// [`mirror_pcpsit_axis_to_secondary`]: the Count-axis key and payload
+/// [`mirror_indexed_axis_to_secondary`]: the Count-axis key and payload
 /// ignore the sum entirely, so the sum values threaded below never affect
 /// the produced bytes and each Option pair maps to the same delete/insert
 /// as the explicit table above. (For the Count axis the pcpsit fast-path
@@ -3676,7 +3676,7 @@ pub(crate) fn mirror_to_secondary_for_batch<'db, S: StorageContext<'db>>(
     new_count: Option<u64>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
-    mirror_pcpsit_axis_to_secondary(
+    mirror_indexed_axis_to_secondary(
         secondary,
         IndexAxis::Count,
         item_key,
@@ -3693,7 +3693,7 @@ pub(crate) fn mirror_to_secondary_for_batch<'db, S: StorageContext<'db>>(
 /// `old_count` is `None` for a fresh insert, `Some(c)` for an update.
 ///
 /// The [`IndexAxis::Count`], always-present-`new_count` special case of
-/// [`mirror_pcpsit_axis_to_secondary`] — see
+/// [`mirror_indexed_axis_to_secondary`] — see
 /// [`mirror_to_secondary_for_batch`] for why the threaded sum values are
 /// irrelevant on the Count axis.
 pub(crate) fn mirror_to_secondary<'db, S: StorageContext<'db>>(
@@ -3703,7 +3703,7 @@ pub(crate) fn mirror_to_secondary<'db, S: StorageContext<'db>>(
     new_count: u64,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
-    mirror_pcpsit_axis_to_secondary(
+    mirror_indexed_axis_to_secondary(
         secondary,
         IndexAxis::Count,
         item_key,
@@ -3868,7 +3868,7 @@ fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error
 
 #[cfg(test)]
 mod bug2_avg_axis_mirror_tests {
-    //! BUG 2 regression: `mirror_pcpsit_axis_to_secondary` must not
+    //! BUG 2 regression: `mirror_indexed_axis_to_secondary` must not
     //! early-return on the Avg axis when the sort key is unchanged but
     //! the stored payload sum differs.
     //!
@@ -3891,7 +3891,7 @@ mod bug2_avg_axis_mirror_tests {
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
-    use super::{make_axis_secondary_key, mirror_pcpsit_axis_to_secondary};
+    use super::{make_axis_secondary_key, mirror_indexed_axis_to_secondary};
     use crate::{
         tests::{make_test_grovedb, TEST_LEAF},
         Element,
@@ -3972,7 +3972,7 @@ mod bug2_avg_axis_mirror_tests {
             .expect("open empty avg secondary");
 
         // 1) Insert (count=1, sum=5).
-        mirror_pcpsit_axis_to_secondary(
+        mirror_indexed_axis_to_secondary(
             &mut secondary,
             IndexAxis::Avg,
             item_key,
@@ -3995,7 +3995,7 @@ mod bug2_avg_axis_mirror_tests {
         );
 
         // 2) Transition to (count=2, sum=10). Same avg key, new sum.
-        mirror_pcpsit_axis_to_secondary(
+        mirror_indexed_axis_to_secondary(
             &mut secondary,
             IndexAxis::Avg,
             item_key,
@@ -4055,7 +4055,7 @@ mod bug2_avg_axis_mirror_tests {
             .unwrap()
             .expect("open empty avg secondary");
 
-        mirror_pcpsit_axis_to_secondary(
+        mirror_indexed_axis_to_secondary(
             &mut secondary,
             IndexAxis::Avg,
             item_key,
@@ -4069,7 +4069,7 @@ mod bug2_avg_axis_mirror_tests {
         .expect("insert (2,10)");
 
         // Identical (count, sum) rewrite: key AND payload unchanged.
-        mirror_pcpsit_axis_to_secondary(
+        mirror_indexed_axis_to_secondary(
             &mut secondary,
             IndexAxis::Avg,
             item_key,

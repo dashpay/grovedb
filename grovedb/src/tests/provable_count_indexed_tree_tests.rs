@@ -1820,4 +1820,94 @@ mod tests {
             "no rejected op may leave a partial write"
         );
     }
+
+    /// Overwriting a populated PCPSIT with a PCIT element must be rejected.
+    ///
+    /// `AggregateData::as_count_u64()` reads a count out of BOTH
+    /// `ProvableCount` and `ProvableCountAndProvableSum`, and the PCIT
+    /// count-axis secondary shares the PCPSIT Count-axis prefix, so every
+    /// existing check passed as long as the counts matched. The element and
+    /// the on-disk primary then disagreed on arity and the next
+    /// `verify_grovedb` aborted the process (a panic in
+    /// `merk/src/tree/mod.rs`, not a recoverable error).
+    #[test]
+    fn cross_variant_overwrite_of_a_populated_pcpsit_is_rejected() {
+        use grovedb_element::indexed::IndexAxis;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"idx",
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (IndexAxis::Count.tag(), None),
+                (IndexAxis::Sum.tag(), None),
+            ])
+            .expect("canonical axes"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCPSIT");
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"idx"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"v".to_vec(), 3),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed one entry");
+
+        // Read back the real primary root key so every other check passes.
+        let stored = db
+            .get([TEST_LEAF].as_ref(), b"idx", None, grove_version)
+            .unwrap()
+            .expect("get PCPSIT");
+        let (primary_root_key, count, axes) = match stored {
+            Element::ProvableCountProvableSumIndexedTree(p, c, _, axes, _) => (p, c, axes),
+            other => panic!("expected PCPSIT, got {other:?}"),
+        };
+        // The PCIT count-axis secondary lives at the same derived prefix as
+        // the PCPSIT Count axis, so reusing its root key satisfies every
+        // root-key check the insert path performs.
+        let count_axis_secondary = axes
+            .iter()
+            .find(|(tag, _)| *tag == IndexAxis::Count.tag())
+            .and_then(|(_, sk)| sk.clone());
+        assert!(
+            count_axis_secondary.is_some(),
+            "the populated PCPSIT must have a count-axis secondary"
+        );
+
+        let override_opts = Some(crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        });
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"idx",
+                Element::ProvableCountIndexedTree(
+                    primary_root_key,
+                    count_axis_secondary,
+                    count,
+                    None,
+                ),
+                override_opts,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInput(m)) if m.contains("does not match the stored subtree")),
+            "cross-variant overwrite must be rejected, got {result:?}"
+        );
+
+        // The database must still be readable and consistent afterwards.
+        let issues = db.verify_grovedb(None, true, false, grove_version).unwrap();
+        assert!(issues.is_empty(), "verify_grovedb reported: {issues:?}");
+    }
 }

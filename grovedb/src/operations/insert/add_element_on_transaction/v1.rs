@@ -20,6 +20,7 @@ use grovedb_element::reference_path::path_from_reference_path_type;
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions, ElementExt},
     tree::NULL_HASH,
+    tree_type::TreeType,
     Merk,
 };
 use grovedb_path::SubtreePath;
@@ -268,6 +269,22 @@ impl GroveDb {
                             ))
                             .wrap_with_cost(cost);
                         }
+                        // The aggregate SHAPE must match the variant too:
+                        // `as_count_u64` reads a count out of both
+                        // `ProvableCount` and `ProvableCountAndProvableSum`, so
+                        // without this a PCIT element could be written over a
+                        // populated PCPSIT primary whose count happens to
+                        // match. The element and the on-disk primary would then
+                        // disagree on arity, and the next `verify_grovedb`
+                        // panics rather than erroring.
+                        if p_aggregate.parent_tree_type() != TreeType::ProvableCountTree {
+                            return Err(Error::InvalidInput(
+                                "CountIndexedTree direct insertion: the existing \
+                                 primary Merk is not a provable-count tree; the \
+                                 element variant does not match the stored subtree",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                         // Also bind the claimed count_value to the primary's
                         // actual aggregate. Without this, a caller could
                         // supply correct root keys but a forged count that
@@ -361,6 +378,15 @@ impl GroveDb {
                         // Bind the claimed sum_value to the primary's actual
                         // aggregate so a forged sum cannot be hash-committed
                         // and propagated into ancestor aggregates.
+                        if p_aggregate.parent_tree_type() != TreeType::ProvableSumTree {
+                            return Err(Error::InvalidInput(
+                                "ProvableSumIndexedTree direct insertion: the \
+                                 existing primary Merk is not a provable-sum \
+                                 tree; the element variant does not match the \
+                                 stored subtree",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                         if p_aggregate.as_sum_i64() != *sum_value {
                             return Err(Error::InvalidInput(
                                 "ProvableSumIndexedTree direct insertion: provided \
@@ -481,6 +507,14 @@ impl GroveDb {
                     // Bind BOTH the claimed count_value and sum_value to the
                     // primary's actual aggregate so forged count/sum cannot be
                     // hash-committed and propagated into ancestor aggregates.
+                    if p_aggregate.parent_tree_type() != TreeType::ProvableCountProvableSumTree {
+                        return Err(Error::InvalidInput(
+                            "ProvableCountProvableSumIndexedTree direct insertion: the existing \
+                             primary Merk is not a provable-count-provable-sum tree; the element \
+                             variant does not match the stored subtree",
+                        ))
+                        .wrap_with_cost(cost);
+                    }
                     if p_aggregate.as_count_u64() != *count_value {
                         return Err(Error::InvalidInput(
                             "ProvableCountProvableSumIndexedTree direct insertion: provided \

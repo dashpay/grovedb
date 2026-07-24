@@ -733,7 +733,7 @@ impl GroveDb {
             reconstruct::ElementReconstructExtensions,
         };
 
-        use crate::operations::indexed_tree::mirror_to_secondary;
+        use crate::operations::indexed_tree::mirror_indexed_axis_to_secondary;
 
         let mut cost = OperationCost::default();
 
@@ -772,6 +772,14 @@ impl GroveDb {
         // re-open the secondary by stale root_key).
         let mut deferred_secondary: Option<(Hash, Option<Vec<u8>>)> = initial_deferred_secondary;
 
+        // PCPSIT's element commits a digest over EVERY axis, so one slot is
+        // not enough: the mirror stages each axis's post-write (root hash,
+        // root key) here and the element rewrite one level up consumes them.
+        // Re-reading the axes from the element instead would open each
+        // secondary by its stale pre-mirror root key and rebuild a digest
+        // over the old state.
+        let mut deferred_axes: Option<Vec<(u8, Hash, Option<Vec<u8>>)>> = None;
+
         while let Some((parent_path, parent_key)) = current_path.derive_parent() {
             let mut parent_tree: Merk<PrefixedRocksDbTransactionContext> = cost_return_on_error!(
                 &mut cost,
@@ -789,18 +797,20 @@ impl GroveDb {
                     .map_err(Error::MerkError)
             );
 
-            let parent_is_cidx_primary = parent_tree.tree_type.is_count_indexed_primary();
+            let parent_is_indexed_primary = parent_tree.tree_type.is_indexed_primary();
 
-            // Snapshot the old count_value of the element at parent_key
-            // BEFORE we mutate parent_tree. We need it later to compute
-            // the count delta for secondary mirroring.
-            let old_count_in_parent = if parent_is_cidx_primary {
+            // Snapshot the old ordering values of the element at parent_key
+            // BEFORE we mutate parent_tree. We need them later to compute the
+            // per-axis delta for secondary mirroring. `count_and_sum` covers
+            // every axis: Count orders on the count, Sum on the sum, and Avg
+            // on the fixed-point ratio of the two.
+            let old_ordering_in_parent = if parent_is_indexed_primary {
                 let old_element = cost_return_on_error!(
                     &mut cost,
                     Element::get(&parent_tree, parent_key, true, grove_version)
                         .map_err(Error::MerkError)
                 );
-                Some(old_element.count_value_or_default())
+                Some(old_element.count_sum_value_or_default())
             } else {
                 None
             };
@@ -816,56 +826,145 @@ impl GroveDb {
             //     on the very first iteration after a direct write into
             //     the cidx primary that bypassed the dedicated insert
             //     API; we read the secondary state from disk).
-            let child_is_cidx_primary = child_tree.tree_type.is_count_indexed_primary();
-            if deferred_secondary.is_some() || child_is_cidx_primary {
+            let child_is_indexed_primary = child_tree.tree_type.is_indexed_primary();
+            if deferred_secondary.is_some() || deferred_axes.is_some() || child_is_indexed_primary {
                 let cidx_element = cost_return_on_error!(
                     &mut cost,
                     Element::get(&parent_tree, parent_key, true, grove_version)
                         .map_err(Error::MerkError)
                 );
-                let (sec_hash, sec_key) = if let Some(s) = deferred_secondary.take() {
-                    s
-                } else {
-                    // Read secondary's current state from on-disk root.
-                    let secondary_root_key_before = match cidx_element.underlying() {
-                        Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
-                        _ => {
-                            return Err(Error::CorruptedData(
-                                "expected ProvableCountIndexedTree element when child_tree is a \
-                                 count-indexed primary"
-                                    .to_string(),
-                            ))
-                            .wrap_with_cost(cost);
-                        }
-                    };
-                    let secondary_merk = cost_return_on_error!(
-                        &mut cost,
-                        self.open_indexed_secondary_at_path(
-                            current_path.clone(),
-                            grovedb_element::indexed::IndexAxis::Count,
-                            secondary_root_key_before,
-                            transaction,
-                            Some(batch),
-                            grove_version,
-                        )
-                    );
-                    let (sh, sk, _) = cost_return_on_error!(
-                        &mut cost,
-                        secondary_merk
-                            .root_hash_key_and_aggregate_data()
-                            .map_err(Error::MerkError)
-                    );
-                    (sh, sk)
-                };
-                let reconstructed = cost_return_on_error_no_add!(
-                    cost,
-                    cidx_element
-                        .reconstruct_with_two_root_keys(root_key, sec_key, aggregate_data)
-                        .ok_or(Error::CorruptedCodeExecution(
-                            "reconstruct_with_two_root_keys returned None for a \
-                             CountIndexedTree element during propagation"
+
+                // PCPSIT commits an axes digest rather than a single
+                // secondary root, and rebuilds through `reconstruct_with_axes`
+                // (its `reconstruct_with_two_root_keys` arm is `None` by
+                // design). Handle it on its own path; PCIT and PSIT share the
+                // single-secondary shape below, differing only in which axis
+                // their secondary lives on.
+                let single_axis = match cidx_element.underlying() {
+                    Element::ProvableCountIndexedTree(_, secondary, ..) => Some((
+                        grovedb_element::indexed::IndexAxis::Count,
+                        secondary.clone(),
+                    )),
+                    Element::ProvableSumIndexedTree(_, secondary, ..) => {
+                        Some((grovedb_element::indexed::IndexAxis::Sum, secondary.clone()))
+                    }
+                    Element::ProvableCountProvableSumIndexedTree(..) => None,
+                    _ => {
+                        return Err(Error::CorruptedData(
+                            "expected an indexed-tree element when child_tree is an indexed \
+                             primary"
+                                .to_string(),
                         ))
-                );
+                        .wrap_with_cost(cost);
+                    }
+                };
+
+                let reconstructed = if let Some((axis, secondary_root_key_before)) = single_axis {
+                    let (sec_hash, sec_key) = if let Some(s) = deferred_secondary.take() {
+                        s
+                    } else {
+                        // Read secondary's current state from on-disk root.
+                        let secondary_merk = cost_return_on_error!(
+                            &mut cost,
+                            self.open_indexed_secondary_at_path(
+                                current_path.clone(),
+                                axis,
+                                secondary_root_key_before,
+                                transaction,
+                                Some(batch),
+                                grove_version,
+                            )
+                        );
+                        let (sh, sk, _) = cost_return_on_error!(
+                            &mut cost,
+                            secondary_merk
+                                .root_hash_key_and_aggregate_data()
+                                .map_err(Error::MerkError)
+                        );
+                        (sh, sk)
+                    };
+                    let rebuilt = cost_return_on_error_no_add!(
+                        cost,
+                        cidx_element
+                            .reconstruct_with_two_root_keys(
+                                root_key.clone(),
+                                sec_key,
+                                aggregate_data
+                            )
+                            .ok_or(Error::CorruptedCodeExecution(
+                                "reconstruct_with_two_root_keys returned None for a \
+                                 single-axis indexed element during propagation"
+                            ))
+                    );
+                    (rebuilt, sec_hash)
+                } else {
+                    // PCPSIT: rebuild the axes digest over every configured
+                    // axis, exactly as the dedicated insert path composes it.
+                    // Prefer the post-mirror state staged below; only fall back
+                    // to the element's stored root keys when this element was
+                    // not itself just mirrored.
+                    deferred_secondary.take();
+                    let mut axis_roots: Vec<(u8, Option<Vec<u8>>)> = Vec::new();
+                    let mut axis_hashes: Vec<(u8, Hash)> = Vec::new();
+
+                    if let Some(staged) = deferred_axes.take() {
+                        for (tag, sec_hash, sec_key) in staged {
+                            axis_roots.push((tag, sec_key));
+                            axis_hashes.push((tag, sec_hash));
+                        }
+                    } else {
+                        let axes = match cidx_element.underlying() {
+                            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
+                                axes.clone()
+                            }
+                            _ => unreachable!("single_axis is None only for PCPSIT"),
+                        };
+                        for (tag, secondary_root_key) in axes.iter() {
+                            let axis = cost_return_on_error_no_add!(
+                                cost,
+                                grovedb_element::indexed::IndexAxis::try_from_tag(*tag).map_err(
+                                    |e| {
+                                        Error::CorruptedData(format!(
+                                    "invalid axis tag on a PCPSIT element during propagation: {e}"
+                                ))
+                                    }
+                                )
+                            );
+                            let secondary_merk = cost_return_on_error!(
+                                &mut cost,
+                                self.open_indexed_secondary_at_path(
+                                    current_path.clone(),
+                                    axis,
+                                    secondary_root_key.clone(),
+                                    transaction,
+                                    Some(batch),
+                                    grove_version,
+                                )
+                            );
+                            let (sh, sk, _) = cost_return_on_error!(
+                                &mut cost,
+                                secondary_merk
+                                    .root_hash_key_and_aggregate_data()
+                                    .map_err(Error::MerkError)
+                            );
+                            axis_roots.push((*tag, sk));
+                            axis_hashes.push((*tag, sh));
+                        }
+                    }
+                    let digest =
+                        grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost);
+                    let rebuilt = cost_return_on_error_no_add!(
+                        cost,
+                        cidx_element
+                            .reconstruct_with_axes(root_key.clone(), aggregate_data, axis_roots)
+                            .ok_or(Error::CorruptedCodeExecution(
+                                "reconstruct_with_axes returned None for a PCPSIT element during \
+                                 propagation"
+                            ))
+                    );
+                    (rebuilt, digest)
+                };
+                let (reconstructed, sec_hash) = reconstructed;
                 cost_return_on_error!(
                     &mut cost,
                     reconstructed
@@ -897,34 +996,33 @@ impl GroveDb {
             // count delta into its secondary and stage the new secondary
             // state for the NEXT iteration (which will reach the element
             // that holds primary_root_key and secondary_root_key).
-            if let Some(old_count) = old_count_in_parent {
-                // Take the new ordering key from the element we just wrote,
+            if let Some((old_count, old_sum)) = old_ordering_in_parent {
+                // Take the new ordering values from the element we just wrote,
                 // NOT from `aggregate_data`. The batch path reads both sides
-                // of the delta with `Element::count_value_or_default`
+                // of the delta from the element
                 // (`batch::indexed_tree::capture_cidx_pre_state` /
                 // `apply_cidx_secondary_mirror_post_apply`), and the two
-                // differ for children whose element carries no count
-                // aggregate — a plain `Tree` or `SumTree` child defaults to
-                // 1 via the element, but `AggregateData::as_count_u64`
-                // reports 0. Deriving it from the aggregate here made
-                // `db.insert` and `apply_batch` place the same child in
-                // different secondary buckets, committing different root
-                // hashes for byte-identical writes.
+                // differ for children that carry no count aggregate — a plain
+                // `Tree` or `SumTree` child defaults to 1 via the element, but
+                // `AggregateData::as_count_u64` reports 0. Deriving it from
+                // the aggregate here made `db.insert` and `apply_batch` place
+                // the same child in different secondary buckets, committing
+                // different root hashes for byte-identical writes.
                 let new_element_in_parent = cost_return_on_error!(
                     &mut cost,
                     Element::get(&parent_tree, parent_key, true, grove_version)
                         .map_err(Error::MerkError)
                 );
-                let new_count = new_element_in_parent.count_value_or_default();
+                let (new_count, new_sum) = new_element_in_parent.count_sum_value_or_default();
 
-                // Find secondary_root_key: it lives in the
-                // CountIndexedTree element which is at grandparent[cidx_key].
-                let (grandparent_path, cidx_key) = match parent_path.derive_parent() {
+                // The indexed element carrying the secondary root key(s) lives
+                // one level up, at grandparent[indexed_key].
+                let (grandparent_path, indexed_key) = match parent_path.derive_parent() {
                     Some(p) => p,
                     None => {
                         return Err(Error::CorruptedCodeExecution(
-                            "CountIndexedTree primary requires a grandparent for the \
-                             CountIndexedTree element",
+                            "an indexed primary requires a grandparent holding its indexed \
+                             element",
                         ))
                         .wrap_with_cost(cost);
                     }
@@ -938,53 +1036,98 @@ impl GroveDb {
                         grove_version,
                     )
                 );
-                let cidx_element = cost_return_on_error!(
+                let indexed_element = cost_return_on_error!(
                     &mut cost,
-                    Element::get(&grandparent_merk, cidx_key, true, grove_version)
+                    Element::get(&grandparent_merk, indexed_key, true, grove_version)
                         .map_err(Error::MerkError)
                 );
-                let secondary_root_key_before = match cidx_element.underlying() {
-                    Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
+
+                // Mirror the delta into EVERY axis the variant configures:
+                // PCIT indexes on count, PSIT on sum, and PCPSIT on whichever
+                // of count / sum / avg its canonical axes list names.
+                let axes: Vec<(u8, Option<Vec<u8>>)> = match indexed_element.underlying() {
+                    Element::ProvableCountIndexedTree(_, secondary, ..) => {
+                        vec![(
+                            grovedb_element::indexed::IndexAxis::Count.tag(),
+                            secondary.clone(),
+                        )]
+                    }
+                    Element::ProvableSumIndexedTree(_, secondary, ..) => {
+                        vec![(
+                            grovedb_element::indexed::IndexAxis::Sum.tag(),
+                            secondary.clone(),
+                        )]
+                    }
+                    Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
                     _ => {
                         return Err(Error::CorruptedData(
-                            "expected ProvableCountIndexedTree element in grandparent during \
-                             cascading aggregation"
+                            "expected an indexed-tree element in grandparent during cascading \
+                             aggregation"
                                 .to_string(),
                         ))
                         .wrap_with_cost(cost);
                     }
                 };
+                let single_axis = axes.len() == 1
+                    && !matches!(
+                        indexed_element.underlying(),
+                        Element::ProvableCountProvableSumIndexedTree(..)
+                    );
 
-                let mut secondary_merk = cost_return_on_error!(
-                    &mut cost,
-                    self.open_indexed_secondary_at_path(
-                        parent_path.clone(),
-                        grovedb_element::indexed::IndexAxis::Count,
-                        secondary_root_key_before,
-                        transaction,
-                        Some(batch),
-                        grove_version,
-                    )
-                );
+                let mut last_axis_state: Option<(Hash, Option<Vec<u8>>)> = None;
+                let mut staged_axes: Vec<(u8, Hash, Option<Vec<u8>>)> = Vec::new();
+                for (tag, secondary_root_key_before) in axes {
+                    let axis = cost_return_on_error_no_add!(
+                        cost,
+                        grovedb_element::indexed::IndexAxis::try_from_tag(tag).map_err(|e| {
+                            Error::CorruptedData(format!(
+                                "invalid axis tag on an indexed element during propagation: {e}"
+                            ))
+                        })
+                    );
+                    let mut secondary_merk = cost_return_on_error!(
+                        &mut cost,
+                        self.open_indexed_secondary_at_path(
+                            parent_path.clone(),
+                            axis,
+                            secondary_root_key_before,
+                            transaction,
+                            Some(batch),
+                            grove_version,
+                        )
+                    );
 
-                cost_return_on_error!(
-                    &mut cost,
-                    mirror_to_secondary(
-                        &mut secondary_merk,
-                        parent_key,
-                        Some(old_count),
-                        new_count,
-                        grove_version,
-                    )
-                );
+                    cost_return_on_error!(
+                        &mut cost,
+                        mirror_indexed_axis_to_secondary(
+                            &mut secondary_merk,
+                            axis,
+                            parent_key,
+                            Some(old_count),
+                            Some(old_sum),
+                            Some(new_count),
+                            Some(new_sum),
+                            grove_version,
+                        )
+                    );
 
-                let (sec_hash, sec_key, _) = cost_return_on_error!(
-                    &mut cost,
-                    secondary_merk
-                        .root_hash_key_and_aggregate_data()
-                        .map_err(Error::MerkError)
-                );
-                deferred_secondary = Some((sec_hash, sec_key));
+                    let (sec_hash, sec_key, _) = cost_return_on_error!(
+                        &mut cost,
+                        secondary_merk
+                            .root_hash_key_and_aggregate_data()
+                            .map_err(Error::MerkError)
+                    );
+                    last_axis_state = Some((sec_hash, sec_key.clone()));
+                    staged_axes.push((tag, sec_hash, sec_key));
+                }
+
+                if single_axis {
+                    deferred_secondary = last_axis_state;
+                    deferred_axes = None;
+                } else {
+                    deferred_secondary = None;
+                    deferred_axes = Some(staged_axes);
+                }
             }
 
             child_tree = parent_tree;
