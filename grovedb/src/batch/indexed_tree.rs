@@ -71,8 +71,8 @@ pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
     // Generic batch validation only enforces the 255-byte cap; cidx
     // primaries need 247 bytes to leave room for the 8-byte count
     // prefix in the secondary.
-    for (key_info, _) in ops_at_path_by_key.iter() {
-        if key_info.get_key_clone().len() > MAX_CIDX_ITEM_KEY_LEN {
+    for key_info in ops_at_path_by_key.keys() {
+        if key_info.as_slice().len() > MAX_CIDX_ITEM_KEY_LEN {
             return Err(Error::InvalidInput(
                 "item key for a CountIndexedTree primary must be at most 247 bytes in batch \
                  ops (the secondary index prepends an 8-byte count, and Merk requires keys \
