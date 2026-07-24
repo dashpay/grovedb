@@ -746,47 +746,17 @@ impl GroveDb {
                 ))
         );
 
-        // Reject generic (direct `db.insert` / `db.delete`) leaf mutations
-        // against an indexed-tree primary. Such a mutation starts
-        // propagation AT the primary's own path, so the initial
-        // `child_tree` IS the primary. The generic propagation path has no
-        // hook to mirror the mutated child's ordering value into the
-        // primary's per-axis secondary index(es); letting it proceed would
-        // commit an element whose secondary root_key / axes digest no
-        // longer matches on-disk secondary state (for PCIT this silently
-        // corrupts the index — `verify_grovedb` flags it — and for
-        // PSIT/PCPSIT the legacy `update_tree_item_preserve_flag` path
-        // errors with a misleading `InvalidPath("can only propagate on
-        // tree items")` because `reconstruct_with_root_key` returns None
-        // for indexed-tree elements). Fail closed with an accurate pointer
-        // to the dedicated indexed-tree APIs, which maintain the secondary
-        // inline.
-        //
-        // The dedicated APIs (`insert_into_provable_*_indexed_tree`,
-        // `delete_from_*`) never trip this: they handle the primary +
-        // secondary themselves and hand off propagation starting from the
-        // primary's PARENT path (so the initial `child_tree` is a regular
-        // tree, not the primary). Deep mutations UNDER a subtree of the
-        // primary also do not trip this: the primary is reached as a
-        // `parent_tree` mid-loop, never as the initial `child_tree`.
-        // `initial_deferred_secondary` is required to be None here as an
-        // extra guard against any future caller that legitimately seeds a
-        // pre-mirrored secondary while starting at the primary path.
-        if child_tree.tree_type.is_indexed_primary() && initial_deferred_secondary.is_none() {
-            return Err(Error::NotSupported(
-                "generic writes into an indexed-tree primary \
-                 (ProvableCountIndexedTree / ProvableSumIndexedTree / \
-                 ProvableCountProvableSumIndexedTree) are not supported via \
-                 db.insert/db.delete; use the dedicated indexed-tree APIs \
-                 (insert_into_provable_count_indexed_tree, \
-                 insert_into_provable_sum_indexed_tree, \
-                 insert_into_provable_count_provable_sum_indexed_tree, and their \
-                 delete_from_* counterparts), which maintain the secondary index \
-                 inline"
-                    .to_string(),
-            ))
-            .wrap_with_cost(cost);
-        }
+        // NOTE: generic leaf mutations against an indexed-tree primary are
+        // rejected by the callers that perform them
+        // (`reject_generic_write_into_indexed_primary`, called from the
+        // generic insert/delete paths), NOT here. This function is shared
+        // with callers whose mutation provably cannot change a child's
+        // ordering value — the typed non-Merk append APIs (`mmr_tree_append`,
+        // `commitment_tree_insert`, `bulk_append`, `dense_tree_insert`, whose
+        // element count is a constant `1` on both sides of the append, matching
+        // `GroveOp::can_mutate_child_count == false` on the batch path) and the
+        // dedicated indexed-tree APIs, which mirror the secondary themselves.
+        // Guarding here rejected all of those too.
 
         let mut current_path = path.clone();
 
@@ -928,7 +898,24 @@ impl GroveDb {
             // state for the NEXT iteration (which will reach the element
             // that holds primary_root_key and secondary_root_key).
             if let Some(old_count) = old_count_in_parent {
-                let new_count = aggregate_data.as_count_u64();
+                // Take the new ordering key from the element we just wrote,
+                // NOT from `aggregate_data`. The batch path reads both sides
+                // of the delta with `Element::count_value_or_default`
+                // (`batch::indexed_tree::capture_cidx_pre_state` /
+                // `apply_cidx_secondary_mirror_post_apply`), and the two
+                // differ for children whose element carries no count
+                // aggregate — a plain `Tree` or `SumTree` child defaults to
+                // 1 via the element, but `AggregateData::as_count_u64`
+                // reports 0. Deriving it from the aggregate here made
+                // `db.insert` and `apply_batch` place the same child in
+                // different secondary buckets, committing different root
+                // hashes for byte-identical writes.
+                let new_element_in_parent = cost_return_on_error!(
+                    &mut cost,
+                    Element::get(&parent_tree, parent_key, true, grove_version)
+                        .map_err(Error::MerkError)
+                );
+                let new_count = new_element_in_parent.count_value_or_default();
 
                 // Find secondary_root_key: it lives in the
                 // CountIndexedTree element which is at grandparent[cidx_key].

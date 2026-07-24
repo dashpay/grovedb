@@ -29,7 +29,7 @@ use crate::{
     },
     query::PathTrunkChunkQuery,
     reference_path::path_from_reference_path_type,
-    Element, Error, GroveDb, PathQuery,
+    Element, Error, GroveDb, PathQuery, Transaction,
 };
 
 impl GroveDb {
@@ -1352,6 +1352,97 @@ impl GroveDb {
         Ok(GroveDBProof::V1(GroveDBProofV1 { root_layer })).wrap_with_cost(cost)
     }
 
+    /// Compute the 32-byte secondary attestation that an indexed-tree element
+    /// commits to as the third input of its parent's `combine_hash_three`.
+    ///
+    /// PCIT / PSIT attest with their single secondary Merk's root hash; PCPSIT
+    /// attests with the `axes_digest` over every configured axis's secondary
+    /// root hash (`NULL_HASH` for an empty axis), exactly as the insert commit
+    /// path composes it.
+    ///
+    /// `indexed_path` is the path OF the indexed primary (i.e. the parent path
+    /// with the element's key already pushed).
+    fn indexed_secondary_attestation(
+        &self,
+        element: &Element,
+        indexed_path: &[&[u8]],
+        transaction: &Transaction,
+        grove_version: &GroveVersion,
+    ) -> CostResult<grovedb_merk::CryptoHash, Error> {
+        let mut cost = OperationCost::default();
+        let subtree_path: grovedb_path::SubtreePath<&[u8]> = indexed_path.into();
+
+        let single_axis = match element {
+            Element::ProvableCountIndexedTree(_, secondary, ..) => Some((
+                grovedb_element::indexed::IndexAxis::Count,
+                secondary.clone(),
+            )),
+            Element::ProvableSumIndexedTree(_, secondary, ..) => {
+                Some((grovedb_element::indexed::IndexAxis::Sum, secondary.clone()))
+            }
+            _ => None,
+        };
+
+        if let Some((axis, secondary_root_key)) = single_axis {
+            let secondary_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_indexed_secondary_at_path(
+                    subtree_path,
+                    axis,
+                    secondary_root_key,
+                    transaction,
+                    None,
+                    grove_version,
+                )
+            );
+            let (secondary_root, _, _) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            return Ok(secondary_root).wrap_with_cost(cost);
+        }
+
+        let Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) = element else {
+            return Err(Error::CorruptedCodeExecution(
+                "indexed_secondary_attestation called with a non-indexed element",
+            ))
+            .wrap_with_cost(cost);
+        };
+
+        let mut axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> = Vec::with_capacity(axes.len());
+        for (tag, secondary_root_key) in axes.iter() {
+            let axis = cost_return_on_error_no_add!(
+                cost,
+                grovedb_element::indexed::IndexAxis::try_from_tag(*tag).map_err(|e| {
+                    Error::CorruptedData(format!("invalid axis tag in PCPSIT during proof: {e}"))
+                })
+            );
+            let secondary_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_indexed_secondary_at_path(
+                    indexed_path.into(),
+                    axis,
+                    secondary_root_key.clone(),
+                    transaction,
+                    None,
+                    grove_version,
+                )
+            );
+            let (secondary_root, _, _) = cost_return_on_error!(
+                &mut cost,
+                secondary_merk
+                    .root_hash_key_and_aggregate_data()
+                    .map_err(Error::MerkError)
+            );
+            axis_hashes.push((*tag, secondary_root));
+        }
+
+        Ok(grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost))
+            .wrap_with_cost(cost)
+    }
+
     /// V1 version of prove_subqueries that returns `LayerProof` and handles
     /// MmrTree/BulkAppendTree elements with type-specific proofs.
     pub(crate) fn prove_subqueries_v1(
@@ -2251,6 +2342,75 @@ impl GroveDb {
                                 }
                                 has_a_result_at_level |= true;
                             }
+                            // Non-empty indexed tree that is itself a result,
+                            // with nothing queried below it. Regular trees are
+                            // handled just above by upgrading the node to
+                            // `KVValueHashFeatureTypeWithChildHash`, but that
+                            // node type is verified with the two-input
+                            // `combine_hash(H(value), child_hash)`, which can
+                            // never reproduce an indexed tree's three-input
+                            // `combine_hash_three(H(value), primary_root,
+                            // attestation)` binding. Emit a terminal
+                            // attestation lower layer carrying both hashes
+                            // instead; the verifier performs the three-input
+                            // check itself. Without this the prover emitted an
+                            // unbound node and every honest proof containing a
+                            // populated indexed tree was rejected.
+                            Ok(ref indexed_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
+                            | Ok(ref indexed_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
+                            | Ok(
+                                ref indexed_elem @ Element::ProvableCountProvableSumIndexedTree(
+                                    Some(_),
+                                    ..,
+                                ),
+                            ) if !done_with_results => {
+                                let mut indexed_path = path.clone();
+                                indexed_path.push(key.as_slice());
+
+                                let primary_merk = cost_return_on_error!(
+                                    &mut cost,
+                                    self.open_transactional_merk_at_path(
+                                        indexed_path.as_slice().into(),
+                                        &tx,
+                                        None,
+                                        grove_version
+                                    )
+                                );
+                                let primary_root_hash =
+                                    primary_merk.root_hash().unwrap_add_cost(&mut cost);
+
+                                let attestation = cost_return_on_error!(
+                                    &mut cost,
+                                    self.indexed_secondary_attestation(
+                                        indexed_elem,
+                                        indexed_path.as_slice(),
+                                        &tx,
+                                        grove_version,
+                                    )
+                                );
+
+                                let mut terminal = Vec::with_capacity(64);
+                                terminal.extend_from_slice(&attestation);
+                                terminal.extend_from_slice(&primary_root_hash);
+                                lower_layers.insert(
+                                    key.clone(),
+                                    LayerProof {
+                                        merk_proof:
+                                            crate::operations::proof::ProofBytes::IndexedTreeTerminal(
+                                                terminal,
+                                            ),
+                                        lower_layers: BTreeMap::new(),
+                                    },
+                                );
+
+                                // The verifier pushes this element as a result
+                                // and decrements, so account for it here too.
+                                if let Some(limit) = overall_limit.as_mut() {
+                                    *limit -= 1;
+                                }
+                                has_a_result_at_level |= true;
+                            }
+
                             // Empty count trees under an aggregate-count
                             // carrier still need a lower-layer descent —
                             // the recursion hits the ACOR short-circuit on

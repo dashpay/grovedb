@@ -27,7 +27,7 @@ pub use delete_up_tree::DeleteUpTreeOptions;
 use grovedb_costs::cost_return_on_error_into;
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
-    cost_return_on_error,
+    cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt, OperationCost,
 };
@@ -242,6 +242,20 @@ impl GroveDb {
                 tx.as_ref(),
                 Some(&batch),
                 grove_version,
+            )
+        );
+
+        // Clearing an indexed primary would empty the primary Merk while
+        // leaving every per-axis secondary Merk fully populated, so the
+        // element's secondary root key / axes digest would still commit to
+        // rows that no longer exist. Reject rather than corrupt; callers
+        // should delete the indexed tree itself (which sweeps all axes) or
+        // remove entries through the dedicated `delete_from_*` APIs.
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
+                merk_to_clear.tree_type,
+                "clear_subtree",
             )
         );
 
@@ -747,6 +761,17 @@ impl GroveDb {
                 grove_version
             )
         );
+        // A generic delete cannot mirror the removed child's ordering value
+        // out of an indexed primary's secondary index. Reject before any
+        // mutation.
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
+                subtree_to_delete_from.tree_type,
+                "delete",
+            )
+        );
+
         let uses_sum_tree = subtree_to_delete_from.tree_type;
         if let Some(tree_type) = element.tree_type() {
             let subtree_merk_path = path.derive_owned_with_child(key);

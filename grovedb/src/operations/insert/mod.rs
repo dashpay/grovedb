@@ -2,7 +2,9 @@
 
 use std::{collections::HashMap, option::Option::None};
 
-use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
+};
 use grovedb_merk::{Merk, MerkOptions};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch};
@@ -145,6 +147,16 @@ impl GroveDb {
                 transaction,
                 batch,
                 grove_version
+            )
+        );
+        // A generic insert cannot mirror the new child's ordering value into
+        // an indexed primary's secondary index. Reject before propagation, so
+        // the `StorageBatch` is discarded and nothing is committed.
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::reject_generic_write_into_indexed_primary(
+                merk.tree_type,
+                "insert",
             )
         );
         merk_cache.insert(path.clone(), merk);

@@ -84,6 +84,46 @@ fn make_axis_secondary_key(axis: IndexAxis, count: u64, sum: i64, item_key: &[u8
     }
 }
 
+/// Reject a generic (indexed-unaware) leaf mutation whose target subtree
+/// is an indexed-tree primary.
+///
+/// A generic `db.insert` / `db.delete` / `clear_subtree` against a primary
+/// mutates a child whose element carries the secondary index's ordering
+/// value, but the generic paths have no hook to mirror that change into the
+/// per-axis secondary Merk(s). Letting one proceed commits an element whose
+/// secondary root key / axes digest no longer matches on-disk secondary
+/// state: for PCIT that silently corrupts the index (`verify_grovedb`
+/// reports `__cidx_count_mismatch__`), and for PSIT / PCPSIT the legacy
+/// `update_tree_item_preserve_flag` path fails with a misleading
+/// `InvalidPath("can only propagate on tree items")` because
+/// `reconstruct_with_root_key` has no indexed arm.
+///
+/// This is deliberately enforced at the generic call sites rather than
+/// inside `propagate_changes_*`: that function is shared with the typed
+/// non-Merk append APIs (`mmr_tree_append`, `commitment_tree_insert`,
+/// `bulk_append`, `dense_tree_insert`), whose element ordering value is a
+/// constant on both sides of the append, and with the dedicated
+/// indexed-tree APIs, which mirror the secondary themselves. Both are
+/// legitimate and must not be rejected.
+pub(crate) fn reject_generic_write_into_indexed_primary(
+    tree_type: TreeType,
+    api_label: &str,
+) -> Result<(), Error> {
+    if !tree_type.is_indexed_primary() {
+        return Ok(());
+    }
+    Err(Error::NotSupported(format!(
+        "{api_label}: generic writes into an indexed-tree primary ({tree_type:?}) are not \
+         supported because they cannot mirror the change into the secondary index; use the \
+         dedicated indexed-tree APIs instead — insert_into_count_indexed_tree / \
+         delete_from_count_indexed_tree (ProvableCountIndexedTree), \
+         insert_into_provable_sum_indexed_tree / delete_from_provable_sum_indexed_tree \
+         (ProvableSumIndexedTree), or insert_into_provable_count_provable_sum_indexed_tree / \
+         delete_from_provable_count_provable_sum_indexed_tree \
+         (ProvableCountProvableSumIndexedTree)"
+    )))
+}
+
 /// Reject a non-empty tree / indexed `item` claim on the dedicated
 /// indexed-tree insert paths (PCIT / PSIT / PCPSIT).
 ///

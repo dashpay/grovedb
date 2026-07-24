@@ -285,8 +285,8 @@ mod tests {
         let bytes = encode_proof(&tampered);
         let result = GroveDb::verify_query(&bytes, &pq, grove_version);
         assert!(
-            matches!(result, Err(Error::InvalidProof(_, ref msg)) if msg.contains("non-cidx")),
-            "expected non-cidx parent rejection, got {:?}",
+            matches!(result, Err(Error::InvalidProof(_, ref msg)) if msg.contains("non-indexed")),
+            "expected non-indexed parent rejection, got {:?}",
             result
         );
     }

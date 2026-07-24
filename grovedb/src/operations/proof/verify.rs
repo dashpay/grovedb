@@ -682,7 +682,8 @@ impl GroveDb {
             | ProofBytes::BulkAppendTree(_)
             | ProofBytes::DenseTree(_)
             | ProofBytes::CommitmentTree(_)
-            | ProofBytes::CountIndexedTree(_) => {
+            | ProofBytes::CountIndexedTree(_)
+            | ProofBytes::IndexedTreeTerminal(_) => {
                 return Err(Error::InvalidProof(
                     query.clone(),
                     "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
@@ -794,6 +795,79 @@ impl GroveDb {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
+                                    // The indexed tree is itself a result and
+                                    // nothing is queried below it. The element
+                                    // bytes still have to be bound to the
+                                    // parent-committed `value_hash`: a
+                                    // `KVValueHash` node hashes only
+                                    // (key, value_hash), so pushing the value
+                                    // unchecked would let a prover swap in a
+                                    // forged element (any count/sum it likes)
+                                    // under a genuine root hash. Only the
+                                    // terminal envelope can bind it here —
+                                    // a descent envelope is unusable because
+                                    // there is no query at the lower path to
+                                    // verify it against.
+                                    let ProofBytes::IndexedTreeTerminal(terminal_bytes) =
+                                        &lower_layer.merk_proof
+                                    else {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 proof supplies a non-terminal lower layer for \
+                                                 indexed tree at key {} with no query below it; \
+                                                 the element bytes would be unbound",
+                                                hex::encode(key),
+                                            ),
+                                        ));
+                                    };
+                                    if !lower_layer.lower_layers.is_empty() {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 indexed terminal attestation at key {} must \
+                                                 not carry further lower layers",
+                                                hex::encode(key),
+                                            ),
+                                        ));
+                                    }
+                                    if terminal_bytes.len() != 64 {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 indexed terminal attestation at key {} must \
+                                                 be exactly 64 bytes (attestation || \
+                                                 primary_root), got {}",
+                                                hex::encode(key),
+                                                terminal_bytes.len(),
+                                            ),
+                                        ));
+                                    }
+                                    let mut attestation = [0u8; 32];
+                                    attestation.copy_from_slice(&terminal_bytes[..32]);
+                                    let mut primary_root = [0u8; 32];
+                                    primary_root.copy_from_slice(&terminal_bytes[32..]);
+
+                                    let combined_root_hash = combine_hash_three(
+                                        value_hash(value_bytes).value(),
+                                        &primary_root,
+                                        &attestation,
+                                    )
+                                    .value()
+                                    .to_owned();
+                                    if hash != &combined_root_hash {
+                                        return Err(Error::InvalidProof(
+                                            query.clone(),
+                                            format!(
+                                                "V1 mismatch in indexed terminal attestation at \
+                                                 key {}, expected {}, got {}",
+                                                hex::encode(key),
+                                                hex::encode(hash),
+                                                hex::encode(combined_root_hash)
+                                            ),
+                                        ));
+                                    }
+
                                     let path_key_optional_value =
                                         ProvedPathKeyOptionalValue::from_proved_key_value(
                                             path.iter().map(|p| p.to_vec()).collect(),
@@ -910,22 +984,31 @@ impl GroveDb {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
                                 if query.query_items_at_path(&path, grove_version)?.is_none() {
-                                    // Query targets the tree itself, not its contents
-                                    let path_key_optional_value =
-                                        ProvedPathKeyOptionalValue::from_proved_key_value(
-                                            path.iter().map(|p| p.to_vec()).collect(),
-                                            proved_key_value,
-                                        );
-                                    result.push(
-                                        path_key_optional_value
-                                            .try_into_versioned(grove_version)?,
-                                    );
-                                    limit_left
-                                        .iter_mut()
-                                        .for_each(|limit| *limit = limit.saturating_sub(1));
-                                    if limit_left == &Some(0) {
-                                        break;
-                                    }
+                                    // Query targets the tree itself, not its
+                                    // contents — but a lower layer was still
+                                    // supplied, which an honest prover never
+                                    // does (every `lower_layers.insert` site is
+                                    // gated on there being a subquery for this
+                                    // key). Pushing the value here would skip
+                                    // both binding mechanisms: the
+                                    // `combine_hash` chain check below (which
+                                    // needs a query at the lower path) and the
+                                    // `child_hash_verified` requirement applied
+                                    // on the no-lower-layer path. Since a
+                                    // `KVValueHash` node commits only to
+                                    // (key, value_hash), accepting it would let
+                                    // a prover attach a dummy lower layer and
+                                    // substitute forged element bytes under a
+                                    // genuine root hash. Fail closed.
+                                    return Err(Error::InvalidProof(
+                                        query.clone(),
+                                        format!(
+                                            "V1 proof supplies a lower layer for tree at key {} \
+                                             with no query below it; the element bytes would be \
+                                             unbound",
+                                            hex::encode(key),
+                                        ),
+                                    ));
                                 } else {
                                     // Known limitation: this parent tree result
                                     // is pushed without decrementing limit_left.
@@ -1005,8 +1088,9 @@ impl GroveDb {
                                                 grove_version,
                                             )?
                                         }
-                                        ProofBytes::CountIndexedTree(_) => {
-                                            // CountIndexedTree elements are
+                                        ProofBytes::CountIndexedTree(_)
+                                        | ProofBytes::IndexedTreeTerminal(_) => {
+                                            // Indexed-tree envelopes are
                                             // dispatched in the dedicated
                                             // arm above; reaching this point
                                             // means the proof envelope put
@@ -1015,7 +1099,7 @@ impl GroveDb {
                                             // which is malformed.
                                             return Err(Error::InvalidProof(
                                                 query.clone(),
-                                                "ProofBytes::CountIndexedTree under a non-cidx \
+                                                "indexed-tree proof envelope under a non-indexed \
                                                  parent element"
                                                     .to_string(),
                                             ));

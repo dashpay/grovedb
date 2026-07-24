@@ -1670,6 +1670,115 @@ mod tests {
         }
     }
 
+    /// `RangeFull` over TEST_LEAF with no subquery — the shape a caller uses
+    /// to list a directory that happens to contain an indexed tree.
+    fn range_full_query() -> crate::PathQuery {
+        use crate::{query::SizedQuery, PathQuery, QueryItem, SubqueryBranch};
+        PathQuery {
+            path: vec![TEST_LEAF.to_vec()],
+            query: SizedQuery {
+                query: grovedb_merk::proofs::Query {
+                    items: vec![QueryItem::RangeFull(..)],
+                    default_subquery_branch: SubqueryBranch {
+                        subquery_path: None,
+                        subquery: None,
+                    },
+                    left_to_right: true,
+                    conditional_subquery_branches: None,
+                    add_parent_tree_on_subquery: false,
+                },
+                limit: None,
+                offset: None,
+            },
+        }
+    }
+
+    /// A `RangeFull` listing whose result set merely CONTAINS a populated
+    /// indexed tree must prove and verify. Before the terminal-attestation
+    /// envelope this proved Ok and then failed verification with
+    /// "must use KVValueHashFeatureTypeWithChildHash", which made every
+    /// generic query over a directory holding an indexed tree unusable.
+    #[test]
+    fn psit_range_full_containing_populated_psit_verifies() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_psit_at_test_leaf(&db, b"psit", v);
+        psit_populate_known_set(&db, v);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"plain",
+            Element::new_item(b"sibling".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("sibling item");
+
+        let pq = range_full_query();
+        let proof = db.prove_query(&pq, None, v).unwrap().expect("prove");
+        let (root, items) =
+            crate::GroveDb::verify_query(&proof, &pq, v).expect("range listing must verify");
+        assert_eq!(
+            root,
+            db.root_hash(None, v).unwrap().unwrap(),
+            "verified root must match the live root"
+        );
+        assert_eq!(items.len(), 2, "the PSIT element and the sibling item");
+    }
+
+    /// The terminal attestation is what binds the indexed element's bytes to
+    /// the parent-committed `value_hash`. Substituting forged element bytes
+    /// (a `KVValueHash` node commits only to key + value_hash, so the merk
+    /// proof itself still checks out) must be caught by the
+    /// `combine_hash_three` comparison.
+    #[test]
+    fn psit_terminal_attestation_rejects_forged_element_bytes() {
+        use crate::operations::proof::{GroveDBProof, ProofBytes};
+
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        insert_empty_psit_at_test_leaf(&db, b"psit", v);
+        psit_populate_known_set(&db, v);
+
+        let pq = key_query(b"psit");
+        let proof_bytes = db.prove_query(&pq, None, v).unwrap().expect("prove");
+        crate::GroveDb::verify_query(&proof_bytes, &pq, v).expect("honest proof verifies");
+
+        let config = bincode::config::standard();
+        let (decoded, _): (GroveDBProof, _) =
+            bincode::decode_from_slice(&proof_bytes, config).expect("decode");
+        let GroveDBProof::V1(mut v1) = decoded else {
+            panic!("expected a V1 proof");
+        };
+
+        // The terminal envelope is present for the populated PSIT.
+        let terminal = v1
+            .root_layer
+            .lower_layers
+            .values_mut()
+            .find_map(|layer| {
+                layer
+                    .lower_layers
+                    .values_mut()
+                    .find(|l| matches!(l.merk_proof, ProofBytes::IndexedTreeTerminal(_)))
+            })
+            .expect("populated PSIT must carry a terminal attestation");
+        // Flip one byte of the attested primary root: the element bytes now
+        // no longer combine to the committed value hash.
+        if let ProofBytes::IndexedTreeTerminal(bytes) = &mut terminal.merk_proof {
+            bytes[32] ^= 0xff;
+        }
+
+        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(v1), config).expect("encode");
+        let result = crate::GroveDb::verify_query(&tampered, &pq, v);
+        assert!(
+            matches!(result, Err(crate::Error::InvalidProof(_, ref m))
+                if m.contains("indexed terminal attestation")),
+            "forged attestation must be rejected, got {result:?}"
+        );
+    }
+
     fn key_subquery(key: &[u8]) -> crate::PathQuery {
         use crate::{query::SizedQuery, PathQuery, QueryItem, SubqueryBranch};
         use grovedb_merk::proofs::Query;
@@ -1774,12 +1883,18 @@ mod tests {
     }
 
     #[test]
-    fn psit_non_empty_v1_direct_key_matches_pcit_limitation() {
-        // Parity: a non-empty indexed tree selected by a direct key with
-        // NO subquery is rejected identically for PSIT and PCIT (both need
-        // KVValueHashFeatureTypeWithChildHash, which the terminal arm does
-        // not emit for indexed trees). This documents the shared,
-        // by-design limitation — PSIT is not more restricted than PCIT.
+    fn psit_non_empty_v1_direct_key_verifies_like_pcit() {
+        // A non-empty indexed tree selected by a direct key with NO subquery
+        // must prove AND verify, identically for PSIT and PCIT.
+        //
+        // This previously asserted the opposite: the prover emitted an
+        // unbound node (the `KVValueHashFeatureTypeWithChildHash` upgrade
+        // used for regular trees cannot express the three-input indexed
+        // binding), the verifier demanded that node type, and every honest
+        // proof containing a populated indexed tree was rejected. The
+        // prover now emits a `ProofBytes::IndexedTreeTerminal` attestation
+        // (secondary attestation ‖ primary root) and the verifier checks
+        // `combine_hash_three` against it.
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
         insert_empty_psit_at_test_leaf(&db, b"psit", v);
@@ -1817,9 +1932,17 @@ mod tests {
             pcit_res.is_err(),
             "PSIT and PCIT direct-key non-empty verification must agree"
         );
-        assert!(
-            psit_res.is_err(),
-            "non-empty direct-key indexed tree is rejected"
+        let (_, psit_items) = psit_res.expect("non-empty direct-key PSIT proof must verify");
+        let (_, pcit_items) = pcit_res.expect("non-empty direct-key PCIT proof must verify");
+        assert_eq!(
+            psit_items.len(),
+            1,
+            "the PSIT element itself is the single result"
+        );
+        assert_eq!(
+            pcit_items.len(),
+            1,
+            "the PCIT element itself is the single result"
         );
     }
 

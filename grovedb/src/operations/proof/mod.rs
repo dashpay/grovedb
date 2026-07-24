@@ -238,6 +238,28 @@ pub enum ProofBytes {
     /// who want secondary-ordered output should use the dedicated
     /// `prove_indexed_count_top_k` proof shape instead.
     CountIndexedTree(Vec<u8>),
+    /// Terminal attestation for an indexed tree that is itself a query
+    /// result with nothing queried below it:
+    /// `attestation (32 bytes) || primary_root_hash (32 bytes)`.
+    ///
+    /// Regular trees cover this case at the Merk level with a
+    /// `KVValueHashFeatureTypeWithChildHash` node, whose verification
+    /// recomputes the two-input `combine_hash(H(value), child_hash)`. An
+    /// indexed tree's parent binding is the three-input
+    /// `combine_hash_three(H(value), primary_root, attestation)`, which that
+    /// node type can never reproduce, so the two hashes travel here instead
+    /// and the verifier performs the three-input check itself. Supplying them
+    /// raw is safe for exactly the same reason `child_hash` is: a wrong value
+    /// fails the comparison against the parent-committed `value_hash`.
+    ///
+    /// `attestation` is the secondary Merk root hash for PCIT / PSIT, and the
+    /// `axes_digest` over every axis's secondary root hash for PCPSIT —
+    /// identical to the 32-byte prefix on [`ProofBytes::CountIndexedTree`].
+    ///
+    /// Appended last so the existing variants keep their discriminants; it is
+    /// only ever emitted for indexed trees, which no released version can
+    /// store.
+    IndexedTreeTerminal(Vec<u8>),
 }
 
 /// A single layer of a v1 GroveDB proof supporting multiple tree types.
@@ -662,6 +684,18 @@ impl fmt::Display for ProofBytes {
                     )
                 } else {
                     write!(f, "CountIndexedTree(<invalid: {} bytes>)", bytes.len())
+                }
+            }
+            ProofBytes::IndexedTreeTerminal(bytes) => {
+                if bytes.len() == 64 {
+                    write!(
+                        f,
+                        "IndexedTreeTerminal(attestation={}, primary_root={})",
+                        hex::encode(&bytes[..32]),
+                        hex::encode(&bytes[32..])
+                    )
+                } else {
+                    write!(f, "IndexedTreeTerminal(<invalid: {} bytes>)", bytes.len())
                 }
             }
         }

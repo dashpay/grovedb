@@ -1699,4 +1699,125 @@ mod tests {
         .expect("empty ProvableCountProvableSumTree child must be accepted");
         assert_verify_passes(&db, grove_version);
     }
+
+    // -----------------------------------------------------------------
+    // Guard scope: typed append APIs vs generic writes
+    // -----------------------------------------------------------------
+
+    /// `mmr_tree_append` on an MMR child of a PCIT primary must succeed.
+    ///
+    /// The generic-write rejection used to live inside `propagate_changes`,
+    /// which every one of these typed APIs also calls, so an append that
+    /// provably cannot change a child's ordering value (an MMR element's
+    /// count is a constant `1` on both sides, matching
+    /// `GroveOp::can_mutate_child_count == false` on the batch path) was
+    /// rejected while the identical batch op succeeded. The guard now sits
+    /// at the generic insert/delete entry points instead.
+    #[test]
+    fn mmr_append_under_pcit_primary_is_allowed() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"mmr",
+            Element::empty_mmr_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("MMR child under PCIT");
+
+        db.mmr_tree_append(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"mmr",
+            b"leaf-value".to_vec(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("appending to an MMR child of a PCIT primary must be allowed");
+
+        let issues = db.verify_grovedb(None, true, false, grove_version).unwrap();
+        assert!(issues.is_empty(), "verify_grovedb reported: {issues:?}");
+    }
+
+    /// The generic paths stay closed: `db.insert`, `db.delete` and
+    /// `clear_subtree` against a PCIT primary must all be rejected, since
+    /// none of them can mirror the change into the secondary index.
+    #[test]
+    fn generic_writes_against_pcit_primary_are_rejected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("seed one entry");
+        let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
+
+        let inserted = db
+            .insert(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"b",
+                Element::new_item(b"w".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(inserted, Err(Error::NotSupported(ref m)) if m.contains("indexed-tree")),
+            "generic insert must be rejected, got {inserted:?}"
+        );
+
+        let deleted = db
+            .delete(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"a",
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(deleted, Err(Error::NotSupported(ref m)) if m.contains("indexed-tree")),
+            "generic delete must be rejected, got {deleted:?}"
+        );
+
+        let cleared = db.clear_subtree([TEST_LEAF, b"cidx"].as_ref(), None, None, grove_version);
+        assert!(
+            matches!(cleared, Err(Error::NotSupported(ref m)) if m.contains("indexed-tree")),
+            "clear_subtree must be rejected, got {cleared:?}"
+        );
+
+        assert_eq!(
+            root_before,
+            db.root_hash(None, grove_version).unwrap().unwrap(),
+            "no rejected op may leave a partial write"
+        );
+    }
 }

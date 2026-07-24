@@ -1384,4 +1384,85 @@ mod tests {
         }
         assert_verify_passes(&db, grove_version);
     }
+
+    // -----------------------------------------------------------------
+    // Direct-vs-batch parity of the secondary ordering key
+    // -----------------------------------------------------------------
+
+    /// The secondary sort key must be derived identically on the direct and
+    /// batch paths. Both read the child's ordering value with
+    /// `Element::count_value_or_default`; `propagate_changes` previously took
+    /// the NEW key from the child Merk's `AggregateData::as_count_u64()`
+    /// instead, which disagrees for children that carry no count aggregate
+    /// (a plain `Tree` defaults to 1 via the element but reports 0 as
+    /// aggregate data). A `db.insert` below such a child then moved it to a
+    /// different secondary bucket than `apply_batch` did, so the two APIs
+    /// committed different root hashes for byte-identical writes.
+    #[test]
+    fn direct_and_batch_writes_under_pcit_agree_on_root_hash() {
+        let grove_version = GroveVersion::latest();
+
+        let seed = |db: &crate::GroveDb| {
+            db.insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCIT");
+            // A plain Tree child: element count defaults to 1, aggregate
+            // data reports 0 — the exact divergence case.
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                b"child",
+                Element::empty_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("tree child under PCIT");
+        };
+
+        let db_direct = make_test_grovedb(grove_version);
+        seed(&db_direct);
+        db_direct
+            .insert(
+                [TEST_LEAF, b"cidx", b"child"].as_ref(),
+                b"k",
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("direct insert below the PCIT primary");
+
+        let db_batch = make_test_grovedb(grove_version);
+        seed(&db_batch);
+        db_batch
+            .apply_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"child".to_vec()],
+                    b"k".to_vec(),
+                    Element::new_item(b"v".to_vec()),
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("batch insert below the PCIT primary");
+
+        let direct_root = db_direct.root_hash(None, grove_version).unwrap().unwrap();
+        let batch_root = db_batch.root_hash(None, grove_version).unwrap().unwrap();
+        assert_eq!(
+            direct_root, batch_root,
+            "db.insert and apply_batch must commit the same root hash for the same write"
+        );
+        assert_verify_passes(&db_direct, grove_version);
+        assert_verify_passes(&db_batch, grove_version);
+    }
 }
