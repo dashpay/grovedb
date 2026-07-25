@@ -1408,4 +1408,69 @@ mod tests {
              ProvableCountSumTree, but the proof bytes use the dual-axis Node variants"
         );
     }
+
+    /// An EMPTY indexed tree returned through the count-offset paginated
+    /// path must verify.
+    ///
+    /// The empty-tree defence-in-depth check recomputes the expected
+    /// value_hash to catch a KV->KVValueHash forgery, but indexed trees
+    /// commit the three-input `combine_hash_three(H(value), NULL_HASH,
+    /// second)` even when empty. Computing the two-input form for them
+    /// rejects an honest proof. Only PSIT is honest-reachable here — PCIT
+    /// and PCPSIT children are NonCounted-wrapped and refused earlier — so
+    /// this pins the arm that had no coverage at all (reverting it to an
+    /// unconditional `combine_hash` left the whole suite green).
+    #[test]
+    fn count_offset_accepts_empty_psit_return() {
+        let v = GroveVersion::latest();
+        let db = make_test_grovedb(v);
+        db.insert(
+            &[] as &[&[u8]],
+            b"counts",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert count tree");
+        db.insert(
+            &[b"counts"],
+            b"a",
+            Element::new_item(b"v_a".to_vec()),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert a");
+        // "b" is an EMPTY PSIT: the element the arm under test handles.
+        db.insert(
+            &[b"counts"],
+            b"b",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            v,
+        )
+        .unwrap()
+        .expect("insert empty PSIT");
+
+        let mut q = Query::new();
+        q.insert_range_inclusive(b"a".to_vec()..=b"z".to_vec());
+        // offset=1 skips "a" so the returned item is the empty PSIT.
+        let path_query = PathQuery::new(
+            vec![b"counts".to_vec()],
+            SizedQuery::new(q, Some(1), Some(1)),
+        );
+        let proof = db
+            .prove_query(&path_query, None, v)
+            .unwrap()
+            .expect("prove empty-PSIT count-offset page");
+        let (root, items) = GroveDb::verify_query(&proof, &path_query, v)
+            .expect("an empty indexed tree returned by a count-offset page must verify");
+        assert_eq!(root, db.root_hash(None, v).unwrap().unwrap());
+        assert_eq!(items.len(), 1, "exactly the empty PSIT is returned");
+        assert_eq!(items[0].1, b"b".to_vec());
+    }
 }

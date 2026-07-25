@@ -1275,9 +1275,22 @@ impl GroveDb {
                 let mut full_range = MerkQuery::new();
                 full_range.insert_all();
                 full_range.left_to_right = !descending;
-                let combined_limit = (offset as u128)
-                    .saturating_add(k as u128)
-                    .min(u16::MAX as u128) as u16;
+                // `offset + k` must fit a u16 Merk limit. Clamping instead
+                // would silently prove a SHORT page while the verifier's
+                // documented `skipped == expected_offset` cross-check still
+                // passed, so the caller would receive fewer rows than asked
+                // for with no error anywhere. Reject instead.
+                let combined = (offset as u128).saturating_add(k as u128);
+                if combined > u16::MAX as u128 {
+                    return Err(Error::NotSupported(format!(
+                        "indexed-axis paginated proof (sum): offset + k = {combined} exceeds the \
+                         {} entry limit a single page can prove; request a smaller page or a \
+                         smaller offset",
+                        u16::MAX
+                    )))
+                    .wrap_with_cost(cost);
+                }
+                let combined_limit = combined as u16;
                 let sec_result = cost_return_on_error!(
                     &mut cost,
                     secondary_merk
@@ -1774,9 +1787,19 @@ fn verify_indexed_axis_paginated_inner(
             let mut full_range = MerkQuery::new();
             full_range.insert_all();
             full_range.left_to_right = !envelope.descending;
-            let combined_limit = (envelope.requested_offset as u128)
-                .saturating_add(envelope.requested_k as u128)
-                .min(u16::MAX as u128) as u16;
+            // Mirror the prover: an envelope whose offset + k overflows u16
+            // cannot be honestly produced, so reject rather than verify a
+            // silently-short page.
+            let combined =
+                (envelope.requested_offset as u128).saturating_add(envelope.requested_k as u128);
+            if combined > u16::MAX as u128 {
+                return Err(Error::CorruptedData(format!(
+                    "indexed-axis paginated proof (sum): offset + k = {combined} exceeds the {} \
+                     entry limit a single page can prove",
+                    u16::MAX
+                )));
+            }
+            let combined_limit = combined as u16;
             let (secondary_root_hash, sec_result) = full_range
                 .execute_proof(
                     &envelope.secondary_proof,

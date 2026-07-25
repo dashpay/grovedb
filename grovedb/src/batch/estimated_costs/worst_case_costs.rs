@@ -356,6 +356,15 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
+            // KNOWN GAP (same as the average-case estimator): this covers
+            // only the parent-merk node update recomputing the indexed
+            // element's value_hash. The per-axis secondary Merk work is not
+            // charged here or anywhere else, because the secondary lives at a
+            // derived prefix with no entry in the supplied layer-information
+            // map. See the long note in
+            // `batch/estimated_costs/average_case_costs.rs`. Worst-case
+            // callers reserving fees must not rely on this for indexed-tree
+            // ops until the layer-information API can describe secondaries.
             GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                 primary_aggregate_data,
                 ..

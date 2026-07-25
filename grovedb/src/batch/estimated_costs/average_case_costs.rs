@@ -364,12 +364,28 @@ impl GroveOp {
                 primary_aggregate_data,
                 ..
             } => {
-                // Cost-shape-equivalent to ReplaceTreeRootKey at this
-                // level: a single Merk node-update on the parent merk
-                // recomputing the cidx element's value_hash. The
-                // dual-Merk update on the secondary is accounted for at
-                // the cidx primary level (inside execute_ops_on_path),
-                // not here.
+                // Covers ONLY the parent-merk node update that recomputes
+                // the indexed element's value_hash — cost-shape-equivalent
+                // to ReplaceTreeRootKey at this level.
+                //
+                // KNOWN GAP: the per-axis secondary Merk work (open +
+                // delete-then-insert of the moved entry + root recompute) is
+                // NOT included, and is not accounted for elsewhere either —
+                // the estimator's `TreeCache` never takes the secondary
+                // hand-off, so no layer charges it. Measured on a single item
+                // insert into a PCIT primary: estimate seek 7 / added 161 vs
+                // actual seek 11 / added 335.
+                //
+                // Fixing this needs the caller to describe the secondary
+                // layer: the secondary lives at a DERIVED prefix
+                // (Blake3(primary_prefix ‖ axis_tag)) that has no entry in
+                // the supplied `EstimatedLayerInformation` map, and its entry
+                // sizes depend on the axis sort-key width (8 bytes count/sum,
+                // 16 avg) plus the item key length. Inventing those numbers
+                // here would bake a wrong fee model into a consensus-relevant
+                // estimator, so the gap is left explicit rather than guessed.
+                // Callers must not rely on these estimates for indexed-tree
+                // ops until the layer-information API can describe secondaries.
                 GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
