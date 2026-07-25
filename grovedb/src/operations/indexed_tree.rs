@@ -1172,13 +1172,20 @@ impl GroveDb {
         }
 
         // 4. Compute the desired secondary keys from the primary entries.
-        let desired_keys: std::collections::HashSet<Vec<u8>> = entries
+        //    `BTreeSet`, not `HashSet`: step 6 iterates this set to drive the
+        //    repair inserts, and a hashed iteration order would build the
+        //    secondary AVL in a different shape on every run — so two
+        //    operators repairing identical databases would derive different
+        //    secondary root hashes, and therefore different
+        //    `combine_hash_three` parent bindings, contradicting this API's
+        //    "producing identical bytes" contract.
+        let desired_keys: std::collections::BTreeSet<Vec<u8>> = entries
             .iter()
             .map(|(count, key)| make_secondary_key(*count, key))
             .collect();
 
         // 5. Delete entries that should not be present.
-        let existing_set: std::collections::HashSet<Vec<u8>> =
+        let existing_set: std::collections::BTreeSet<Vec<u8>> =
             existing_secondary_keys.iter().cloned().collect();
         for key in existing_secondary_keys {
             if !desired_keys.contains(&key) {
@@ -3885,6 +3892,7 @@ mod bug2_avg_axis_mirror_tests {
     //! module-private mirror function directly against a real Avg
     //! secondary Merk.
 
+    use grovedb_costs::OperationCost;
     use grovedb_element::indexed::{compute_avg_fixed_point, IndexAxis};
     use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
     use grovedb_path::SubtreePath;
@@ -4069,6 +4077,10 @@ mod bug2_avg_axis_mirror_tests {
         .expect("insert (2,10)");
 
         // Identical (count, sum) rewrite: key AND payload unchanged.
+        // Assert on the COST, not just the stored value — a delete+reinsert
+        // would leave the same value behind, so a value-only assertion passes
+        // even with the fast path deleted entirely.
+        let mut noop_cost = OperationCost::default();
         mirror_indexed_axis_to_secondary(
             &mut secondary,
             IndexAxis::Avg,
@@ -4079,8 +4091,24 @@ mod bug2_avg_axis_mirror_tests {
             Some(10),
             grove_version,
         )
-        .unwrap()
+        .unwrap_add_cost(&mut noop_cost)
         .expect("noop rewrite");
+        // Byte deltas are NOT a usable signal here: a delete-then-reinsert of
+        // an identical entry nets zero added/replaced/removed bytes. Merk
+        // work is the discriminator — the fast path touches storage not at
+        // all, while the delete+insert it replaces seeks and rehashes.
+        assert_eq!(
+            noop_cost.seek_count, 0,
+            "an unchanged rewrite must not touch storage"
+        );
+        assert_eq!(
+            noop_cost.hash_node_calls, 0,
+            "an unchanged rewrite must not rehash the secondary"
+        );
+        assert_eq!(
+            noop_cost.storage_loaded_bytes, 0,
+            "an unchanged rewrite must not load"
+        );
 
         let key = make_axis_secondary_key(IndexAxis::Avg, 2, 10, item_key);
         let entry = Element::get(&secondary, key.as_slice(), true, grove_version)

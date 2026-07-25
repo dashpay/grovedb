@@ -134,14 +134,14 @@ fn bench_cidx_top_k(c: &mut Criterion) {
         let (_dir, db, gv) = populate_cidx(n);
         group.bench_function(format!("n={}_k=10", n), |b| {
             b.iter(|| {
-                db.count_indexed_top_k([b"cidx".as_slice()].as_ref(), 10, true, None, gv)
+                db.indexed_count_top_k([b"cidx".as_slice()].as_ref(), 10, true, None, gv)
                     .unwrap()
                     .expect("bench_cidx_top_k: count_indexed_top_k k=10")
             });
         });
         group.bench_function(format!("n={}_k=100", n), |b| {
             b.iter(|| {
-                db.count_indexed_top_k([b"cidx".as_slice()].as_ref(), 100, true, None, gv)
+                db.indexed_count_top_k([b"cidx".as_slice()].as_ref(), 100, true, None, gv)
                     .unwrap()
                     .expect("bench_cidx_top_k: count_indexed_top_k k=100")
             });
