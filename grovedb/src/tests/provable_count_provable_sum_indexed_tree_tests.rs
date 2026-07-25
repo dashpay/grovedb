@@ -2400,4 +2400,95 @@ mod tests {
             .is_err());
         assert_verify_passes(&db, grove_version);
     }
+
+    /// Adding (or removing) an axis on a POPULATED PCPSIT must be rejected.
+    ///
+    /// `axes_digest` is recomputed from the element's own claimed axes, so a
+    /// schema change produced a perfectly consistent-looking element whose
+    /// new axis indexed none of the existing rows — `indexed_avg_top_k`
+    /// returned an empty set for a populated tree and `verify_grovedb`
+    /// reported nothing, because it re-derives the digest from the same
+    /// claimed axes. There is no backfill/reindex path.
+    #[test]
+    fn pcpsit_axes_schema_change_on_a_populated_tree_is_rejected() {
+        use grovedb_element::indexed::IndexAxis;
+
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"idx",
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (IndexAxis::Count.tag(), None),
+                (IndexAxis::Sum.tag(), None),
+            ])
+            .expect("canonical axes"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PCPSIT");
+        for (k, sum) in [(b"a".as_slice(), 3i64), (b"b".as_slice(), 5)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"idx"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(b"v".to_vec(), sum),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("seed entry");
+        }
+
+        let stored = db
+            .get([TEST_LEAF].as_ref(), b"idx", None, grove_version)
+            .unwrap()
+            .expect("get PCPSIT");
+        let (primary, count, sum, axes) = match stored {
+            Element::ProvableCountProvableSumIndexedTree(p, c, s, axes, _) => (p, c, s, axes),
+            other => panic!("expected PCPSIT, got {other:?}"),
+        };
+
+        // Same element, but with the Avg axis appended.
+        let mut widened = axes.clone();
+        widened.push((IndexAxis::Avg.tag(), None));
+        let override_opts = Some(crate::operations::insert::InsertOptions {
+            validate_insertion_does_not_override: false,
+            validate_insertion_does_not_override_tree: false,
+            base_root_storage_is_free: true,
+        });
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"idx",
+                Element::ProvableCountProvableSumIndexedTree(
+                    primary.clone(),
+                    count,
+                    sum,
+                    widened,
+                    None,
+                ),
+                override_opts.clone(),
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInput(m)) if m.contains("axes schema")),
+            "widening the axes schema must be rejected, got {result:?}"
+        );
+
+        // Re-inserting the element unchanged must still be accepted.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"idx",
+            Element::ProvableCountProvableSumIndexedTree(primary, count, sum, axes, None),
+            override_opts,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("an unchanged re-insert must still be accepted");
+    }
 }

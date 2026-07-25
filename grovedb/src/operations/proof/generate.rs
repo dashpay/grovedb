@@ -1977,6 +1977,30 @@ impl GroveDb {
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
+                                // Aggregate carrier queries (AggregateCountOnRange /
+                                // AggregateSumOnRange) are verified by
+                                // `operations::proof::aggregate_common`, whose
+                                // `expect_merk_bytes` accepts only
+                                // `ProofBytes::Merk` and whose chain check uses the
+                                // two-input `combine_hash`. Neither can consume the
+                                // indexed envelope this arm is about to emit, so the
+                                // proof would verify-fail at the far end. Reject here
+                                // instead of shipping an unverifiable proof.
+                                if is_aggregate_count_query
+                                    || is_aggregate_sum_query
+                                    || is_aggregate_count_and_sum_query
+                                {
+                                    return Err(Error::NotSupported(
+                                        "aggregate-on-range carrier queries cannot descend \
+                                         through an indexed tree (PCIT / PSIT / PCPSIT); use \
+                                         the dedicated indexed-axis aggregate proofs \
+                                         (prove_indexed_count_range_aggregate / \
+                                         prove_indexed_sum_range_aggregate) instead"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
@@ -2065,6 +2089,30 @@ impl GroveDb {
                                 if !done_with_results
                                     && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
+                                // Aggregate carrier queries (AggregateCountOnRange /
+                                // AggregateSumOnRange) are verified by
+                                // `operations::proof::aggregate_common`, whose
+                                // `expect_merk_bytes` accepts only
+                                // `ProofBytes::Merk` and whose chain check uses the
+                                // two-input `combine_hash`. Neither can consume the
+                                // indexed envelope this arm is about to emit, so the
+                                // proof would verify-fail at the far end. Reject here
+                                // instead of shipping an unverifiable proof.
+                                if is_aggregate_count_query
+                                    || is_aggregate_sum_query
+                                    || is_aggregate_count_and_sum_query
+                                {
+                                    return Err(Error::NotSupported(
+                                        "aggregate-on-range carrier queries cannot descend \
+                                         through an indexed tree (PCIT / PSIT / PCPSIT); use \
+                                         the dedicated indexed-axis aggregate proofs \
+                                         (prove_indexed_count_range_aggregate / \
+                                         prove_indexed_sum_range_aggregate) instead"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 
@@ -2152,6 +2200,23 @@ impl GroveDb {
                             ) if !done_with_results
                                 && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
+                                // See the PCIT arm: the aggregate-carrier
+                                // verifier cannot consume an indexed envelope.
+                                if is_aggregate_count_query
+                                    || is_aggregate_sum_query
+                                    || is_aggregate_count_and_sum_query
+                                {
+                                    return Err(Error::NotSupported(
+                                        "aggregate-on-range carrier queries cannot descend \
+                                         through an indexed tree (PCIT / PSIT / PCPSIT); use \
+                                         the dedicated indexed-axis aggregate proofs \
+                                         (prove_indexed_count_range_aggregate / \
+                                         prove_indexed_sum_range_aggregate) instead"
+                                            .to_string(),
+                                    ))
+                                    .wrap_with_cost(cost);
+                                }
+
                                 let mut lower_path = path.clone();
                                 lower_path.push(key.as_slice());
 

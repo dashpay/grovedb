@@ -26,7 +26,10 @@ use grovedb_costs::{
 };
 use grovedb_element::reference_path::path_from_reference_path_type;
 use grovedb_merk::{
-    element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions, ElementExt},
+    element::{
+        costs::ElementCostExtensions, get::ElementFetchFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions, ElementExt,
+    },
     tree::NULL_HASH,
     tree_type::TreeType,
     Merk,
@@ -543,6 +546,39 @@ impl GroveDb {
                              sum",
                         ))
                         .wrap_with_cost(cost);
+                    }
+                    // The axes SCHEMA must match what is already stored.
+                    // `axes_digest` is recomputed from the element's own
+                    // claimed axes, so adding an axis to a populated PCPSIT
+                    // was accepted and produced a consistent-looking element
+                    // whose new axis indexes NONE of the existing rows
+                    // (`indexed_avg_top_k` then returns an empty set for a
+                    // populated tree, and `verify_grovedb` reports nothing
+                    // because it re-derives the digest from the same claimed
+                    // axes). Dropping an axis likewise orphans a populated
+                    // secondary Merk. There is no backfill/reindex API, so
+                    // the only safe answer is to refuse the schema change.
+                    let stored_axis_tags: Option<Vec<u8>> = cost_return_on_error!(
+                        &mut cost,
+                        Element::get_optional(&subtree_to_insert_into, key, true, grove_version)
+                            .map_err(Error::MerkError)
+                    )
+                    .and_then(|existing| match existing.into_underlying() {
+                        Element::ProvableCountProvableSumIndexedTree(_, _, _, stored_axes, _) => {
+                            Some(stored_axes.iter().map(|(t, _)| *t).collect())
+                        }
+                        _ => None,
+                    });
+                    if let Some(stored_tags) = stored_axis_tags {
+                        let incoming_tags: Vec<u8> = axes.iter().map(|(t, _)| *t).collect();
+                        if stored_tags != incoming_tags {
+                            return Err(Error::InvalidInput(
+                                "ProvableCountProvableSumIndexedTree direct insertion: the axes \
+                                 schema does not match the stored element; axes cannot be added \
+                                 or removed on an existing indexed tree (no reindex path exists)",
+                            ))
+                            .wrap_with_cost(cost);
+                        }
                     }
                     // For each axis, open + verify and collect its root hash.
                     let mut axis_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =

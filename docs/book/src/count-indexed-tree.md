@@ -200,7 +200,8 @@ current derivation. The **secondary** prefix is derived from the primary:
 
 ```text
 primary_prefix(path)   = Blake3(path_body)
-secondary_prefix(path) = Blake3(primary_prefix ‖ 0x01)
+secondary_prefix(path, axis) = Blake3(primary_prefix ‖ axis_tag)
+// axis_tag: 0x00 = count, 0x01 = sum, 0x02 = avg
 ```
 
 This has three useful properties:
@@ -213,12 +214,12 @@ This has three useful properties:
   fixed-length 33-byte input that no path-derived prefix can produce
   (path-derived prefixes hash a variable-length `path_body` that always
   ends with per-segment length bytes, never with a single trailing
-  `0x01` tag after a 32-byte prefix block). Collision resistance still
+  one-byte axis tag after a 32-byte prefix block). Collision resistance still
   rests on Blake3's preimage / 2nd-preimage assumptions, like every
   other prefix in the database.
 - **Empty-path safety.** A root-level CountIndexedTree (unusual but
   legal) has `primary_prefix = 0x00..00` and
-  `secondary_prefix = Blake3(0x00..00 ‖ 0x01)`. Both well-defined.
+  `secondary_prefix = Blake3(0x00..00 ‖ axis_tag)`. Both well-defined.
 
 The implication for the storage layer: when the engine encounters a
 `CountIndexedTree` element while resolving a path, it materializes two
@@ -358,7 +359,7 @@ intermediate levels where you don't.
 
 The level-by-level batch path (`apply_batch`, `apply_partial_batch`)
 supports cidx primary mutations end-to-end. The bubble-up emits a
-new internal op variant `GroveOp::ReplaceCountIndexedTreeRootKeys`
+new internal op variant `GroveOp::ReplaceAggregateIndexedTreeRootKeys`
 carrying both the primary's and secondary's new state, which the
 parent merk handler consumes via H1-A
 (`combine_hash_three`).
@@ -370,7 +371,7 @@ parent merk handler consumes via H1-A
 | `Insert` / `InsertOrReplace` / `Replace` / `Patch` of a leaf (`Item`, `SumItem`, `Reference`, …) at a path **inside** a cidx primary | Mirrors the count delta to the secondary inline, bubbles up via the new op so the cidx element on the parent merk recomputes its `value_hash` via H1-A. |
 | `Delete` of a leaf inside a cidx primary | Same — the count goes to `None`, secondary entry is removed. |
 | Deep `Insert` / `Delete` under a sub-tree of a cidx primary (e.g. `cidx / sub_count_tree / item`) | The cidx primary's bubble-up sees the sub-tree's new aggregate count as a `ReplaceTreeRootKey`, mirrors the count change to the secondary via the same pre/post-state capture as direct mutations. |
-| `DeleteTree` of a cidx element (any `SubelementsDeletionBehavior`) | Cleans up **both** the primary's recursive subtree storage and the secondary's storage namespace at `Blake3(primary_prefix ‖ 0x01)`. The cleanup runs unconditionally (including for `DontCheckWithNoCleanup`) because the secondary lives in a different namespace not visible to `find_subtrees`. |
+| `DeleteTree` of a cidx element (any `SubelementsDeletionBehavior`) | Cleans up **both** the primary's recursive subtree storage and every per-axis secondary storage namespace at `Blake3(primary_prefix ‖ axis_tag)`. The cleanup runs unconditionally (including for `DontCheckWithNoCleanup`) because the secondary lives in a different namespace not visible to `find_subtrees`. |
 
 ### Rejected batch operations on cidx
 
@@ -405,7 +406,7 @@ db.insert_into_count_indexed_tree(path, key, element, tx, grove_version)?;
 db.delete_from_count_indexed_tree(path, key, tx, grove_version)?;
 
 // Direct creation of an empty cidx + populate via direct insert:
-db.insert(parent_path, cidx_key, Element::empty_count_indexed_tree(), ..., tx, gv)?;
+db.insert(parent_path, cidx_key, Element::empty_provable_count_indexed_tree(), ..., tx, gv)?;
 db.insert_into_count_indexed_tree(cidx_path, item_key, item_element, tx, gv)?;
 ```
 
@@ -434,7 +435,7 @@ let entries: Vec<(u64, Vec<u8>)> = db
 let proof_bytes = db
     .prove_indexed_count_top_k(path, k, /* descending: */ true, transaction, grove_version)?
     .expect("prove");
-let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path)?;
+let result = GroveDb::verify_indexed_count_top_k(&proof_bytes, &path, k)?;
 // result.entries: Vec<(u64, Vec<u8>)>, result.root_hash: [u8; 32]
 ```
 
@@ -498,7 +499,7 @@ let proof_bytes = db
     .expect("prove");
 
 // Verify with the SAME query (positional binding):
-let result = GroveDb::verify_indexed_count_query(&proof_bytes, q, &path)?;
+let result = GroveDb::verify_indexed_count_query(&proof_bytes, &path, q)?;
 ```
 
 `prove_indexed_count_top_k` is just a thin wrapper around
@@ -520,7 +521,7 @@ let mut q = MerkQuery::new();
 q.insert_range(a.to_be_bytes().to_vec()..=b.to_be_bytes().to_vec());
 
 let proof = db.prove_indexed_count_query(path, q.clone(), None, tx, grove_version)?;
-let result = GroveDb::verify_indexed_count_query(&proof, q, &path)?;
+let result = GroveDb::verify_indexed_count_query(&proof, &path, q)?;
 
 let count = result.entries.len();
 let root_hash = result.root_hash;
@@ -534,16 +535,16 @@ the size.
 
 ### Direction
 
-`CountIndexedQuery` supports both ascending and descending iteration
+The indexed read APIs support both ascending and descending iteration
 through `left_to_right: bool`, mirroring the existing `Query` API. The
 common case for top-k is `left_to_right: false` (highest counts first),
-which is what `CountIndexedQuery::top_k(k)` produces by default.
+which is what `indexed_count_top_k(path, k, descending = true, ..)` produces.
 Ascending traversal is also supported for "smallest counts first" /
 "items with the lowest counts in [a, b]" patterns.
 
 ### Lookup of count for a key
 
-`CountIndexedQuery::count_of(key)` returns the count without returning the
+`indexed_count_range_aggregate(path, lo, hi, ..)` returns the count without returning the
 value. It can be answered by reading the primary node's feature type
 (which carries `count_value`). No secondary lookup needed; one Merk read.
 
@@ -661,8 +662,27 @@ ordering. Top-k descending iteration encounters them last.
 
 ## Limitations and non-goals
 
+- **State sync does not support indexed trees.** A database containing
+  any indexed tree cannot be snapshot-synced: the restorer binds a
+  restored subtree to its parent with the two-input `combine_hash`,
+  which can never reproduce an indexed element's three-input binding,
+  and subtree discovery never enumerates the derived per-axis secondary
+  namespaces. Both the source (`fetch_chunk`) and target (subtree
+  discovery) sides reject with `Error::NotSupported` before any chunk is
+  produced or committed, so the failure is loud and early rather than a
+  half-restored database — but note the rejection is **database-wide**:
+  one indexed tree anywhere disables snapshot sync for the whole grove.
+- **Generic writes into an indexed primary are rejected.** `db.insert`,
+  `db.delete` and `clear_subtree` targeting an indexed primary return
+  `Error::NotSupported`, because none of them can mirror the change into
+  the secondary index. Use the dedicated `insert_into_*` /
+  `delete_from_*` APIs, or a batch, which maintains the mirror itself.
+  Writing *below* a child of an indexed primary is unaffected.
+- **The axes schema is fixed at creation.** Adding or removing an axis
+  on a populated indexed tree is rejected: there is no reindex path, and
+  a new axis would index none of the existing rows.
 - **No cross-tree count ordering.** A query orders elements *within*
-  one `CountIndexedTree`. To rank items across multiple sibling trees,
+  one indexed tree. To rank items across multiple sibling trees,
   the application must compose results manually.
 - **No floating-point or signed counts.** `count_value` is `u64`.
   Big-endian encoding gives correct order only for unsigned magnitudes.
@@ -700,7 +720,7 @@ implementation and are documented here for posterity.
 | ID | Question | Resolution |
 |---|---|---|
 | C1 | Cost-tracking surface for double-Merk writes — one combined cost line item or two? | Two (one per Merk), aggregated at the element level. |
-| W1 | Cascading secondary updates: route through standard batch ops, or specialized propagation handler? | Specialized propagation: `propagate_changes_with_transaction_with_initial_deferred` carries the seeded secondary state through the cidx-primary boundary; the level-by-level batch path detects cidx primaries via `is_count_indexed_primary()` and emits a dedicated `GroveOp::ReplaceCountIndexedTreeRootKeys` at the bubble-up. The standard batch ops handle nested cases without requiring callers to think about the secondary. |
+| W1 | Cascading secondary updates: route through standard batch ops, or specialized propagation handler? | Specialized propagation: `propagate_changes_with_transaction_with_initial_deferred` carries the seeded secondary state through the cidx-primary boundary; the level-by-level batch path detects indexed primaries via `is_indexed_primary()` and emits a dedicated `GroveOp::ReplaceAggregateIndexedTreeRootKeys` at the bubble-up. The standard batch ops handle nested cases without requiring callers to think about the secondary. |
 
 ## Summary
 
