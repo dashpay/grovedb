@@ -1339,6 +1339,50 @@ mod flag_accessor_tests {
     }
 
     #[test]
+    fn provable_sum_indexed_tree_flag_accessors() {
+        // PSIT's flags are the 4th field; drives the
+        // `ProvableSumIndexedTree(.., flags)` arm of get_flags /
+        // get_flags_owned / get_flags_mut / set_flags.
+        let e = Element::ProvableSumIndexedTree(None, None, -12, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn provable_count_indexed_tree_flag_accessors() {
+        let e = Element::ProvableCountIndexedTree(None, None, 9, flags());
+        check_accessors_round_trip(e);
+    }
+
+    #[test]
+    fn provable_count_provable_sum_indexed_tree_flag_accessors() {
+        // PCPSIT's flags are the trailing field *after* `axes`, so it gets
+        // its own match arm in each accessor rather than joining the
+        // `(.., flags)` group.
+        let e = Element::ProvableCountProvableSumIndexedTree(
+            Some(vec![7]),
+            3,
+            -4,
+            vec![(0, None), (1, Some(vec![0x01]))],
+            flags(),
+        );
+        check_accessors_round_trip(e.clone());
+
+        // The non-flag fields must survive a set_flags round trip.
+        let mut mutated = e;
+        mutated.set_flags(None);
+        match mutated {
+            Element::ProvableCountProvableSumIndexedTree(pk, c, s, axes, f) => {
+                assert_eq!(pk, Some(vec![7]));
+                assert_eq!(c, 3);
+                assert_eq!(s, -4);
+                assert_eq!(axes, vec![(0, None), (1, Some(vec![0x01]))]);
+                assert_eq!(f, None);
+            }
+            other => panic!("expected PCPSIT, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn flag_accessors_delegate_through_not_summed() {
         // Drives the `Element::NotSummed(inner) => inner.set_flags(...)` arm
         // (and matching arms in the other two accessors).
@@ -1944,5 +1988,85 @@ mod indexed_tree_aggregate_helpers_tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    // -- big_sum_value_or_default over the indexed variants -------------
+
+    #[test]
+    fn big_sum_value_or_default_for_psit_widens_the_i64_sum() {
+        // PSIT carries an i64 sum; the big-sum accessor widens it to i128
+        // (rather than falling through to the `_ => 0` arm).
+        let psit = Element::ProvableSumIndexedTree(None, None, -9_223_372_036_854_775_808, None);
+        assert_eq!(psit.big_sum_value_or_default(), i64::MIN as i128);
+
+        let positive = Element::new_provable_sum_indexed_tree_with_root_keys_and_sum_value(
+            None, None, 77, None,
+        );
+        assert_eq!(positive.big_sum_value_or_default(), 77i128);
+    }
+
+    #[test]
+    fn big_sum_value_or_default_for_pcpsit_widens_the_i64_sum() {
+        let pcpsit = Element::new_provable_count_provable_sum_indexed_tree(
+            None,
+            5,
+            i64::MAX,
+            vec![(0, None), (1, None)],
+            None,
+        )
+        .expect("canonical axes");
+        assert_eq!(pcpsit.big_sum_value_or_default(), i64::MAX as i128);
+    }
+
+    #[test]
+    fn big_sum_value_or_default_for_pcit_is_zero() {
+        // PCIT has no sum axis at all — it must take the `_ => 0` arm and
+        // not accidentally read the count as a sum.
+        let pcit = Element::ProvableCountIndexedTree(None, None, 99, None);
+        assert_eq!(pcit.big_sum_value_or_default(), 0i128);
+    }
+
+    // -- wrapper short-circuits in the "bearing child" predicates -------
+
+    #[test]
+    fn is_sum_bearing_child_rejects_sum_suppressing_wrappers() {
+        // `NotSummed` / `NotCountedOrSummed` actively suppress the sum
+        // contribution, so the early `return false` fires before the
+        // `underlying()` match would have accepted the inner sum tree.
+        let not_summed = Element::NotSummed(Box::new(Element::SumTree(None, 50, None)));
+        assert!(!not_summed.is_sum_bearing_child());
+
+        let not_counted_or_summed =
+            Element::NotCountedOrSummed(Box::new(Element::CountSumTree(None, 3, 50, None)));
+        assert!(!not_counted_or_summed.is_sum_bearing_child());
+
+        // Contrast: the same inner element unwrapped, and through the
+        // sum-transparent `NonCounted` wrapper, both do contribute.
+        assert!(Element::SumTree(None, 50, None).is_sum_bearing_child());
+        assert!(
+            Element::NonCounted(Box::new(Element::SumTree(None, 50, None))).is_sum_bearing_child()
+        );
+    }
+
+    #[test]
+    fn is_count_and_sum_bearing_child_rejects_every_wrapper() {
+        // All three wrappers suppress at least one of the two axes, so the
+        // early `return false` fires for each — including `NonCounted`,
+        // which `is_sum_bearing_child` looks through.
+        let inner = Element::ItemWithSumItem(b"v".to_vec(), 12, None);
+        assert!(inner.is_count_and_sum_bearing_child());
+
+        assert!(
+            !Element::NonCounted(Box::new(inner.clone())).is_count_and_sum_bearing_child(),
+            "NonCounted suppresses the count axis"
+        );
+        assert!(
+            !Element::NotSummed(Box::new(Element::CountSumTree(None, 1, 12, None)))
+                .is_count_and_sum_bearing_child()
+        );
+        assert!(
+            !Element::NotCountedOrSummed(Box::new(Element::CountSumTree(None, 1, 12, None)))
+                .is_count_and_sum_bearing_child()
+        );
     }
 }

@@ -996,6 +996,62 @@ mod serde_impl {
             }
         }
 
+        /// The three indexed-tree variants must survive the shadow-enum
+        /// detour (`ElementShadow` -> `From<ElementShadow> for Element`)
+        /// with every field intact — including PCPSIT's axes TLV, whose
+        /// shadow variant carries an extra `Vec<(u8, Option<Vec<u8>>)>`
+        /// field the other two do not have.
+        #[test]
+        fn serde_round_trip_indexed_tree_variants() {
+            let cases = vec![
+                Element::ProvableSumIndexedTree(
+                    Some(b"pk".to_vec()),
+                    Some(b"sk".to_vec()),
+                    -42,
+                    Some(vec![1, 2]),
+                ),
+                Element::ProvableSumIndexedTree(None, None, 0, None),
+                Element::ProvableCountIndexedTree(
+                    Some(b"pk".to_vec()),
+                    Some(b"sk".to_vec()),
+                    99,
+                    Some(vec![3]),
+                ),
+                Element::ProvableCountIndexedTree(None, None, 0, None),
+                Element::ProvableCountProvableSumIndexedTree(
+                    Some(b"pk".to_vec()),
+                    7,
+                    -13,
+                    vec![(0, None), (1, Some(b"sk".to_vec())), (2, None)],
+                    Some(vec![4, 5]),
+                ),
+            ];
+            for original in cases {
+                let json = serde_json::to_string(&original).expect("serialize");
+                let back: Element = serde_json::from_str(&json).expect("deserialize");
+                assert_eq!(back, original, "round trip mismatch for {:?}", original);
+            }
+
+            // Pin the wire shape of the PCPSIT axes field so a shadow /
+            // element field-order divergence is caught here.
+            let pcpsit = Element::ProvableCountProvableSumIndexedTree(
+                None,
+                7,
+                -13,
+                vec![(1, Some(vec![0xAB]))],
+                None,
+            );
+            assert_eq!(
+                serde_json::to_string(&pcpsit).expect("serialize"),
+                r#"{"ProvableCountProvableSumIndexedTree":[null,7,-13,[[1,[171]]],null]}"#
+            );
+            let back: Element = serde_json::from_str(
+                r#"{"ProvableCountProvableSumIndexedTree":[null,7,-13,[[1,[171]]],null]}"#,
+            )
+            .expect("deserialize");
+            assert_eq!(back, pcpsit);
+        }
+
         /// `NotCountedOrSummed(NotCountedOrSummed(_))` and cross-nestings
         /// involving the new wrapper must be rejected.
         #[test]
@@ -1189,6 +1245,142 @@ mod tests {
                 .element_type(),
             ElementType::NonCountedProvableCountSumTree
         );
+    }
+
+    #[test]
+    fn element_type_resolves_non_counted_indexed_twins() {
+        // The three indexed-tree variants each map to their NonCounted
+        // twin (and to the twin's `as_str`).
+        let cases: [(Element, ElementType); 3] = [
+            (
+                Element::NonCounted(Box::new(Element::ProvableSumIndexedTree(
+                    None, None, -5, None,
+                ))),
+                ElementType::NonCountedProvableSumIndexedTree,
+            ),
+            (
+                Element::NonCounted(Box::new(Element::ProvableCountIndexedTree(
+                    None, None, 7, None,
+                ))),
+                ElementType::NonCountedProvableCountIndexedTree,
+            ),
+            (
+                Element::NonCounted(Box::new(Element::ProvableCountProvableSumIndexedTree(
+                    None,
+                    7,
+                    -5,
+                    vec![(0, None)],
+                    None,
+                ))),
+                ElementType::NonCountedProvableCountProvableSumIndexedTree,
+            ),
+        ];
+        for (element, expected) in cases {
+            assert_eq!(element.element_type(), expected);
+            assert_eq!(element.type_str(), expected.as_str());
+        }
+        assert_eq!(
+            ElementType::NonCountedProvableSumIndexedTree.as_str(),
+            "non_counted provable sum indexed tree"
+        );
+        assert_eq!(
+            ElementType::NonCountedProvableCountIndexedTree.as_str(),
+            "non_counted provable count indexed tree"
+        );
+        assert_eq!(
+            ElementType::NonCountedProvableCountProvableSumIndexedTree.as_str(),
+            "non_counted provable count provable sum indexed tree"
+        );
+    }
+
+    #[test]
+    fn display_renders_pcpsit_with_all_axes_and_flags() {
+        // Exercises the axes loop: the separator between entries, the
+        // hex rendering of a present secondary root key, the "None"
+        // fallback for an absent one, and the trailing flags suffix.
+        let element = Element::new_provable_count_provable_sum_indexed_tree(
+            Some(vec![0x01, 0x02, 0x03]),
+            5,
+            -7,
+            vec![
+                (0, None),
+                (1, Some(vec![0xAA, 0xBB])),
+                (2, Some(vec![0x0C])),
+            ],
+            Some(vec![9, 10]),
+        )
+        .expect("canonical axes");
+        assert_eq!(
+            format!("{}", element),
+            "ProvableCountProvableSumIndexedTree(primary=010203, count=5, sum=-7, axes=[(0, \
+             None), (1, aabb), (2, 0c)], flags: [9, 10])"
+        );
+    }
+
+    #[test]
+    fn display_renders_pcpsit_single_axis_no_primary_no_flags() {
+        let element = Element::empty_provable_count_provable_sum_indexed_tree(vec![(2, None)])
+            .expect("canonical axes");
+        assert_eq!(
+            format!("{}", element),
+            "ProvableCountProvableSumIndexedTree(primary=None, count=0, sum=0, axes=[(2, None)])"
+        );
+    }
+
+    #[test]
+    fn display_pcpsit_propagates_formatter_errors() {
+        // The PCPSIT Display arm is the only one that chains several
+        // `write!(..)?` calls (header, per-axis entry, separator, trailing
+        // flags). Each `?` has an error path that a `String` sink can never
+        // take, so drive it with a sink that fails after a fixed number of
+        // successful writes.
+        use std::fmt::Write as _;
+
+        struct Failing {
+            budget: usize,
+        }
+        impl fmt::Write for Failing {
+            fn write_str(&mut self, _s: &str) -> fmt::Result {
+                if self.budget == 0 {
+                    return Err(fmt::Error);
+                }
+                self.budget -= 1;
+                Ok(())
+            }
+        }
+
+        let element = Element::new_provable_count_provable_sum_indexed_tree(
+            Some(vec![0x01]),
+            5,
+            -7,
+            vec![(0, None), (1, Some(vec![0xAA]))],
+            Some(vec![9]),
+        )
+        .expect("canonical axes");
+
+        // Find the smallest budget that renders the whole element.
+        let mut first_success = None;
+        for budget in 0..256 {
+            let mut sink = Failing { budget };
+            if write!(sink, "{}", element).is_ok() {
+                first_success = Some(budget);
+                break;
+            }
+        }
+        let first_success = first_success.expect("a large enough budget must succeed");
+        // Header + two axis entries + separator + tail means the arm makes
+        // several distinct writes, each of which must be able to fail.
+        assert!(
+            first_success > 5,
+            "expected the PCPSIT arm to perform several writes, first success at {first_success}"
+        );
+        for budget in 0..first_success {
+            let mut sink = Failing { budget };
+            assert!(
+                write!(sink, "{}", element).is_err(),
+                "budget {budget} must surface the sink error"
+            );
+        }
     }
 
     #[test]

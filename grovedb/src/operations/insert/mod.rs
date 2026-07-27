@@ -901,6 +901,689 @@ mod tests {
         forged_pcpsit_aggregate_is_rejected(gv);
     }
 
+    // ------------------------------------------------------------------
+    // Indexed-tree (PCIT / PSIT / PCPSIT) direct-insertion guards.
+    //
+    // `Element` is public, so `db.insert` can be handed a hand-built
+    // indexed-tree element whose root keys / aggregates / axes disagree
+    // with what is actually on disk. Those fields are hash-committed into
+    // the parent and propagated into ancestor aggregates, so
+    // `add_element_on_transaction` revalidates every one of them against
+    // the on-disk state before writing. The scenarios below drive each
+    // rejection in turn: half-initialized state, primary root-key
+    // mismatch, element-variant vs stored-subtree mismatch, secondary
+    // root-key mismatch, and PCPSIT axes-schema changes. Every scenario
+    // ends with `verify_grovedb` to prove the rejected write left no
+    // partial state behind.
+    //
+    // The guards are byte-identical in the v0 (`GROVE_V1` / `GROVE_V2`)
+    // and v1 (`GROVE_V3`+) snapshots, so each scenario is parameterized by
+    // grove version and run under both.
+    // ------------------------------------------------------------------
+
+    // Exact rejection messages emitted by the indexed-tree arms of
+    // `add_element_on_transaction`.
+    const PCIT_PARTIAL_STATE: &str = "CountIndexedTree direct insertion: non-empty cidx must have \
+                                      BOTH primary_root_key and secondary_root_key set to \
+                                      Some(_); partial state (one None, one Some, or count>0 with \
+                                      no roots) is not permitted";
+    const PCIT_PRIMARY_MISMATCH: &str = "CountIndexedTree direct insertion: provided \
+                                         primary_root_key does not match the existing primary \
+                                         Merk's root key";
+    const PCIT_VARIANT_MISMATCH: &str = "CountIndexedTree direct insertion: the existing primary \
+                                         Merk is not a provable-count tree; the element variant \
+                                         does not match the stored subtree";
+    const PCIT_SECONDARY_MISMATCH: &str = "CountIndexedTree direct insertion: provided \
+                                           secondary_root_key does not match the existing \
+                                           secondary Merk's root key";
+    const PSIT_PARTIAL_STATE: &str = "ProvableSumIndexedTree direct insertion: non-empty PSIT \
+                                      must have BOTH primary_root_key and secondary_root_key set \
+                                      to Some(_); partial state is not permitted";
+    const PSIT_PRIMARY_MISMATCH: &str = "ProvableSumIndexedTree direct insertion: provided \
+                                         primary_root_key does not match the existing primary \
+                                         Merk's root key";
+    const PSIT_VARIANT_MISMATCH: &str = "ProvableSumIndexedTree direct insertion: the existing \
+                                         primary Merk is not a provable-sum tree; the element \
+                                         variant does not match the stored subtree";
+    const PSIT_SECONDARY_MISMATCH: &str = "ProvableSumIndexedTree direct insertion: provided \
+                                           secondary_root_key does not match the existing \
+                                           secondary Merk's root key";
+    const PCPSIT_PARTIAL_STATE: &str = "ProvableCountProvableSumIndexedTree direct insertion: \
+                                        non-empty PCPSIT must have primary_root_key = Some(_); \
+                                        partial state is not permitted";
+    const PCPSIT_PRIMARY_MISMATCH: &str = "ProvableCountProvableSumIndexedTree direct insertion: \
+                                           provided primary_root_key does not match the existing \
+                                           primary Merk's root key";
+    const PCPSIT_VARIANT_MISMATCH: &str = "ProvableCountProvableSumIndexedTree direct insertion: \
+                                           the existing primary Merk is not a \
+                                           provable-count-provable-sum tree; the element variant \
+                                           does not match the stored subtree";
+    const PCPSIT_AXES_SCHEMA_CHANGE: &str =
+        "ProvableCountProvableSumIndexedTree direct insertion: the axes schema does not match the \
+         stored element; axes cannot be added or removed on an existing indexed tree (no reindex \
+         path exists)";
+    const PCPSIT_AXIS_SECONDARY_MISMATCH: &str =
+        "ProvableCountProvableSumIndexedTree direct insertion: provided axis secondary_root_key \
+         does not match the existing secondary Merk's root key";
+
+    /// A root key no Merk in these fixtures can have: nothing is ever
+    /// stored under it, so `Merk::open_layered_with_root_key` loads an
+    /// *empty* tree whose `root_hash_key_and_aggregate_data()` reports a
+    /// root key of `None` — i.e. `!= Some(bogus)`, which is exactly the
+    /// shape the secondary-root-key guards must reject.
+    fn bogus_root_key() -> Option<Vec<u8>> {
+        Some(b"\xff\xff\xff\xff\xff\xff\xff\xff".to_vec())
+    }
+
+    #[track_caller]
+    fn assert_invalid_input(result: Result<(), Error>, expected: &str) {
+        match result {
+            Err(Error::InvalidInput(message)) => assert_eq!(message, expected),
+            other => panic!("expected Err(Error::InvalidInput({expected:?})), got {other:?}"),
+        }
+    }
+
+    /// Build a populated PCIT at `[TEST_LEAF, key]` through the dedicated
+    /// indexed-tree API and return its real
+    /// `(primary_root_key, secondary_root_key, count_value)`.
+    fn populate_pcit(
+        db: &crate::tests::TempGroveDb,
+        gv: &GroveVersion,
+        key: &[u8],
+    ) -> (Option<Vec<u8>>, Option<Vec<u8>>, u64) {
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            key,
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create empty PCIT");
+        for k in [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, key].as_ref(),
+                k,
+                Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCIT entry");
+        }
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), key, None, gv)
+            .unwrap()
+            .expect("get PCIT");
+        let parts = match elem.underlying() {
+            Element::ProvableCountIndexedTree(p, s, c, _) => (p.clone(), s.clone(), *c),
+            other => panic!("expected PCIT, got {other:?}"),
+        };
+        assert!(parts.0.is_some() && parts.1.is_some(), "PCIT is populated");
+        assert_eq!(parts.2, 3, "three entries were inserted");
+        parts
+    }
+
+    /// Build a populated PSIT at `[TEST_LEAF, key]` and return its real
+    /// `(primary_root_key, secondary_root_key, sum_value)`.
+    fn populate_psit(
+        db: &crate::tests::TempGroveDb,
+        gv: &GroveVersion,
+        key: &[u8],
+    ) -> (Option<Vec<u8>>, Option<Vec<u8>>, i64) {
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            key,
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create empty PSIT");
+        for (k, v) in [
+            (b"a".as_slice(), 5i64),
+            (b"b".as_slice(), 7),
+            (b"c".as_slice(), 11),
+        ] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, key].as_ref(),
+                k,
+                Element::new_sum_item(v),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PSIT entry");
+        }
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), key, None, gv)
+            .unwrap()
+            .expect("get PSIT");
+        let parts = match elem.underlying() {
+            Element::ProvableSumIndexedTree(p, s, sv, _) => (p.clone(), s.clone(), *sv),
+            other => panic!("expected PSIT, got {other:?}"),
+        };
+        assert!(parts.0.is_some() && parts.1.is_some(), "PSIT is populated");
+        assert_eq!(parts.2, 23, "5 + 7 + 11");
+        parts
+    }
+
+    /// Build a populated PCPSIT at `[TEST_LEAF, key]` carrying the count
+    /// and sum axes, and return its real
+    /// `(primary_root_key, count_value, sum_value, axes)`.
+    #[allow(clippy::type_complexity)]
+    fn populate_pcpsit(
+        db: &crate::tests::TempGroveDb,
+        gv: &GroveVersion,
+        key: &[u8],
+    ) -> (Option<Vec<u8>>, u64, i64, Vec<(u8, Option<Vec<u8>>)>) {
+        use grovedb_element::indexed::IndexAxis;
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            key,
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (IndexAxis::Count.tag(), None),
+                (IndexAxis::Sum.tag(), None),
+            ])
+            .expect("canonical axes"),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create empty PCPSIT");
+        for (k, v) in [
+            (b"a".as_slice(), 5i64),
+            (b"b".as_slice(), 7),
+            (b"c".as_slice(), 11),
+        ] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, key].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), v),
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCPSIT entry");
+        }
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), key, None, gv)
+            .unwrap()
+            .expect("get PCPSIT");
+        let parts = match elem.underlying() {
+            Element::ProvableCountProvableSumIndexedTree(p, c, s, ax, _) => {
+                (p.clone(), *c, *s, ax.clone())
+            }
+            other => panic!("expected PCPSIT, got {other:?}"),
+        };
+        assert!(parts.0.is_some(), "PCPSIT primary is populated");
+        assert_eq!((parts.1, parts.2), (3, 23));
+        assert_eq!(
+            parts.3.iter().map(|(t, _)| *t).collect::<Vec<u8>>(),
+            vec![IndexAxis::Count.tag(), IndexAxis::Sum.tag()],
+        );
+        parts
+    }
+
+    /// Half-initialized indexed-tree elements are refused before any child
+    /// Merk is opened: a claim that is not fully empty must carry every
+    /// root key it needs, otherwise the element bytes would commit an
+    /// aggregate that is disconnected from any real index content.
+    fn indexed_partial_state_is_rejected(gv: &GroveVersion) {
+        let db = make_test_grovedb(gv);
+
+        // PCIT — (Some, None), (None, Some) and (None, None) with count > 0.
+        for (primary, secondary, count) in [
+            (bogus_root_key(), None, 0u64),
+            (None, bogus_root_key(), 0),
+            (None, None, 5),
+        ] {
+            let result = db
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    b"pcit_partial",
+                    Element::ProvableCountIndexedTree(primary, secondary, count, None),
+                    None,
+                    None,
+                    gv,
+                )
+                .unwrap();
+            assert_invalid_input(result, PCIT_PARTIAL_STATE);
+        }
+
+        // PSIT — same three shapes.
+        for (primary, secondary, sum) in [
+            (bogus_root_key(), None, 0i64),
+            (None, bogus_root_key(), 0),
+            (None, None, 9),
+        ] {
+            let result = db
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    b"psit_partial",
+                    Element::ProvableSumIndexedTree(primary, secondary, sum, None),
+                    None,
+                    None,
+                    gv,
+                )
+                .unwrap();
+            assert_invalid_input(result, PSIT_PARTIAL_STATE);
+        }
+
+        // PCPSIT — a missing primary with a non-zero count, with a non-zero
+        // sum, and with an axis that already claims a secondary root key.
+        for (count, sum, axes) in [
+            (5u64, 0i64, vec![(0u8, None)]),
+            (0, 9, vec![(0u8, None)]),
+            (0, 0, vec![(0u8, bogus_root_key())]),
+        ] {
+            let result = db
+                .insert(
+                    [TEST_LEAF].as_ref(),
+                    b"pcpsit_partial",
+                    Element::ProvableCountProvableSumIndexedTree(None, count, sum, axes, None),
+                    None,
+                    None,
+                    gv,
+                )
+                .unwrap();
+            assert_invalid_input(result, PCPSIT_PARTIAL_STATE);
+        }
+
+        // Nothing was written at any of the three keys.
+        for key in [
+            b"pcit_partial".as_slice(),
+            b"psit_partial".as_slice(),
+            b"pcpsit_partial".as_slice(),
+        ] {
+            assert!(
+                !db.has_raw([TEST_LEAF].as_ref(), key, None, gv)
+                    .unwrap()
+                    .expect("has_raw"),
+                "rejected partial insert must not create {}",
+                String::from_utf8_lossy(key)
+            );
+        }
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// A claimed `primary_root_key` that disagrees with the primary Merk's
+    /// actual root key is refused — persisting it would break the H1-A
+    /// value-hash reconstruction for the whole subtree.
+    fn indexed_primary_root_key_mismatch_is_rejected(gv: &GroveVersion) {
+        let db = make_test_grovedb(gv);
+        let (_, pcit_secondary, pcit_count) = populate_pcit(&db, gv, b"cidx");
+        let (_, psit_secondary, psit_sum) = populate_psit(&db, gv, b"psit");
+        let (_, pcpsit_count, pcpsit_sum, pcpsit_axes) = populate_pcpsit(&db, gv, b"pcpsit");
+
+        // Everything except the primary root key is honest in each case.
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                Element::ProvableCountIndexedTree(
+                    bogus_root_key(),
+                    pcit_secondary,
+                    pcit_count,
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCIT_PRIMARY_MISMATCH);
+
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                Element::ProvableSumIndexedTree(bogus_root_key(), psit_secondary, psit_sum, None),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PSIT_PRIMARY_MISMATCH);
+
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                Element::ProvableCountProvableSumIndexedTree(
+                    bogus_root_key(),
+                    pcpsit_count,
+                    pcpsit_sum,
+                    pcpsit_axes,
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCPSIT_PRIMARY_MISMATCH);
+
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// The element variant must agree with the aggregate *shape* of the
+    /// primary Merk that is already stored under the key. A correct root
+    /// key is not enough: writing a PCIT element over a provable-sum
+    /// primary (or vice versa) makes the element and the subtree disagree
+    /// on arity, which `verify_grovedb` cannot even report.
+    fn indexed_variant_mismatch_is_rejected(gv: &GroveVersion) {
+        let db = make_test_grovedb(gv);
+        let (pcit_primary, _, pcit_count) = populate_pcit(&db, gv, b"cidx");
+        let (psit_primary, _, _) = populate_psit(&db, gv, b"psit");
+
+        // PCIT element over the populated PSIT: the primary root key
+        // matches, but that primary is a provable-SUM tree.
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                Element::ProvableCountIndexedTree(psit_primary, bogus_root_key(), 3, None),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCIT_VARIANT_MISMATCH);
+
+        // PSIT element over the populated PCIT (provable-COUNT primary).
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                Element::ProvableSumIndexedTree(pcit_primary.clone(), bogus_root_key(), 23, None),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PSIT_VARIANT_MISMATCH);
+
+        // PCPSIT element over the same provable-count primary — the count
+        // even matches, so only the aggregate shape rules it out.
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                Element::ProvableCountProvableSumIndexedTree(
+                    pcit_primary,
+                    pcit_count,
+                    0,
+                    vec![(0, None)],
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCPSIT_VARIANT_MISMATCH);
+
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// The secondary (index) Merk's root key is validated the same way the
+    /// primary's is. A claimed key that no node lives under opens as an
+    /// empty secondary, whose root key is `None` — the mismatch is caught
+    /// instead of being committed into the element bytes.
+    fn indexed_secondary_root_key_mismatch_is_rejected(gv: &GroveVersion) {
+        let db = make_test_grovedb(gv);
+        let (pcit_primary, _, pcit_count) = populate_pcit(&db, gv, b"cidx");
+        let (psit_primary, _, psit_sum) = populate_psit(&db, gv, b"psit");
+        let (pcpsit_primary, pcpsit_count, pcpsit_sum, pcpsit_axes) =
+            populate_pcpsit(&db, gv, b"pcpsit");
+
+        // PCIT — honest primary + count, bogus secondary.
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"cidx",
+                Element::ProvableCountIndexedTree(pcit_primary, bogus_root_key(), pcit_count, None),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCIT_SECONDARY_MISMATCH);
+
+        // PSIT — honest primary + sum, bogus secondary.
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"psit",
+                Element::ProvableSumIndexedTree(psit_primary, bogus_root_key(), psit_sum, None),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PSIT_SECONDARY_MISMATCH);
+
+        // PCPSIT — the axis TAGS still match what is stored (so the
+        // schema guard passes), but the count axis carries a bogus
+        // secondary root key.
+        let mut tampered_axes = pcpsit_axes;
+        tampered_axes[0].1 = bogus_root_key();
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                Element::ProvableCountProvableSumIndexedTree(
+                    pcpsit_primary,
+                    pcpsit_count,
+                    pcpsit_sum,
+                    tampered_axes,
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCPSIT_AXIS_SECONDARY_MISMATCH);
+
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// Adding or removing a PCPSIT axis on an existing indexed tree is
+    /// refused: `axes_digest` is recomputed from the element's own claimed
+    /// axes, so a schema change would look self-consistent while the new
+    /// axis indexed none of the existing rows (and a dropped axis orphaned
+    /// a populated secondary Merk). There is no reindex path, so the only
+    /// safe answer is to refuse.
+    fn pcpsit_axes_schema_change_is_rejected(gv: &GroveVersion) {
+        use grovedb_element::indexed::IndexAxis;
+
+        let db = make_test_grovedb(gv);
+        let (primary, count, sum, axes) = populate_pcpsit(&db, gv, b"pcpsit");
+
+        // Drop the sum axis (stored tags [0, 1] vs incoming [0]).
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                Element::ProvableCountProvableSumIndexedTree(
+                    primary.clone(),
+                    count,
+                    sum,
+                    vec![axes[0].clone()],
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCPSIT_AXES_SCHEMA_CHANGE);
+
+        // Add the avg axis (stored tags [0, 1] vs incoming [0, 1, 2]).
+        let mut widened = axes.clone();
+        widened.push((IndexAxis::Avg.tag(), None));
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpsit",
+                Element::ProvableCountProvableSumIndexedTree(
+                    primary.clone(),
+                    count,
+                    sum,
+                    widened,
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(result, PCPSIT_AXES_SCHEMA_CHANGE);
+
+        // The stored element is untouched and the unchanged schema still
+        // round-trips.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::ProvableCountProvableSumIndexedTree(primary, count, sum, axes, None),
+            Some(override_tree_opts()),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("re-inserting the unchanged axes schema succeeds");
+
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// The axes-schema guard only applies when the key already holds a
+    /// PCPSIT. Over a *plain* `ProvableCountProvableSumTree` — whose
+    /// primary has the very same aggregate shape, so the variant, count
+    /// and sum checks all pass — there is no stored axes list to compare
+    /// against, and validation falls through to the per-axis secondary
+    /// check (which here rejects the bogus axis root key).
+    fn pcpsit_over_plain_provable_count_sum_tree_has_no_axes_schema(gv: &GroveVersion) {
+        let db = make_test_grovedb(gv);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"plain",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create empty plain PCPS tree");
+        for (k, v) in [
+            (b"a".as_slice(), 5i64),
+            (b"b".as_slice(), 7),
+            (b"c".as_slice(), 11),
+        ] {
+            db.insert(
+                [TEST_LEAF, b"plain"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), v),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate plain PCPS tree");
+        }
+
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"plain", None, gv)
+            .unwrap()
+            .expect("get plain PCPS tree");
+        let (root_key, count, sum) = match elem.underlying() {
+            Element::ProvableCountProvableSumTree(rk, c, s, _) => (rk.clone(), *c, *s),
+            other => panic!("expected a plain ProvableCountProvableSumTree, got {other:?}"),
+        };
+        assert!(root_key.is_some());
+        assert_eq!((count, sum), (3, 23));
+
+        // Honest primary/count/sum, so every primary check passes — but
+        // the stored element is a PLAIN tree of a different type, and
+        // converting it in place would leave the axis secondaries empty
+        // over its populated primary. The in-place conversion guard is
+        // what rejects this (it did not always exist: before it, this
+        // fell through the axes-schema comparison, which has nothing to
+        // compare against a non-PCPSIT element, and was only stopped by
+        // the axis secondary root-key check).
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"plain",
+                Element::ProvableCountProvableSumIndexedTree(
+                    root_key,
+                    count,
+                    sum,
+                    vec![(0, bogus_root_key())],
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert_invalid_input(
+            result,
+            "ProvableCountProvableSumIndexedTree direct insertion: an existing tree of a \
+             different type is stored at this key; converting it in place would leave the axis \
+             secondaries empty over a populated primary (no reindex path)",
+        );
+
+        // The plain tree is still a plain tree.
+        let elem = db
+            .get_raw([TEST_LEAF].as_ref().into(), b"plain", None, gv)
+            .unwrap()
+            .expect("get plain PCPS tree");
+        assert!(
+            matches!(elem.underlying(), Element::ProvableCountProvableSumTree(..)),
+            "the rejected insert must not have replaced the element, got {elem:?}"
+        );
+        let issues = db.verify_grovedb(None, true, true, gv).expect("verify");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    /// v0 snapshot (`GROVE_V1`) — every indexed-tree direct-insert guard.
+    #[test]
+    fn indexed_tree_direct_insert_guards_v0() {
+        use grovedb_version::version::v1::GROVE_V1;
+
+        indexed_partial_state_is_rejected(&GROVE_V1);
+        indexed_primary_root_key_mismatch_is_rejected(&GROVE_V1);
+        indexed_variant_mismatch_is_rejected(&GROVE_V1);
+        indexed_secondary_root_key_mismatch_is_rejected(&GROVE_V1);
+        pcpsit_axes_schema_change_is_rejected(&GROVE_V1);
+        pcpsit_over_plain_provable_count_sum_tree_has_no_axes_schema(&GROVE_V1);
+    }
+
+    /// v1 snapshot (`GROVE_V3`+, latest) — the indexed-tree arms are
+    /// identical to v0's, so the same guards must hold.
+    #[test]
+    fn indexed_tree_direct_insert_guards_v1() {
+        let gv = GroveVersion::latest();
+
+        indexed_partial_state_is_rejected(gv);
+        indexed_primary_root_key_mismatch_is_rejected(gv);
+        indexed_variant_mismatch_is_rejected(gv);
+        indexed_secondary_root_key_mismatch_is_rejected(gv);
+        pcpsit_axes_schema_change_is_rejected(gv);
+        pcpsit_over_plain_provable_count_sum_tree_has_no_axes_schema(gv);
+    }
+
     #[test]
     fn test_non_root_insert_item_without_transaction() {
         let grove_version = GroveVersion::latest();
@@ -2700,5 +3383,139 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(result, Err(Error::InvalidInput(..))));
+    }
+
+    /// In-place conversion guard: overriding a populated PLAIN tree with an
+    /// indexed element of byte-compatible primary shape must be rejected.
+    ///
+    /// A plain `ProvableCountTree`'s subtree is exactly what a PCIT primary
+    /// looks like on disk (same feature type, same aggregate), so a PCIT
+    /// element carrying that tree's real root key and count passes the
+    /// root-key, variant-shape and aggregate checks — but its Count secondary
+    /// would start EMPTY over the populated primary, the same no-reindex
+    /// hazard as an axes schema change. Same for PCPST -> PCPSIT.
+    fn indexed_conversion_of_plain_tree_is_rejected(gv: &GroveVersion) {
+        use grovedb_element::indexed::IndexAxis;
+
+        let db = make_test_grovedb(gv);
+
+        // PCT -> PCIT.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pct",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create plain PCT");
+        for k in [b"a".as_slice(), b"b".as_slice()] {
+            db.insert(
+                [TEST_LEAF, b"pct"].as_ref(),
+                k,
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCT");
+        }
+        let (root_key, count) = match db
+            .get([TEST_LEAF].as_ref(), b"pct", None, gv)
+            .unwrap()
+            .expect("get PCT")
+        {
+            Element::ProvableCountTree(rk, c, _) => (rk, c),
+            other => panic!("expected PCT, got {other:?}"),
+        };
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pct",
+                Element::ProvableCountIndexedTree(root_key, Some(b"sk".to_vec()), count, None),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                &result,
+                Err(Error::InvalidInput(m)) if m.contains("existing tree of a different type")
+            ),
+            "PCT -> PCIT conversion must be rejected, got {result:?}"
+        );
+
+        // PCPST -> PCPSIT.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpst",
+            Element::empty_provable_count_provable_sum_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create plain PCPST");
+        db.insert(
+            [TEST_LEAF, b"pcpst"].as_ref(),
+            b"a",
+            Element::new_item_with_sum_item(b"v".to_vec(), 7),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("populate PCPST");
+        let (root_key, count, sum) = match db
+            .get([TEST_LEAF].as_ref(), b"pcpst", None, gv)
+            .unwrap()
+            .expect("get PCPST")
+        {
+            Element::ProvableCountProvableSumTree(rk, c, s, _) => (rk, c, s),
+            other => panic!("expected PCPST, got {other:?}"),
+        };
+        let result = db
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpst",
+                Element::ProvableCountProvableSumIndexedTree(
+                    root_key,
+                    count,
+                    sum,
+                    vec![(IndexAxis::Count.tag(), None)],
+                    None,
+                ),
+                Some(override_tree_opts()),
+                None,
+                gv,
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                &result,
+                Err(Error::InvalidInput(m)) if m.contains("existing tree of a different type")
+            ),
+            "PCPST -> PCPSIT conversion must be rejected, got {result:?}"
+        );
+
+        // Nothing was persisted by the rejected writes.
+        let issues = db
+            .verify_grovedb(None, true, true, gv)
+            .expect("verify_grovedb");
+        assert!(issues.is_empty(), "issues: {issues:?}");
+    }
+
+    #[test]
+    fn indexed_conversion_of_plain_tree_rejected_v0() {
+        use grovedb_version::version::v1::GROVE_V1;
+        indexed_conversion_of_plain_tree_is_rejected(&GROVE_V1);
+    }
+
+    #[test]
+    fn indexed_conversion_of_plain_tree_rejected_v1() {
+        indexed_conversion_of_plain_tree_is_rejected(GroveVersion::latest());
     }
 }

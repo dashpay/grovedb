@@ -868,9 +868,21 @@ impl GroveDb {
                                         ));
                                     }
 
+                                    // Report under the PARENT path (path
+                                    // without the trailing key we pushed for
+                                    // descent), matching query_raw and the
+                                    // regular-tree terminal arm. Including the
+                                    // key made `(path, key)` lookups miss —
+                                    // absence-proof verification would report
+                                    // an EXISTING indexed tree as absent.
+                                    let parent_path: Vec<Vec<u8>> = path
+                                        [..path.len().saturating_sub(1)]
+                                        .iter()
+                                        .map(|p| p.to_vec())
+                                        .collect();
                                     let path_key_optional_value =
                                         ProvedPathKeyOptionalValue::from_proved_key_value(
-                                            path.iter().map(|p| p.to_vec()).collect(),
+                                            parent_path,
                                             proved_key_value,
                                         );
                                     result.push(
