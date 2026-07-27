@@ -1728,4 +1728,164 @@ mod tests {
         }
         assert_verify_passes(&db, grove_version);
     }
+
+    /// PSIT drift must stay visible AFTER a later write re-heals the parent
+    /// hash over the drifted secondary.
+    ///
+    /// The H1-A chain check alone catches drift only while the parent still
+    /// commits to the OLD secondary root. Any subsequent legitimate write
+    /// re-derives the parent's value_hash from the drifted secondary's
+    /// current root, at which point the chain is internally consistent again
+    /// and the drift is invisible without a per-entry content walk.
+    #[test]
+    fn verify_grovedb_psit_drift_survives_hash_reheal_and_is_still_detected() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create psit");
+        for (k, sum) in [(b"a".as_slice(), 10i64), (b"b".as_slice(), 20)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                k,
+                Element::new_sum_item(sum),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("seed");
+        }
+
+        // Drop "a"'s secondary row behind the mirror's back.
+        let mut sec_key = Vec::new();
+        sec_key.extend_from_slice(&grovedb_element::indexed::sort_keys::encode_sum_sort_key(
+            10,
+        ));
+        sec_key.extend_from_slice(b"a");
+        corrupt_psit_secondary_delete(&db, &[TEST_LEAF, b"psit"], &sec_key, grove_version);
+
+        // The chain check sees it right now.
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        assert!(!issues.is_empty(), "fresh drift must be detected");
+
+        // Now perform a legitimate write through the dedicated API. It
+        // re-derives the parent's value_hash from the CURRENT (drifted)
+        // secondary root, healing the hash chain over the corruption.
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"c",
+            Element::new_sum_item(30),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("post-drift write re-heals the chain");
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        let orphan_path: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"psit".to_vec(),
+            b"__psit_primary_orphan__".to_vec(),
+            b"a".to_vec(),
+        ];
+        assert!(
+            issues.contains_key(&orphan_path),
+            "content walk must still report the orphaned primary entry after the hash chain was \
+             re-healed; got {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Same re-heal scenario as the PSIT case, but on a multi-axis PCPSIT:
+    /// drift on ONE axis must remain visible after a later write re-derives
+    /// the axes digest over the drifted axis, and must be attributed to the
+    /// axis it happened on.
+    #[test]
+    fn verify_grovedb_pcpsit_axis_drift_survives_hash_reheal_and_names_the_axis() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes = vec![(IndexAxis::Count.tag(), None), (IndexAxis::Sum.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).unwrap(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create");
+        for (k, sum) in [(b"a".as_slice(), 7i64), (b"b".as_slice(), 12)] {
+            db.insert_into_provable_count_provable_sum_indexed_tree(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                k,
+                Element::new_item_with_sum_item(k.to_vec(), sum),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("seed");
+        }
+
+        // Delete "a"'s row from the SUM axis only.
+        let mut sum_key = Vec::new();
+        sum_key.extend_from_slice(&grovedb_element::indexed::sort_keys::encode_sum_sort_key(7));
+        sum_key.extend_from_slice(b"a");
+        corrupt_pcpsit_axis_secondary_delete(
+            &db,
+            &[TEST_LEAF, b"pcpsit"],
+            IndexAxis::Sum,
+            &sum_key,
+            grove_version,
+        );
+
+        // A later legitimate write re-derives the axes digest over the
+        // drifted sum secondary, healing the chain.
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"pcpsit"].as_ref(),
+            b"c",
+            Element::new_item_with_sum_item(b"c".to_vec(), 30),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("post-drift write re-heals the chain");
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify");
+        let sum_orphan: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"pcpsit".to_vec(),
+            b"__pcpsit_sum_primary_orphan__".to_vec(),
+            b"a".to_vec(),
+        ];
+        assert!(
+            issues.contains_key(&sum_orphan),
+            "sum-axis drift must be reported against the sum axis; got {:?}",
+            issues.keys().collect::<Vec<_>>()
+        );
+        // The untouched count axis must not be implicated.
+        let count_orphan: Vec<Vec<u8>> = vec![
+            TEST_LEAF.to_vec(),
+            b"pcpsit".to_vec(),
+            b"__pcpsit_count_primary_orphan__".to_vec(),
+            b"a".to_vec(),
+        ];
+        assert!(
+            !issues.contains_key(&count_orphan),
+            "the healthy count axis must not be flagged"
+        );
+    }
 }

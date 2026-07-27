@@ -1474,6 +1474,187 @@ impl GroveDb {
         )
     }
 
+    /// Per-entry content-consistency walk between an indexed primary and
+    /// one of its axis secondaries.
+    ///
+    /// The H1-A check binds both Merks' ROOT HASHES into the parent's
+    /// value_hash, but a secondary can be internally consistent (its root
+    /// hash correctly hashes its own content) while its CONTENT is stale
+    /// relative to the primary — a mirror bug leaves exactly that shape.
+    /// Worse, the chain check stops seeing such drift entirely once any
+    /// later legitimate write re-derives the parent hash over the drifted
+    /// secondary; only this walk still catches it.
+    ///
+    /// Invariant enforced: every primary entry at `key` must have exactly
+    /// one secondary entry at `make_axis_secondary_key(axis, count, sum,
+    /// key)`, and the secondary must contain nothing else.
+    ///
+    /// Issues are recorded under `<path>/<label_prefix><kind>__/<key>` so
+    /// the existing `VerificationIssues` shape is unchanged. `label_prefix`
+    /// identifies the variant and axis (`__cidx_` keeps the PCIT sentinels
+    /// byte-identical to what they have always been).
+    /// Short axis name used to build per-axis verification sentinels.
+    fn axis_label(axis: grovedb_element::indexed::IndexAxis) -> &'static str {
+        match axis {
+            grovedb_element::indexed::IndexAxis::Count => "count",
+            grovedb_element::indexed::IndexAxis::Sum => "sum",
+            grovedb_element::indexed::IndexAxis::Avg => "avg",
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_indexed_axis_content<'db, S: StorageContext<'db>>(
+        primary_merk: &Merk<S>,
+        secondary_merk: &Merk<S>,
+        axis: grovedb_element::indexed::IndexAxis,
+        label_prefix: &str,
+        new_path: &[Vec<u8>],
+        issues: &mut VerificationIssues,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        use crate::operations::indexed_tree::{axis_sort_key_len, make_axis_secondary_key};
+
+        let mut all_query = Query::new();
+        all_query.insert_all();
+        let sentinel = |kind: &str| format!("{label_prefix}{kind}__").into_bytes();
+        // Name the ordering value the axis sorts on, so a mismatch reads as
+        // `__<prefix>count_mismatch__` / `_sum_` / `_avg_`.
+        let axis_value_name = match axis {
+            grovedb_element::indexed::IndexAxis::Count => "count",
+            grovedb_element::indexed::IndexAxis::Sum => "sum",
+            grovedb_element::indexed::IndexAxis::Avg => "avg",
+        };
+        // Decode a secondary key's sort-key prefix back to its ordering
+        // value, right-aligned in a hash slot for reporting.
+        let decode_sort_value = |sec_key: &[u8]| -> CryptoHash {
+            use grovedb_element::indexed::sort_keys::{
+                decode_avg_sort_key, decode_count_sort_key, decode_sum_sort_key,
+            };
+            let mut slot = [0u8; 32];
+            match axis {
+                grovedb_element::indexed::IndexAxis::Count => {
+                    let mut b = [0u8; 8];
+                    b.copy_from_slice(&sec_key[..8]);
+                    slot[24..32].copy_from_slice(&decode_count_sort_key(&b).to_be_bytes());
+                }
+                grovedb_element::indexed::IndexAxis::Sum => {
+                    let mut b = [0u8; 8];
+                    b.copy_from_slice(&sec_key[..8]);
+                    slot[24..32].copy_from_slice(&decode_sum_sort_key(&b).to_be_bytes());
+                }
+                grovedb_element::indexed::IndexAxis::Avg => {
+                    let mut b = [0u8; 16];
+                    b.copy_from_slice(&sec_key[..16]);
+                    slot[16..32].copy_from_slice(&decode_avg_sort_key(&b).to_be_bytes());
+                }
+            }
+            slot
+        };
+
+        // Expected secondary key for every primary entry, derived from the
+        // entry's own aggregates exactly as the mirror derives it.
+        let mut expected: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut content_iter =
+            KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap();
+        while let Some((p_key, p_value)) = content_iter.next_kv().unwrap() {
+            // An item key long enough to push the derived secondary key over
+            // Merk's < 256-byte invariant can only arrive via a path that
+            // bypassed the length check (legacy data, corruption, direct
+            // storage injection). Flag it rather than deriving a key that
+            // could never have been written.
+            let max_len = crate::operations::indexed_tree::max_item_key_len_for_axis(axis);
+            if p_key.len() > max_len {
+                let mut p = new_path.to_vec();
+                p.push(sentinel("primary_key_oversize"));
+                p.push(p_key.clone());
+                let mut len_slot = [0u8; 32];
+                len_slot[24..32].copy_from_slice(&(p_key.len() as u64).to_be_bytes());
+                issues.insert(p, ([0u8; 32], [0u8; 32], len_slot));
+                continue;
+            }
+            let p_elem = Element::raw_decode(&p_value, grove_version)?;
+            let (count, sum) = p_elem.count_sum_value_or_default();
+            expected.insert(
+                p_key.clone(),
+                make_axis_secondary_key(axis, count, sum, &p_key),
+            );
+        }
+        drop(content_iter);
+
+        // Actual secondary rows, keyed by the item key they point at. A Vec
+        // rather than a single value so duplicate rows for one item key (a
+        // real drift class: the same item in two sort buckets) are visible
+        // instead of silently collapsing.
+        let sort_len = axis_sort_key_len(axis);
+        let mut actual: HashMap<Vec<u8>, Vec<Vec<u8>>> = HashMap::new();
+        let mut sec_iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap();
+        while let Some((sec_key, _)) = sec_iter.next_kv().unwrap() {
+            if sec_key.len() < sort_len {
+                let mut p = new_path.to_vec();
+                p.push(sentinel("secondary_malformed_key"));
+                p.push(sec_key.clone());
+                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+                continue;
+            }
+            let item_key = sec_key[sort_len..].to_vec();
+            actual.entry(item_key).or_default().push(sec_key.clone());
+        }
+        drop(sec_iter);
+
+        for (item_key, rows) in &actual {
+            if rows.len() > 1 {
+                let mut p = new_path.to_vec();
+                p.push(sentinel("secondary_duplicate"));
+                p.push(item_key.clone());
+                let mut dup = [0u8; 32];
+                let n = rows[0].len().min(32);
+                dup[..n].copy_from_slice(&rows[0][..n]);
+                issues.insert(p, ([0u8; 32], [0u8; 32], dup));
+            }
+        }
+
+        for (item_key, want_key) in &expected {
+            match actual.get(item_key).and_then(|v| v.first()) {
+                None => {
+                    let mut p = new_path.to_vec();
+                    p.push(sentinel("primary_orphan"));
+                    p.push(item_key.clone());
+                    issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+                }
+                Some(got_key) if got_key != want_key => {
+                    // The item is indexed, but under the wrong sort key —
+                    // i.e. the secondary's ordering value is stale. Report
+                    // the DECODED ordering value (right-aligned in the hash
+                    // slot) rather than raw key bytes, so the diagnostic
+                    // reads directly.
+                    let mut p = new_path.to_vec();
+                    p.push(sentinel(&format!("{}_mismatch", axis_value_name)));
+                    p.push(item_key.clone());
+                    issues.insert(
+                        p,
+                        (
+                            [0u8; 32],
+                            decode_sort_value(want_key),
+                            decode_sort_value(got_key),
+                        ),
+                    );
+                }
+                Some(_) => { /* indexed under the expected sort key */ }
+            }
+        }
+
+        for item_key in actual.keys() {
+            if !expected.contains_key(item_key) {
+                let mut p = new_path.to_vec();
+                p.push(sentinel("secondary_orphan"));
+                p.push(item_key.clone());
+                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
+            }
+        }
+
+        Ok(())
+    }
+
     fn verify_merk_and_submerks_in_transaction<'db, B: AsRef<[u8]>, S: StorageContext<'db>>(
         &'db self,
         merk: Merk<S>,
@@ -1568,151 +1749,21 @@ impl GroveDb {
                         );
                     }
 
-                    // Cidx content-consistency check.
-                    //
-                    // The H1-A check above verifies *chain* integrity —
-                    // the cidx element's recorded value_hash matches
-                    // `combine_hash_three(value_hash(bytes),
-                    // primary_root, secondary_root)`. That binds the
-                    // two Merks' root hashes into the parent's hash,
-                    // but it does NOT verify the secondary's contents
-                    // match what the primary says they should be.
-                    //
-                    // A bug like nested-cidx batch bubble-up forgetting
-                    // to mirror the count change (caught at audit in
-                    // a8bb34fb) leaves the secondary internally
-                    // consistent — its root hash is the correct hash
-                    // of its on-disk content — but its content is
-                    // stale relative to the primary. H1-A passes;
-                    // queries return wrong results.
-                    //
-                    // Walk both Merks here and assert per-entry
-                    // consistency: every primary entry with
-                    // count_value=c at key=k must correspond to
-                    // exactly one secondary entry at
-                    // (c.to_be_bytes() ‖ k). Each mismatch is recorded
-                    // in `issues` with a sentinel path suffix so the
-                    // existing `VerificationIssues` type doesn't need
-                    // to change.
-                    let mut primary_entries: HashMap<Vec<u8>, u64> = HashMap::new();
-                    let mut content_iter =
-                        KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap();
-                    while let Some((p_key, p_value)) = content_iter.next_kv().unwrap() {
-                        // Cidx primary keys must be ≤ 247 bytes so the
-                        // derived secondary key (count_be ‖ key) fits
-                        // under Merk's < 256-byte invariant. Oversize
-                        // keys can only enter the primary via a code
-                        // path that bypassed the cidx-key length check
-                        // (legacy data, corruption, external storage
-                        // injection). Flag explicitly via a sentinel
-                        // path so the cause is visible.
-                        if p_key.len() > crate::operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN {
-                            let mut p = new_path.to_vec();
-                            p.push(b"__cidx_primary_key_oversize__".to_vec());
-                            p.push(p_key.clone());
-                            // Encode the key's actual length in the
-                            // last 8 bytes of the third hash slot for
-                            // diagnostic.
-                            let mut len_slot = [0u8; 32];
-                            let len_be = (p_key.len() as u64).to_be_bytes();
-                            len_slot[24..32].copy_from_slice(&len_be);
-                            issues.insert(p, ([0u8; 32], [0u8; 32], len_slot));
-                        }
-                        let p_elem = Element::raw_decode(&p_value, grove_version)?;
-                        primary_entries.insert(p_key, p_elem.count_value_or_default());
-                    }
-                    drop(content_iter);
-
-                    // Use Vec<u64> rather than u64 so duplicate
-                    // secondary rows for the same original_key (a real
-                    // drift class — two count buckets pointing to the
-                    // same item key) don't get silently collapsed.
-                    // After collection, every original_key must have
-                    // exactly one count; more = duplicate; zero =
-                    // orphan.
-                    let mut secondary_entries: HashMap<Vec<u8>, Vec<u64>> = HashMap::new();
-                    let mut sec_iter =
-                        KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap();
-                    while let Some((sec_key, _sec_value)) = sec_iter.next_kv().unwrap() {
-                        // Secondary keys are (count_be ‖ original_key);
-                        // a malformed key short of 8 bytes is itself a
-                        // drift indicator.
-                        if sec_key.len() < 8 {
-                            let mut p = new_path.to_vec();
-                            p.push(b"__cidx_secondary_malformed_key__".to_vec());
-                            p.push(sec_key.clone());
-                            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-                            continue;
-                        }
-                        let mut count_bytes = [0u8; 8];
-                        count_bytes.copy_from_slice(&sec_key[..8]);
-                        let sec_count = u64::from_be_bytes(count_bytes);
-                        let original_key = sec_key[8..].to_vec();
-                        secondary_entries
-                            .entry(original_key)
-                            .or_default()
-                            .push(sec_count);
-                    }
-                    drop(sec_iter);
-
-                    // Surface duplicate-count entries explicitly. Each
-                    // (key, [count_a, count_b, ...]) with more than one
-                    // count is a duplicate-row drift — the cidx
-                    // invariant is "exactly one secondary entry per
-                    // primary entry".
-                    for (s_key, counts) in &secondary_entries {
-                        if counts.len() > 1 {
-                            let mut p = new_path.to_vec();
-                            p.push(b"__cidx_secondary_duplicate__".to_vec());
-                            p.push(s_key.clone());
-                            // Encode the duplicate count value in slot 2
-                            // (just one of them; the consumer can scan
-                            // the secondary to enumerate all).
-                            let mut dup = [0u8; 32];
-                            dup[24..32].copy_from_slice(&counts[0].to_be_bytes());
-                            issues.insert(p, ([0u8; 32], [0u8; 32], dup));
-                        }
-                    }
-
-                    // For each primary entry, the secondary must have
-                    // a matching entry at the same count_value. We use
-                    // `.first()` on the Vec — if there are multiple
-                    // entries that's a duplicate (already flagged
-                    // above); the first one is sufficient for the
-                    // count-mismatch comparison here.
-                    for (p_key, p_count) in &primary_entries {
-                        match secondary_entries.get(p_key).and_then(|v| v.first()) {
-                            None => {
-                                let mut p = new_path.to_vec();
-                                p.push(b"__cidx_primary_orphan__".to_vec());
-                                p.push(p_key.clone());
-                                issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-                            }
-                            Some(s_count) if s_count != p_count => {
-                                let mut p = new_path.to_vec();
-                                p.push(b"__cidx_count_mismatch__".to_vec());
-                                p.push(p_key.clone());
-                                let mut expected = [0u8; 32];
-                                expected[24..32].copy_from_slice(&p_count.to_be_bytes());
-                                let mut actual = [0u8; 32];
-                                actual[24..32].copy_from_slice(&s_count.to_be_bytes());
-                                issues.insert(p, ([0u8; 32], expected, actual));
-                            }
-                            Some(_) => { /* matches */ }
-                        }
-                    }
-                    // For each secondary entry, the primary must have
-                    // a matching entry at that exact key (count match
-                    // is already checked above; here we look for
-                    // orphans in the secondary).
-                    for s_key in secondary_entries.keys() {
-                        if !primary_entries.contains_key(s_key) {
-                            let mut p = new_path.to_vec();
-                            p.push(b"__cidx_secondary_orphan__".to_vec());
-                            p.push(s_key.clone());
-                            issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
-                        }
-                    }
+                    // Per-entry content walk (see
+                    // `verify_indexed_axis_content`): the H1-A check above
+                    // only binds the two Merks' ROOT HASHES into the
+                    // parent, so a secondary whose content is stale but
+                    // internally consistent passes it — and passes forever
+                    // once a later write re-heals the parent hash.
+                    Self::verify_indexed_axis_content(
+                        &primary_merk,
+                        &secondary_merk,
+                        grovedb_element::indexed::IndexAxis::Count,
+                        "__cidx_",
+                        &new_path.to_vec(),
+                        &mut issues,
+                        grove_version,
+                    )?;
 
                     issues.extend(self.verify_merk_and_submerks_in_transaction(
                         primary_merk,
@@ -2046,6 +2097,18 @@ impl GroveDb {
                         );
                     }
 
+                    // Per-entry content walk over the sum axis (see
+                    // `verify_indexed_axis_content`).
+                    Self::verify_indexed_axis_content(
+                        &primary_merk,
+                        &secondary_merk,
+                        grovedb_element::indexed::IndexAxis::Sum,
+                        "__psit_",
+                        &new_path.to_vec(),
+                        &mut issues,
+                        grove_version,
+                    )?;
+
                     issues.extend(self.verify_merk_and_submerks_in_transaction(
                         primary_merk,
                         &new_path_ref,
@@ -2116,6 +2179,17 @@ impl GroveDb {
                             )
                             .unwrap()?;
                         axis_hashes.push((*tag, secondary_merk.root_hash().unwrap()));
+                        // Per-axis content walk while this axis's secondary
+                        // is open (see `verify_indexed_axis_content`).
+                        Self::verify_indexed_axis_content(
+                            &primary_merk,
+                            &secondary_merk,
+                            axis,
+                            &format!("__pcpsit_{}_", Self::axis_label(axis)),
+                            &new_path.to_vec(),
+                            &mut issues,
+                            grove_version,
+                        )?;
                     }
                     // `axes_digest` returns a `CostContext`; its
                     // `hash_node_calls` cost is intentionally discarded here.

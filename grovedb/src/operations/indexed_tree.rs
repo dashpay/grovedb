@@ -57,7 +57,12 @@ fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
 /// - sum axis   → `sum_sortable_be(8) ‖ item_key`
 /// - avg axis   → `avg_sortable_be(16) ‖ item_key`
 #[inline]
-fn make_axis_secondary_key(axis: IndexAxis, count: u64, sum: i64, item_key: &[u8]) -> Vec<u8> {
+pub(crate) fn make_axis_secondary_key(
+    axis: IndexAxis,
+    count: u64,
+    sum: i64,
+    item_key: &[u8],
+) -> Vec<u8> {
     match axis {
         IndexAxis::Count => {
             let prefix = encode_count_sort_key(count);
@@ -81,6 +86,16 @@ fn make_axis_secondary_key(axis: IndexAxis, count: u64, sum: i64, item_key: &[u8
             k.extend_from_slice(item_key);
             k
         }
+    }
+}
+
+/// Width in bytes of an axis's sort-key prefix inside a secondary key
+/// (`sort_key ‖ item_key`).
+#[inline]
+pub(crate) fn axis_sort_key_len(axis: IndexAxis) -> usize {
+    match axis {
+        IndexAxis::Count | IndexAxis::Sum => 8,
+        IndexAxis::Avg => 16,
     }
 }
 
@@ -3759,6 +3774,16 @@ pub(crate) fn validate_cidx_item_key_len(item_key: &[u8]) -> Result<(), Error> {
 /// under Merk's 256-byte ceiling the item key must be `<= 239` bytes —
 /// 8 bytes tighter than the count/sum (`MAX_CIDX_ITEM_KEY_LEN`) limit.
 pub const MAX_AVG_INDEXED_ITEM_KEY_LEN: usize = 239;
+
+/// Maximum item-key length permitted for a given axis: the sort-key
+/// prefix width is what eats into Merk's 256-byte key ceiling.
+#[inline]
+pub(crate) fn max_item_key_len_for_axis(axis: IndexAxis) -> usize {
+    match axis {
+        IndexAxis::Count | IndexAxis::Sum => MAX_CIDX_ITEM_KEY_LEN,
+        IndexAxis::Avg => MAX_AVG_INDEXED_ITEM_KEY_LEN,
+    }
+}
 
 /// Validate an item key for a PCPSIT given its configured `axes`.
 ///
