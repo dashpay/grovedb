@@ -356,15 +356,20 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
-            // KNOWN GAP (same as the average-case estimator): this covers
-            // only the parent-merk node update recomputing the indexed
-            // element's value_hash. The per-axis secondary Merk work is not
-            // charged here or anywhere else, because the secondary lives at a
-            // derived prefix with no entry in the supplied layer-information
-            // map. See the long note in
-            // `batch/estimated_costs/average_case_costs.rs`. Worst-case
-            // callers reserving fees must not rely on this for indexed-tree
-            // ops until the layer-information API can describe secondaries.
+            // KNOWN GAP: this covers only the parent-merk node update that
+            // recomputes the indexed element's value_hash; the per-axis
+            // secondary Merk work is not charged.
+            //
+            // The average-case estimator DOES charge it (see
+            // `average_case_indexed_secondary_mirror`), deriving the
+            // secondary's shape from the primary's `EstimatedLayerInformation`.
+            // That is not possible here: `WorstCaseLayerInformation` carries
+            // only `MaxElementsNumber` / `NumberOfLevels` — no tree type (so an
+            // indexed primary cannot even be identified) and no key/value sizes
+            // (so a secondary row cannot be sized). Closing this needs that
+            // public type extended, which is a breaking change for callers
+            // that construct it. Worst-case fee reservation for indexed-tree
+            // ops must not rely on this number until then.
             GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                 primary_aggregate_data,
                 ..

@@ -2,7 +2,7 @@
 
 #[cfg(feature = "minimal")]
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
@@ -364,28 +364,10 @@ impl GroveOp {
                 primary_aggregate_data,
                 ..
             } => {
-                // Covers ONLY the parent-merk node update that recomputes
-                // the indexed element's value_hash — cost-shape-equivalent
-                // to ReplaceTreeRootKey at this level.
-                //
-                // KNOWN GAP: the per-axis secondary Merk work (open +
-                // delete-then-insert of the moved entry + root recompute) is
-                // NOT included, and is not accounted for elsewhere either —
-                // the estimator's `TreeCache` never takes the secondary
-                // hand-off, so no layer charges it. Measured on a single item
-                // insert into a PCIT primary: estimate seek 7 / added 161 vs
-                // actual seek 11 / added 335.
-                //
-                // Fixing this needs the caller to describe the secondary
-                // layer: the secondary lives at a DERIVED prefix
-                // (Blake3(primary_prefix ‖ axis_tag)) that has no entry in
-                // the supplied `EstimatedLayerInformation` map, and its entry
-                // sizes depend on the axis sort-key width (8 bytes count/sum,
-                // 16 avg) plus the item key length. Inventing those numbers
-                // here would bake a wrong fee model into a consensus-relevant
-                // estimator, so the gap is left explicit rather than guessed.
-                // Callers must not rely on these estimates for indexed-tree
-                // ops until the layer-information API can describe secondaries.
+                // The parent-merk node update that recomputes the indexed
+                // element's value_hash. The per-axis secondary Merk work is
+                // charged at the PRIMARY's own level in `execute_ops_on_path`,
+                // where the primary's layer information is in scope.
                 GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
@@ -399,11 +381,31 @@ impl GroveOp {
 }
 
 #[cfg(feature = "minimal")]
+/// Axes whose secondary Merks an indexed primary maintains.
+///
+/// A PCPSIT's configured axes are a 1..=3 subset carried by the element, which
+/// the estimator cannot see, so the worst case (all three) is charged — the
+/// estimate stays an upper bound.
+fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::indexed::IndexAxis> {
+    use grovedb_element::indexed::IndexAxis;
+    match tree_type {
+        TreeType::ProvableSumIndexedTree => vec![IndexAxis::Sum],
+        TreeType::ProvableCountProvableSumIndexedTree => {
+            vec![IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]
+        }
+        _ => vec![IndexAxis::Count],
+    }
+}
+
+#[cfg(feature = "minimal")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     paths: HashMap<KeyInfoPath, EstimatedLayerInformation>,
     cached_merks: HashMap<KeyInfoPath, TreeType>,
+    /// Paths whose layer is an indexed primary, so the bubble-up emits the
+    /// same `ReplaceAggregateIndexedTreeRootKeys` op a real apply produces.
+    pending_cidx_secondary: HashSet<Vec<Vec<u8>>>,
 }
 
 #[cfg(feature = "minimal")]
@@ -415,6 +417,7 @@ impl AverageCaseTreeCacheKnownPaths {
         AverageCaseTreeCacheKnownPaths {
             paths,
             cached_merks: HashMap::default(),
+            pending_cidx_secondary: HashSet::default(),
         }
     }
 }
@@ -428,6 +431,22 @@ impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
 
 #[cfg(feature = "minimal")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
+    /// Report a secondary mirror for layers that are indexed primaries, so the
+    /// bubble-up emits `ReplaceAggregateIndexedTreeRootKeys` — the op a real
+    /// `apply_batch` produces — instead of a plain `ReplaceTreeRootKey`. The
+    /// hash and root key are placeholders: the estimator only needs the op
+    /// SHAPE to charge the right parent-node update.
+    fn take_cidx_secondary_after_apply(
+        &mut self,
+        path: &[Vec<u8>],
+    ) -> Option<(grovedb_merk::CryptoHash, Option<Vec<u8>>)> {
+        if self.pending_cidx_secondary.remove(path) {
+            Some(([0u8; 32], None))
+        } else {
+            None
+        }
+    }
+
     fn insert(
         &mut self,
         path: &KeyInfoPath,
@@ -523,6 +542,32 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             average_case_merk_propagate(layer_element_estimates, grove_version)
                 .map_err(Error::MerkError)
         );
+
+        // An indexed primary also maintains one secondary Merk per axis. Those
+        // live at derived prefixes (`Blake3(primary_prefix ‖ axis_tag)`) which
+        // are not GroveDB paths, so they never appear in `self.paths` and no
+        // layer charges them — but this IS the primary's level, so its layer
+        // information is right here and the secondary's shape follows from it.
+        //
+        // Recording the path additionally makes `take_cidx_secondary_after_apply`
+        // report a mirror, so the bubble-up emits
+        // `ReplaceAggregateIndexedTreeRootKeys` exactly as a real apply_batch
+        // does. Without it the estimator emitted a plain `ReplaceTreeRootKey`
+        // and the indexed arm of `average_case_cost` was unreachable.
+        if layer_element_estimates.tree_type.is_indexed_primary() {
+            let axes = indexed_axes_for_tree_type(layer_element_estimates.tree_type);
+            cost_return_on_error!(
+                &mut cost,
+                GroveDb::average_case_indexed_secondary_mirror(
+                    path,
+                    layer_element_estimates,
+                    &axes,
+                    grove_version,
+                )
+            );
+            self.pending_cidx_secondary.insert(path.to_path());
+        }
+
         Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
     }
 
@@ -1895,6 +1940,97 @@ mod tests {
             "propagate=true cost should be >= non-propagate baseline; pcount={:?}, count={:?}",
             cost_pcount,
             cost_count,
+        );
+    }
+
+    /// The estimator must not UNDER-report an indexed-tree batch.
+    ///
+    /// The per-axis secondary Merk work (open + delete-old + insert-new +
+    /// re-root) is charged from the primary's layer information; before that
+    /// it was charged nowhere, so the estimate came in well under actual on
+    /// exactly the ops a fee reservation is computed from. Estimates for
+    /// indexed trees are an upper bound rather than an equality (the axis set
+    /// of a PCPSIT is not visible to the estimator, so the worst case of three
+    /// axes is charged), hence >= rather than the eq() other tests use.
+    #[test]
+    fn test_batch_indexed_tree_insert_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        // A PCIT holding one item.
+        db.insert(
+            EMPTY_PATH,
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            Some(&tx),
+            grove_version,
+        )
+        .unwrap()
+        .expect("create pcit");
+
+        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![b"cidx".to_vec()],
+            b"k1".to_vec(),
+            Element::new_item(b"v1".to_vec()),
+        )];
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+            },
+        );
+        // The PRIMARY's layer — this is what the secondary's shape is derived
+        // from.
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountIndexedTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllItems(2, 2, None),
+            },
+        );
+
+        let average_case_cost = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("expected to get average case costs");
+
+        let cost = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("expected to apply batch");
+
+        assert!(
+            average_case_cost.seek_count >= cost.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            average_case_cost.seek_count,
+            cost.seek_count
+        );
+        assert!(
+            average_case_cost.storage_cost.added_bytes >= cost.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            average_case_cost.storage_cost.added_bytes,
+            cost.storage_cost.added_bytes
+        );
+        assert!(
+            average_case_cost.hash_node_calls >= cost.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            average_case_cost.hash_node_calls,
+            cost.hash_node_calls
         );
     }
 }

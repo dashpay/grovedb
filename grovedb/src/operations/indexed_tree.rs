@@ -40,7 +40,7 @@ use crate::{util::TxRef, Element, Error, GroveDb, Transaction, TransactionArg};
 
 /// Per-axis Merk tree type to open the secondary with.
 #[inline]
-fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
+pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
     match axis {
         // Each count entry contributes count = 1.
         IndexAxis::Count => TreeType::ProvableCountTree,
