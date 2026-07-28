@@ -1668,9 +1668,15 @@ mod tests {
 
     #[test]
     fn verify_grovedb_pcit_with_many_distinct_counts_passes() {
-        // Each entry has a distinct count_value; every (count, key)
-        // pair is unique in the secondary index. Stress the
-        // content-consistency walk.
+        // Fifteen entries with distinct counts, so every (count, key)
+        // pair is unique in the secondary index. Stresses the
+        // content-consistency walk over a fully distinct index.
+        //
+        // The counts are DERIVED, which is the only way a child can carry
+        // an aggregate: each child is inserted EMPTY and then populated,
+        // and propagation supplies the ordering value. A rootless child
+        // asserting a count has nothing to derive it from, so the
+        // distinct ordering has to come from distinct contents.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         db.insert(
@@ -1685,24 +1691,55 @@ mod tests {
         .expect("create");
         for i in 0..15u64 {
             let key = format!("k{:02}", i);
-            let elem = Element::new_provable_count_tree_with_flags_and_count_value(None, i, None);
             db.insert_into_count_indexed_tree(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 key.as_bytes(),
-                elem,
+                Element::empty_provable_count_tree(),
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect("insert");
+            .expect("insert empty child");
+            for j in 0..i {
+                db.insert(
+                    [TEST_LEAF, b"cidx", key.as_bytes()].as_ref(),
+                    &j.to_be_bytes(),
+                    Element::new_item(vec![]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate child so its count is derived");
+            }
         }
+
+        // Pin the ordering the distinct counts are supposed to produce:
+        // descending top-k must run k14(14) down to k00(0).
+        let top = db
+            .indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 15, true, None, grove_version)
+            .unwrap()
+            .expect("top-k over distinct derived counts");
+        assert_eq!(
+            top,
+            (0..15u64)
+                .rev()
+                .map(|i| (i, format!("k{:02}", i).into_bytes()))
+                .collect::<Vec<_>>()
+        );
+
         assert_verify_passes(&db, grove_version);
     }
 
     #[test]
     fn verify_grovedb_pcit_with_many_same_counts_passes() {
-        // Every entry has the same count_value. Tests the secondary
-        // ordering when prefix is identical (sort by item_key).
+        // Every entry ends up with the same count. Tests the secondary
+        // ordering when the count prefix is identical (sort by item_key).
+        //
+        // As above the count is DERIVED, so "same count" means "same
+        // number of children": each entry is inserted EMPTY and filled
+        // with the same number of items.
+        const SHARED_COUNT: u64 = 42;
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         db.insert(
@@ -1720,13 +1757,44 @@ mod tests {
             db.insert_into_count_indexed_tree(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 key.as_bytes(),
-                Element::new_provable_count_tree_with_flags_and_count_value(None, 42, None),
+                Element::empty_provable_count_tree(),
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect("insert");
+            .expect("insert empty child");
+            for j in 0..SHARED_COUNT {
+                db.insert(
+                    [TEST_LEAF, b"cidx", key.as_bytes()].as_ref(),
+                    &j.to_be_bytes(),
+                    Element::new_item(vec![]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate child so its count is derived");
+            }
         }
+
+        // Identical count prefixes: ordering falls through to item_key.
+        let asc = db
+            .indexed_count_top_k(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                10,
+                false,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("ascending top-k over tied derived counts");
+        assert_eq!(
+            asc,
+            (0..10)
+                .map(|i| (SHARED_COUNT, format!("k{:02}", i).into_bytes()))
+                .collect::<Vec<_>>()
+        );
+
         assert_verify_passes(&db, grove_version);
     }
 

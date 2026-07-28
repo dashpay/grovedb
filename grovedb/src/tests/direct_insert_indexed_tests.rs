@@ -541,15 +541,28 @@ mod tests {
         )
         .unwrap()
         .expect("create");
+        // The child enters EMPTY and gains its count from its contents:
+        // one item inside derives count 1 on the child and, through
+        // propagation, count 1 on the PCIT.
         db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"cidx"].as_ref(),
             b"a",
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+            Element::empty_provable_count_tree(),
             None,
             grove_version,
         )
         .unwrap()
         .expect("populate");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"row",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("derive child count");
 
         // Read the actual on-disk roots.
         let elem = db
@@ -605,15 +618,28 @@ mod tests {
         )
         .unwrap()
         .expect("create");
+        // The child enters EMPTY and gains its count from its contents:
+        // one item inside derives count 1 on the child and, through
+        // propagation, count 1 on the PCIT.
         db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"cidx"].as_ref(),
             b"a",
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+            Element::empty_provable_count_tree(),
             None,
             grove_version,
         )
         .unwrap()
         .expect("populate");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"row",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("derive child count");
         let elem = db
             .get_raw([TEST_LEAF].as_ref().into(), b"cidx", None, grove_version)
             .unwrap()
@@ -657,15 +683,28 @@ mod tests {
         )
         .unwrap()
         .expect("create");
+        // The child enters EMPTY and gains its count from its contents:
+        // one item inside derives count 1 on the child and, through
+        // propagation, count 1 on the PCIT.
         db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"cidx"].as_ref(),
             b"a",
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+            Element::empty_provable_count_tree(),
             None,
             grove_version,
         )
         .unwrap()
         .expect("populate");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"row",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("derive child count");
         let elem = db
             .get_raw([TEST_LEAF].as_ref().into(), b"cidx", None, grove_version)
             .unwrap()

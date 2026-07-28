@@ -27,8 +27,9 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------
 
-    /// Build a PCIT at `[TEST_LEAF, b"pcit"]` and insert the supplied
-    /// `(key, count)` entries.
+    /// Build a PCIT at `[TEST_LEAF, b"pcit"]` and seed the supplied
+    /// `(key, count)` entries. Counts are DERIVED — see
+    /// [`insert_counts`].
     fn build_pcit(db: &GroveDb, grove_version: &GroveVersion, entries: &[(&[u8], u64)]) {
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -40,18 +41,7 @@ mod tests {
         )
         .unwrap()
         .expect("create PCIT");
-        for (k, c) in entries {
-            let ct = Element::new_provable_count_tree_with_flags_and_count_value(None, *c, None);
-            db.insert_into_count_indexed_tree(
-                [TEST_LEAF, b"pcit"].as_ref(),
-                k,
-                ct,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("insert PCIT entry");
-        }
+        insert_counts(db, grove_version, &[TEST_LEAF, b"pcit"], entries);
     }
 
     /// Build a PSIT at `[TEST_LEAF, b"psit"]` and insert the supplied
@@ -827,17 +817,12 @@ mod tests {
         )
         .unwrap()
         .expect("insert PCIT inside PCIT primary");
-        for (k, c) in &[(b"a" as &[u8], 4u64), (b"b" as &[u8], 9u64)] {
-            db.insert_into_count_indexed_tree(
-                [TEST_LEAF, b"outer", b"inner"].as_ref(),
-                k,
-                Element::new_provable_count_tree_with_flags_and_count_value(None, *c, None),
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("insert count entry under inner PCIT");
-        }
+        insert_counts(
+            &db,
+            grove_version,
+            &[TEST_LEAF, b"outer", b"inner"],
+            &[(b"a", 4), (b"b", 9)],
+        );
 
         let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"inner"];
         let proof = db
@@ -2054,15 +2039,32 @@ mod tests {
     // Correctness regression: out-of-domain aggregate ranges (P2)
     // -----------------------------------------------------------------
 
-    /// A count aggregate range entirely above `u64::MAX` must return 0,
-    /// not clamp onto the `count == u64::MAX` boundary entry.
+    /// A count aggregate range entirely above `u64::MAX` must return 0.
+    ///
+    /// REDUCED BITE — read before "strengthening" this test. It used to
+    /// seed a boundary entry at `count == u64::MAX`, so a clamping prover
+    /// (`RangeFrom(u64::MAX..)`) would have counted it. That fixture is no
+    /// longer constructible: counts are DERIVED from a child's contents,
+    /// and no child can hold `u64::MAX` items — the dedicated insert
+    /// rejects the asserted-count form that used to fake it. What this
+    /// test still pins is that prover and verifier agree on the canonical
+    /// out-of-domain empty-range shape for the Count axis, and that the
+    /// aggregate is 0.
+    ///
+    /// The "must not collapse an out-of-domain range onto the boundary
+    /// entry" property is still regression-covered on the arms where a
+    /// boundary entry IS constructible, all through the same
+    /// `aggregate_range_out_of_domain` guard:
+    /// `aggregate_sum_range_above_i64_max_returns_zero` and
+    /// `aggregate_sum_range_below_i64_min_returns_zero` (sum items
+    /// legitimately hold `i64::MAX` / `i64::MIN`), plus
+    /// `count_aggregate_negative_hi_returns_zero` for the `hi < 0` half of
+    /// the Count arm.
     #[test]
     fn aggregate_count_range_above_u64_max_returns_zero() {
         let v = GroveVersion::latest();
         let db = make_test_grovedb(v);
-        // Single boundary entry whose secondary key sits at count =
-        // u64::MAX. A buggy clamp (RangeFrom(u64::MAX..)) would count it.
-        build_pcit(&db, v, &[(b"max", u64::MAX)]);
+        build_pcit(&db, v, &[(b"max", 3)]);
         let path: &[&[u8]] = &[TEST_LEAF, b"pcit"];
         let lo = u64::MAX as i128 + 5;
         let hi = u64::MAX as i128 + 10;
@@ -2140,7 +2142,20 @@ mod tests {
     // wrappers (byte-equivalent to the retired dedicated cidx family).
     // =================================================================
 
-    /// Insert `(key, count)` pairs into an already-created cidx at `path`.
+    /// Seed `(key, count)` pairs into an already-created cidx at `path`,
+    /// with each count **derived** rather than asserted.
+    ///
+    /// Every child goes in EMPTY and is then populated with exactly
+    /// `count` distinct items, so propagation is what raises the child's
+    /// count to `count` — and that derived value is what becomes the
+    /// child's authenticated secondary sort key.
+    ///
+    /// The dedicated insert refuses a rootless child carrying a non-zero
+    /// aggregate (`reject_non_empty_dedicated_indexed_child_claim`): with
+    /// no contents to derive the aggregate from, the value would be a
+    /// bare caller assertion that nonetheless becomes the authenticated
+    /// ordering key. Fixtures therefore have to build the contents that
+    /// justify the count, which is also what the real consumer does.
     fn insert_counts(
         db: &GroveDb,
         grove_version: &GroveVersion,
@@ -2148,10 +2163,30 @@ mod tests {
         entries: &[(&[u8], u64)],
     ) {
         for (k, c) in entries {
-            let ct = Element::new_provable_count_tree_with_flags_and_count_value(None, *c, None);
-            db.insert_into_count_indexed_tree(path, k, ct, None, grove_version)
+            db.insert_into_count_indexed_tree(
+                path,
+                k,
+                Element::empty_provable_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert empty cidx child");
+
+            let mut child_path: Vec<&[u8]> = path.to_vec();
+            child_path.push(k);
+            for i in 0..*c {
+                db.insert(
+                    child_path.as_slice(),
+                    &i.to_be_bytes(),
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
                 .unwrap()
-                .expect("insert cidx entry");
+                .expect("populate cidx child");
+            }
         }
     }
 

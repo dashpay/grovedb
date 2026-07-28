@@ -89,6 +89,52 @@ pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
         }
     }
 
+    // Same rule the dedicated insert paths enforce
+    // (`reject_non_empty_dedicated_indexed_child_claim`): a child of an
+    // indexed primary may not claim a NON-ZERO aggregate while being
+    // ROOTLESS. With no contents to derive the value from it is a bare
+    // assertion, and under an indexed primary it becomes the authenticated
+    // secondary sort key and the parent's aggregate contribution.
+    //
+    // The batch door has to be shut as well as the dedicated one: an
+    // `insert_or_replace_op` carrying `ProvableCountTree(None, 9, None)` under
+    // a PCIT was accepted and written, and `verify_grovedb` then reported the
+    // child as an aggregate mismatch (recorded 9 against an empty inner Merk).
+    // The legitimate way to reach count 9 is to insert the child empty and
+    // populate it in the same batch, letting propagation derive it.
+    for op in ops_at_path_by_key.values() {
+        let element = match op {
+            GroveOp::InsertOrReplace { element }
+            | GroveOp::Replace { element }
+            | GroveOp::InsertIfNotExists { element, .. }
+            | GroveOp::InsertWithKnownToNotAlreadyExist { element } => element,
+            _ => continue,
+        };
+        let rootless_with_aggregate = match element.underlying() {
+            Element::SumTree(None, sum, _) | Element::ProvableSumTree(None, sum, _) => *sum != 0,
+            Element::BigSumTree(None, big_sum, _) => *big_sum != 0,
+            Element::CountTree(None, count, _) | Element::ProvableCountTree(None, count, _) => {
+                *count != 0
+            }
+            Element::CountSumTree(None, count, sum, _)
+            | Element::ProvableCountSumTree(None, count, sum, _)
+            | Element::ProvableCountProvableSumTree(None, count, sum, _) => {
+                *count != 0 || *sum != 0
+            }
+            _ => false,
+        };
+        if rootless_with_aggregate {
+            return Err(Error::InvalidBatchOperation(
+                "a child of an indexed-tree primary may not claim a non-zero \
+                 aggregate while having no root key: with no contents to derive \
+                 it from, the value is a bare assertion that would become the \
+                 authenticated secondary sort key. Insert the child empty and \
+                 populate it (in the same batch is fine) so the aggregate is derived",
+            ))
+            .wrap_with_cost(cost);
+        }
+    }
+
     let mut pre: BTreeMap<Vec<u8>, Option<u64>> = BTreeMap::new();
     for (key_info, op) in ops_at_path_by_key.iter() {
         let key_bytes = key_info.get_key_clone();

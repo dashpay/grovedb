@@ -905,27 +905,42 @@ mod tests {
     // Phase 3: indexed_count_* direct query APIs over PCIT
     // -----------------------------------------------------------------
 
-    /// Insert a CountTree child with explicit count_value under
-    /// `[TEST_LEAF, "cidx"]`. The PCIT's secondary key is
-    /// `count_be ‖ item_key` so different count_values produce
-    /// distinct, ordered secondary entries.
+    /// Insert a CountTree child under `[TEST_LEAF, "cidx"]` whose count
+    /// is DERIVED: the child enters the index EMPTY and is then populated
+    /// with `count_value` items, so propagation supplies the aggregate.
+    ///
+    /// Aggregates are never caller-asserted — a rootless child carrying a
+    /// non-zero count has nothing to derive that count from, and the value
+    /// would become the authenticated secondary sort key. The PCIT's
+    /// secondary key is `count_be ‖ item_key`, so children populated to
+    /// different sizes still produce distinct, ordered secondary entries.
     fn pcit_insert_count_child(
         db: &crate::GroveDb,
         item_key: &[u8],
         count_value: u64,
         grove_version: &GroveVersion,
     ) {
-        let count_tree =
-            Element::new_count_tree_with_flags_and_count_value(None, count_value, None);
         db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"cidx"].as_ref(),
             item_key,
-            count_tree,
+            Element::empty_count_tree(),
             None,
             grove_version,
         )
         .unwrap()
-        .expect("insert count-tree child");
+        .expect("insert empty count-tree child");
+        for i in 0..count_value {
+            db.insert(
+                [TEST_LEAF, b"cidx", item_key].as_ref(),
+                &i.to_be_bytes(),
+                Element::new_item(vec![]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate count-tree child so the count is derived");
+        }
     }
 
     /// Populate the PCIT under `[TEST_LEAF, "cidx"]` with a known set

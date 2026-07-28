@@ -83,15 +83,28 @@ fn psit_rejects_big_sum_tree_at_i64_boundary() {
         .unwrap();
     assert!(matches!(result, Err(crate::Error::InvalidInput(_))));
 
+    // i64 SumTree control: the child goes in EMPTY and derives its sum from a
+    // sum item written inside it. Asserting the sum on a rootless child is
+    // rejected now — there would be nothing to derive it from.
     db.insert_into_provable_sum_indexed_tree(
         [b"psit".as_slice()].as_ref(),
         b"sum",
-        Element::new_sum_tree_with_flags_and_sum_value(None, 42, None),
+        Element::empty_sum_tree(),
         None,
         grove_version,
     )
     .unwrap()
     .expect("i64 SumTree control");
+    db.insert(
+        [b"psit".as_slice(), b"sum".as_slice()].as_ref(),
+        b"v",
+        Element::new_sum_item(42),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("populate the control child so its sum derives to 42");
     assert_eq!(
         db.indexed_sum_top_k([b"psit".as_slice()].as_ref(), 10, true, None, grove_version,)
             .unwrap()
@@ -417,4 +430,167 @@ fn batch_count_changes_remove_all_old_secondary_rows_first() {
         vec![(2, b"a".to_vec()), (2, b"b".to_vec())]
     );
     assert_verify_passes(&db, grove_version);
+}
+
+/// The derived-count flow: insert children EMPTY, populate them, and let
+/// propagation supply each child's ordering value.
+///
+/// This is the flow that replaces caller-asserted counts. It has to work for
+/// "aggregates are always derived" to be a viable rule rather than a
+/// restriction that makes the index unusable.
+#[test]
+fn derived_counts_order_the_secondary_index() {
+    let grove_version = GroveVersion::latest();
+    let db = crate::tests::make_test_grovedb(grove_version);
+
+    db.insert(
+        [crate::tests::TEST_LEAF].as_ref(),
+        b"cidx",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("create PCIT");
+
+    // Three children, inserted EMPTY (count 0), then populated with 1, 3 and
+    // 2 items respectively.
+    for (child, n) in [
+        (b"a".as_slice(), 1usize),
+        (b"b".as_slice(), 3),
+        (b"c".as_slice(), 2),
+    ] {
+        db.insert_into_count_indexed_tree(
+            [crate::tests::TEST_LEAF, b"cidx"].as_ref(),
+            child,
+            Element::empty_provable_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert empty child");
+
+        for i in 0..n {
+            db.insert(
+                [crate::tests::TEST_LEAF, b"cidx", child].as_ref(),
+                &[b'i', i as u8],
+                Element::new_item(vec![i as u8]),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate child");
+        }
+    }
+
+    // Descending top-k must rank by the DERIVED counts: b(3), c(2), a(1).
+    let top = db
+        .indexed_count_top_k(
+            [crate::tests::TEST_LEAF, b"cidx"].as_ref(),
+            3,
+            true,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("top_k");
+    let order: Vec<Vec<u8>> = top.iter().map(|(_, k)| k.clone()).collect();
+    assert_eq!(
+        order,
+        vec![b"b".to_vec(), b"c".to_vec(), b"a".to_vec()],
+        "secondary must be ordered by the counts propagation derived, got {order:?}"
+    );
+
+    assert!(
+        db.verify_grovedb(None, true, true, grove_version)
+            .expect("verify")
+            .is_empty(),
+        "derived-count state must verify clean with no indexed-primary exemption"
+    );
+}
+
+/// The rootless-aggregate rule must hold on the BATCH path too, not just the
+/// dedicated insert APIs.
+///
+/// An `insert_or_replace_op` carrying `ProvableCountTree(None, 9, None)` under
+/// a PCIT used to be accepted and written; `verify_grovedb` then reported the
+/// child as an aggregate mismatch — recorded count 9 against an empty inner
+/// Merk. Same forgery as the dedicated path, different door.
+#[test]
+fn batch_rejects_rootless_aggregate_child_under_indexed_primary() {
+    let grove_version = GroveVersion::latest();
+    let db = crate::tests::make_test_grovedb(grove_version);
+
+    db.insert(
+        [crate::tests::TEST_LEAF].as_ref(),
+        b"cidx",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("create PCIT");
+
+    let forged = vec![crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
+        vec![crate::tests::TEST_LEAF.to_vec(), b"cidx".to_vec()],
+        b"b".to_vec(),
+        Element::new_provable_count_tree_with_flags_and_count_value(None, 9, None),
+    )];
+    let result = db.apply_batch(forged, None, None, grove_version).unwrap();
+    assert!(
+        matches!(
+            &result,
+            Err(crate::Error::InvalidBatchOperation(m))
+                if m.contains("non-zero aggregate while having no root key")
+        ),
+        "batch must refuse a rootless child claiming an aggregate, got {result:?}"
+    );
+
+    // The legitimate route: create the child empty and populate it in the same
+    // batch, so the count is derived.
+    let derived: Vec<_> = std::iter::once(crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
+        vec![crate::tests::TEST_LEAF.to_vec(), b"cidx".to_vec()],
+        b"b".to_vec(),
+        Element::empty_provable_count_tree(),
+    ))
+    .chain((0..9u8).map(|i| {
+        crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
+            vec![
+                crate::tests::TEST_LEAF.to_vec(),
+                b"cidx".to_vec(),
+                b"b".to_vec(),
+            ],
+            vec![i],
+            Element::new_item(vec![i]),
+        )
+    }))
+    .collect();
+    db.apply_batch(derived, None, None, grove_version)
+        .unwrap()
+        .expect("derived-count batch must be accepted");
+
+    let top = db
+        .indexed_count_top_k(
+            [crate::tests::TEST_LEAF, b"cidx"].as_ref(),
+            1,
+            true,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("top_k");
+    assert_eq!(
+        top,
+        vec![(9, b"b".to_vec())],
+        "the derived count must reach the secondary index"
+    );
+    assert!(
+        db.verify_grovedb(None, true, true, grove_version)
+            .expect("verify")
+            .is_empty(),
+        "derived-count batch state must verify clean"
+    );
 }

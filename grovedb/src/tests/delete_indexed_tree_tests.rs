@@ -104,16 +104,31 @@ mod tests {
         )
         .unwrap()
         .expect("create PCIT");
+        // Children enter EMPTY and are populated so their counts are
+        // DERIVED; the delete-with-children path is unaffected by how the
+        // aggregate got there, only that the primary is non-empty.
         for (k, c) in &[(b"a" as &[u8], 1u64), (b"b" as &[u8], 5u64)] {
             db.insert_into_count_indexed_tree(
                 [TEST_LEAF, b"pcit"].as_ref(),
                 k,
-                Element::new_provable_count_tree_with_flags_and_count_value(None, *c, None),
+                Element::empty_provable_count_tree(),
                 None,
                 grove_version,
             )
             .unwrap()
             .expect("insert PCIT entry");
+            for i in 0..*c {
+                db.insert(
+                    [TEST_LEAF, b"pcit", k].as_ref(),
+                    &i.to_be_bytes(),
+                    Element::new_item(vec![]),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("derive PCIT entry count");
+            }
         }
         // Delete the PCIT primary itself with allow flag.
         db.delete(
@@ -172,15 +187,28 @@ mod tests {
         )
         .unwrap()
         .expect("create PCIT");
+        // Empty child, then one item inside it: the PCIT is non-empty by
+        // DERIVED content, which is what the no-allow-flag delete must
+        // still refuse.
         db.insert_into_count_indexed_tree(
             [TEST_LEAF, b"pcit"].as_ref(),
             b"a",
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+            Element::empty_provable_count_tree(),
             None,
             grove_version,
         )
         .unwrap()
         .expect("insert PCIT entry");
+        db.insert(
+            [TEST_LEAF, b"pcit", b"a"].as_ref(),
+            b"row",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("derive PCIT entry count");
         let result = db
             .delete([TEST_LEAF].as_ref(), b"pcit", None, None, grove_version)
             .unwrap();

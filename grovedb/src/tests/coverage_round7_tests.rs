@@ -38,6 +38,53 @@ mod tests {
         assert!(issues.is_empty(), "verify_grovedb reported: {:?}", issues);
     }
 
+    /// Insert an EMPTY `ProvableCountTree` child under the indexed
+    /// primary at `parent_path`, then populate it with `count` items so
+    /// propagation DERIVES the child's ordering value.
+    ///
+    /// The dedicated indexed-tree insert only accepts empty tree
+    /// children: a rootless child carrying a non-zero aggregate has no
+    /// contents to derive that aggregate from, so the value would be a
+    /// bare caller assertion that becomes the authenticated secondary
+    /// sort key (see `reject_non_empty_dedicated_indexed_child_claim` in
+    /// `operations/indexed_tree.rs`). Counts therefore have to be earned
+    /// by writing `count` entries into the child, which is what the
+    /// sole consumer does and what `verify_grovedb` enforces.
+    ///
+    /// The resulting secondary sort key for the child is `count`,
+    /// identical to what the old asserted-count fixture produced.
+    fn insert_child_with_derived_count(
+        db: &GroveDb,
+        parent_path: &[&[u8]],
+        key: &[u8],
+        count: u64,
+        grove_version: &GroveVersion,
+    ) {
+        db.insert_into_count_indexed_tree(
+            parent_path,
+            key,
+            Element::empty_provable_count_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert empty PCIT child");
+        let mut child_path: Vec<&[u8]> = parent_path.to_vec();
+        child_path.push(key);
+        for i in 0..count {
+            db.insert(
+                child_path.as_slice(),
+                &i.to_be_bytes(),
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate PCIT child");
+        }
+    }
+
     fn populate_simple_pcit(
         db: &GroveDb,
         cidx_key: &[u8],
@@ -55,15 +102,7 @@ mod tests {
         .unwrap()
         .expect("create PCIT");
         for (k, c) in entries {
-            db.insert_into_count_indexed_tree(
-                [TEST_LEAF, cidx_key].as_ref(),
-                k,
-                Element::new_provable_count_tree_with_flags_and_count_value(None, *c, None),
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("insert PCIT child");
+            insert_child_with_derived_count(db, &[TEST_LEAF, cidx_key], k, *c, grove_version);
         }
     }
 
@@ -410,15 +449,13 @@ mod tests {
         )
         .unwrap()
         .expect("nest");
-        db.insert_into_count_indexed_tree(
-            [TEST_LEAF, b"outer_cidx", b"inner_cidx"].as_ref(),
+        insert_child_with_derived_count(
+            &db,
+            &[TEST_LEAF, b"outer_cidx", b"inner_cidx"],
             b"a",
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 5, None),
-            None,
+            5,
             grove_version,
-        )
-        .unwrap()
-        .expect("seed");
+        );
 
         let path: &[&[u8]] = &[TEST_LEAF, b"outer_cidx", b"inner_cidx"];
         let proof_bytes = db
@@ -1217,15 +1254,13 @@ mod tests {
         )
         .unwrap()
         .expect("nest");
-        db.insert_into_count_indexed_tree(
-            [TEST_LEAF, b"outer", b"inner"].as_ref(),
+        insert_child_with_derived_count(
+            &db,
+            &[TEST_LEAF, b"outer", b"inner"],
             b"a",
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 5, None),
-            None,
+            5,
             grove_version,
-        )
-        .unwrap()
-        .expect("seed");
+        );
 
         let path: &[&[u8]] = &[TEST_LEAF, b"outer", b"inner"];
         let proof_bytes = db
@@ -1526,11 +1561,23 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         populate_simple_pcit(&db, b"cidx", &[(b"a", 3)], grove_version);
 
-        let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        // Create the new child EMPTY and populate it in the SAME batch:
+        // its count (9) is derived from the nine entries written into
+        // it, not asserted by the caller. An asserted rootless count
+        // would be corruption — `verify_grovedb` flags the child as an
+        // aggregate mismatch against its empty inner Merk.
+        let mut ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
             b"b".to_vec(),
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 9, None),
+            Element::empty_provable_count_tree(),
         )];
+        ops.extend((0u64..9).map(|i| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"b".to_vec()],
+                i.to_be_bytes().to_vec(),
+                Element::new_item(b"v".to_vec()),
+            )
+        }));
 
         db.apply_partial_batch(
             ops,
@@ -1547,6 +1594,9 @@ mod tests {
             .unwrap()
             .expect("top-k");
         assert_eq!(top.len(), 2);
+        // The partial batch must have mirrored the DERIVED count of the
+        // new child into the secondary, ahead of the existing "a" (3).
+        assert_eq!(top, vec![(9, b"b".to_vec()), (3, b"a".to_vec())]);
         assert_verify_passes(&db, grove_version);
     }
 

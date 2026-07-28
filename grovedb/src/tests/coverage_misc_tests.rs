@@ -30,6 +30,13 @@ mod tests {
     /// Builds `[TEST_LEAF]/a_pcit` (PCIT, child counts 1 + 5),
     /// `[TEST_LEAF]/b_psit` (PSIT, sums 7 + -3) and
     /// `[TEST_LEAF]/c_pcpsit` (PCPSIT, two `ItemWithSumItem` of 5 and 10).
+    ///
+    /// The PCIT child counts are DERIVED: each child subtree is inserted
+    /// EMPTY and then populated with that many items, so propagation
+    /// supplies the aggregate. The dedicated indexed insert rejects a
+    /// rootless child that merely claims a non-zero count — there would
+    /// be nothing to derive it from, and the claim would become the
+    /// authenticated secondary sort key.
     fn build_indexed_trees(db: &GroveDb, grove_version: &GroveVersion) {
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -45,12 +52,24 @@ mod tests {
             db.insert_into_count_indexed_tree(
                 [TEST_LEAF, b"a_pcit"].as_ref(),
                 k,
-                Element::new_provable_count_tree_with_flags_and_count_value(None, c, None),
+                Element::empty_provable_count_tree(),
                 None,
                 grove_version,
             )
             .unwrap()
-            .expect("insert PCIT entry");
+            .expect("insert empty PCIT child");
+            for i in 0..c {
+                db.insert(
+                    [TEST_LEAF, b"a_pcit", k].as_ref(),
+                    &i.to_be_bytes(),
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate PCIT child");
+            }
         }
 
         db.insert(

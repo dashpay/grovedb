@@ -978,11 +978,56 @@ mod tests {
         );
     }
 
-    /// Populate `[TEST_LEAF, "pcpsit"]` with CountSumTree children
-    /// carrying explicit (count, sum) values that give distinct
-    /// secondary keys across all three axes. Each tuple is
-    /// `(item_key, count, sum, expected_avg)`. The expected avg is
-    /// `floor(sum * 10^15 / count)`.
+    /// Insert a CountSumTree child under `[TEST_LEAF, indexed_key]` whose
+    /// `(count, sum)` pair is DERIVED rather than caller-asserted.
+    ///
+    /// The child enters the index EMPTY and is then populated with `count`
+    /// sum items whose values total `sum` (the whole sum is carried on the
+    /// first item, the remainder are zero-valued). A CountSumTree counts
+    /// every element and sums every sum item, so propagation derives
+    /// exactly `(count, sum)` and feeds it to all three secondary axes.
+    ///
+    /// `count == 0` cannot carry a non-zero `sum` — there is no element to
+    /// hold it — which is the same constraint the production rule enforces.
+    fn pcpsit_insert_count_sum_child(
+        db: &crate::GroveDb,
+        indexed_key: &[u8],
+        item_key: &[u8],
+        count: u64,
+        sum: i64,
+        grove_version: &GroveVersion,
+    ) {
+        assert!(
+            count > 0 || sum == 0,
+            "a zero-count child has no element to derive a non-zero sum from"
+        );
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, indexed_key].as_ref(),
+            item_key,
+            Element::empty_count_sum_tree(),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert empty count-sum-tree child");
+        for i in 0..count {
+            db.insert(
+                [TEST_LEAF, indexed_key, item_key].as_ref(),
+                &i.to_be_bytes(),
+                Element::new_sum_item(if i == 0 { sum } else { 0 }),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate count-sum-tree child so count and sum are derived");
+        }
+    }
+
+    /// Populate `[TEST_LEAF, "pcpsit"]` with CountSumTree children whose
+    /// derived (count, sum) values give distinct secondary keys across all
+    /// three axes. Each tuple is `(item_key, count, sum)`; the avg axis
+    /// encodes `floor(sum * 10^15 / count)`.
     fn pcpsit_populate_count_sum_dataset(
         db: &crate::GroveDb,
         grove_version: &GroveVersion,
@@ -995,17 +1040,7 @@ mod tests {
             (b"eve".to_vec(), 3u64, 9i64),     // avg = 3
         ];
         for (k, c, s) in &dataset {
-            let child =
-                Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, *c, *s, None);
-            db.insert_into_provable_count_provable_sum_indexed_tree(
-                [TEST_LEAF, b"pcpsit"].as_ref(),
-                k,
-                child,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("insert count-sum-tree child");
+            pcpsit_insert_count_sum_child(db, b"pcpsit", k, *c, *s, grove_version);
         }
         dataset
     }
@@ -1437,19 +1472,10 @@ mod tests {
         let db = make_test_grovedb(grove_version);
         insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
 
-        // Both (1, 7) and (2, 14) yield avg = 7 * SCALE.
+        // Both (1, 7) and (2, 14) yield avg = 7 * SCALE. Each child is
+        // inserted empty and populated so its (count, sum) is derived.
         for (k, c, s) in [(b"aaa".as_ref(), 1u64, 7i64), (b"zzz", 2, 14)] {
-            let child =
-                Element::new_count_sum_tree_with_flags_and_sum_and_count_value(None, c, s, None);
-            db.insert_into_provable_count_provable_sum_indexed_tree(
-                [TEST_LEAF, b"pcpsit"].as_ref(),
-                k,
-                child,
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("insert");
+            pcpsit_insert_count_sum_child(&db, b"pcpsit", k, c, s, grove_version);
         }
 
         let asc = db

@@ -618,16 +618,33 @@ mod tests {
         )
         .unwrap()
         .expect("create empty PCIT");
+        // Each child's count is DERIVED, never asserted: the child goes in
+        // EMPTY and then receives one item, so propagation supplies the
+        // count of 1 that lands in the secondary index. The dedicated
+        // insert refuses a rootless child that claims a non-zero count
+        // (`reject_non_empty_dedicated_indexed_child_claim`), which is the
+        // whole point of the forgery this test then attempts at the PCIT
+        // level.
         for k in [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()] {
             db.insert_into_count_indexed_tree(
                 [TEST_LEAF, b"cidx"].as_ref(),
                 k,
-                Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+                Element::empty_provable_count_tree(),
                 None,
                 gv,
             )
             .unwrap()
-            .expect("populate PCIT entry");
+            .expect("insert empty PCIT child");
+            db.insert(
+                [TEST_LEAF, b"cidx", k].as_ref(),
+                b"row",
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCIT child");
         }
 
         let elem = db
@@ -1001,16 +1018,30 @@ mod tests {
         )
         .unwrap()
         .expect("create empty PCIT");
+        // Derived counts: empty child in, one item written into it, so the
+        // count of 1 per child (and 3 for the PCIT) comes from propagation
+        // rather than from a caller assertion the dedicated insert would
+        // refuse.
         for k in [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()] {
             db.insert_into_count_indexed_tree(
                 [TEST_LEAF, key].as_ref(),
                 k,
-                Element::new_provable_count_tree_with_flags_and_count_value(None, 1, None),
+                Element::empty_provable_count_tree(),
                 None,
                 gv,
             )
             .unwrap()
-            .expect("populate PCIT entry");
+            .expect("insert empty PCIT child");
+            db.insert(
+                [TEST_LEAF, key, k].as_ref(),
+                b"row",
+                Element::new_item(b"v".to_vec()),
+                None,
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("populate PCIT child");
         }
         let elem = db
             .get_raw([TEST_LEAF].as_ref().into(), key, None, gv)

@@ -21,6 +21,49 @@ mod tests {
         Element, Error, PathQuery, SizedQuery,
     };
 
+    /// Seed `(key, count)` children into an already-created cidx at
+    /// `path`, with each count **derived** rather than asserted.
+    ///
+    /// Every child goes in EMPTY and is then populated with exactly
+    /// `count` distinct items, so propagation is what raises the child's
+    /// count. The dedicated insert refuses a rootless child carrying a
+    /// non-zero aggregate — with no contents to derive it from, the value
+    /// would be a bare caller assertion that still becomes the
+    /// authenticated ordering key.
+    fn insert_derived_counts(
+        db: &crate::GroveDb,
+        grove_version: &GroveVersion,
+        path: &[&[u8]],
+        entries: &[(&[u8], u64)],
+    ) {
+        for (k, c) in entries {
+            db.insert_into_count_indexed_tree(
+                path,
+                k,
+                Element::empty_provable_count_tree(),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("insert empty cidx child");
+
+            let mut child_path: Vec<&[u8]> = path.to_vec();
+            child_path.push(k);
+            for i in 0..*c {
+                db.insert(
+                    child_path.as_slice(),
+                    &i.to_be_bytes(),
+                    Element::new_item(b"v".to_vec()),
+                    None,
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("populate cidx child");
+            }
+        }
+    }
+
     fn build_pcit_under_leaf(db: &crate::GroveDb, grove_version: &GroveVersion) {
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -32,17 +75,12 @@ mod tests {
         )
         .unwrap()
         .expect("create PCIT");
-        for (k, c) in &[(b"a" as &[u8], 1u64), (b"b" as &[u8], 5)] {
-            db.insert_into_count_indexed_tree(
-                [TEST_LEAF, b"pcit"].as_ref(),
-                k,
-                Element::new_provable_count_tree_with_flags_and_count_value(None, *c, None),
-                None,
-                grove_version,
-            )
-            .unwrap()
-            .expect("insert PCIT entry");
-        }
+        insert_derived_counts(
+            db,
+            grove_version,
+            &[TEST_LEAF, b"pcit"],
+            &[(b"a", 1), (b"b", 5)],
+        );
     }
 
     fn build_psit_under_leaf(db: &crate::GroveDb, grove_version: &GroveVersion) {
@@ -284,15 +322,12 @@ mod tests {
         )
         .unwrap()
         .expect("create pcit_inner");
-        db.insert_into_count_indexed_tree(
-            [TEST_LEAF, b"wrapper", b"pcit_inner"].as_ref(),
-            b"k",
-            Element::new_provable_count_tree_with_flags_and_count_value(None, 3, None),
-            None,
+        insert_derived_counts(
+            &db,
             grove_version,
-        )
-        .unwrap()
-        .expect("insert pcit entry");
+            &[TEST_LEAF, b"wrapper", b"pcit_inner"],
+            &[(b"k", 3)],
+        );
 
         let mut sub = MerkQuery::new();
         sub.insert_all();

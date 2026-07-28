@@ -1934,27 +1934,19 @@ impl GroveDb {
                     // alone cannot detect.
                     if !element.uses_non_merk_data_storage() {
                         let actual_aggregate = inner_merk.aggregate_data().map_err(MerkError)?;
-                        // Under an indexed-tree primary, a child element's
-                        // recorded aggregate (e.g. `CountTree(None, 42, None)`)
-                        // may legitimately be a user-supplied secondary
-                        // ordering key rather than a claim about the child's
-                        // own inner Merk — but ONLY when that inner Merk is
-                        // empty (`NoAggregateData`). In that empty case the
-                        // generic consistency check would false-positive (a
-                        // non-zero recorded value against `NoAggregateData`
-                        // falls through to the catch-all mismatch arm of
-                        // `aggregate_consistency_labels`); the primary-level
-                        // secondary-index check already validates the ordering
-                        // key, so skip here. For a POPULATED child the recorded
-                        // value must equal the inner Merk's actual aggregate
-                        // (propagation keeps them in lock-step), so the check
-                        // stays active and still catches software-bug
-                        // corruption that the hash chain alone cannot.
-                        let skip_indexed_primary_empty_child = merk.tree_type.is_indexed_primary()
-                            && actual_aggregate == AggregateData::NoAggregateData;
-                        if !skip_indexed_primary_empty_child
-                            && let Some((recorded_label, actual_label)) =
-                                aggregate_consistency_labels(&element, &actual_aggregate)
+                        // No indexed-primary exemption: a child's recorded
+                        // aggregate is always a claim about its own inner Merk,
+                        // never a free-standing ordering key. An earlier
+                        // revision skipped this check for empty children under
+                        // an indexed primary so that rootless non-zero
+                        // aggregates (`CountTree(None, 42, None)`) could serve
+                        // as caller-asserted sort keys; the dedicated insert
+                        // paths now reject that shape at the door, so the
+                        // exemption has nothing left to permit and its absence
+                        // restores the stricter check the rest of the codebase
+                        // already assumes.
+                        if let Some((recorded_label, actual_label)) =
+                            aggregate_consistency_labels(&element, &actual_aggregate)
                         {
                             let expected_placeholder: CryptoHash =
                                 blake3::hash(recorded_label.as_bytes()).into();

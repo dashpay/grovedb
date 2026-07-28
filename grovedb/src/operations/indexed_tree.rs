@@ -159,16 +159,35 @@ fn reject_non_empty_dedicated_indexed_child_claim(
     item: &Element,
     api_label: &str,
 ) -> Result<(), Error> {
+    // A child is "non-empty" if it claims a root key OR a non-zero aggregate.
+    //
+    // The aggregate half matters as much as the root key: a ROOTLESS child
+    // carrying a non-zero count/sum has no contents to derive that value from,
+    // so the value is a bare assertion — and for an indexed tree it becomes the
+    // authenticated secondary sort key and the parent's aggregate contribution.
+    // Accepting it lets a caller claim any position in the index for an empty
+    // subtree.
+    //
+    // Aggregates are DERIVED everywhere else in this codebase: `verify_grovedb`
+    // reports a rootless non-zero aggregate as corruption (a non-zero recorded
+    // value against an empty inner Merk's `NoAggregateData` falls through to the
+    // mismatch arm of `aggregate_consistency_labels`), and the sole consumer
+    // constructs only empty forms. Children enter an indexed tree empty and gain
+    // their ordering value from propagation once they are populated.
     let non_empty = match item.underlying() {
-        Element::Tree(Some(_), _)
-        | Element::SumTree(Some(_), ..)
-        | Element::BigSumTree(Some(_), ..)
-        | Element::CountTree(Some(_), ..)
-        | Element::CountSumTree(Some(_), ..)
-        | Element::ProvableCountTree(Some(_), ..)
-        | Element::ProvableCountSumTree(Some(_), ..)
-        | Element::ProvableSumTree(Some(_), ..)
-        | Element::ProvableCountProvableSumTree(Some(_), ..) => true,
+        Element::Tree(Some(_), _) => true,
+        Element::SumTree(root, sum, _) | Element::ProvableSumTree(root, sum, _) => {
+            root.is_some() || *sum != 0
+        }
+        Element::BigSumTree(root, big_sum, _) => root.is_some() || *big_sum != 0,
+        Element::CountTree(root, count, _) | Element::ProvableCountTree(root, count, _) => {
+            root.is_some() || *count != 0
+        }
+        Element::CountSumTree(root, count, sum, _)
+        | Element::ProvableCountSumTree(root, count, sum, _)
+        | Element::ProvableCountProvableSumTree(root, count, sum, _) => {
+            root.is_some() || *count != 0 || *sum != 0
+        }
         Element::ProvableCountIndexedTree(p, s, c, _) => p.is_some() || s.is_some() || *c != 0,
         Element::ProvableSumIndexedTree(p, s, sum, _) => p.is_some() || s.is_some() || *sum != 0,
         Element::ProvableCountProvableSumIndexedTree(p, c, sum, axes, _) => {
@@ -179,7 +198,10 @@ fn reject_non_empty_dedicated_indexed_child_claim(
     if non_empty {
         return Err(Error::NotSupported(format!(
             "{api_label} only accepts EMPTY tree/indexed child elements (all child root \
-             keys = None, aggregates = 0, no populated secondaries). The dedicated insert \
+             keys = None, aggregates = 0, no populated secondaries). A rootless child with \
+             a non-zero aggregate is rejected too: with no contents to derive it from, the \
+             value would be a bare assertion that becomes the authenticated sort key. The \
+             dedicated insert \
              short-circuits child roots to NULL_HASH; a non-empty claim would persist a \
              serialized element whose stored roots disagree with the empty merk node it is \
              bound to. Use generic db.insert for non-empty claims, or insert empty here \
