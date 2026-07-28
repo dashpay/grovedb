@@ -12,7 +12,8 @@ use crate::{
     tree_type::{
         BIG_SUM_TREE_COST_SIZE, BULK_APPEND_TREE_COST_SIZE, COMMITMENT_TREE_COST_SIZE,
         COUNT_INDEXED_TREE_COST_SIZE, COUNT_SUM_TREE_COST_SIZE, COUNT_TREE_COST_SIZE,
-        DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
+        DENSE_TREE_COST_SIZE, MMR_TREE_COST_SIZE,
+        PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE, SUM_ITEM_COST_SIZE, SUM_TREE_COST_SIZE,
         TREE_COST_SIZE,
     },
     Error,
@@ -86,12 +87,18 @@ impl ElementCostPrivateExtensions for Element {
             // flags), so the cost is the same as the legacy cidx slot.
             Element::ProvableSumIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
             Element::ProvableCountIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
-            // ProvableCountProvableSumIndexedTree: variable size due to the
-            // TLV axes list. For Phase 1, we conservatively bound it by
-            // the legacy cidx cost (no production code paths cost it yet —
-            // direct/batch insert is stubbed for PCPSIT). Phase 2 must
-            // wire a precise cost model.
-            Element::ProvableCountProvableSumIndexedTree(..) => Ok(COUNT_INDEXED_TREE_COST_SIZE),
+            // ProvableCountProvableSumIndexedTree carries BOTH aggregates plus
+            // a variable-length axes TLV, so the single-axis indexed constant
+            // is below its own minimum payload — it is not a conservative
+            // bound. Use the same worst-case constant the tree-type cost model
+            // uses (count+sum layer + TLV length byte + 3 axes x 2).
+            //
+            // The previous comment claimed no production path costs PCPSIT
+            // because insert was stubbed; both direct and batch insert are
+            // implemented, so this constant is live.
+            Element::ProvableCountProvableSumIndexedTree(..) => {
+                Ok(PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE)
+            }
             Element::NonCounted(inner)
             | Element::NotSummed(inner)
             | Element::NotCountedOrSummed(inner) => {

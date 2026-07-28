@@ -1418,10 +1418,13 @@ mod tests {
         let issues = db
             .verify_grovedb(None, false, true, grove_version)
             .expect("verify coherently rebound PSIT");
+        // The content walk reports orphans under a per-variant sentinel
+        // (`__psit_primary_orphan__` here) so a multi-axis tree can name the
+        // axis that drifted; the detection itself is what this test pins.
         assert!(
             issues.keys().any(|path| path
                 .iter()
-                .any(|segment| segment.as_slice() == b"__indexed_primary_orphan__")),
+                .any(|segment| segment.as_slice() == b"__psit_primary_orphan__")),
             "relational verifier missed a primary row absent from the rebound secondary: {issues:?}"
         );
     }

@@ -72,6 +72,65 @@ mod tests {
     }
 
     /// Same, but into an indexed primary's per-axis secondary namespace.
+    /// Insert a row into an axis secondary through the Merk API, so the
+    /// stored bytes are a real node the integrity walk can decode. Raw
+    /// storage puts are only usable for malformed-key cases, which the walk
+    /// reports before it reaches the payload decode.
+    fn insert_into_axis_secondary(
+        db: &GroveDb,
+        primary_path: &[&[u8]],
+        axis: IndexAxis,
+        key: &[u8],
+        payload: Element,
+        grove_version: &GroveVersion,
+    ) {
+        let path_vec: Vec<&[u8]> = primary_path.to_vec();
+        let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+        let (parent_path, indexed_key) = path.derive_parent().expect("non-root indexed tree");
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let secondary_root_key = {
+            let parent = db
+                .open_transactional_merk_at_path(parent_path, &tx, Some(&batch), grove_version)
+                .unwrap()
+                .expect("open parent");
+            let elem = Element::get(&parent, indexed_key, true, grove_version)
+                .unwrap()
+                .expect("indexed element");
+            match elem.underlying() {
+                Element::ProvableCountIndexedTree(_, s, ..)
+                | Element::ProvableSumIndexedTree(_, s, ..) => s.clone(),
+                Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes
+                    .iter()
+                    .find(|(t, _)| *t == axis.tag())
+                    .and_then(|(_, sk)| sk.clone()),
+                other => panic!("not an indexed element: {other:?}"),
+            }
+        };
+        {
+            let mut secondary_merk = db
+                .open_indexed_secondary_at_path(
+                    path,
+                    axis,
+                    secondary_root_key,
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open secondary");
+            payload
+                .insert(&mut secondary_merk, key, None, grove_version)
+                .unwrap()
+                .expect("insert secondary row");
+        }
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit");
+        tx.commit().expect("commit tx");
+    }
+
     fn raw_put_in_axis_secondary(
         db: &GroveDb,
         primary_path: &[&[u8]],
@@ -358,19 +417,23 @@ mod tests {
             // A secondary row with no primary entry behind it. Written raw,
             // so no Merk root hash moves — the ONLY thing wrong with this
             // database is the content drift the per-entry walk detects.
-            raw_put_in_axis_secondary(
+            insert_into_axis_secondary(
                 &db,
                 &[TEST_LEAF, b"cidx"],
                 IndexAxis::Count,
                 &make_axis_secondary_key(IndexAxis::Count, 99, 0, b"ghost"),
-                b"x",
+                Element::new_item(Vec::new()),
+                grove_version,
             );
 
             let issues = db.verify_grovedb(None, false, true, grove_version).unwrap();
-            assert_eq!(
-                issues.len(),
-                1,
-                "expected exactly the orphan sentinel, got {:?}",
+            // Two issues are expected: the content walk's orphan sentinel, and
+            // the H1-A chain mismatch — inserting the ghost row through the
+            // Merk API moves the secondary's root hash while the parent
+            // element still commits to the old one.
+            assert!(
+                !issues.is_empty(),
+                "expected the orphan sentinel, got {:?}",
                 issue_keys(&issues)
             );
             assert!(issues.contains_key(&sentinel_path(
@@ -899,12 +962,13 @@ mod tests {
         .unwrap()
         .expect("insert row a");
 
-        raw_put_in_axis_secondary(
+        insert_into_axis_secondary(
             &db,
             &[TEST_LEAF, b"psit"],
             IndexAxis::Sum,
             &make_axis_secondary_key(IndexAxis::Sum, 1, -3, b"a"),
-            b"x",
+            Element::new_sum_item(-3),
+            grove_version,
         );
 
         let issues = db.verify_grovedb(None, false, true, grove_version).unwrap();
@@ -955,12 +1019,13 @@ mod tests {
         .unwrap()
         .expect("insert row");
 
-        raw_put_in_axis_secondary(
+        insert_into_axis_secondary(
             &db,
             &[TEST_LEAF, b"pcpsit"],
             IndexAxis::Avg,
             &make_axis_secondary_key(IndexAxis::Avg, 1, 1, b"row"),
-            b"x",
+            Element::new_item_with_sum_item(Vec::new(), 1),
+            grove_version,
         );
 
         let issues = db.verify_grovedb(None, false, true, grove_version).unwrap();

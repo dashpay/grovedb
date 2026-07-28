@@ -323,101 +323,6 @@ type OpenedMerkForReplication<'tx> = (
 /// from its primary entries. Root-hash binding alone only proves that both
 /// Merks are internally authenticated; it does not prove their relationship.
 #[cfg(feature = "minimal")]
-fn verify_indexed_axis_relation<'db, P, S>(
-    primary_merk: &Merk<P>,
-    secondary_merk: &Merk<S>,
-    axis: grovedb_element::indexed::IndexAxis,
-    indexed_path: &[Vec<u8>],
-    primary_root_hash: CryptoHash,
-    all_query: &Query,
-    issues: &mut VerificationIssues,
-    grove_version: &GroveVersion,
-) -> Result<(), Error>
-where
-    P: StorageContext<'db>,
-    S: StorageContext<'db>,
-{
-    let mut expected: HashMap<Vec<u8>, (Vec<u8>, Element)> = HashMap::new();
-    let mut primary_iter = KVIterator::new(primary_merk.storage.raw_iter(), all_query).unwrap();
-    while let Some((primary_key, primary_value)) = primary_iter.next_kv().unwrap() {
-        let primary_element = Element::raw_decode(&primary_value, grove_version)?;
-        let (count, sum) = primary_element.count_sum_value_or_default();
-        let secondary_key = crate::operations::indexed_tree::make_axis_secondary_key(
-            axis,
-            count,
-            sum,
-            &primary_key,
-        );
-        let secondary_element = match axis {
-            grovedb_element::indexed::IndexAxis::Count => Element::new_item(Vec::new()),
-            grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(sum),
-            grovedb_element::indexed::IndexAxis::Avg => {
-                Element::new_item_with_sum_item(Vec::new(), sum)
-            }
-        };
-        expected.insert(secondary_key, (primary_key, secondary_element));
-    }
-    drop(primary_iter);
-
-    let mut secondary_iter = KVIterator::new(secondary_merk.storage.raw_iter(), all_query).unwrap();
-    while let Some((secondary_key, actual_value)) = secondary_iter.next_kv().unwrap() {
-        let actual_element = Element::raw_decode(&actual_value, grove_version)?;
-        match expected.remove(&secondary_key) {
-            Some((primary_key, expected_element)) if expected_element != actual_element => {
-                let expected_value = expected_element.serialize(grove_version)?;
-                let actual_value = actual_element.serialize(grove_version)?;
-                let mut issue_path = indexed_path.to_vec();
-                issue_path.push(b"__indexed_secondary_value_mismatch__".to_vec());
-                issue_path.push(vec![axis.tag()]);
-                issue_path.push(primary_key);
-                issues.insert(
-                    issue_path,
-                    (
-                        primary_root_hash,
-                        value_hash(&expected_value).unwrap(),
-                        value_hash(&actual_value).unwrap(),
-                    ),
-                );
-            }
-            Some(_) => {}
-            None => {
-                let actual_value = actual_element.serialize(grove_version)?;
-                let mut issue_path = indexed_path.to_vec();
-                issue_path.push(b"__indexed_secondary_orphan__".to_vec());
-                issue_path.push(vec![axis.tag()]);
-                issue_path.push(secondary_key);
-                issues.insert(
-                    issue_path,
-                    (
-                        primary_root_hash,
-                        [0u8; 32],
-                        value_hash(&actual_value).unwrap(),
-                    ),
-                );
-            }
-        }
-    }
-    drop(secondary_iter);
-
-    for (_secondary_key, (primary_key, expected_element)) in expected {
-        let expected_value = expected_element.serialize(grove_version)?;
-        let mut issue_path = indexed_path.to_vec();
-        issue_path.push(b"__indexed_primary_orphan__".to_vec());
-        issue_path.push(vec![axis.tag()]);
-        issue_path.push(primary_key);
-        issues.insert(
-            issue_path,
-            (
-                primary_root_hash,
-                value_hash(&expected_value).unwrap(),
-                [0u8; 32],
-            ),
-        );
-    }
-
-    Ok(())
-}
-
 #[cfg(feature = "minimal")]
 impl GroveDb {
     /// Opens a given path
@@ -1652,7 +1557,7 @@ impl GroveDb {
 
         // Expected secondary key for every primary entry, derived from the
         // entry's own aggregates exactly as the mirror derives it.
-        let mut expected: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut expected: HashMap<Vec<u8>, (Vec<u8>, Element)> = HashMap::new();
         let mut content_iter =
             KVIterator::new(primary_merk.storage.raw_iter(), &all_query).unwrap();
         while let Some((p_key, p_value)) = content_iter.next_kv().unwrap() {
@@ -1673,9 +1578,19 @@ impl GroveDb {
             }
             let p_elem = Element::raw_decode(&p_value, grove_version)?;
             let (count, sum) = p_elem.count_sum_value_or_default();
+            // The payload the mirror writes for this axis, so a row filed
+            // under the right key but carrying the wrong value is caught too
+            // — the key alone does not pin the stored aggregate.
+            let payload = match axis {
+                grovedb_element::indexed::IndexAxis::Count => Element::new_item(Vec::new()),
+                grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(sum),
+                grovedb_element::indexed::IndexAxis::Avg => {
+                    Element::new_item_with_sum_item(Vec::new(), sum)
+                }
+            };
             expected.insert(
                 p_key.clone(),
-                make_axis_secondary_key(axis, count, sum, &p_key),
+                (make_axis_secondary_key(axis, count, sum, &p_key), payload),
             );
         }
         drop(content_iter);
@@ -1685,9 +1600,9 @@ impl GroveDb {
         // real drift class: the same item in two sort buckets) are visible
         // instead of silently collapsing.
         let sort_len = axis_sort_key_len(axis);
-        let mut actual: HashMap<Vec<u8>, Vec<Vec<u8>>> = HashMap::new();
+        let mut actual: HashMap<Vec<u8>, Vec<(Vec<u8>, Element)>> = HashMap::new();
         let mut sec_iter = KVIterator::new(secondary_merk.storage.raw_iter(), &all_query).unwrap();
-        while let Some((sec_key, _)) = sec_iter.next_kv().unwrap() {
+        while let Some((sec_key, sec_value)) = sec_iter.next_kv().unwrap() {
             if sec_key.len() < sort_len {
                 let mut p = new_path.to_vec();
                 p.push(sentinel("secondary_malformed_key"));
@@ -1695,8 +1610,12 @@ impl GroveDb {
                 issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
                 continue;
             }
+            let sec_elem = Element::raw_decode(&sec_value, grove_version)?;
             let item_key = sec_key[sort_len..].to_vec();
-            actual.entry(item_key).or_default().push(sec_key.clone());
+            actual
+                .entry(item_key)
+                .or_default()
+                .push((sec_key.clone(), sec_elem));
         }
         drop(sec_iter);
 
@@ -1706,13 +1625,13 @@ impl GroveDb {
                 p.push(sentinel("secondary_duplicate"));
                 p.push(item_key.clone());
                 let mut dup = [0u8; 32];
-                let n = rows[0].len().min(32);
-                dup[..n].copy_from_slice(&rows[0][..n]);
+                let n = rows[0].0.len().min(32);
+                dup[..n].copy_from_slice(&rows[0].0[..n]);
                 issues.insert(p, ([0u8; 32], [0u8; 32], dup));
             }
         }
 
-        for (item_key, want_key) in &expected {
+        for (item_key, (want_key, want_payload)) in &expected {
             match actual.get(item_key).and_then(|v| v.first()) {
                 None => {
                     let mut p = new_path.to_vec();
@@ -1720,7 +1639,7 @@ impl GroveDb {
                     p.push(item_key.clone());
                     issues.insert(p, ([0u8; 32], [0u8; 32], [0u8; 32]));
                 }
-                Some(got_key) if got_key != want_key => {
+                Some((got_key, _)) if got_key != want_key => {
                     // The item is indexed, but under the wrong sort key —
                     // i.e. the secondary's ordering value is stale. Report
                     // the DECODED ordering value (right-aligned in the hash
@@ -1738,7 +1657,26 @@ impl GroveDb {
                         ),
                     );
                 }
-                Some(_) => { /* indexed under the expected sort key */ }
+                Some((_, got_payload)) if got_payload != want_payload => {
+                    // Filed under the right key, but the stored payload
+                    // disagrees with what the primary implies — the key
+                    // encodes the ordering value, not the stored aggregate,
+                    // so this is invisible to a key-only comparison.
+                    let mut p = new_path.to_vec();
+                    p.push(sentinel("secondary_value_mismatch"));
+                    p.push(item_key.clone());
+                    let want_bytes = want_payload.serialize(grove_version)?;
+                    let got_bytes = got_payload.serialize(grove_version)?;
+                    issues.insert(
+                        p,
+                        (
+                            [0u8; 32],
+                            value_hash(&want_bytes).unwrap(),
+                            value_hash(&got_bytes).unwrap(),
+                        ),
+                    );
+                }
+                Some(_) => { /* indexed under the expected sort key and value */ }
             }
         }
 
@@ -2209,20 +2147,10 @@ impl GroveDb {
                     )?;
 
                     // Also validate the axis payload. The content walk above
-                    // catches missing, duplicate, orphaned, and mis-bucketed
+                    // catches missing, duplicate, orphaned, and wrongly bucketed
                     // rows; this relation check additionally proves that the
                     // secondary element stored at the right key is the one
                     // canonically derived from the primary element.
-                    verify_indexed_axis_relation(
-                        &primary_merk,
-                        &secondary_merk,
-                        grovedb_element::indexed::IndexAxis::Sum,
-                        &new_path.to_vec(),
-                        primary_root_hash,
-                        &all_query,
-                        &mut issues,
-                        grove_version,
-                    )?;
 
                     issues.extend(self.verify_merk_and_submerks_in_transaction(
                         primary_merk,
@@ -2293,16 +2221,6 @@ impl GroveDb {
                                 grove_version,
                             )
                             .unwrap()?;
-                        verify_indexed_axis_relation(
-                            &primary_merk,
-                            &secondary_merk,
-                            axis,
-                            &new_path.to_vec(),
-                            primary_root_hash,
-                            &all_query,
-                            &mut issues,
-                            grove_version,
-                        )?;
                         axis_hashes.push((*tag, secondary_merk.root_hash().unwrap()));
                         // Per-axis content walk while this axis's secondary
                         // is open (see `verify_indexed_axis_content`).

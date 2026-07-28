@@ -143,7 +143,24 @@ fn validate_delete_tree_type<'db, S: StorageContext<'db>>(
         ))
         .wrap_with_cost(cost);
     };
-    if actual_tree_type != declared_tree_type {
+    // Reject a mismatch only when an indexed tree is involved on either
+    // side. The security property this guards is cleanup-namespace
+    // selection: a declared type that hides a stored indexed primary would
+    // skip the per-axis secondary sweep and leave authenticated stale rows.
+    // For two non-indexed types the declaration is merely advisory — the
+    // caller-supplied value is discarded in favour of `actual_tree_type`
+    // below, so nothing downstream can be steered by it.
+    //
+    // Rejecting every mismatch instead would change acceptance behaviour on
+    // GROVE_V1/V2/V3, which are live: a batch declaring `NormalTree` for a
+    // `SumTree` delete succeeds today (the repo's own deletion-cost tests do
+    // exactly that), and nodes carrying a strict check would diverge from
+    // nodes that do not. Indexed trees exist on no live version, so scoping
+    // the rejection to them preserves live behaviour exactly while closing
+    // the actual hole.
+    if actual_tree_type != declared_tree_type
+        && (actual_tree_type.is_indexed_primary() || declared_tree_type.is_indexed_primary())
+    {
         return Err(Error::InvalidBatchOperation(
             "DeleteTree declared tree type does not match the stored element",
         ))
@@ -2356,7 +2373,22 @@ where
                                 .wrap_with_cost(cost);
                             }
                         }
-                    } else if op_could_overwrite {
+                    // NOTE: bare `Reference` overwrites are deliberately still
+                    // excluded here. Including them (so a reference overwriting an
+                    // indexed tree schedules the per-axis secondary cleanup) costs
+                    // one extra stored-element read on EVERY reference overwrite,
+                    // which measurably changes tracked cost — +1 seek and +79
+                    // storage_loaded_bytes on the repo's own refresh-reference cost
+                    // tests. Cost feeds fees, and references over plain trees are
+                    // shipped functionality on GROVE_V1/V2/V3, so paying that read
+                    // unconditionally is a live-path behaviour change.
+                    //
+                    // The hole it would close requires an indexed tree to be the
+                    // element being overwritten, which cannot occur on any released
+                    // version (indexed trees are introduced by this PR). Closing it
+                    // therefore belongs with the protocol version that activates
+                    // indexed trees, gated so live versions keep today's cost.
+                    } else if op_could_overwrite && !matches!(&element, Element::Reference(..)) {
                         // Tree-override protection is OFF; let the
                         // cidx helper classify the overwrite (safe
                         // subset → schedule cleanup, ambiguous → err,

@@ -530,6 +530,15 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             self.cached_merks.insert(path.clone(), layer_info.tree_type);
         }
 
+        // How many keys at this level the mirror will actually rewrite. The
+        // real mirror (`apply_cidx_secondary_mirror_post_apply`) does one
+        // delete+insert per captured key, so charging a single key's worth
+        // per level undercharges in proportion to batch width.
+        let mirrored_key_count = ops_at_path_by_key
+            .values()
+            .filter(|op| op.can_mutate_child_count())
+            .count();
+
         for (key, op) in ops_at_path_by_key.into_iter() {
             cost_return_on_error!(
                 &mut cost,
@@ -556,15 +565,19 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
         // and the indexed arm of `average_case_cost` was unreachable.
         if layer_element_estimates.tree_type.is_indexed_primary() {
             let axes = indexed_axes_for_tree_type(layer_element_estimates.tree_type);
-            cost_return_on_error!(
-                &mut cost,
-                GroveDb::average_case_indexed_secondary_mirror(
-                    path,
-                    layer_element_estimates,
-                    &axes,
-                    grove_version,
-                )
-            );
+            // Once per mutated key, not once per level: the mirror rewrites
+            // every captured key's row on every axis.
+            for _ in 0..mirrored_key_count {
+                cost_return_on_error!(
+                    &mut cost,
+                    GroveDb::average_case_indexed_secondary_mirror(
+                        path,
+                        layer_element_estimates,
+                        &axes,
+                        grove_version,
+                    )
+                );
+            }
             self.pending_cidx_secondary.insert(path.to_path());
         }
 
@@ -2031,6 +2044,89 @@ mod tests {
             "estimated hash_node_calls {} must not be under actual {}",
             average_case_cost.hash_node_calls,
             cost.hash_node_calls
+        );
+    }
+
+    /// The mirror charge must scale with the number of keys a batch mutates
+    /// in an indexed primary, not be a flat per-level constant.
+    ///
+    /// The real mirror does one delete+insert per captured key on every axis,
+    /// so a flat charge undercharges in proportion to batch width — the exact
+    /// direction that lets an attacker buy unpaid work.
+    #[test]
+    fn test_batch_indexed_tree_mirror_cost_scales_with_batch_width() {
+        let grove_version = GroveVersion::latest();
+
+        let estimate_for = |n: usize| {
+            let db = make_empty_grovedb();
+            let tx = db.start_transaction();
+            db.insert(
+                EMPTY_PATH,
+                b"cidx",
+                Element::empty_provable_count_indexed_tree(),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("create pcit");
+
+            let ops: Vec<_> = (0..n)
+                .map(|i| {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![b"cidx".to_vec()],
+                        vec![b'k', i as u8],
+                        Element::new_item(b"v".to_vec()),
+                    )
+                })
+                .collect();
+
+            let mut paths = HashMap::new();
+            paths.insert(
+                KeyInfoPath(vec![]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::NormalTree,
+                    estimated_layer_count: ApproximateElements(1),
+                    estimated_layer_sizes: AllSubtrees(4, NoSumTrees, None),
+                },
+            );
+            paths.insert(
+                KeyInfoPath(vec![KeyInfo::KnownKey(b"cidx".to_vec())]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::ProvableCountIndexedTree,
+                    estimated_layer_count: ApproximateElements(n as u32),
+                    estimated_layer_sizes: AllItems(2, 2, None),
+                },
+            );
+
+            GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops,
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("expected average case costs")
+        };
+
+        let one = estimate_for(1);
+        let four = estimate_for(4);
+
+        assert!(
+            four.storage_cost.added_bytes > one.storage_cost.added_bytes,
+            "a 4-key batch must be charged more mirror work than a 1-key batch \
+             (1-key: {one:?}, 4-key: {four:?})"
+        );
+        assert!(
+            four.seek_count > one.seek_count,
+            "seek count must scale with the number of mirrored keys \
+             (1-key: {}, 4-key: {})",
+            one.seek_count,
+            four.seek_count
         );
     }
 }
