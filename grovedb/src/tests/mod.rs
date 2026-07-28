@@ -52,6 +52,7 @@ mod estimated_costs_worst_case_tests;
 mod get_cost_estimator_tests;
 mod grove_query_result_tests;
 mod indexed_axis_proof_tests;
+mod indexed_tree_security_regression_tests;
 mod is_empty_tree_tests;
 mod misc_coverage_tests;
 mod mmr_tree_tests;

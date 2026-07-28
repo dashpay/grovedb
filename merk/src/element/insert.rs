@@ -745,9 +745,9 @@ impl ElementInsertToStorageExtensions for Element {
             .wrap_with_cost(Default::default());
         }
 
-        if self.is_non_counted() && !merk.tree_type.is_count_bearing() {
+        if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
             return Err(Error::InvalidInputError(
-                "non-counted elements may only be inserted into count-bearing trees",
+                "non-counted elements may only be inserted into non-provable count-bearing trees",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -831,20 +831,18 @@ impl ElementInsertToStorageExtensions for Element {
             .wrap_with_cost(Default::default());
         }
 
-        // Mirror the non-counted destination guard from the direct
-        // `insert_count_indexed_subtree` path (L696-700): a NonCounted-
-        // wrapped cidx may only be inserted into a count-bearing
-        // parent. The direct path checks `merk.tree_type.is_count_bearing()`;
-        // the batch variant only has the per-node `feature_type` so we
-        // use `feature_type.count().is_some()` as the equivalent
-        // count-bearing predicate (a node is count-bearing iff its
-        // feature type carries a count). Without this check, callers
-        // could queue a `NonCounted(CountIndexedTree)` op with a
-        // non-count-bearing feature type, bypassing the invariant the
-        // direct API enforces.
-        if self.is_non_counted() && feature_type.count().is_none() {
+        // The batch builder has the parent's feature type instead of its
+        // TreeType. Only the non-provable CountTree/CountSumTree feature
+        // variants accept NonCounted children; the Provable* variants commit
+        // their count and must reject the wrapper just like the direct path.
+        if self.is_non_counted()
+            && !matches!(
+                feature_type,
+                TreeFeatureType::CountedMerkNode(_) | TreeFeatureType::CountedSummedMerkNode(..)
+            )
+        {
             return Err(Error::InvalidInputError(
-                "non-counted elements may only be inserted into count-bearing trees",
+                "non-counted elements may only be inserted into non-provable count-bearing trees",
             ))
             .wrap_with_cost(Default::default());
         }
@@ -1455,9 +1453,9 @@ mod tests {
 
     #[test]
     fn insert_count_indexed_subtree_rejects_non_counted_wrapper_into_normal_tree() {
-        // Coverage for L696-700 — non-counted wrapper elements may
-        // only be inserted into count-bearing trees. A NonCounted-
-        // wrapped cidx into a NormalTree merk must be rejected.
+        // Non-counted wrapper elements may only be inserted into
+        // non-provable count-bearing trees. A NonCounted-wrapped cidx into a
+        // NormalTree merk must be rejected.
         use crate::tree::hash::NULL_HASH;
 
         let grove_version = GroveVersion::latest();
@@ -1481,10 +1479,7 @@ mod tests {
         match result {
             Err(Error::InvalidInputError(msg)) => {
                 assert!(
-                    msg.contains(
-                        "non-counted elements may only be inserted into \
-                                  count-bearing trees"
-                    ),
+                    msg.contains("non-provable count-bearing trees"),
                     "expected non-counted-wrong-tree error, got: {msg}"
                 );
             }
@@ -1539,17 +1534,48 @@ mod tests {
     }
 
     #[test]
+    fn insert_count_indexed_subtree_rejects_non_counted_in_provable_count_parents() {
+        use crate::tree::hash::NULL_HASH;
+
+        let grove_version = GroveVersion::latest();
+        for parent_type in [
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableCountIndexedTree,
+            TreeType::ProvableCountProvableSumIndexedTree,
+        ] {
+            assert!(!parent_type.accepts_non_counted_children());
+            let mut merk = TempMerk::new_with_tree_type(grove_version, parent_type);
+            let wrapped = Element::new_non_counted(Element::empty_provable_count_indexed_tree())
+                .expect("valid wrapper");
+            let result = wrapped
+                .insert_count_indexed_subtree(
+                    &mut merk,
+                    b"nested",
+                    NULL_HASH,
+                    NULL_HASH,
+                    None,
+                    grove_version,
+                )
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::InvalidInputError(_))),
+                "forbidden indexed child was accepted by {parent_type:?}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn insert_count_indexed_subtree_into_batch_operations_rejects_non_counted_wrapper_with_non_count_bearing_feature_type(
     ) {
         // Coverage for the new non-counted-destination guard (CodeRabbit
         // finding on 2026-05-11 review). The direct
         // insert_count_indexed_subtree path already enforces:
         //   `NonCounted(...) + non-count-bearing merk → InvalidInput`
-        // The batch variant must enforce the equivalent invariant
-        // using its only available signal (`feature_type`): a node is
-        // count-bearing iff `feature_type.count().is_some()`. Without
-        // this check, callers could queue a NonCounted(cidx) op with
-        // BasicMerkNode and bypass the guard.
+        // The batch variant must enforce the equivalent invariant using its
+        // available `feature_type`: only the non-provable CountedMerkNode and
+        // CountedSummedMerkNode variants accept the wrapper.
         use crate::tree::hash::NULL_HASH;
         use crate::TreeFeatureType::BasicMerkNode;
 
@@ -1576,10 +1602,7 @@ mod tests {
         match result {
             Err(Error::InvalidInputError(msg)) => {
                 assert!(
-                    msg.contains(
-                        "non-counted elements may only be inserted into \
-                                  count-bearing trees"
-                    ),
+                    msg.contains("non-provable count-bearing trees"),
                     "expected non-counted-wrong-destination error, got: {msg}"
                 );
             }
@@ -1594,8 +1617,8 @@ mod tests {
             "rejected op must not push to batch_operations vec"
         );
 
-        // Sanity: same wrapped element with a count-bearing feature
-        // type SUCCEEDS (the guard only fires on non-count-bearing).
+        // Sanity: the same wrapped element with a non-provable count-bearing
+        // feature succeeds.
         let result_ok = wrapped
             .insert_count_indexed_subtree_into_batch_operations(
                 key,
@@ -1612,6 +1635,30 @@ mod tests {
             "non-counted cidx into count-bearing tree must be accepted, got: {:?}",
             result_ok
         );
+
+        for feature_type in [
+            crate::TreeFeatureType::ProvableCountedMerkNode(0),
+            crate::TreeFeatureType::ProvableCountedSummedMerkNode(0, 0),
+            crate::TreeFeatureType::ProvableCountedAndProvableSummedMerkNode(0, 0),
+        ] {
+            let mut rejected_ops: Vec<BatchEntry<&[u8]>> = Vec::new();
+            let result = wrapped
+                .insert_count_indexed_subtree_into_batch_operations(
+                    key,
+                    NULL_HASH,
+                    NULL_HASH,
+                    false,
+                    &mut rejected_ops,
+                    feature_type,
+                    grove_version,
+                )
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::InvalidInputError(_))),
+                "provable count feature accepted NonCounted child: {feature_type:?}"
+            );
+            assert!(rejected_ops.is_empty());
+        }
     }
 
     #[test]

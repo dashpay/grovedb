@@ -123,6 +123,35 @@ pub enum SubelementsDeletionBehavior {
     Skip,
 }
 
+/// Treat the tree type carried by `DeleteTree` as a checked claim, not as
+/// storage-ownership authority. Cleanup namespaces must be selected from the
+/// element that is actually stored at the target key.
+fn validate_delete_tree_type<'db, S: StorageContext<'db>>(
+    parent_storage: &S,
+    key: &[u8],
+    declared_tree_type: TreeType,
+    grove_version: &GroveVersion,
+) -> CostResult<TreeType, Error> {
+    let mut cost = OperationCost::default();
+    let stored_element = cost_return_on_error!(
+        &mut cost,
+        Element::get_from_storage(parent_storage, key, grove_version).map_err(Error::MerkError)
+    );
+    let Some(actual_tree_type) = stored_element.tree_type() else {
+        return Err(Error::InvalidBatchOperation(
+            "DeleteTree target exists but is not a tree element",
+        ))
+        .wrap_with_cost(cost);
+    };
+    if actual_tree_type != declared_tree_type {
+        return Err(Error::InvalidBatchOperation(
+            "DeleteTree declared tree type does not match the stored element",
+        ))
+        .wrap_with_cost(cost);
+    }
+    Ok(actual_tree_type).wrap_with_cost(cost)
+}
+
 /// Metadata for non-Merk tree types, carrying tree-type-specific state
 /// through the batch system.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -2327,7 +2356,7 @@ where
                                 .wrap_with_cost(cost);
                             }
                         }
-                    } else if op_could_overwrite && !matches!(&element, Element::Reference(..)) {
+                    } else if op_could_overwrite {
                         // Tree-override protection is OFF; let the
                         // cidx helper classify the overwrite (safe
                         // subset → schedule cleanup, ambiguous → err,
@@ -4776,6 +4805,27 @@ impl GroveDb {
                 let mut child_path = op.path.to_path();
                 child_path.push(key.as_slice().to_vec());
 
+                let parent_path_vec = op.path.to_path();
+                let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
+                let parent_storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        parent_path,
+                        Some(&storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let actual_tree_type = cost_return_on_error!(
+                    &mut cost,
+                    validate_delete_tree_type(
+                        &parent_storage,
+                        key.as_slice(),
+                        *tree_type,
+                        grove_version,
+                    )
+                );
+                let tree_type = &actual_tree_type;
+
                 // Per-op emptiness check based on the SubelementsDeletionBehavior policy.
                 match subelements_deletion_behavior {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {
@@ -5294,6 +5344,27 @@ impl GroveDb {
             {
                 let mut child_path = op.path.to_path();
                 child_path.push(key.as_slice().to_vec());
+
+                let parent_path_vec = op.path.to_path();
+                let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
+                let parent_storage = self
+                    .db
+                    .get_transactional_storage_context(
+                        parent_path,
+                        Some(&storage_batch),
+                        tx.as_ref(),
+                    )
+                    .unwrap_add_cost(&mut cost);
+                let actual_tree_type = cost_return_on_error!(
+                    &mut cost,
+                    validate_delete_tree_type(
+                        &parent_storage,
+                        key.as_slice(),
+                        *tree_type,
+                        grove_version,
+                    )
+                );
+                let tree_type = &actual_tree_type;
 
                 match subelements_deletion_behavior {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {

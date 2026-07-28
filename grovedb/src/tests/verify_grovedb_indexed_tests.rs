@@ -17,6 +17,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
 
     use crate::{
+        operations::insert::InsertOptions,
         tests::{make_test_grovedb, TEST_LEAF},
         Element,
     };
@@ -1258,6 +1259,53 @@ mod tests {
         k
     }
 
+    fn delete_psit_secondary_row_and_get_root_key(
+        db: &crate::GroveDb,
+        psit_primary_path: &[&[u8]],
+        secondary_root_key: Option<Vec<u8>>,
+        secondary_key: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Option<Vec<u8>> {
+        let tx = db.start_transaction();
+        let batch = StorageBatch::new();
+        let path_vec: Vec<&[u8]> = psit_primary_path.to_vec();
+        let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
+        let new_root_key = {
+            let mut secondary_merk = db
+                .open_indexed_secondary_at_path(
+                    path,
+                    IndexAxis::Sum,
+                    secondary_root_key,
+                    &tx,
+                    Some(&batch),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open PSIT secondary");
+            Element::delete(
+                &mut secondary_merk,
+                secondary_key,
+                None,
+                false,
+                TreeType::ProvableSumTree,
+                grove_version,
+            )
+            .unwrap()
+            .expect("delete secondary row");
+            secondary_merk
+                .root_hash_key_and_aggregate_data()
+                .unwrap()
+                .expect("read secondary root")
+                .1
+        };
+        db.db
+            .commit_multi_context_batch(batch, Some(&tx))
+            .unwrap()
+            .expect("commit mutated secondary");
+        tx.commit().expect("commit transaction");
+        new_root_key
+    }
+
     #[test]
     fn verify_grovedb_psit_detects_secondary_drift() {
         // PSIT mirror is via i64-keyed secondary. Delete the secondary
@@ -1307,6 +1355,75 @@ mod tests {
             .verify_grovedb(None, true, true, grove_version)
             .expect("verify");
         assert!(!issues.is_empty(), "expected H1-A drift detection");
+    }
+
+    #[test]
+    fn verify_grovedb_psit_detects_coherently_rebound_relational_drift() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::empty_provable_sum_indexed_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create PSIT");
+        for (key, sum) in [(b"a".as_slice(), 10), (b"b".as_slice(), 20)] {
+            db.insert_into_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                key,
+                Element::new_sum_item(sum),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate PSIT");
+        }
+        let parent = db
+            .get([TEST_LEAF].as_ref(), b"psit", None, grove_version)
+            .unwrap()
+            .expect("read PSIT parent");
+        let (primary_root, secondary_root, sum, flags) = match parent {
+            Element::ProvableSumIndexedTree(primary, secondary, sum, flags) => {
+                (primary, secondary, sum, flags)
+            }
+            other => panic!("expected PSIT, got {other:?}"),
+        };
+        let new_secondary_root = delete_psit_secondary_row_and_get_root_key(
+            &db,
+            &[TEST_LEAF, b"psit"],
+            secondary_root,
+            &psit_secondary_key(10, b"a"),
+            grove_version,
+        );
+
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"psit",
+            Element::ProvableSumIndexedTree(primary_root, new_secondary_root, sum, flags),
+            Some(InsertOptions {
+                validate_insertion_does_not_override: false,
+                validate_insertion_does_not_override_tree: false,
+                base_root_storage_is_free: true,
+            }),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("rebind authenticated secondary root");
+
+        let issues = db
+            .verify_grovedb(None, false, true, grove_version)
+            .expect("verify coherently rebound PSIT");
+        assert!(
+            issues.keys().any(|path| path
+                .iter()
+                .any(|segment| segment.as_slice() == b"__indexed_primary_orphan__")),
+            "relational verifier missed a primary row absent from the rebound secondary: {issues:?}"
+        );
     }
 
     // -----------------------------------------------------------------

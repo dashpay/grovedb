@@ -1143,4 +1143,40 @@ mod tests {
             .unwrap();
         assert!(matches!(result, Err(Error::InvalidInput(_))));
     }
+
+    #[test]
+    fn non_counted_indexed_child_rejected_in_provable_count_tree() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pct",
+            Element::empty_provable_count_tree(),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("create parent");
+
+        let wrapped = Element::new_non_counted(Element::empty_provable_count_indexed_tree())
+            .expect("valid wrapper");
+        let result = db
+            .insert(
+                [TEST_LEAF, b"pct"].as_ref(),
+                b"cidx",
+                wrapped,
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+        assert!(
+            db.get([TEST_LEAF, b"pct"].as_ref(), b"cidx", None, grove_version)
+                .unwrap()
+                .is_err(),
+            "a rejected child must not be persisted"
+        );
+    }
 }

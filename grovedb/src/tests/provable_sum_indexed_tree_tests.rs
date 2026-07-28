@@ -6,8 +6,8 @@
 //! - Delete (existing + missing) + verify.
 //! - Child-type rejection: non-sum-bearing items (`Item`, plain
 //!   `Reference`, plain `Tree`).
-//! - Child-type acceptance: SumItem, ItemWithSumItem, empty sum-bearing
-//!   trees (SumTree, BigSumTree, CountSumTree, …).
+//! - Child-type acceptance: SumItem, ItemWithSumItem, and empty i64
+//!   sum-bearing trees (SumTree, CountSumTree, …); BigSumTree is rejected.
 //! - Error paths: wrong tree-type target, root-path inserts/deletes,
 //!   non-empty PSIT direct child rejection, oversized item key.
 //! - Tree-overwrite cleanup via batch.

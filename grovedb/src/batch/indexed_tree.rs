@@ -11,8 +11,7 @@
 //! - [`apply_cidx_secondary_mirror_post_apply`] runs after the primary
 //!   merk's `apply_with_specialized_costs` returns. It re-reads each
 //!   captured key's new count, builds a deterministic delta list, and
-//!   applies the corresponding `mirror_to_secondary_for_batch` calls
-//!   on the cidx secondary merk, returning the secondary's post-mirror
+//!   applies one atomic Merk batch to the cidx secondary, returning its post-mirror
 //!   `(root_hash, root_key)` for the bubble-up code to fold into the
 //!   parent's H1-A composition.
 //! - [`reject_freshly_inserted_cidx_with_descendants`] is the preflight
@@ -23,10 +22,10 @@
 //!   parent merk that hasn't been flushed yet.
 //! - [`inspect_cidx_overwrite`] runs inside the per-op loop when
 //!   tree-override protection is OFF and the op could overwrite an
-//!   existing element. It classifies the overwrite against the
-//!   safe-subset rules (cidx → non-cidx OR cidx → empty cidx are
-//!   allowed and scheduled for cleanup; cidx → non-empty cidx is
-//!   rejected as ambiguous; descendants-in-same-batch are rejected
+//!   existing element. It classifies every indexed-tree variant against
+//!   the safe-subset rules (indexed → non-indexed OR indexed → empty
+//!   indexed are allowed and scheduled for cleanup; indexed → non-empty
+//!   indexed is rejected as ambiguous; descendants-in-same-batch are rejected
 //!   because the post-apply cleanup would silently clear them).
 //!
 //! Kept out of `mod.rs` to keep that file focused on the generic batch
@@ -39,7 +38,15 @@ use std::collections::BTreeMap;
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_merk::{element::costs::ElementCostExtensions, CryptoHash, Merk};
+use grovedb_element::indexed::IndexAxis;
+use grovedb_merk::{
+    element::{
+        costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
+        insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
+    },
+    tree_type::TreeType,
+    BatchEntry, CryptoHash, Merk,
+};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
@@ -128,23 +135,11 @@ pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
 /// `(root_hash, root_key)` for the caller to fold into the parent's
 /// H1-A `combine_hash_three` composition.
 ///
-/// **Determinism note:** the input `pre` is a `BTreeMap`, so its
-/// iteration is already deterministic (key-sorted). The deltas are
-/// still re-sorted *pure deletes first, then by key* before being
-/// applied: empirical reproduction showed that when an INSERT delta
-/// runs BEFORE a DELETE delta on the same secondary merk, the delete
-/// sometimes fails to actually remove the entry — leaving stale
-/// secondary state. The underlying merk-level bug
-/// (delete-after-insert on a count-bearing Merk) needs separate
-/// investigation; this sort enforces a known-good order in the
-/// meantime. (We previously used a `HashMap` here, which made the
-/// ordering bug surface non-deterministically across runs.)
-///
-/// Classification: a delta `(_, Some(_), None)` is a pure delete
-/// (key removed from primary). For each individual delta,
-/// `mirror_to_secondary_for_batch` does a delete-then-insert ON ONE
-/// KEY which is fine; the order issue only surfaces ACROSS deltas of
-/// different keys.
+/// **Determinism and atomic-transition note:** the input `pre` is a
+/// `BTreeMap`, so iteration is key-sorted. All secondary deletes and inserts
+/// are assembled into one sorted Merk batch. Applying them as separate Merk
+/// mutations can retain a stale row after multiple same-level count changes;
+/// one atomic batch gives the secondary a single pre/post transition.
 pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     pre: BTreeMap<Vec<u8>, Option<u64>>,
@@ -183,24 +178,80 @@ pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>
         deltas.push((key, old_count, new_count));
     }
 
-    deltas.sort_by(|a, b| {
-        let a_is_pure_delete = a.1.is_some() && a.2.is_none();
-        let b_is_pure_delete = b.1.is_some() && b.2.is_none();
-        match b_is_pure_delete.cmp(&a_is_pure_delete) {
-            std::cmp::Ordering::Equal => a.0.cmp(&b.0),
-            other => other,
+    let secondary_tree_type = TreeType::ProvableCountTree;
+    let mut secondary_batch: Vec<BatchEntry<Vec<u8>>> = Vec::with_capacity(deltas.len() * 2);
+    for (key, old_count, new_count) in &deltas {
+        if old_count == new_count {
+            continue;
         }
-    });
-    for (key, old_count, new_count) in deltas {
+        if let Some(old_count) = old_count {
+            let old_secondary_key = crate::operations::indexed_tree::make_axis_secondary_key(
+                IndexAxis::Count,
+                *old_count,
+                0,
+                key,
+            );
+            cost_return_on_error!(
+                &mut cost,
+                Element::delete_into_batch_operations(
+                    old_secondary_key,
+                    false,
+                    secondary_tree_type,
+                    &mut secondary_batch,
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
+            );
+        }
+        if let Some(new_count) = new_count {
+            let new_secondary_key = crate::operations::indexed_tree::make_axis_secondary_key(
+                IndexAxis::Count,
+                *new_count,
+                0,
+                key,
+            );
+            let entry = Element::new_item(Vec::new());
+            let feature_type = cost_return_on_error_no_add!(
+                cost,
+                entry
+                    .get_feature_type(secondary_tree_type)
+                    .map_err(Error::MerkError)
+            );
+            cost_return_on_error!(
+                &mut cost,
+                entry
+                    .insert_into_batch_operations(
+                        new_secondary_key,
+                        &mut secondary_batch,
+                        feature_type,
+                        grove_version,
+                    )
+                    .map_err(Error::MerkError)
+            );
+        }
+    }
+    secondary_batch.sort_by(|a, b| a.0.cmp(&b.0));
+    if !secondary_batch.is_empty() {
         cost_return_on_error!(
             &mut cost,
-            crate::operations::indexed_tree::mirror_to_secondary_for_batch(
-                secondary_merk,
-                key.as_slice(),
-                old_count,
-                new_count,
-                grove_version,
-            )
+            secondary_merk
+                .apply_with_specialized_costs::<_, Vec<u8>>(
+                    &secondary_batch,
+                    &[],
+                    None,
+                    &|key, value| {
+                        Element::specialized_costs_for_key_value(
+                            key,
+                            value,
+                            secondary_tree_type.inner_node_type(),
+                            grove_version,
+                        )
+                        .map_err(|e| grovedb_merk::Error::ClientCorruptionError(e.to_string()))
+                    },
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .map_err(Error::MerkError)
         );
     }
     let (sec_hash, sec_root_key, _) = cost_return_on_error!(
@@ -290,16 +341,16 @@ pub(crate) fn reject_freshly_inserted_cidx_with_descendants(
 
 /// Classify an `op_could_overwrite` insert at `path / key_info` against
 /// the existing primary-merk entry, when tree-override protection is
-/// **OFF** for this batch. Allows the cidx safe-subset overwrites and
+/// **OFF** for this batch. Allows indexed-tree safe-subset overwrites and
 /// rejects the ambiguous ones:
 ///
 /// |  existing              |  new                       |  outcome                      |
 /// |------------------------|----------------------------|-------------------------------|
 /// |  none                  |  *                         |  `Ok(None)`                   |
-/// |  non-cidx              |  *                         |  `Ok(None)`                   |
-/// |  cidx                  |  non-cidx                  |  `Ok(Some(cidx_path))`        |
-/// |  cidx                  |  empty cidx                |  `Ok(Some(cidx_path))`        |
-/// |  cidx                  |  non-empty cidx            |  `Err(NotSupported)`          |
+/// |  non-indexed           |  *                         |  `Ok(None)`                   |
+/// |  indexed              |  non-indexed               |  `Ok(Some(indexed_path))`     |
+/// |  indexed              |  empty indexed             |  `Ok(Some(indexed_path))`     |
+/// |  indexed              |  non-empty indexed         |  `Err(NotSupported)`          |
 ///
 /// When `Ok(Some(cidx_path))` is returned, the caller should push
 /// `cidx_path` onto its `cidx_overwrite_cleanup_paths` list so the
@@ -355,36 +406,41 @@ pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
         })
     );
 
-    let existing_is_cidx = matches!(
-        existing_element.underlying(),
-        Element::ProvableCountIndexedTree(..)
-    );
-    if !existing_is_cidx {
+    if !existing_element.is_indexed_tree() {
         return Ok(None).wrap_with_cost(cost);
     }
 
-    // Classify the new element.
-    let (new_is_cidx, new_is_empty_cidx) = match new_element.underlying() {
-        Element::ProvableCountIndexedTree(p, s, c, _) => {
-            (true, p.is_none() && s.is_none() && *c == 0)
+    // Classify the complete indexed family. Empty PCPSIT elements retain a
+    // canonical non-empty axes list, but every axis root key must be None.
+    let new_indexed_empty = match new_element.underlying() {
+        Element::ProvableSumIndexedTree(p, s, sum, _) => {
+            Some(p.is_none() && s.is_none() && *sum == 0)
         }
-        _ => (false, false),
+        Element::ProvableCountIndexedTree(p, s, c, _) => {
+            Some(p.is_none() && s.is_none() && *c == 0)
+        }
+        Element::ProvableCountProvableSumIndexedTree(p, c, sum, axes, _) => Some(
+            p.is_none()
+                && *c == 0
+                && *sum == 0
+                && axes.iter().all(|(_, root_key)| root_key.is_none()),
+        ),
+        _ => None,
     };
-    if new_is_cidx && !new_is_empty_cidx {
+    if matches!(new_indexed_empty, Some(false)) {
         return Err(Error::NotSupported(
-            "overwriting an existing CountIndexedTree / ProvableCountIndexedTree with a \
-             NON-EMPTY cidx via the batch path is not supported (storage-pointer semantics \
+            "overwriting an existing indexed tree with a NON-EMPTY indexed tree via the \
+             batch path is not supported (storage-pointer semantics \
              are ambiguous: the new element's root_keys would refer to data while the \
-             post-apply cleanup also clears it). Empty the cidx via \
-             delete_from_count_indexed_tree, DeleteTree it via batch, and re-create with \
+             post-apply cleanup also clears it). DeleteTree the old indexed tree and re-create \
              the new state in a follow-up batch"
                 .to_string(),
         ))
         .wrap_with_cost(cost);
     }
 
-    // Safe subset: cidx → non-cidx OR cidx → empty cidx. Schedule the
-    // OLD cidx's storage namespaces for cleanup. The cidx's path is
+    // Safe subset: indexed → non-indexed OR indexed → empty indexed.
+    // Schedule the OLD indexed tree's storage namespaces for cleanup. Its path is
     // `path + key_info`.
     let mut cidx_path = path.to_vec();
     cidx_path.push(key_info.get_key_clone());

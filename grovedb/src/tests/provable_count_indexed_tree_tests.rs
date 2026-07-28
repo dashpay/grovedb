@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn pcit_batch_overwrite_existing_pcit_with_non_empty_pcit_is_rejected() {
-        // cidx → non-empty cidx must be rejected by
+        // indexed → non-empty indexed must be rejected by
         // `inspect_cidx_overwrite` (storage-pointer ambiguity: the new
         // root keys would refer to on-disk data that post-apply
         // cleanup of the OLD cidx also clears).
@@ -499,7 +499,7 @@ mod tests {
             .unwrap();
         match result {
             Err(Error::NotSupported(msg)) => assert!(
-                msg.contains("NON-EMPTY cidx") || msg.contains("cidx"),
+                msg.contains("NON-EMPTY indexed tree"),
                 "expected NotSupported, got: {msg}"
             ),
             other => panic!("expected NotSupported, got {:?}", other),
