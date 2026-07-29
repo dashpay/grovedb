@@ -362,7 +362,8 @@ impl GroveDb {
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
         let root_hash = Self::verify_layer_proof_v1(
-            &proof.root_layer,
+            Self::merk_bytes_of_layer(&proof.root_layer, query)?,
+            &proof.root_layer.lower_layers,
             &prove_options,
             query,
             &mut limit,
@@ -410,7 +411,8 @@ impl GroveDb {
         let mut limit = query.query.limit;
         let mut last_tree_feature_type = None;
         let root_hash = Self::verify_layer_proof_v1(
-            &proof.root_layer,
+            Self::merk_bytes_of_layer(&proof.root_layer, query)?,
+            &proof.root_layer.lower_layers,
             &prove_options,
             query,
             &mut limit,
@@ -653,8 +655,40 @@ impl GroveDb {
         Ok(count_offset_result.root_hash)
     }
 
+    /// Destructure a layer's proof body, rejecting non-Merk shapes. Callers
+    /// pass the resulting slice to `verify_layer_proof_v1`.
+    fn merk_bytes_of_layer<'a>(
+        layer: &'a LayerProof,
+        query: &PathQuery,
+    ) -> Result<&'a [u8], Error> {
+        match &layer.merk_proof {
+            ProofBytes::Merk(bytes) => Ok(bytes.as_slice()),
+            ProofBytes::MMR(_)
+            | ProofBytes::BulkAppendTree(_)
+            | ProofBytes::DenseTree(_)
+            | ProofBytes::CommitmentTree(_)
+            | ProofBytes::CountIndexedTree(_)
+            | ProofBytes::IndexedTreeTerminal(_) => Err(Error::InvalidProof(
+                query.clone(),
+                "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
+            )),
+        }
+    }
+
+    /// Takes the layer's Merk proof BYTES and its lower layers separately
+    /// rather than a `&LayerProof`.
+    ///
+    /// The indexed-tree descent needs to recurse with a different proof body
+    /// (the primary proof carved out of the indexed envelope) but the SAME
+    /// descendant layers. Passing a `&LayerProof` forced it to synthesize one,
+    /// which meant deep-copying the whole `lower_layers` map at every nesting
+    /// level — O(depth x payload) memory on a proof whose depth and payload an
+    /// untrusted peer chooses. Splitting the parameters lets that descent pass
+    /// a borrowed slice and a borrowed map, so nothing is copied.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn verify_layer_proof_v1<T>(
-        layer_proof: &LayerProof,
+        merk_proof_bytes: &[u8],
+        lower_layers: &BTreeMap<Vec<u8>, LayerProof>,
         prove_options: &ProveOptions,
         query: &PathQuery,
         limit_left: &mut Option<u16>,
@@ -675,22 +709,6 @@ impl GroveDb {
                 "proof verification exceeded maximum depth limit".to_string(),
             ));
         }
-        // The merk proof at this layer must be Merk type
-        let merk_proof_bytes = match &layer_proof.merk_proof {
-            ProofBytes::Merk(bytes) => bytes,
-            ProofBytes::MMR(_)
-            | ProofBytes::BulkAppendTree(_)
-            | ProofBytes::DenseTree(_)
-            | ProofBytes::CommitmentTree(_)
-            | ProofBytes::CountIndexedTree(_)
-            | ProofBytes::IndexedTreeTerminal(_) => {
-                return Err(Error::InvalidProof(
-                    query.clone(),
-                    "Expected Merk proof at this layer, got non-Merk proof type".to_string(),
-                ));
-            }
-        };
-
         // Count-offset paginated dispatch (v1 verify). Fires when:
         //   - we're at the leaf level (current_path == query.path), and
         //   - the path query has a non-zero offset, and
@@ -709,7 +727,7 @@ impl GroveDb {
             return Self::run_count_offset_layer_dispatch(
                 query,
                 merk_proof_bytes,
-                layer_proof.lower_layers.is_empty(),
+                lower_layers.is_empty(),
                 current_path,
                 limit_left,
                 result,
@@ -772,7 +790,7 @@ impl GroveDb {
 
                     verified_keys.insert(key.clone());
 
-                    if let Some(lower_layer) = layer_proof.lower_layers.get(key) {
+                    if let Some(lower_layer) = lower_layers.get(key) {
                         // MmrTree/BulkAppendTree have root_key=None (no child Merk data),
                         // so they match on (..) rather than (Some(_), ..)
                         match element {
@@ -936,15 +954,16 @@ impl GroveDb {
                                     }
                                     let mut secondary_root: [u8; 32] = [0u8; 32];
                                     secondary_root.copy_from_slice(&cidx_bytes[..32]);
-                                    let primary_proof_bytes = cidx_bytes[32..].to_vec();
-                                    // Synthesize a standard-Merk LayerProof
-                                    // for the primary descent and recurse.
-                                    let primary_layer = LayerProof {
-                                        merk_proof: ProofBytes::Merk(primary_proof_bytes),
-                                        lower_layers: lower_layer.lower_layers.clone(),
-                                    };
+                                    // Recurse straight into the primary proof
+                                    // carved out of the indexed envelope,
+                                    // borrowing this layer's descendants. This
+                                    // used to synthesize a LayerProof, which
+                                    // deep-copied `lower_layers` at every
+                                    // nesting level — memory an untrusted peer
+                                    // could multiply by nesting depth.
                                     let primary_root_hash = Self::verify_layer_proof_v1(
-                                        &primary_layer,
+                                        &cidx_bytes[32..],
+                                        &lower_layer.lower_layers,
                                         prove_options,
                                         query,
                                         limit_left,
@@ -1046,7 +1065,8 @@ impl GroveDb {
                                         ProofBytes::Merk(_) => {
                                             // Standard Merk subtree - recurse
                                             Self::verify_layer_proof_v1(
-                                                lower_layer,
+                                                Self::merk_bytes_of_layer(lower_layer, query)?,
+                                                &lower_layer.lower_layers,
                                                 prove_options,
                                                 query,
                                                 limit_left,
@@ -1306,7 +1326,7 @@ impl GroveDb {
         // Succinctness check: reject proof if it contains lower layers
         // for keys that the query did not require
         if options.verify_proof_succinctness {
-            for key in layer_proof.lower_layers.keys() {
+            for key in lower_layers.keys() {
                 if !verified_keys.contains(key) {
                     return Err(Error::InvalidProof(
                         query.clone(),
