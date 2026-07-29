@@ -248,7 +248,8 @@ impl<'db> MultiStateSyncSession<'db> {
         // Individual subtree chunks are hash-verified during restore, but we must also
         // verify the overall GroveDB root to ensure the composition is correct.
         //
-        // TODO: This check is not fully atomic. apply_chunk() flushes completed
+        // TODO(https://github.com/dashpay/grovedb/issues/775): This check is not
+        // fully atomic. apply_chunk() flushes completed
         // subtree batches via set_new_transaction()/commit_transaction(), so on
         // mismatch only the last transaction is rolled back while earlier subtrees
         // remain on disk. A full fix requires staging all subtree commits and only

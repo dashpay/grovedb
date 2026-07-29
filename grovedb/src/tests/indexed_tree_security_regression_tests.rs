@@ -297,8 +297,10 @@ fn batch_overwrite_cleans_psit_and_pcpsit_namespaces() {
 /// indexed trees, gated so live versions keep today's cost. Un-ignore this test
 /// as part of that change.
 #[test]
-#[ignore = "deferred: closing this changes reference-overwrite cost on live versions; \
-            gate with the protocol version that activates indexed trees"]
+#[ignore = "deferred, tracked in \
+            https://github.com/dashpay/grovedb/issues/776 — closing this changes \
+            reference-overwrite cost on live versions; gate with the protocol \
+            version that activates indexed trees"]
 fn bare_reference_overwrite_cleans_indexed_storage() {
     let grove_version = GroveVersion::latest();
     let db = make_test_grovedb(grove_version);
