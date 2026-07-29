@@ -596,3 +596,62 @@ fn batch_rejects_rootless_aggregate_child_under_indexed_primary() {
         "derived-count batch state must verify clean"
     );
 }
+
+/// `GroveOp::Patch` must be subject to the rootless-aggregate rule too.
+///
+/// The batch guard originally matched only the insert/replace ops and fell
+/// through `_ => continue` for everything else, so a Patch carrying
+/// `ProvableCountTree(None, 9, None)` was written unchecked: it changed the
+/// authenticated root and the forged 9 came back out of top-k.
+#[test]
+fn batch_patch_cannot_forge_a_rootless_aggregate() {
+    let grove_version = GroveVersion::latest();
+    let db = crate::tests::make_test_grovedb(grove_version);
+
+    db.insert(
+        [crate::tests::TEST_LEAF].as_ref(),
+        b"cidx",
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("create PCIT");
+
+    let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
+
+    let forged = vec![crate::batch::QualifiedGroveDbOp::patch_op(
+        vec![crate::tests::TEST_LEAF.to_vec(), b"cidx".to_vec()],
+        b"p".to_vec(),
+        Element::new_provable_count_tree_with_flags_and_count_value(None, 9, None),
+        0,
+    )];
+    let result = db.apply_batch(forged, None, None, grove_version).unwrap();
+    assert!(
+        matches!(
+            &result,
+            Err(crate::Error::InvalidBatchOperation(m))
+                if m.contains("non-zero aggregate while having no root key")
+        ),
+        "Patch must be held to the same rule as insert/replace, got {result:?}"
+    );
+    assert_eq!(
+        db.root_hash(None, grove_version).unwrap().unwrap(),
+        root_before,
+        "a rejected patch must not move the authenticated root"
+    );
+    assert!(
+        db.indexed_count_top_k(
+            [crate::tests::TEST_LEAF, b"cidx"].as_ref(),
+            10,
+            true,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("top_k")
+        .is_empty(),
+        "no forged entry may surface through the secondary index"
+    );
+}

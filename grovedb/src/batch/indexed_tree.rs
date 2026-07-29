@@ -103,12 +103,34 @@ pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
     // The legitimate way to reach count 9 is to insert the child empty and
     // populate it in the same batch, letting propagation derive it.
     for op in ops_at_path_by_key.values() {
+        // EXHAUSTIVE on purpose — no `_` arm. An earlier revision used a
+        // catch-all and silently skipped `GroveOp::Patch`, which carries an
+        // element like the insert/replace ops do: a patch of
+        // `ProvableCountTree(None, 9, None)` was written unchecked, moved the
+        // authenticated root, and returned the forged 9 through top-k. Listing
+        // every variant makes a new op a compile error here rather than a
+        // silent hole, the same technique `GroveOp::can_mutate_child_count`
+        // uses for exactly this bug class.
         let element = match op {
             GroveOp::InsertOrReplace { element }
             | GroveOp::Replace { element }
+            | GroveOp::Patch { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => element,
-            _ => continue,
+            // Ops that carry no caller-supplied element, or whose element is
+            // internally derived rather than caller-claimed.
+            GroveOp::Delete
+            | GroveOp::DeleteTree(..)
+            | GroveOp::ReplaceTreeRootKey { .. }
+            | GroveOp::InsertTreeWithRootHash { .. }
+            | GroveOp::ReplaceNonMerkTreeRoot { .. }
+            | GroveOp::InsertNonMerkTree { .. }
+            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::RefreshReference { .. }
+            | GroveOp::CommitmentTreeInsert { .. }
+            | GroveOp::MmrTreeAppend { .. }
+            | GroveOp::BulkAppend { .. }
+            | GroveOp::DenseTreeInsert { .. } => continue,
         };
         let rootless_with_aggregate = match element.underlying() {
             Element::SumTree(None, sum, _) | Element::ProvableSumTree(None, sum, _) => *sum != 0,

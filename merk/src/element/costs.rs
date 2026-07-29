@@ -301,9 +301,13 @@ impl ElementCostExtensions for Element {
                     let flags_len = flags.len() as u32;
                     flags_len + flags_len.required_space() as u32
                 });
-                // Phase 1 stub: use the legacy cidx cost size as a placeholder.
-                // Phase 2 must model the TLV axes payload precisely.
-                let value_len = COUNT_INDEXED_TREE_COST_SIZE + flags_len + wrapper_overhead;
+                // PCPSIT carries both aggregates plus a variable-length axes
+                // TLV, so the single-axis indexed constant is below its own
+                // minimum payload rather than a conservative bound. Use the
+                // same worst-case constant as the other two PCPSIT cost sites.
+                let value_len = PROVABLE_COUNT_PROVABLE_SUM_INDEXED_TREE_COST_SIZE
+                    + flags_len
+                    + wrapper_overhead;
                 let key_len = key.len() as u32;
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key_len, value_len, node_type,
