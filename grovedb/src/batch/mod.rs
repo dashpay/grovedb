@@ -4839,24 +4839,37 @@ impl GroveDb {
 
                 let parent_path_vec = op.path.to_path();
                 let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
-                let parent_storage = self
-                    .db
-                    .get_transactional_storage_context(
-                        parent_path,
-                        Some(&storage_batch),
-                        tx.as_ref(),
+                // Gated: reading the stored element to pick cleanup namespaces
+                // costs an extra seek + load per DeleteTree op, so it cannot
+                // apply to the released versions. V1..V3 keep taking the
+                // caller-declared type at face value; V4+ reads the truth.
+                let resolved_tree_type = if grove_version
+                    .grovedb_versions
+                    .apply_batch
+                    .delete_tree_cleanup_type_source
+                    >= 1
+                {
+                    let parent_storage = self
+                        .db
+                        .get_transactional_storage_context(
+                            parent_path,
+                            Some(&storage_batch),
+                            tx.as_ref(),
+                        )
+                        .unwrap_add_cost(&mut cost);
+                    cost_return_on_error!(
+                        &mut cost,
+                        validate_delete_tree_type(
+                            &parent_storage,
+                            key.as_slice(),
+                            *tree_type,
+                            grove_version,
+                        )
                     )
-                    .unwrap_add_cost(&mut cost);
-                let actual_tree_type = cost_return_on_error!(
-                    &mut cost,
-                    validate_delete_tree_type(
-                        &parent_storage,
-                        key.as_slice(),
-                        *tree_type,
-                        grove_version,
-                    )
-                );
-                let tree_type = &actual_tree_type;
+                } else {
+                    *tree_type
+                };
+                let tree_type = &resolved_tree_type;
 
                 // Per-op emptiness check based on the SubelementsDeletionBehavior policy.
                 match subelements_deletion_behavior {
@@ -5379,24 +5392,37 @@ impl GroveDb {
 
                 let parent_path_vec = op.path.to_path();
                 let parent_path: SubtreePath<Vec<u8>> = parent_path_vec.as_slice().into();
-                let parent_storage = self
-                    .db
-                    .get_transactional_storage_context(
-                        parent_path,
-                        Some(&storage_batch),
-                        tx.as_ref(),
+                // Gated: reading the stored element to pick cleanup namespaces
+                // costs an extra seek + load per DeleteTree op, so it cannot
+                // apply to the released versions. V1..V3 keep taking the
+                // caller-declared type at face value; V4+ reads the truth.
+                let resolved_tree_type = if grove_version
+                    .grovedb_versions
+                    .apply_batch
+                    .delete_tree_cleanup_type_source
+                    >= 1
+                {
+                    let parent_storage = self
+                        .db
+                        .get_transactional_storage_context(
+                            parent_path,
+                            Some(&storage_batch),
+                            tx.as_ref(),
+                        )
+                        .unwrap_add_cost(&mut cost);
+                    cost_return_on_error!(
+                        &mut cost,
+                        validate_delete_tree_type(
+                            &parent_storage,
+                            key.as_slice(),
+                            *tree_type,
+                            grove_version,
+                        )
                     )
-                    .unwrap_add_cost(&mut cost);
-                let actual_tree_type = cost_return_on_error!(
-                    &mut cost,
-                    validate_delete_tree_type(
-                        &parent_storage,
-                        key.as_slice(),
-                        *tree_type,
-                        grove_version,
-                    )
-                );
-                let tree_type = &actual_tree_type;
+                } else {
+                    *tree_type
+                };
+                let tree_type = &resolved_tree_type;
 
                 match subelements_deletion_behavior {
                     SubelementsDeletionBehavior::DontCheckWithNoCleanup => {

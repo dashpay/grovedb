@@ -50,6 +50,20 @@ pub struct GroveDBApplyBatchVersions {
     pub apply_batch_with_element_flags_update: FeatureVersion,
     pub apply_partial_batch_with_element_flags_update: FeatureVersion,
     pub estimated_case_operations_for_batch: FeatureVersion,
+    /// Which tree type a batch `DeleteTree` op uses to select the storage
+    /// namespaces it cleans up.
+    ///
+    /// - `0` (V1..V3): the caller-declared `TreeType` carried by the op is
+    ///   taken at face value.
+    /// - `1` (V4+): the stored element is read and its actual type used
+    ///   instead, and a declared/stored mismatch involving an indexed tree is
+    ///   rejected. Closes an indexed type-confusion — a declared type hiding a
+    ///   stored indexed primary skips the per-axis secondary sweep and leaves
+    ///   authenticated stale rows — and a `CommitmentTree` case where the
+    ///   declared type sends the op down the wrong emptiness path, orphaning
+    ///   its non-Merk data. Costs one extra stored-element read per op, which
+    ///   is why it cannot apply to the released versions.
+    pub delete_tree_cleanup_type_source: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

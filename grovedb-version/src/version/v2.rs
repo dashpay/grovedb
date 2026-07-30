@@ -30,6 +30,7 @@ pub const GROVE_V2: GroveVersion = GroveVersion {
             apply_batch_with_element_flags_update: 0,
             apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
+            delete_tree_cleanup_type_source: 0,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,

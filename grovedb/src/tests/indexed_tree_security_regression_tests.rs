@@ -655,3 +655,91 @@ fn batch_patch_cannot_forge_a_rootless_aggregate() {
         "no forged entry may surface through the secondary index"
     );
 }
+
+/// The DeleteTree cleanup-type fix is gated on V4: active there, absent on the
+/// released versions.
+///
+/// Reading the stored element to select cleanup namespaces costs an extra seek
+/// and load per op, so applying it to V1..V3 would change tracked costs — and
+/// therefore fees — on a shipped path. This pins both halves of the gate, so a
+/// future change cannot quietly extend it to a released version (which would
+/// be a consensus divergence) or drop it from V4 (which would reopen the
+/// type-confusion).
+#[test]
+fn delete_tree_cleanup_type_gate_is_v4_only() {
+    use grovedb_version::version::{v3::GROVE_V3, v4::GROVE_V4};
+
+    // The slot itself: released versions read the declared type, V4 the stored.
+    assert_eq!(
+        GROVE_V3
+            .grovedb_versions
+            .apply_batch
+            .delete_tree_cleanup_type_source,
+        0,
+        "V3 is live; it must keep taking the declared tree type at face value"
+    );
+    assert_eq!(
+        GROVE_V4
+            .grovedb_versions
+            .apply_batch
+            .delete_tree_cleanup_type_source,
+        1,
+        "V4 must read the stored element to select cleanup namespaces"
+    );
+
+    // Behaviour: a mismatched declared type on a populated PCIT.
+    let build = |gv: &GroveVersion| {
+        let db = make_test_grovedb(gv);
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"cidx",
+            Element::empty_provable_count_indexed_tree(),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("create PCIT");
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"row",
+            Element::new_item(b"value".to_vec()),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("populate PCIT");
+        db
+    };
+    let mismatched_delete = || {
+        vec![QualifiedGroveDbOp::delete_tree_op(
+            vec![TEST_LEAF.to_vec()],
+            b"cidx".to_vec(),
+            TreeType::NormalTree,
+            SubelementsDeletionBehavior::DeleteChildren,
+        )]
+    };
+
+    // V4: rejected, because the declared NormalTree hides a stored indexed
+    // primary and would skip the per-axis secondary sweep.
+    let v4_db = build(&GROVE_V4);
+    let v4_result = v4_db
+        .apply_batch(mismatched_delete(), None, None, &GROVE_V4)
+        .unwrap();
+    assert!(
+        matches!(
+            &v4_result,
+            Err(crate::Error::InvalidBatchOperation(m))
+                if m.contains("declared tree type does not match")
+        ),
+        "V4 must reject the mismatch, got {v4_result:?}"
+    );
+
+    // V3: accepted, exactly as it is today. This is the released behaviour the
+    // gate exists to preserve — not an endorsement of it.
+    let v3_db = build(&GROVE_V3);
+    v3_db
+        .apply_batch(mismatched_delete(), None, None, &GROVE_V3)
+        .unwrap()
+        .expect("V3 must keep accepting the mismatch; changing that is a consensus break");
+}
