@@ -4,6 +4,7 @@ use crate::version::merk_versions::*;
 use crate::version::v1::GROVE_V1;
 use crate::version::v2::GROVE_V2;
 use crate::version::v3::GROVE_V3;
+use crate::version::v4::GROVE_V4;
 use crate::version::{GroveVersion, GROVE_VERSIONS};
 use crate::{TryFromVersioned, TryIntoVersioned};
 
@@ -64,14 +65,40 @@ fn grove_version_first_returns_v1() {
 }
 
 #[test]
-fn grove_version_latest_returns_v3() {
+fn grove_version_latest_returns_v4() {
     let latest = GroveVersion::latest();
-    assert_eq!(latest.protocol_version, GROVE_V3.protocol_version);
+    assert_eq!(latest.protocol_version, GROVE_V4.protocol_version);
 }
 
 #[test]
 fn grove_versions_count() {
-    assert_eq!(GROVE_VERSIONS.len(), 3);
+    assert_eq!(GROVE_VERSIONS.len(), 4);
+}
+
+/// V4 is introduced deliberately identical to V3 so that registering it —
+/// which changes what `GroveVersion::latest()` resolves to — cannot alter
+/// behaviour on its own. Every gate added later must bump a slot here on
+/// purpose; this test fails the moment one is bumped, which is the intended
+/// prompt to document it.
+#[test]
+fn grove_v4_is_behaviourally_identical_to_v3_until_a_gate_is_added() {
+    assert_eq!(GROVE_V4.protocol_version, 4);
+    assert_eq!(GROVE_V3.protocol_version, 3);
+    // The version structs do not derive PartialEq, and widening their public
+    // API for a test is not worth it — every field is a plain integer slot, so
+    // the derived Debug rendering is a faithful structural comparison.
+    assert_eq!(
+        format!("{:?}", GROVE_V4.grovedb_versions),
+        format!("{:?}", GROVE_V3.grovedb_versions),
+        "a grovedb slot differs between V3 and V4 — if that is intentional, \
+         document the gate and update this test"
+    );
+    assert_eq!(
+        format!("{:?}", GROVE_V4.merk_versions),
+        format!("{:?}", GROVE_V3.merk_versions),
+        "a merk slot differs between V3 and V4 — if that is intentional, \
+         document the gate and update this test"
+    );
 }
 
 #[test]
