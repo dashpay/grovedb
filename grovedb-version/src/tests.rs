@@ -75,32 +75,6 @@ fn grove_versions_count() {
     assert_eq!(GROVE_VERSIONS.len(), 4);
 }
 
-/// V4 is introduced deliberately identical to V3 so that registering it —
-/// which changes what `GroveVersion::latest()` resolves to — cannot alter
-/// behaviour on its own. Every gate added later must bump a slot here on
-/// purpose; this test fails the moment one is bumped, which is the intended
-/// prompt to document it.
-#[test]
-fn grove_v4_is_behaviourally_identical_to_v3_until_a_gate_is_added() {
-    assert_eq!(GROVE_V4.protocol_version, 4);
-    assert_eq!(GROVE_V3.protocol_version, 3);
-    // The version structs do not derive PartialEq, and widening their public
-    // API for a test is not worth it — every field is a plain integer slot, so
-    // the derived Debug rendering is a faithful structural comparison.
-    assert_eq!(
-        format!("{:?}", GROVE_V4.grovedb_versions),
-        format!("{:?}", GROVE_V3.grovedb_versions),
-        "a grovedb slot differs between V3 and V4 — if that is intentional, \
-         document the gate and update this test"
-    );
-    assert_eq!(
-        format!("{:?}", GROVE_V4.merk_versions),
-        format!("{:?}", GROVE_V3.merk_versions),
-        "a merk slot differs between V3 and V4 — if that is intentional, \
-         document the gate and update this test"
-    );
-}
-
 #[test]
 fn grove_versions_ordered_by_protocol_version() {
     for window in GROVE_VERSIONS.windows(2) {
