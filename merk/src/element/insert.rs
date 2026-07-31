@@ -15,11 +15,24 @@ use crate::{
         costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
         get::ElementFetchFromStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
+    tree_type::TreeType,
     BatchEntry, CryptoHash, Error, Merk, MerkOptions, Op, TreeFeatureType,
 };
 
 /// Extension trait for inserting elements into Merk storage.
 pub trait ElementInsertToStorageExtensions {
+    /// Whether this element may legally live in a tree of `tree_type`.
+    ///
+    /// The rule the direct insert path has always enforced, lifted out so the
+    /// batch path can apply the identical check instead of a second copy that
+    /// can drift. It already had: a `SumItem` inserted into a count-only
+    /// indexed primary was refused through `Element::insert` but accepted
+    /// through a batch, where the caller's sum was then silently dropped.
+    ///
+    /// `get_feature_type` is NOT a substitute — it answers a different
+    /// question and admits several of the combinations rejected here.
+    fn validate_insertable_into(&self, tree_type: TreeType) -> Result<(), Error>;
+
     /// Insert an element in Merk under a key; path should be resolved and
     /// proper Merk should be loaded by this moment
     /// If transaction is not passed, the batch will be written immediately.
@@ -190,6 +203,34 @@ impl ElementInsertToStorageExtensions for Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
+    fn validate_insertable_into(&self, tree_type: TreeType) -> Result<(), Error> {
+        if self.is_non_counted() && !tree_type.accepts_non_counted_children() {
+            return Err(Error::InvalidInputError(
+                "non-counted elements may only be inserted into non-provable count-bearing \
+                 trees (CountTree or CountSumTree); Provable* count trees commit the count \
+                 cryptographically and cannot host NonCounted children",
+            ));
+        }
+        if self.is_not_summed() && !tree_type.is_sum_bearing() {
+            return Err(Error::InvalidInputError(
+                "not-summed elements may only be inserted into sum-bearing trees",
+            ));
+        }
+        if self.is_not_counted_or_summed() && !tree_type.accepts_not_counted_or_summed_children() {
+            return Err(Error::InvalidInputError(
+                "not-counted-or-summed elements may only be inserted into CountSumTree; \
+                 ProvableCountSumTree commits the count cryptographically and cannot host \
+                 NotCountedOrSummed children",
+            ));
+        }
+        if !tree_type.allows_sum_item() && self.is_sum_item() {
+            return Err(Error::InvalidInputError(
+                "cannot add sum item to non sum tree",
+            ));
+        }
+        Ok(())
+    }
+
     fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
         &self,
         merk: &mut Merk<S>,
@@ -201,38 +242,8 @@ impl ElementInsertToStorageExtensions for Element {
 
         let serialized = cost_return_on_error_into_default!(self.serialize(grove_version));
 
-        if self.is_non_counted() && !merk.tree_type.accepts_non_counted_children() {
-            return Err(Error::InvalidInputError(
-                "non-counted elements may only be inserted into non-provable count-bearing \
-                 trees (CountTree or CountSumTree); Provable* count trees commit the count \
-                 cryptographically and cannot host NonCounted children",
-            ))
-            .wrap_with_cost(Default::default());
-        }
-
-        if self.is_not_summed() && !merk.tree_type.is_sum_bearing() {
-            return Err(Error::InvalidInputError(
-                "not-summed elements may only be inserted into sum-bearing trees",
-            ))
-            .wrap_with_cost(Default::default());
-        }
-
-        if self.is_not_counted_or_summed()
-            && !merk.tree_type.accepts_not_counted_or_summed_children()
-        {
-            return Err(Error::InvalidInputError(
-                "not-counted-or-summed elements may only be inserted into CountSumTree; \
-                 ProvableCountSumTree commits the count cryptographically and cannot host \
-                 NotCountedOrSummed children",
-            ))
-            .wrap_with_cost(Default::default());
-        }
-
-        if !merk.tree_type.allows_sum_item() && self.is_sum_item() {
-            return Err(Error::InvalidInputError(
-                "cannot add sum item to non sum tree",
-            ))
-            .wrap_with_cost(Default::default());
+        if let Err(e) = self.validate_insertable_into(merk.tree_type) {
+            return Err(e).wrap_with_cost(Default::default());
         }
 
         let merk_feature_type =

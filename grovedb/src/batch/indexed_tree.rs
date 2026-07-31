@@ -151,6 +151,27 @@ pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
             }
             _ => false,
         };
+        // Child-type acceptance, delegated to merk's own rule rather than a
+        // second copy of it: `get_feature_type` is what decides whether an
+        // element can live in a tree of this type, and it is what the
+        // dedicated insert path already enforces. Without this the batch door
+        // accepted children the dedicated door refused — a `SumItem` in a
+        // count-only PCIT primary was written, `verify_grovedb` reported it
+        // clean, and the caller's sum was silently dropped because a
+        // count-only primary aggregates nothing else.
+        cost_return_on_error_no_add!(
+            cost,
+            element
+                .validate_insertable_into(primary_merk.tree_type)
+                .map_err(Error::MerkError)
+        );
+        cost_return_on_error_no_add!(
+            cost,
+            crate::operations::indexed_tree::validate_indexed_child_for_variant(
+                element,
+                primary_merk.tree_type,
+            )
+        );
         if rootless_with_aggregate {
             return Err(Error::InvalidBatchOperation(
                 "a child of an indexed-tree primary may not claim a non-zero \
