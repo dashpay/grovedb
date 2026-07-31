@@ -1,14 +1,28 @@
 //! Direct operations for indexed-tree elements (`ProvableCountIndexedTree`,
 //! `ProvableSumIndexedTree`, `ProvableCountProvableSumIndexedTree`).
 //!
-//! These dedicated APIs handle the two-Merk machinery for the single-axis
-//! variants (primary + one count-/sum-ordered secondary) and the
-//! multi-axis PCPSIT (primary + 1..=3 axis-specific secondaries). Direct
-//! mutations against an indexed-tree primary must go through these APIs
-//! (`insert_into_indexed_tree`, `delete_from_indexed_tree`); the
-//! level-by-level batch path fails closed for direct indexed-primary
-//! mutations until full batch integration lands. Deep ops *under* a
-//! sub-tree of a cidx primary propagate correctly through the existing
+//! Direct mutations against an indexed-tree primary must go through the
+//! dedicated APIs here (`insert_into_indexed_tree`,
+//! `delete_from_indexed_tree`) rather than the generic `insert`/`delete`,
+//! which reject an indexed primary as a target.
+//!
+//! Those APIs are **thin wrappers over the batch path**: they build a
+//! one-op batch and hand it to `apply_batch`, so the two-Merk machinery
+//! (primary + 1..=3 axis-specific secondaries) lives in exactly one place,
+//! [`crate::batch::indexed_tree`]. The consolidation is what makes the
+//! dedicated and batch entry points agree by construction instead of by
+//! two implementations being kept in sync; the earlier split was where the
+//! divergences came from.
+//!
+//! What remains here is the part the batch mirror cannot own: opening the
+//! per-axis secondary Merks for a batch to write into
+//! (`open_indexed_secondaries_for_batch`), the axis-derived key and
+//! sort-key encodings the mirror calls, the child-shape validation shared
+//! by both entry points, and the storage sweep for a dedicated indexed
+//! child being replaced.
+//!
+//! Deep ops *under* a sub-tree of an indexed primary need none of this —
+//! they propagate through the ordinary
 //! `propagate_changes_with_transaction_with_initial_deferred` machinery.
 
 use grovedb_costs::{

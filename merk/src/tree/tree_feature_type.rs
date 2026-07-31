@@ -68,6 +68,36 @@ impl AggregateData {
         }
     }
 
+    /// Returns the INDEXED tree type for this aggregate, for callers that
+    /// already know from context that the tree is an indexed primary.
+    ///
+    /// [`parent_tree_type`](Self::parent_tree_type) cannot answer this. An
+    /// indexed primary carries exactly the same aggregate payload as its
+    /// non-indexed counterpart — a `ProvableCountProvableSumIndexedTree` and a
+    /// `ProvableCountProvableSumTree` both carry
+    /// `ProvableCountAndProvableSum` — so the payload alone is ambiguous and
+    /// `parent_tree_type` resolves it to the non-indexed type. The
+    /// disambiguation has to come from the caller: the estimators reach this
+    /// only from `ReplaceAggregateIndexedTreeRootKeys`, an op emitted solely
+    /// for indexed primaries.
+    ///
+    /// The distinction is not cosmetic. An indexed element serializes its
+    /// per-axis secondary state, so the non-indexed type's `cost_size()` is
+    /// *smaller* than the indexed element's own minimum payload — 21 against
+    /// 28 bytes for PCPSIT — and using it under-charges the estimate.
+    ///
+    /// Returns `None` for the variants no indexed tree can carry.
+    pub fn indexed_parent_tree_type(&self) -> Option<TreeType> {
+        match self {
+            AggregateData::ProvableCount(_) => Some(TreeType::ProvableCountIndexedTree),
+            AggregateData::ProvableSum(_) => Some(TreeType::ProvableSumIndexedTree),
+            AggregateData::ProvableCountAndProvableSum(..) => {
+                Some(TreeType::ProvableCountProvableSumIndexedTree)
+            }
+            _ => None,
+        }
+    }
+
     /// Returns the sum value as `i64`, or 0 if not a sum variant.
     pub fn as_sum_i64(&self) -> i64 {
         match self {
@@ -157,6 +187,61 @@ impl From<TreeFeatureType> for AggregateData {
 #[cfg(feature = "minimal")]
 mod tests {
     use super::*;
+
+    /// The indexed mapping must NOT collapse onto `parent_tree_type`.
+    ///
+    /// Each indexed primary carries the same aggregate payload as its
+    /// non-indexed counterpart, so a regression to `parent_tree_type` is
+    /// invisible unless something asserts the two disagree — and it
+    /// under-sizes every indexed element in the estimators.
+    #[test]
+    fn indexed_parent_tree_type_disagrees_with_parent_tree_type() {
+        use crate::tree_type::CostSize;
+
+        for agg in [
+            AggregateData::ProvableCount(3),
+            AggregateData::ProvableSum(7),
+            AggregateData::ProvableCountAndProvableSum(1, 2),
+        ] {
+            let indexed = agg
+                .indexed_parent_tree_type()
+                .expect("every provable aggregate maps to an indexed tree type");
+            assert_ne!(
+                indexed,
+                agg.parent_tree_type(),
+                "{agg:?} must map to a distinct INDEXED tree type"
+            );
+            assert!(
+                indexed.cost_size() > agg.parent_tree_type().cost_size(),
+                "{agg:?}: the indexed element serializes per-axis secondary \
+                 state, so it cannot cost less than the non-indexed one"
+            );
+        }
+
+        assert_eq!(
+            AggregateData::ProvableCountAndProvableSum(1, 2)
+                .indexed_parent_tree_type()
+                .unwrap()
+                .cost_size()
+                - AggregateData::ProvableCountAndProvableSum(1, 2)
+                    .parent_tree_type()
+                    .cost_size(),
+            7,
+            "PCPSIT's axes TLV is the 7 bytes the old mapping dropped"
+        );
+
+        // Aggregates no indexed tree can carry get no indexed type.
+        for agg in [
+            AggregateData::NoAggregateData,
+            AggregateData::Sum(1),
+            AggregateData::BigSum(1),
+            AggregateData::Count(1),
+            AggregateData::CountAndSum(1, 2),
+            AggregateData::ProvableCountAndSum(1, 2),
+        ] {
+            assert_eq!(agg.indexed_parent_tree_type(), None, "{agg:?}");
+        }
+    }
 
     #[test]
     fn aggregate_data_parent_tree_type_all_variants() {

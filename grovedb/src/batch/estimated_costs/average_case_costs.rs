@@ -368,10 +368,19 @@ impl GroveOp {
                 // element's value_hash. The per-axis secondary Merk work is
                 // charged at the PRIMARY's own level in `execute_ops_on_path`,
                 // where the primary's layer information is in scope.
+                //
+                // The node must be sized as the INDEXED type: an indexed
+                // element serializes its per-axis secondary state, so the
+                // non-indexed type `parent_tree_type()` yields is smaller than
+                // the element's own minimum payload. The fallback covers only
+                // hand-built ops carrying a non-indexed aggregate, which
+                // `execute_ops_on_path` never emits.
                 GroveDb::average_case_merk_replace_tree(
                     key,
                     layer_element_estimates,
-                    primary_aggregate_data.parent_tree_type(),
+                    primary_aggregate_data
+                        .indexed_parent_tree_type()
+                        .unwrap_or_else(|| primary_aggregate_data.parent_tree_type()),
                     propagate,
                     grove_version,
                 )

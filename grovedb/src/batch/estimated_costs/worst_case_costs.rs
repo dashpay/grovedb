@@ -375,7 +375,12 @@ impl GroveOp {
                 ..
             } => GroveDb::worst_case_merk_replace_tree(
                 key,
-                primary_aggregate_data.parent_tree_type(),
+                // Sized as the INDEXED type — see the note on
+                // `indexed_parent_tree_type`; the non-indexed type is smaller
+                // than the indexed element's own minimum payload.
+                primary_aggregate_data
+                    .indexed_parent_tree_type()
+                    .unwrap_or_else(|| primary_aggregate_data.parent_tree_type()),
                 in_parent_tree_type,
                 worst_case_layer_element_estimates,
                 propagate,
@@ -1478,8 +1483,8 @@ mod tests {
     /// `worst_case_cost`. The op is emitted by `execute_ops_on_path` when
     /// a level's path resolves to a Count/ProvableCount-indexed primary
     /// — the worst-case path here just delegates to
-    /// `worst_case_merk_replace_tree` with the carried
-    /// `primary_aggregate_data.parent_tree_type()`.
+    /// `worst_case_merk_replace_tree` with the indexed tree type derived
+    /// from the carried `primary_aggregate_data`.
     #[test]
     fn test_replace_aggregate_indexed_tree_root_keys_worst_case_cost_direct() {
         let grove_version = GroveVersion::latest();
@@ -1489,7 +1494,7 @@ mod tests {
         let op_count = GroveOp::ReplaceAggregateIndexedTreeRootKeys {
             primary_hash: [1u8; 32],
             primary_root_key: Some(b"prk".to_vec()),
-            primary_aggregate_data: AggregateData::Count(42),
+            primary_aggregate_data: AggregateData::ProvableCount(42),
             axes: vec![(0u8, [2u8; 32], Some(b"srk".to_vec()))],
         };
         let cost_count = op_count
