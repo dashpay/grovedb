@@ -418,15 +418,19 @@ pub enum GroveOp {
         primary_hash: [u8; 32],
         /// Primary Merk's new root key.
         primary_root_key: Option<Vec<u8>>,
-        /// Primary Merk's new aggregate. Today always one of
-        /// `AggregateData::Count` / `AggregateData::ProvableCount`;
-        /// future aggregate-indexed shapes (Sum, BigSum, ...) reuse this
-        /// op with their corresponding `AggregateData` variant.
+        /// Primary Merk's new aggregate, whichever the indexed variant
+        /// carries — count for PCIT, sum for PSIT, count-and-sum for PCPSIT.
         primary_aggregate_data: AggregateData,
-        /// Secondary Merk's new root hash.
-        secondary_hash: [u8; 32],
-        /// Secondary Merk's new root key.
-        secondary_root_key: Option<Vec<u8>>,
+        /// Every configured axis's new state, as
+        /// `(axis_tag, root_hash, root_key)`, in the element's canonical axis
+        /// order. One entry for the single-axis variants (PCIT, PSIT); up to
+        /// three for a PCPSIT indexing count, sum and avg.
+        ///
+        /// The consumer rebuilds the element from these and derives the second
+        /// input to the H1-A `combine_hash_three`: the single axis's root hash
+        /// directly for PCIT/PSIT, or `axes_digest` over all of them for
+        /// PCPSIT.
+        axes: Vec<(u8, [u8; 32], Option<Vec<u8>>)>,
     },
     /// Refresh a reference. The full op shape (which on-disk variant,
     /// trust mode, sum-update behavior) lives in `mode` — see
@@ -1440,23 +1444,43 @@ impl GroveDbOpConsistencyResults {
     }
 }
 
+/// Axes an indexed primary maintains, derived from its tree type.
+///
+/// PCIT and PSIT are single-axis by construction. A PCPSIT's axes are carried
+/// by its ELEMENT, not its tree type, so the widest set is assumed here for
+/// the key-length bound; the actual per-axis mirroring is driven by the axes
+/// the secondary-opening closure reads off the element.
+fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::indexed::IndexAxis> {
+    use grovedb_element::indexed::IndexAxis;
+    match tree_type {
+        TreeType::ProvableSumIndexedTree => vec![IndexAxis::Sum],
+        TreeType::ProvableCountProvableSumIndexedTree => {
+            vec![IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]
+        }
+        _ => vec![IndexAxis::Count],
+    }
+}
+
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
     get_merk_fn: F,
-    /// Opens a CountIndexedTree secondary Merk given the cidx primary's
-    /// path. Used when ops mutate a cidx primary so the secondary mirror
-    /// stays in sync at apply time. The closure is responsible for
-    /// reading the cidx element from the parent merk to discover the
-    /// secondary's current root key, then opening the secondary at the
-    /// derived prefix.
-    get_secondary_merk_fn: F2,
-    /// Per-cidx-primary captured secondary state after apply, keyed by
-    /// the primary's path. Populated by `execute_ops_on_path` when the
-    /// path's merk is a cidx primary; consumed by the bubble-up code so
-    /// a `ReplaceAggregateIndexedTreeRootKeys` op can be emitted on the
-    /// parent level carrying both primary and secondary state.
-    cidx_secondary_after_apply: HashMap<Vec<Vec<u8>>, (CryptoHash, Option<Vec<u8>>)>,
+    /// Opens EVERY configured axis secondary for an indexed primary, given
+    /// the primary's path. Used when ops mutate an indexed primary so the
+    /// mirrors stay in sync at apply time. The closure reads the indexed
+    /// element from the parent merk to learn the configured axes and each
+    /// axis's current root key, then opens one secondary per axis at its
+    /// derived prefix. PCIT/PSIT yield one; a PCPSIT indexing count+sum+avg
+    /// yields three.
+    get_secondary_merks_fn: F2,
+    /// Per-indexed-primary captured secondary state after apply, keyed by the
+    /// primary's path, as `(axis_tag, root_hash, root_key)` in the element's
+    /// canonical axis order. Populated by `execute_ops_on_path` when the
+    /// path's merk is an indexed primary; consumed by the bubble-up code so a
+    /// `ReplaceAggregateIndexedTreeRootKeys` op can be emitted on the parent
+    /// level carrying the primary plus every axis's state — one entry for
+    /// PCIT/PSIT, up to three for PCPSIT.
+    indexed_secondary_after_apply: HashMap<Vec<Vec<u8>>, Vec<(u8, CryptoHash, Option<Vec<u8>>)>>,
     /// Cidx primary paths whose old storage (primary subtree + secondary
     /// namespace) must be cleaned up at apply_batch's post-apply phase
     /// because an InsertOrReplace / Replace / Patch op replaced the
@@ -1510,7 +1534,7 @@ trait TreeCache<G, SR> {
     fn take_cidx_secondary_after_apply(
         &mut self,
         _path: &[Vec<u8>],
-    ) -> Option<(CryptoHash, Option<Vec<u8>>)> {
+    ) -> Option<Vec<(u8, CryptoHash, Option<Vec<u8>>)>> {
         None
     }
 
@@ -1527,7 +1551,7 @@ trait TreeCache<G, SR> {
 impl<'db, S, F, F2> TreeCacheMerkByPath<S, F, F2>
 where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    F2: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(&[Vec<u8>]) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
     /// Processes a reference, determining whether it can be retrieved from a
@@ -2189,7 +2213,7 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    F2: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(&[Vec<u8>]) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
     fn insert(
@@ -2215,8 +2239,8 @@ where
     fn take_cidx_secondary_after_apply(
         &mut self,
         path: &[Vec<u8>],
-    ) -> Option<(CryptoHash, Option<Vec<u8>>)> {
-        self.cidx_secondary_after_apply.remove(path)
+    ) -> Option<Vec<(u8, CryptoHash, Option<Vec<u8>>)>> {
+        self.indexed_secondary_after_apply.remove(path)
     }
 
     fn take_cidx_overwrite_cleanup_paths(&mut self) -> Vec<Vec<Vec<u8>>> {
@@ -2283,12 +2307,18 @@ where
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
         // secondary entry needs to move; we capture it here too.
-        let cidx_pre_state: Option<BTreeMap<Vec<u8>, Option<u64>>> =
-            if in_tree_type.is_count_indexed_primary() {
+        let indexed_pre_state: Option<BTreeMap<Vec<u8>, Option<(u64, i64)>>> =
+            if in_tree_type.is_indexed_primary() {
                 let merk = self.merks.get(path).expect("the Merk is cached");
+                let axes = indexed_axes_for_tree_type(in_tree_type);
                 Some(cost_return_on_error!(
                     &mut cost,
-                    indexed_tree::capture_cidx_pre_state(merk, &ops_at_path_by_key, grove_version,)
+                    indexed_tree::capture_indexed_pre_state(
+                        merk,
+                        &ops_at_path_by_key,
+                        &axes,
+                        grove_version,
+                    )
                 ))
             } else {
                 None
@@ -3376,26 +3406,24 @@ where
                     primary_hash,
                     primary_root_key,
                     primary_aggregate_data,
-                    secondary_hash,
-                    secondary_root_key,
+                    axes,
                 } => {
-                    // Bubble-up from a cidx primary's level. The
-                    // `path` here is the parent merk where the cidx
-                    // ELEMENT lives; key_info points at the cidx
-                    // element. Recompute the cidx element's
-                    // value_hash via H1-A using the primary's and
-                    // secondary's new root hashes.
+                    // Bubble-up from an indexed primary's level. The `path`
+                    // here is the parent merk where the indexed ELEMENT lives;
+                    // key_info points at that element. Recompute its
+                    // value_hash via H1-A from the primary's new root hash and
+                    // the axes' new state — the single axis's root hash for
+                    // PCIT/PSIT, the axes digest for PCPSIT.
                     let merk = self.merks.get(path).expect("the Merk is cached");
                     cost_return_on_error!(
                         &mut cost,
-                        GroveDb::update_count_indexed_tree_item_preserve_flag_into_batch_operations(
+                        GroveDb::update_indexed_tree_item_preserve_flag_into_batch_operations(
                             merk,
                             key_info.get_key(),
                             primary_root_key,
-                            secondary_root_key,
+                            axes,
                             primary_aggregate_data,
                             primary_hash,
-                            secondary_hash,
                             &mut batch_operations,
                             grove_version,
                         )
@@ -3558,23 +3586,28 @@ where
         // mutation to the secondary and capture the secondary's
         // post-mirror state into `cidx_secondary_after_apply` so the
         // bubble-up can emit `ReplaceAggregateIndexedTreeRootKeys`.
-        if let Some(pre) = cidx_pre_state {
-            // Open the secondary via the closure (it does the parent
-            // merk lookup to find the current secondary_root_key).
-            let mut secondary_merk =
-                cost_return_on_error!(&mut cost, (self.get_secondary_merk_fn)(path));
+        if let Some(pre) = indexed_pre_state {
+            // Open every configured axis secondary via the closure (it does the
+            // parent merk lookup to learn the axes and their current root
+            // keys), then mirror each one from the same captured pre-state.
+            let secondaries = cost_return_on_error!(&mut cost, (self.get_secondary_merks_fn)(path));
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
-            let (sec_hash, sec_root_key) = cost_return_on_error!(
-                &mut cost,
-                indexed_tree::apply_cidx_secondary_mirror_post_apply(
-                    primary_merk,
-                    pre,
-                    &mut secondary_merk,
-                    grove_version,
-                )
-            );
-            self.cidx_secondary_after_apply
-                .insert(path.to_vec(), (sec_hash, sec_root_key));
+            let mut per_axis = Vec::with_capacity(secondaries.len());
+            for (axis, mut secondary_merk) in secondaries {
+                let (sec_hash, sec_root_key) = cost_return_on_error!(
+                    &mut cost,
+                    indexed_tree::apply_indexed_secondary_mirror_post_apply(
+                        primary_merk,
+                        &pre,
+                        axis,
+                        &mut secondary_merk,
+                        grove_version,
+                    )
+                );
+                per_axis.push((axis.tag(), sec_hash, sec_root_key));
+            }
+            self.indexed_secondary_after_apply
+                .insert(path.to_vec(), per_axis);
         }
 
         let merk = self.merks.get_mut(path).expect("the Merk is cached");
@@ -3704,16 +3737,13 @@ impl GroveDb {
                                 {
                                     match ops_on_path.entry(key.clone()) {
                                         Entry::Vacant(vacant_entry) => {
-                                            if let Some((sec_hash, sec_root_key)) =
-                                                cidx_secondary_state
-                                            {
+                                            if let Some(axes) = cidx_secondary_state {
                                                 vacant_entry.insert(
                                                     GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                                                         primary_hash: root_hash,
                                                         primary_root_key: calculated_root_key,
                                                         primary_aggregate_data: aggregate_data,
-                                                        secondary_hash: sec_hash,
-                                                        secondary_root_key: sec_root_key,
+                                                        axes,
                                                     },
                                                 );
                                             } else {
@@ -3732,10 +3762,8 @@ impl GroveDb {
                                                     root_key,
                                                     aggregate_data: aggregate_data_entry,
                                                 } => {
-                                                    if let Some((sec_hash, sec_root_key)) =
-                                                        cidx_secondary_state
-                                                    {
-                                                        // Upgrade to the cidx variant so
+                                                    if let Some(axes) = cidx_secondary_state {
+                                                        // Upgrade to the indexed variant so
                                                         // the parent merk's value_hash
                                                         // is recomputed via H1-A.
                                                         *mutable_occupied_entry =
@@ -3745,8 +3773,7 @@ impl GroveDb {
                                                                     calculated_root_key,
                                                                 primary_aggregate_data:
                                                                     aggregate_data,
-                                                                secondary_hash: sec_hash,
-                                                                secondary_root_key: sec_root_key,
+                                                                axes,
                                                             };
                                                     } else {
                                                         *hash = root_hash;
@@ -4096,15 +4123,12 @@ impl GroveDb {
                                 } else {
                                     let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> =
                                         BTreeMap::new();
-                                    let new_op = if let Some((sec_hash, sec_root_key)) =
-                                        cidx_secondary_state
-                                    {
+                                    let new_op = if let Some(axes) = cidx_secondary_state {
                                         GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                                             primary_hash: root_hash,
                                             primary_root_key: calculated_root_key,
                                             primary_aggregate_data: aggregate_data,
-                                            secondary_hash: sec_hash,
-                                            secondary_root_key: sec_root_key,
+                                            axes,
                                         }
                                     } else {
                                         GroveOp::ReplaceTreeRootKey {
@@ -4118,22 +4142,20 @@ impl GroveDb {
                                 }
                             } else {
                                 let mut ops_on_path: BTreeMap<KeyInfo, GroveOp> = BTreeMap::new();
-                                let new_op =
-                                    if let Some((sec_hash, sec_root_key)) = cidx_secondary_state {
-                                        GroveOp::ReplaceAggregateIndexedTreeRootKeys {
-                                            primary_hash: root_hash,
-                                            primary_root_key: calculated_root_key,
-                                            primary_aggregate_data: aggregate_data,
-                                            secondary_hash: sec_hash,
-                                            secondary_root_key: sec_root_key,
-                                        }
-                                    } else {
-                                        GroveOp::ReplaceTreeRootKey {
-                                            hash: root_hash,
-                                            root_key: calculated_root_key,
-                                            aggregate_data,
-                                        }
-                                    };
+                                let new_op = if let Some(axes) = cidx_secondary_state {
+                                    GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                                        primary_hash: root_hash,
+                                        primary_root_key: calculated_root_key,
+                                        primary_aggregate_data: aggregate_data,
+                                        axes,
+                                    }
+                                } else {
+                                    GroveOp::ReplaceTreeRootKey {
+                                        hash: root_hash,
+                                        root_key: calculated_root_key,
+                                        aggregate_data,
+                                    }
+                                };
                                 ops_on_path.insert(key.clone(), new_op);
                                 let mut ops_on_level: BTreeMap<
                                     KeyInfoPath,
@@ -4180,7 +4202,12 @@ impl GroveDb {
             Error,
         >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-        get_secondary_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+        get_secondary_merks_fn: impl FnMut(
+            &[Vec<u8>],
+        ) -> CostResult<
+            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
+            Error,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
         check_grovedb_v0_with_cost!(
@@ -4197,8 +4224,8 @@ impl GroveDb {
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
-                    get_secondary_merk_fn,
-                    cidx_secondary_after_apply: Default::default(),
+                    get_secondary_merks_fn,
+                    indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                 }
             )
@@ -4229,7 +4256,12 @@ impl GroveDb {
             Error,
         >,
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-        get_secondary_merk_fn: impl FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+        get_secondary_merks_fn: impl FnMut(
+            &[Vec<u8>],
+        ) -> CostResult<
+            Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
+            Error,
+        >,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<OpsByLevelPath>, Vec<Vec<Vec<u8>>>), Error> {
         check_grovedb_v0_with_cost!(
@@ -4250,8 +4282,8 @@ impl GroveDb {
                 TreeCacheMerkByPath {
                     merks: Default::default(),
                     get_merk_fn,
-                    get_secondary_merk_fn,
-                    cidx_secondary_after_apply: Default::default(),
+                    get_secondary_merks_fn,
+                    indexed_secondary_after_apply: Default::default(),
                     cidx_overwrite_cleanup_paths: Default::default(),
                 }
             )
@@ -5068,7 +5100,7 @@ impl GroveDb {
                     let primary_refs: Vec<&[u8]> =
                         primary_path.iter().map(|v| v.as_slice()).collect();
                     let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
-                    self.open_count_indexed_secondary_for_batch(
+                    self.open_indexed_secondaries_for_batch(
                         cidx_path,
                         &storage_batch,
                         tx.as_ref(),
@@ -5615,7 +5647,7 @@ impl GroveDb {
                     let primary_refs: Vec<&[u8]> =
                         primary_path.iter().map(|v| v.as_slice()).collect();
                     let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
-                    self.open_count_indexed_secondary_for_batch(
+                    self.open_indexed_secondaries_for_batch(
                         cidx_path,
                         &storage_batch,
                         tx.as_ref(),
@@ -5700,7 +5732,7 @@ impl GroveDb {
                     let primary_refs: Vec<&[u8]> =
                         primary_path.iter().map(|v| v.as_slice()).collect();
                     let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
-                    self.open_count_indexed_secondary_for_batch(
+                    self.open_indexed_secondaries_for_batch(
                         cidx_path,
                         &continue_storage_batch,
                         tx.as_ref(),

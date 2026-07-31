@@ -24,7 +24,7 @@ use crate::{
 impl<'db, S, F, F2> TreeCacheMerkByPath<S, F, F2>
 where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    F2: FnMut(&[Vec<u8>]) -> CostResult<Merk<S>, Error>,
+    F2: FnMut(&[Vec<u8>]) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
     pub(crate) fn process_old_element_flags<G, SR>(

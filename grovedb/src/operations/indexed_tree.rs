@@ -525,22 +525,33 @@ impl GroveDb {
     /// primary at `path`. Reads the parent merk's cidx element to discover
     /// the secondary's current root_key, then opens the secondary at the
     /// derived prefix sharing the supplied storage batch and transaction.
-    pub(crate) fn open_count_indexed_secondary_for_batch<'db, 'b, B>(
+    /// Open every configured axis secondary for an indexed primary, for the
+    /// batch apply path.
+    ///
+    /// Reads the indexed element from the parent merk once to learn which axes
+    /// are configured and each axis's current secondary root key, then opens
+    /// one Merk per axis. PCIT and PSIT have exactly one axis (count / sum
+    /// respectively); PCPSIT carries a canonical 1..=3 axes TLV, so a tree
+    /// indexing count+sum+avg yields three secondaries here.
+    ///
+    /// Returns them in the element's canonical axis order so the caller's
+    /// per-axis state stays aligned with the axes digest.
+    pub(crate) fn open_indexed_secondaries_for_batch<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
         batch: &'db StorageBatch,
         tx: &'db Transaction,
         grove_version: &GroveVersion,
-    ) -> CostResult<Merk<PrefixedRocksDbTransactionContext<'db>>, Error>
+    ) -> CostResult<Vec<(IndexAxis, Merk<PrefixedRocksDbTransactionContext<'db>>)>, Error>
     where
         B: AsRef<[u8]> + 'b,
     {
         let mut cost = OperationCost::default();
-        let (parent_path, cidx_key) = match path.derive_parent() {
+        let (parent_path, indexed_key) = match path.derive_parent() {
             Some(p) => p,
             None => {
                 return Err(Error::InvalidPath(
-                    "cannot open cidx secondary at root path".to_string(),
+                    "cannot open indexed secondaries at root path".to_string(),
                 ))
                 .wrap_with_cost(cost);
             }
@@ -551,28 +562,50 @@ impl GroveDb {
         );
         let element = cost_return_on_error!(
             &mut cost,
-            Element::get(&parent_merk, cidx_key, true, grove_version).map_err(Error::MerkError)
+            Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
         );
-        let secondary_root_key = match element.underlying() {
-            Element::ProvableCountIndexedTree(_, s, ..) => s.clone(),
-            _ => {
-                return Err(Error::CorruptedData(
-                    "open_count_indexed_secondary_for_batch: parent element is not a \
-                     ProvableCountIndexedTree"
-                        .to_string(),
-                ))
+        let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match element.underlying() {
+            Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
+            Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
+                let mut out = Vec::with_capacity(axes.len());
+                for (tag, root_key) in axes {
+                    let axis = cost_return_on_error_no_add!(
+                        cost,
+                        IndexAxis::try_from_tag(*tag).map_err(|e| Error::CorruptedData(format!(
+                            "open_indexed_secondaries_for_batch: invalid axis tag: {e}"
+                        )))
+                    );
+                    out.push((axis, root_key.clone()));
+                }
+                out
+            }
+            other => {
+                return Err(Error::CorruptedData(format!(
+                    "open_indexed_secondaries_for_batch: parent element is not an indexed tree, \
+                     got {}",
+                    other.type_str()
+                )))
                 .wrap_with_cost(cost);
             }
         };
-        self.open_indexed_secondary_at_path(
-            path,
-            IndexAxis::Count,
-            secondary_root_key,
-            tx,
-            Some(batch),
-            grove_version,
-        )
-        .add_cost(cost)
+
+        let mut merks = Vec::with_capacity(axes.len());
+        for (axis, root_key) in axes {
+            let merk = cost_return_on_error!(
+                &mut cost,
+                self.open_indexed_secondary_at_path(
+                    path.clone(),
+                    axis,
+                    root_key,
+                    tx,
+                    Some(batch),
+                    grove_version,
+                )
+            );
+            merks.push((axis, merk));
+        }
+        Ok(merks).wrap_with_cost(cost)
     }
 
     /// Insert (or update) an item under a key into a `CountIndexedTree`

@@ -70,8 +70,7 @@ mod tests {
             primary_hash: [1u8; 32],
             primary_root_key: Some(b"pk".to_vec()),
             primary_aggregate_data: AggregateData::ProvableCount(3),
-            secondary_hash: [2u8; 32],
-            secondary_root_key: Some(b"sk".to_vec()),
+            axes: vec![(0u8, [2u8; 32], Some(b"sk".to_vec()))],
         };
         // L489: the exact tag, not just a relative ordering.
         assert_eq!(op.to_u8(), 17);
@@ -136,8 +135,7 @@ mod tests {
             primary_hash: [0u8; 32],
             primary_root_key: None,
             primary_aggregate_data: AggregateData::ProvableCount(0),
-            secondary_hash: [0u8; 32],
-            secondary_root_key: None,
+            axes: vec![(0u8, [0u8; 32], None)],
         }
         .can_mutate_child_count());
     }
@@ -622,9 +620,7 @@ mod tests {
         match db.apply_batch(ops, None, None, grove_version).unwrap() {
             Err(Error::NotSupported(msg)) => {
                 assert!(
-                    msg.contains(
-                        "populating a freshly-inserted indexed-tree element in the same batch"
-                    ),
+                    msg.contains("populating a freshly-inserted indexed tree"),
                     "expected the fresh-indexed-tree bubble-up rejection, got: {msg}"
                 );
             }
@@ -658,9 +654,7 @@ mod tests {
         match db.apply_batch(ops, None, None, grove_version).unwrap() {
             Err(Error::NotSupported(msg)) => {
                 assert!(
-                    msg.contains(
-                        "populating a freshly-inserted indexed-tree element in the same batch"
-                    ),
+                    msg.contains("populating a freshly-inserted indexed tree"),
                     "expected the fresh-indexed-tree bubble-up rejection, got: {msg}"
                 );
             }

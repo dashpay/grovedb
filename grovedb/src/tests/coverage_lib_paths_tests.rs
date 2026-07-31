@@ -769,13 +769,12 @@ mod tests {
             .expect("open test leaf merk");
 
         let mut ops: Vec<BatchEntry<Vec<u8>>> = Vec::new();
-        let result = GroveDb::update_count_indexed_tree_item_preserve_flag_into_batch_operations(
+        let result = GroveDb::update_indexed_tree_item_preserve_flag_into_batch_operations(
             &merk,
             b"plain".to_vec(),
             None,
-            None,
+            vec![(0u8, ZERO_HASH, None)],
             AggregateData::NoAggregateData,
-            ZERO_HASH,
             ZERO_HASH,
             &mut ops,
             grove_version,
@@ -784,9 +783,8 @@ mod tests {
 
         match result.expect_err("a plain Tree is not an indexed element") {
             Error::InvalidPath(message) => assert!(
-                message.contains(
-                    "update_count_indexed_tree_item_preserve_flag: existing element is not a"
-                ),
+                message
+                    .contains("update_indexed_tree_item_preserve_flag: existing element is not an"),
                 "unexpected message: {message}"
             ),
             other => panic!("expected InvalidPath, got {other:?}"),

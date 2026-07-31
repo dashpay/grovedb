@@ -406,6 +406,9 @@ pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     /// Paths whose layer is an indexed primary, so the bubble-up emits the
     /// same `ReplaceAggregateIndexedTreeRootKeys` op a real apply produces.
     pending_cidx_secondary: HashSet<Vec<Vec<u8>>>,
+    /// The axes each pending path maintains, so the emitted op carries one
+    /// entry per axis exactly as a real apply would.
+    pending_cidx_axes: HashMap<Vec<Vec<u8>>, Vec<grovedb_element::indexed::IndexAxis>>,
 }
 
 #[cfg(feature = "minimal")]
@@ -418,6 +421,7 @@ impl AverageCaseTreeCacheKnownPaths {
             paths,
             cached_merks: HashMap::default(),
             pending_cidx_secondary: HashSet::default(),
+            pending_cidx_axes: HashMap::default(),
         }
     }
 }
@@ -439,9 +443,19 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     fn take_cidx_secondary_after_apply(
         &mut self,
         path: &[Vec<u8>],
-    ) -> Option<(grovedb_merk::CryptoHash, Option<Vec<u8>>)> {
+    ) -> Option<Vec<(u8, grovedb_merk::CryptoHash, Option<Vec<u8>>)>> {
         if self.pending_cidx_secondary.remove(path) {
-            Some(([0u8; 32], None))
+            // Placeholder per-axis state: the estimator only needs the op SHAPE
+            // to charge the right parent-node update, not real hashes. One
+            // entry per axis so the shape matches what a real apply produces.
+            Some(
+                self.pending_cidx_axes
+                    .remove(path)
+                    .unwrap_or_else(|| vec![grovedb_element::indexed::IndexAxis::Count])
+                    .into_iter()
+                    .map(|axis| (axis.tag(), [0u8; 32], None))
+                    .collect(),
+            )
         } else {
             None
         }
@@ -579,6 +593,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
                 );
             }
             self.pending_cidx_secondary.insert(path.to_path());
+            self.pending_cidx_axes.insert(path.to_path(), axes.clone());
         }
 
         Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
@@ -1927,8 +1942,7 @@ mod tests {
             primary_hash: [0xCDu8; 32],
             primary_root_key: Some(b"prk".to_vec()),
             primary_aggregate_data: AggregateData::Count(123),
-            secondary_hash: [0xEFu8; 32],
-            secondary_root_key: Some(b"srk".to_vec()),
+            axes: vec![(0u8, [0xEFu8; 32], Some(b"srk".to_vec()))],
         };
         let cost_count = op_count
             .average_case_cost(&key, &layer_info, false, grove_version)
@@ -1940,8 +1954,7 @@ mod tests {
             primary_hash: [9u8; 32],
             primary_root_key: None,
             primary_aggregate_data: AggregateData::ProvableCount(11),
-            secondary_hash: [8u8; 32],
-            secondary_root_key: None,
+            axes: vec![(0u8, [8u8; 32], None)],
         };
         let cost_pcount = op_pcount
             .average_case_cost(&key, &layer_info, true, grove_version)

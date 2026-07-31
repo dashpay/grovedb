@@ -44,14 +44,16 @@ use grovedb_merk::{
         costs::ElementCostExtensions, delete::ElementDeleteFromStorageExtensions,
         insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
     },
-    tree_type::TreeType,
     BatchEntry, CryptoHash, Merk,
 };
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
 use super::{GroveOp, KeyInfo, QualifiedGroveDbOp};
-use crate::{operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN, Element, Error};
+use crate::{
+    operations::indexed_tree::{make_axis_secondary_key, MAX_CIDX_ITEM_KEY_LEN},
+    Element, Error,
+};
 
 /// Capture, *before* batch ops are applied to the primary merk, the
 /// pre-apply `count_value` for each key this level's ops will mutate.
@@ -66,24 +68,28 @@ use crate::{operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN, Element, Error};
 ///
 /// Only ops whose `can_mutate_child_count()` is true are captured —
 /// non-count-mutating ops (e.g., `CommitmentTreeInsert`) are skipped.
-pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
+pub(crate) fn capture_indexed_pre_state<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     ops_at_path_by_key: &BTreeMap<KeyInfo, GroveOp>,
+    axes: &[IndexAxis],
     grove_version: &GroveVersion,
-) -> CostResult<BTreeMap<Vec<u8>, Option<u64>>, Error> {
+) -> CostResult<BTreeMap<Vec<u8>, Option<(u64, i64)>>, Error> {
     let mut cost = OperationCost::default();
 
-    // Bound the item key length so the derived secondary key
-    // (count_be ‖ item_key) stays under merk's 256-byte limit.
-    // Generic batch validation only enforces the 255-byte cap; cidx
-    // primaries need 247 bytes to leave room for the 8-byte count
-    // prefix in the secondary.
+    // Loosest bound that applies to EVERY axis (count and sum both prepend 8
+    // bytes). Generic batch validation only enforces the 255-byte cap. The
+    // tighter avg bound (16-byte prefix, 239 bytes) is enforced per axis in
+    // `apply_indexed_secondary_mirror_post_apply`, where the axis is known —
+    // deriving it here from the tree type alone would assume every PCPSIT
+    // indexes avg and wrongly reject 240..=247-byte keys on one that does
+    // not, which the dedicated insert path accepts.
+    let _ = axes;
     for key_info in ops_at_path_by_key.keys() {
         if key_info.as_slice().len() > MAX_CIDX_ITEM_KEY_LEN {
             return Err(Error::InvalidInput(
-                "item key for a CountIndexedTree primary must be at most 247 bytes in batch \
-                 ops (the secondary index prepends an 8-byte count, and Merk requires keys \
-                 < 256 bytes)",
+                "item key for an indexed-tree primary must be at most 247 bytes in batch ops \
+                 (the secondary key is sort_key ‖ item_key and Merk requires keys < 256 \
+                 bytes); a tree indexing the avg axis is bounded further at 239",
             ))
             .wrap_with_cost(cost);
         }
@@ -157,7 +163,7 @@ pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
         }
     }
 
-    let mut pre: BTreeMap<Vec<u8>, Option<u64>> = BTreeMap::new();
+    let mut pre: BTreeMap<Vec<u8>, Option<(u64, i64)>> = BTreeMap::new();
     for (key_info, op) in ops_at_path_by_key.iter() {
         let key_bytes = key_info.get_key_clone();
         // Single source of truth: `GroveOp::can_mutate_child_count`
@@ -176,48 +182,59 @@ pub(crate) fn capture_cidx_pre_state<'db, S: StorageContext<'db>>(
                         grove_version,
                     )
                     .map_err(|e| Error::CorruptedData(format!(
-                        "cidx pre-state read for key {}: {e}",
+                        "indexed pre-state read for key {}: {e}",
                         hex::encode(&key_bytes)
                     )))
             );
-            let old_count = if let Some(bytes) = maybe_bytes {
+            // Both aggregates are captured regardless of which axes are
+            // configured: the avg axis derives its sort key from the pair, and
+            // a PCPSIT can index count, sum and avg simultaneously.
+            let old_aggregates = if let Some(bytes) = maybe_bytes {
                 let elem = cost_return_on_error_no_add!(
                     cost,
                     Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
-                        Error::CorruptedData(format!("cidx pre-state deserialize: {e}"))
+                        Error::CorruptedData(format!("indexed pre-state deserialize: {e}"))
                     })
                 );
-                Some(elem.count_value_or_default())
+                Some(elem.count_sum_value_or_default())
             } else {
                 None
             };
-            pre.insert(key_bytes, old_count);
+            pre.insert(key_bytes, old_aggregates);
         }
     }
     Ok(pre).wrap_with_cost(cost)
 }
 
-/// Apply the secondary-mirror update for every key captured by
-/// [`capture_cidx_pre_state`], after the primary merk's batch ops
-/// have been applied. Returns the secondary merk's post-mirror
-/// `(root_hash, root_key)` for the caller to fold into the parent's
-/// H1-A `combine_hash_three` composition.
+/// Apply one axis's secondary-mirror update for every key captured by
+/// [`capture_indexed_pre_state`], after the primary merk's batch ops have been
+/// applied. Returns that axis secondary's post-mirror `(root_hash, root_key)`
+/// so the caller can fold it into the parent's H1-A composition — directly for
+/// the single-axis variants, or through `axes_digest` for PCPSIT.
+///
+/// Call once per configured axis. Each axis derives its own sort key from the
+/// same `(count, sum)` pair, so an entry can move in the count index while
+/// staying put in the sum index, and the avg index can move when neither of
+/// the other two does.
 ///
 /// **Determinism and atomic-transition note:** the input `pre` is a
-/// `BTreeMap`, so iteration is key-sorted. All secondary deletes and inserts
-/// are assembled into one sorted Merk batch. Applying them as separate Merk
-/// mutations can retain a stale row after multiple same-level count changes;
+/// `BTreeMap`, so iteration is key-sorted. All deletes and inserts for this
+/// axis are assembled into one sorted Merk batch. Applying them as separate
+/// Merk mutations can retain a stale row after multiple same-level changes;
 /// one atomic batch gives the secondary a single pre/post transition.
-pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>>(
+pub(crate) fn apply_indexed_secondary_mirror_post_apply<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
-    pre: BTreeMap<Vec<u8>, Option<u64>>,
+    pre: &BTreeMap<Vec<u8>, Option<(u64, i64)>>,
+    axis: IndexAxis,
     secondary_merk: &mut Merk<S>,
     grove_version: &GroveVersion,
 ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
     let mut cost = OperationCost::default();
 
-    let mut deltas: Vec<(Vec<u8>, Option<u64>, Option<u64>)> = Vec::with_capacity(pre.len());
-    for (key, old_count) in pre {
+    #[allow(clippy::type_complexity)]
+    let mut deltas: Vec<(Vec<u8>, Option<(u64, i64)>, Option<(u64, i64)>)> =
+        Vec::with_capacity(pre.len());
+    for (key, old_aggregates) in pre {
         let maybe_bytes = cost_return_on_error!(
             &mut cost,
             primary_merk
@@ -228,41 +245,71 @@ pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>
                     grove_version,
                 )
                 .map_err(|e| Error::CorruptedData(format!(
-                    "cidx post-state read for key {}: {e}",
-                    hex::encode(&key)
+                    "indexed post-state read for key {}: {e}",
+                    hex::encode(key)
                 )))
         );
-        let new_count = if let Some(bytes) = maybe_bytes {
+        let new_aggregates = if let Some(bytes) = maybe_bytes {
             let elem = cost_return_on_error_no_add!(
                 cost,
                 Element::deserialize(bytes.as_slice(), grove_version).map_err(|e| {
-                    Error::CorruptedData(format!("cidx post-state deserialize: {e}"))
+                    Error::CorruptedData(format!("indexed post-state deserialize: {e}"))
                 })
             );
-            Some(elem.count_value_or_default())
+            Some(elem.count_sum_value_or_default())
         } else {
             None
         };
-        deltas.push((key, old_count, new_count));
+        deltas.push((key.clone(), *old_aggregates, new_aggregates));
     }
 
-    let secondary_tree_type = TreeType::ProvableCountTree;
+    // Precise per-axis bound: avg prepends a 16-byte sort key, count and sum
+    // 8, so the same item key can be legal on one axis and not another. This
+    // runs before any secondary write; returning here aborts the whole batch
+    // with its storage batch discarded, so nothing is committed.
+    let max_item_key_len = crate::operations::indexed_tree::max_item_key_len_for_axis(axis);
+    for key in pre.keys() {
+        if key.len() > max_item_key_len {
+            return Err(Error::InvalidInput(
+                "item key for an indexed-tree primary is too long for a configured axis's \
+                 sort key (count/sum allow 247 bytes, avg 239); the secondary key is \
+                 sort_key ‖ item_key and Merk requires keys < 256 bytes",
+            ))
+            .wrap_with_cost(cost);
+        }
+    }
+
+    let secondary_tree_type = crate::operations::indexed_tree::axis_secondary_tree_type(axis);
+    // The value stored alongside the sort key, per axis. The key encodes the
+    // ordering value; the payload carries what the secondary's own aggregate
+    // must sum to, which is why the sum and avg axes cannot store a bare item.
+    let axis_payload = |count: u64, sum: i64| -> Element {
+        let _ = count;
+        match axis {
+            IndexAxis::Count => Element::new_item(Vec::new()),
+            IndexAxis::Sum => Element::new_sum_item(sum),
+            IndexAxis::Avg => Element::new_item_with_sum_item(Vec::new(), sum),
+        }
+    };
+
     let mut secondary_batch: Vec<BatchEntry<Vec<u8>>> = Vec::with_capacity(deltas.len() * 2);
-    for (key, old_count, new_count) in &deltas {
-        if old_count == new_count {
+    for (key, old_aggregates, new_aggregates) in &deltas {
+        // Compare this axis's (key, payload) rather than the raw aggregates:
+        // on the avg axis two different (count, sum) pairs can share a sort
+        // key while carrying different payloads, and on the count axis a sum
+        // change moves nothing at all.
+        let old_entry = old_aggregates
+            .map(|(c, s)| (make_axis_secondary_key(axis, c, s, key), axis_payload(c, s)));
+        let new_entry = new_aggregates
+            .map(|(c, s)| (make_axis_secondary_key(axis, c, s, key), axis_payload(c, s)));
+        if old_entry == new_entry {
             continue;
         }
-        if let Some(old_count) = old_count {
-            let old_secondary_key = crate::operations::indexed_tree::make_axis_secondary_key(
-                IndexAxis::Count,
-                *old_count,
-                0,
-                key,
-            );
+        if let Some((old_secondary_key, _)) = &old_entry {
             cost_return_on_error!(
                 &mut cost,
                 Element::delete_into_batch_operations(
-                    old_secondary_key,
+                    old_secondary_key.clone(),
                     false,
                     secondary_tree_type,
                     &mut secondary_batch,
@@ -271,14 +318,7 @@ pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>
                 .map_err(Error::MerkError)
             );
         }
-        if let Some(new_count) = new_count {
-            let new_secondary_key = crate::operations::indexed_tree::make_axis_secondary_key(
-                IndexAxis::Count,
-                *new_count,
-                0,
-                key,
-            );
-            let entry = Element::new_item(Vec::new());
+        if let Some((new_secondary_key, entry)) = new_entry {
             let feature_type = cost_return_on_error_no_add!(
                 cost,
                 entry
@@ -327,7 +367,7 @@ pub(crate) fn apply_cidx_secondary_mirror_post_apply<'db, S: StorageContext<'db>
         secondary_merk
             .root_hash_key_and_aggregate_data()
             .map_err(|e| Error::CorruptedData(format!(
-                "cidx secondary root hash capture after mirror: {e}"
+                "indexed secondary root hash capture after mirror: {e}"
             )))
     );
     Ok((sec_hash, sec_root_key)).wrap_with_cost(cost)
@@ -368,8 +408,18 @@ pub(crate) fn reject_freshly_inserted_cidx_with_descendants(
             | GroveOp::Patch { element, .. } => element,
             _ => continue,
         };
-        if matches!(elem.underlying(), Element::ProvableCountIndexedTree(..))
-            && let Some(key) = &op.key
+        // All three indexed variants, not just PCIT: the limitation is the
+        // same for each — the bubble-up has to read the indexed element from
+        // the parent merk to learn its secondary root keys (and, for PCPSIT,
+        // its axes), and a freshly-inserted element has not been flushed
+        // there yet. Before this covered PSIT/PCPSIT the batch failed later
+        // and less clearly, with a PathKeyNotFound from the secondary opener.
+        if matches!(
+            elem.underlying(),
+            Element::ProvableCountIndexedTree(..)
+                | Element::ProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableSumIndexedTree(..)
+        ) && let Some(key) = &op.key
         {
             let mut cidx_path = op.path.to_path();
             cidx_path.push(key.get_key_clone());
@@ -392,8 +442,9 @@ pub(crate) fn reject_freshly_inserted_cidx_with_descendants(
         for cidx_path in &fresh_cidx_paths {
             if op_target.len() > cidx_path.len() && op_target[..cidx_path.len()] == cidx_path[..] {
                 return Err(Error::NotSupported(
-                    "populating a freshly-inserted CountIndexedTree / \
-                     ProvableCountIndexedTree in the same batch as its creation is not \
+                    "populating a freshly-inserted indexed tree (ProvableCountIndexedTree \
+                     / ProvableSumIndexedTree / ProvableCountProvableSumIndexedTree) in the \
+                     same batch as its creation is not \
                      supported (no Insert variant for aggregate-indexed two-Merk \
                      propagation exists, and the secondary merk cannot be opened from \
                      stale parent state during bubble-up). Split into two batches: \

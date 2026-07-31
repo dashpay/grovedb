@@ -1220,7 +1220,18 @@ impl GroveDb {
     /// its `value_hash` via H1-A — `combine_hash_three(value_hash(cidx_bytes),
     /// primary_root_hash, secondary_root_hash)`. Preserves the existing
     /// element's flags. Used by the batch path's cidx primary bubble-up.
-    pub(crate) fn update_count_indexed_tree_item_preserve_flag_into_batch_operations<
+    /// Rebuild an indexed-tree element in the parent merk after its primary
+    /// and secondaries have been re-rooted, preserving flags.
+    ///
+    /// `axes` carries `(axis_tag, root_hash, root_key)` per configured axis in
+    /// canonical order. The variant decides how they are consumed:
+    ///
+    /// - **PCIT / PSIT** are single-axis. The element stores that one axis's
+    ///   root key, and the H1-A second input is its root hash directly.
+    /// - **PCPSIT** stores an axes TLV of every axis's root key, and the H1-A
+    ///   second input is `axes_digest` over `(tag, root_hash)` for all of
+    ///   them — so changing any one axis re-roots the element.
+    pub(crate) fn update_indexed_tree_item_preserve_flag_into_batch_operations<
         'db,
         K: AsRef<[u8]>,
         S: StorageContext<'db>,
@@ -1228,43 +1239,78 @@ impl GroveDb {
         parent_tree: &Merk<S>,
         key: K,
         primary_root_key: Option<Vec<u8>>,
-        secondary_root_key: Option<Vec<u8>>,
+        axes: Vec<(u8, Hash, Option<Vec<u8>>)>,
         primary_aggregate_data: AggregateData,
         primary_root_hash: Hash,
-        secondary_root_hash: Hash,
         batch_operations: &mut Vec<BatchEntry<K>>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
+        if axes.is_empty() {
+            return Err(Error::CorruptedCodeExecution(
+                "an indexed-tree bubble-up must carry at least one axis",
+            ))
+            .wrap_with_cost(cost);
+        }
         Self::get_element_from_subtree(parent_tree, key.as_ref(), grove_version).flat_map_ok(
-            |element| match element.reconstruct_with_two_root_keys(
-                primary_root_key,
-                secondary_root_key,
-                primary_aggregate_data,
-            ) {
-                Some(tree) => {
-                    let merk_feature_type = cost_return_on_error_into!(
-                        &mut cost,
-                        tree.get_feature_type(parent_tree.tree_type)
-                            .wrap_with_cost(OperationCost::default())
-                    );
-                    tree.insert_count_indexed_subtree_into_batch_operations(
-                        key,
-                        primary_root_hash,
-                        secondary_root_hash,
-                        true,
-                        batch_operations,
-                        merk_feature_type,
-                        grove_version,
+            |element| {
+                // Single-axis variants keep their one secondary root key
+                // inline; PCPSIT keeps a TLV of all of them.
+                let is_multi_axis = matches!(
+                    element.underlying(),
+                    Element::ProvableCountProvableSumIndexedTree(..)
+                );
+                let rebuilt = if is_multi_axis {
+                    let axes_tlv: Vec<(u8, Option<Vec<u8>>)> = axes
+                        .iter()
+                        .map(|(tag, _, root_key)| (*tag, root_key.clone()))
+                        .collect();
+                    element.reconstruct_with_axes(
+                        primary_root_key.clone(),
+                        primary_aggregate_data,
+                        axes_tlv,
                     )
-                    .map_err(|e| e.into())
+                } else {
+                    element.reconstruct_with_two_root_keys(
+                        primary_root_key.clone(),
+                        axes[0].2.clone(),
+                        primary_aggregate_data,
+                    )
+                };
+                match rebuilt {
+                    Some(tree) => {
+                        // H1-A second input: the lone axis's root hash, or the
+                        // digest over every axis.
+                        let second_hash = if is_multi_axis {
+                            let axis_hashes: Vec<(u8, Hash)> =
+                                axes.iter().map(|(tag, hash, _)| (*tag, *hash)).collect();
+                            grovedb_merk::tree::axes_digest(&axis_hashes).unwrap_add_cost(&mut cost)
+                        } else {
+                            axes[0].1
+                        };
+                        let merk_feature_type = cost_return_on_error_into!(
+                            &mut cost,
+                            tree.get_feature_type(parent_tree.tree_type)
+                                .wrap_with_cost(OperationCost::default())
+                        );
+                        tree.insert_count_indexed_subtree_into_batch_operations(
+                            key,
+                            primary_root_hash,
+                            second_hash,
+                            true,
+                            batch_operations,
+                            merk_feature_type,
+                            grove_version,
+                        )
+                        .map_err(|e| e.into())
+                    }
+                    None => Err(Error::InvalidPath(
+                        "update_indexed_tree_item_preserve_flag: existing element is not an \
+                         indexed tree"
+                            .to_owned(),
+                    ))
+                    .wrap_with_cost(Default::default()),
                 }
-                None => Err(Error::InvalidPath(
-                    "update_count_indexed_tree_item_preserve_flag: existing element is not a \
-                     CountIndexedTree / ProvableCountIndexedTree"
-                        .to_owned(),
-                ))
-                .wrap_with_cost(Default::default()),
             },
         )
     }

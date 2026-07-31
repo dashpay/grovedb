@@ -1490,8 +1490,7 @@ mod tests {
             primary_hash: [1u8; 32],
             primary_root_key: Some(b"prk".to_vec()),
             primary_aggregate_data: AggregateData::Count(42),
-            secondary_hash: [2u8; 32],
-            secondary_root_key: Some(b"srk".to_vec()),
+            axes: vec![(0u8, [2u8; 32], Some(b"srk".to_vec()))],
         };
         let cost_count = op_count
             .worst_case_cost(
@@ -1516,8 +1515,7 @@ mod tests {
             primary_hash: [3u8; 32],
             primary_root_key: None,
             primary_aggregate_data: AggregateData::ProvableCount(7),
-            secondary_hash: [4u8; 32],
-            secondary_root_key: None,
+            axes: vec![(0u8, [4u8; 32], None)],
         };
         let cost_pcount = op_pcount
             .worst_case_cost(
