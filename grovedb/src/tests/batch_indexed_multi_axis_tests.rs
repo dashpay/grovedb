@@ -877,4 +877,181 @@ mod tests {
         );
         assert_clean(&db, gv);
     }
+
+    // ---------------------------------------------------------------
+    // Delete equivalence: the dedicated delete now delegates to batch
+    // ---------------------------------------------------------------
+
+    /// Seed two entries, remove one, and require the batch and dedicated
+    /// doors to land on the same root — the delete-side counterpart of the
+    /// insert equivalence tests, and what makes delegating the dedicated
+    /// delete safe.
+    fn assert_delete_equivalence(
+        seed: impl Fn(&TempGroveDb, &GroveVersion),
+        via_batch_delete: impl Fn(&TempGroveDb, &GroveVersion),
+        via_api_delete: impl Fn(&TempGroveDb, &GroveVersion),
+        gv: &GroveVersion,
+    ) {
+        let a = make_test_grovedb(gv);
+        seed(&a, gv);
+        via_batch_delete(&a, gv);
+
+        let b = make_test_grovedb(gv);
+        seed(&b, gv);
+        via_api_delete(&b, gv);
+
+        assert_eq!(
+            a.root_hash(None, gv).unwrap().unwrap(),
+            b.root_hash(None, gv).unwrap().unwrap(),
+            "a batch delete and the dedicated delete must commit the same root hash"
+        );
+        assert_clean(&a, gv);
+        assert_clean(&b, gv);
+    }
+
+    #[test]
+    fn batch_and_dedicated_delete_agree_for_pcit() {
+        let gv = GroveVersion::latest();
+        assert_delete_equivalence(
+            |db, gv| {
+                make_pcit(db, b"cidx", gv);
+                for k in [b"a".as_slice(), b"b".as_slice()] {
+                    db.insert_into_count_indexed_tree(
+                        [TEST_LEAF, b"cidx"].as_ref(),
+                        k,
+                        Element::new_item(k.to_vec()),
+                        None,
+                        gv,
+                    )
+                    .unwrap()
+                    .expect("seed");
+                }
+            },
+            |db, gv| {
+                db.apply_batch(
+                    vec![QualifiedGroveDbOp::delete_op(
+                        vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                        b"a".to_vec(),
+                    )],
+                    None,
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .expect("batch delete");
+            },
+            |db, gv| {
+                assert!(
+                    db.delete_from_count_indexed_tree(
+                        [TEST_LEAF, b"cidx"].as_ref(),
+                        b"a",
+                        None,
+                        gv
+                    )
+                    .unwrap()
+                    .expect("dedicated delete"),
+                    "deleting an existing entry must report true"
+                );
+            },
+            gv,
+        );
+    }
+
+    #[test]
+    fn batch_and_dedicated_delete_agree_for_pcpsit_all_axes() {
+        let gv = GroveVersion::latest();
+        let axes = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg];
+        assert_delete_equivalence(
+            move |db, gv| {
+                make_pcpsit(db, b"idx", &axes, gv);
+                for (k, sum) in [(b"a".as_slice(), 5i64), (b"b".as_slice(), 9)] {
+                    db.insert_into_provable_count_provable_sum_indexed_tree(
+                        [TEST_LEAF, b"idx"].as_ref(),
+                        k,
+                        Element::new_item_with_sum_item(k.to_vec(), sum),
+                        None,
+                        gv,
+                    )
+                    .unwrap()
+                    .expect("seed");
+                }
+            },
+            |db, gv| {
+                db.apply_batch(
+                    vec![QualifiedGroveDbOp::delete_op(
+                        vec![TEST_LEAF.to_vec(), b"idx".to_vec()],
+                        b"a".to_vec(),
+                    )],
+                    None,
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .expect("batch delete");
+            },
+            |db, gv| {
+                assert!(db
+                    .delete_from_provable_count_provable_sum_indexed_tree(
+                        [TEST_LEAF, b"idx"].as_ref(),
+                        b"a",
+                        None,
+                        gv
+                    )
+                    .unwrap()
+                    .expect("dedicated delete"),);
+            },
+            gv,
+        );
+    }
+
+    #[test]
+    fn dedicated_delete_of_an_absent_key_is_a_no_op_returning_false() {
+        // The batch op carries no notion of "was anything removed", so the
+        // wrapper probes first. An absent key must not apply an empty batch,
+        // which would still move nothing but is worth pinning explicitly.
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_psit(&db, b"psit", gv);
+        db.insert_into_provable_sum_indexed_tree(
+            [TEST_LEAF, b"psit"].as_ref(),
+            b"a",
+            Element::new_sum_item(4),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("seed");
+
+        let before = db.root_hash(None, gv).unwrap().unwrap();
+        let removed = db
+            .delete_from_provable_sum_indexed_tree(
+                [TEST_LEAF, b"psit"].as_ref(),
+                b"missing",
+                None,
+                gv,
+            )
+            .unwrap()
+            .expect("deleting an absent key must not error");
+        assert!(!removed, "an absent key must report false");
+        assert_eq!(
+            db.root_hash(None, gv).unwrap().unwrap(),
+            before,
+            "a no-op delete must not move the root"
+        );
+        assert_clean(&db, gv);
+    }
+
+    #[test]
+    fn dedicated_delete_rejects_a_mismatched_variant() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_psit(&db, b"psit", gv);
+        let result = db
+            .delete_from_count_indexed_tree([TEST_LEAF, b"psit"].as_ref(), b"a", None, gv)
+            .unwrap();
+        assert!(
+            matches!(&result, Err(crate::Error::InvalidPath(m)) if m.contains("must be a")),
+            "the count-indexed delete must refuse a PSIT target, got {result:?}"
+        );
+    }
 }

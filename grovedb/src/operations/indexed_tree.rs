@@ -264,189 +264,6 @@ fn reject_non_empty_dedicated_indexed_child_claim(
 }
 
 impl GroveDb {
-    /// Clear orphaned child-subtree storage (and any indexed-secondary
-    /// namespaces) for an existing tree/indexed entry that is about to
-    /// be overwritten or deleted at `entry_path`. No-op when `existing`
-    /// is not a tree.
-    ///
-    /// Shared by the PCIT/PSIT/PCPSIT dedicated insert (overwrite) and
-    /// delete paths. Without it, replacing or deleting a tree-typed
-    /// child orphans the child's storage namespace — the entry is gone
-    /// from the primary Merk but its descendants still occupy storage
-    /// and resurface to `verify_grovedb`'s raw_iter pass (and to a
-    /// future insert at the same key). For an indexed-tree child the
-    /// per-axis secondary namespaces at `Blake3(primary_prefix ‖
-    /// axis_tag)` must be cleared too.
-    fn cleanup_dedicated_indexed_child_storage<'db, 'b, B: AsRef<[u8]>>(
-        &'db self,
-        existing: &Element,
-        entry_path: SubtreePath<'b, B>,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        if !existing.is_any_tree() {
-            return Ok(()).wrap_with_cost(cost);
-        }
-        // Recursively clear all primary subtree storage under entry_path.
-        let subtrees_paths = cost_return_on_error!(
-            &mut cost,
-            self.find_subtrees(&entry_path, Some(transaction), grove_version)
-        );
-        for subtree_path in subtrees_paths {
-            let p: SubtreePath<_> = subtree_path.as_slice().into();
-            let mut storage = self
-                .db
-                .get_transactional_storage_context(p, Some(batch), transaction)
-                .unwrap_add_cost(&mut cost);
-            cost_return_on_error!(
-                &mut cost,
-                storage.clear().map_err(|e| {
-                    Error::CorruptedData(format!(
-                        "unable to clean up old subtree storage in dedicated indexed-tree \
-                         overwrite/delete: {e}",
-                    ))
-                })
-            );
-        }
-        // Clear the per-axis secondary namespaces for indexed primaries.
-        let axes: Vec<IndexAxis> = match existing.underlying() {
-            Element::ProvableCountIndexedTree(..) => vec![IndexAxis::Count],
-            Element::ProvableSumIndexedTree(..) => vec![IndexAxis::Sum],
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes_tlv, _) => axes_tlv
-                .iter()
-                .filter_map(|(tag, _)| IndexAxis::try_from_tag(*tag).ok())
-                .collect(),
-            _ => Vec::new(),
-        };
-        if !axes.is_empty() {
-            let primary_prefix =
-                RocksDbStorage::build_prefix(entry_path.clone()).unwrap_add_cost(&mut cost);
-            for axis in axes {
-                let secondary_prefix =
-                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                        .unwrap_add_cost(&mut cost);
-                let mut secondary_storage = self
-                    .db
-                    .get_transactional_storage_context_by_subtree_prefix(
-                        secondary_prefix,
-                        Some(batch),
-                        transaction,
-                    )
-                    .unwrap_add_cost(&mut cost);
-                cost_return_on_error!(
-                    &mut cost,
-                    secondary_storage.clear().map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "unable to clean up indexed secondary (axis {axis:?}) during \
-                             dedicated indexed-tree overwrite/delete: {e}",
-                        ))
-                    })
-                );
-            }
-        }
-        Ok(()).wrap_with_cost(cost)
-    }
-
-    /// Seed the upstream `deferred_secondary` when the just-modified
-    /// indexed-tree element lives inside a **nested** `CountIndexedTree`
-    /// primary (`parent_merk` is itself a cidx primary).
-    ///
-    /// In that case the parent element's `count_value` changed, so the
-    /// parent's own count-ordered secondary must be re-mirrored and the
-    /// resulting `(root_hash, root_key)` handed to
-    /// [`Self::propagate_changes_with_transaction_with_initial_deferred`].
-    /// Returns `None` when `parent_merk` is not a cidx primary (no
-    /// nested mirror needed).
-    ///
-    /// **Only the PCIT insert/delete paths call this** — PSIT / PCPSIT
-    /// primaries do not yet nest under another indexed-tree primary, so
-    /// their propagation runs without an initial deferred secondary.
-    /// Preserving that asymmetry is deliberate: extracting this shared
-    /// block does not enable it for PSIT / PCPSIT.
-    ///
-    /// `new_count_in_parent` is `primary_aggregate_data.as_count_u64()`
-    /// captured from the primary's post-mutation snapshot;
-    /// `old_count_in_parent` is the parent element's count before the
-    /// rewrite. `indexed_key` is the just-rewritten element's key inside
-    /// `parent_merk`.
-    #[allow(clippy::too_many_arguments)]
-    fn capture_nested_cidx_deferred_secondary<'db, 'b, B: AsRef<[u8]>, S>(
-        &'db self,
-        parent_merk: &Merk<S>,
-        parent_path: &SubtreePath<'b, B>,
-        indexed_key: &[u8],
-        old_count_in_parent: u64,
-        new_count_in_parent: u64,
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<Option<(grovedb_merk::CryptoHash, Option<Vec<u8>>)>, Error>
-    where
-        S: grovedb_storage::StorageContext<'db>,
-    {
-        let mut cost = OperationCost::default();
-        if !parent_merk.tree_type.is_count_indexed_primary() {
-            return Ok(None).wrap_with_cost(cost);
-        }
-        let (gp_path, parent_cidx_key) = match parent_path.derive_parent() {
-            Some(p) => p,
-            None => {
-                return Err(Error::CorruptedCodeExecution(
-                    "nested CountIndexedTree primary requires a grandparent",
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-        let gp_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(gp_path, transaction, Some(batch), grove_version,)
-        );
-        let gp_element = cost_return_on_error!(
-            &mut cost,
-            Element::get(&gp_merk, parent_cidx_key, true, grove_version).map_err(Error::MerkError)
-        );
-        let parent_secondary_root_key_before = match gp_element.underlying() {
-            Element::ProvableCountIndexedTree(_, sec, ..) => sec.clone(),
-            _ => {
-                return Err(Error::CorruptedData(
-                    "expected ProvableCountIndexedTree element in grandparent for nested mirror"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-        let mut parent_secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_indexed_secondary_at_path(
-                parent_path.clone(),
-                IndexAxis::Count,
-                parent_secondary_root_key_before,
-                transaction,
-                Some(batch),
-                grove_version,
-            )
-        );
-        cost_return_on_error!(
-            &mut cost,
-            mirror_to_secondary(
-                &mut parent_secondary_merk,
-                indexed_key,
-                Some(old_count_in_parent),
-                new_count_in_parent,
-                grove_version,
-            )
-        );
-        let (sh, sk, _) = cost_return_on_error!(
-            &mut cost,
-            parent_secondary_merk
-                .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
-        );
-        Ok(Some((sh, sk))).wrap_with_cost(cost)
-    }
-
     /// Open the per-axis secondary Merk for any indexed-tree element
     /// (`ProvableCountIndexedTree`, `ProvableSumIndexedTree`, or
     /// `ProvableCountProvableSumIndexedTree`) at `path`. The secondary
@@ -679,6 +496,76 @@ impl GroveDb {
             self.apply_batch(vec![op], None, Some(tx.as_ref()), grove_version)
         );
         tx.commit_local().wrap_with_cost(cost)
+    }
+
+    /// Validate that `path` names an indexed primary of the expected variant,
+    /// then hand the delete to the batch pipeline.
+    ///
+    /// Returns whether anything was removed, which the batch op itself does
+    /// not report — so the entry is probed first, and an absent key is a
+    /// no-op returning `false` rather than an empty batch.
+    ///
+    /// The mirroring, including removing the entry from every configured axis,
+    /// belongs to the batch path; this is only the variant check and the
+    /// existence probe.
+    fn delete_from_indexed_tree_via_batch<'b, B, P>(
+        &self,
+        path: P,
+        item_key: &[u8],
+        expect: TreeType,
+        api_label: &str,
+        transaction: TransactionArg,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        let mut cost = OperationCost::default();
+        let path: SubtreePath<B> = path.into();
+        if path.derive_parent().is_none() {
+            return Err(Error::InvalidPath(format!(
+                "{api_label}: cannot delete from an indexed tree at the root path"
+            )))
+            .wrap_with_cost(cost);
+        }
+
+        let tx = TxRef::new(&self.db, transaction);
+        let probe_batch = StorageBatch::new();
+        let primary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_transactional_merk_at_path(
+                path.clone(),
+                tx.as_ref(),
+                Some(&probe_batch),
+                grove_version,
+            )
+        );
+        if primary_merk.tree_type != expect {
+            return Err(Error::InvalidPath(format!(
+                "{api_label}: the path's last segment must be a {expect:?} element, found {:?}",
+                primary_merk.tree_type
+            )))
+            .wrap_with_cost(cost);
+        }
+        let existing = cost_return_on_error!(
+            &mut cost,
+            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
+                .map_err(Error::MerkError)
+        );
+        drop(primary_merk);
+        drop(probe_batch);
+        if existing.is_none() {
+            return Ok(false).wrap_with_cost(cost);
+        }
+
+        let op = crate::batch::QualifiedGroveDbOp::delete_op(path.to_vec(), item_key.to_vec());
+        cost_return_on_error!(
+            &mut cost,
+            self.apply_batch(vec![op], None, Some(tx.as_ref()), grove_version)
+        );
+        cost_return_on_error_no_add!(cost, tx.commit_local());
+        Ok(true).wrap_with_cost(cost)
     }
 
     /// Insert (or update) an item under a key into a `CountIndexedTree`
@@ -1874,279 +1761,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let removed = cost_return_on_error!(
-            &mut cost,
-            self.delete_from_count_indexed_tree_on_transaction(
-                path,
-                item_key,
-                tx_ref,
-                &batch,
-                grove_version,
-            )
-        );
-
-        cost_return_on_error!(
-            &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx_ref))
-                .map_err(Into::into)
-        );
-
-        cost_return_on_error_no_add!(cost, tx.commit_local());
-        Ok(removed).wrap_with_cost(cost)
-    }
-
-    fn delete_from_count_indexed_tree_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        item_key: &[u8],
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<bool, Error> {
-        let mut cost = OperationCost::default();
-
-        let (parent_path, count_indexed_key) = match path.derive_parent() {
-            Some(p) => p,
-            None => {
-                return Err(Error::InvalidPath(
-                    "cannot delete from count-indexed tree at the root path".to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-
-        let mut primary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        if !primary_merk.tree_type.is_count_indexed_primary() {
-            return Err(Error::InvalidPath(
-                "delete_from_count_indexed_tree requires the path's last segment to be a \
-                 CountIndexedTree or ProvableCountIndexedTree element"
-                    .to_string(),
-            ))
-            .wrap_with_cost(cost);
-        }
-
-        // Read existing item to determine the secondary entry to remove.
-        let existing_item = cost_return_on_error!(
-            &mut cost,
-            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
-                .map_err(Error::MerkError)
-        );
-        let Some(existing) = existing_item else {
-            return Ok(false).wrap_with_cost(cost);
-        };
-        let old_count = existing.count_value_or_default();
-
-        let in_tree_type = primary_merk.tree_type;
-
-        // Open parent for later element rewrite.
-        let mut parent_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                parent_path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        let count_indexed_element = cost_return_on_error!(
-            &mut cost,
-            Element::get(&parent_merk, count_indexed_key, true, grove_version)
-                .map_err(Error::MerkError)
-        );
-        let secondary_root_key_before = match count_indexed_element.underlying() {
-            Element::ProvableCountIndexedTree(_, secondary, ..) => secondary.clone(),
-            _ => {
-                return Err(Error::CorruptedData(
-                    "parent element at count-indexed key is not a ProvableCountIndexedTree"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-
-        // Determine the layered-or-not deletion shape based on what we're
-        // deleting from the primary.
-        let is_layered_target = existing.is_any_tree();
-
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                &mut primary_merk,
-                item_key,
-                None,
-                is_layered_target,
-                in_tree_type,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-
-        // Storage cleanup for tree entries.
-        //
-        // If the deleted cidx entry is a tree (CountTree, SumTree, etc.),
-        // its child storage at `cidx_primary_path + item_key` is now
-        // orphaned — the entry is gone from the primary Merk but its
-        // children still occupy the storage namespace. Without cleanup,
-        // a future insert at the same item_key would observe stale data
-        // (orphaned entries surface to `verify_grovedb`'s raw_iter pass
-        // even though they're invisible to the Merk tree at the new
-        // root). Same class of bug as the direct `db.delete` cidx
-        // primary cleanup (commit 6b7ec21d).
-        //
-        // For nested cidx entries (the deleted item is itself a cidx
-        // primary), we also need to clear the secondary's storage at
-        // the derived prefix.
-        //
-        // NOTE: we do NOT drop+reopen primary_merk around this block —
-        // dropping the merk without explicit apply would lose the
-        // staged Element::delete. The cleanup calls below only use
-        // `&self` (via find_subtrees and get_transactional_storage_*),
-        // which coexist with the owned primary_merk.
-        //
-        // Uses the shared helper (identical to the PCPSIT delete path):
-        // it no-ops for non-tree existing, walks find_subtrees to clear
-        // primary child storage, and clears the correct per-axis
-        // secondary namespace for whichever indexed variant the deleted
-        // entry is (PCIT→Count, PSIT→Sum, PCPSIT→per-axis). The prior
-        // inline copy cleared only the Count secondary and so would have
-        // orphaned a nested PSIT / PCPSIT entry's secondary namespace.
-        if is_layered_target {
-            let entry_path = path.derive_owned_with_child(item_key.to_vec());
-            cost_return_on_error!(
-                &mut cost,
-                self.cleanup_dedicated_indexed_child_storage(
-                    &existing,
-                    SubtreePath::from(&entry_path),
-                    transaction,
-                    batch,
-                    grove_version,
-                )
-            );
-        }
-
-        // Open and update secondary.
-        let mut secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_indexed_secondary_at_path(
-                path,
-                IndexAxis::Count,
-                secondary_root_key_before,
-                transaction,
-                Some(batch),
-                grove_version,
-            )
-        );
-        let old_secondary_key = make_secondary_key(old_count, item_key);
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                &mut secondary_merk,
-                old_secondary_key.as_slice(),
-                None,
-                false,
-                TreeType::ProvableCountTree,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-
-        // Snapshot both merks' new states.
-        let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
-            &mut cost,
-            primary_merk
-                .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
-        );
-        let (secondary_root_hash, secondary_root_key, _secondary_aggregate) = cost_return_on_error!(
-            &mut cost,
-            secondary_merk
-                .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
-        );
-
-        let reconstructed = cost_return_on_error_no_add!(
-            cost,
-            count_indexed_element
-                .reconstruct_with_two_root_keys(
-                    primary_root_key,
-                    secondary_root_key,
-                    primary_aggregate_data,
-                )
-                .ok_or(Error::CorruptedCodeExecution(
-                    "reconstruct_with_two_root_keys returned None for a CountIndexedTree element"
-                ))
-        );
-        // Capture parent_merk's element's OLD count for the
-        // count_indexed_key BEFORE the rewrite, so we can mirror to
-        // parent_merk's secondary if parent_merk is itself a cidx
-        // primary (nested case).
-        let old_count_in_parent = count_indexed_element.count_value_or_default();
-        cost_return_on_error!(
-            &mut cost,
-            reconstructed
-                .insert_count_indexed_subtree(
-                    &mut parent_merk,
-                    count_indexed_key,
-                    primary_root_hash,
-                    secondary_root_hash,
-                    None,
-                    grove_version,
-                )
-                .map_err(Error::MerkError)
-        );
-
-        // 7b (nested case). Mirror parent's secondary if parent_merk is
-        //     itself a CountIndexedTree primary, then seed
-        //     `deferred_secondary` for upstream propagate. PCIT-only
-        //     asymmetry (see the helper doc).
-        let initial_deferred_secondary = cost_return_on_error!(
-            &mut cost,
-            self.capture_nested_cidx_deferred_secondary(
-                &parent_merk,
-                &parent_path,
-                count_indexed_key,
-                old_count_in_parent,
-                primary_aggregate_data.as_count_u64(),
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
-
-        // Hand off to shared propagation (CountIndexedTree-aware).
-        let mut merk_cache: std::collections::HashMap<
-            SubtreePath<B>,
-            Merk<PrefixedRocksDbTransactionContext>,
-        > = std::collections::HashMap::default();
-        merk_cache.insert(parent_path.clone(), parent_merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction_with_initial_deferred(
-                merk_cache,
-                parent_path,
-                initial_deferred_secondary,
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
-
-        Ok(true).wrap_with_cost(cost)
+        self.delete_from_indexed_tree_via_batch(
+            path,
+            item_key,
+            TreeType::ProvableCountIndexedTree,
+            "delete_from_count_indexed_tree",
+            transaction,
+            grove_version,
+        )
     }
 
     // -----------------------------------------------------------------
@@ -2198,215 +1820,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let removed = cost_return_on_error!(
-            &mut cost,
-            self.delete_from_psit_on_transaction(path, item_key, tx_ref, &batch, grove_version,)
-        );
-
-        cost_return_on_error!(
-            &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx_ref))
-                .map_err(Into::into)
-        );
-
-        cost_return_on_error_no_add!(cost, tx.commit_local());
-        Ok(removed).wrap_with_cost(cost)
-    }
-
-    fn delete_from_psit_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        item_key: &[u8],
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<bool, Error> {
-        let mut cost = OperationCost::default();
-
-        let (parent_path, psit_key) = match path.derive_parent() {
-            Some(p) => p,
-            None => {
-                return Err(Error::InvalidPath(
-                    "cannot delete from ProvableSumIndexedTree at the root path".to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-
-        let mut primary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        if !matches!(primary_merk.tree_type, TreeType::ProvableSumIndexedTree) {
-            return Err(Error::InvalidPath(
-                "delete_from_provable_sum_indexed_tree requires the path's last segment to be a \
-                 ProvableSumIndexedTree element"
-                    .to_string(),
-            ))
-            .wrap_with_cost(cost);
-        }
-
-        let existing_item = cost_return_on_error!(
-            &mut cost,
-            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
-                .map_err(Error::MerkError)
-        );
-        let Some(existing) = existing_item else {
-            return Ok(false).wrap_with_cost(cost);
-        };
-        let old_sum = existing.sum_value_or_default();
-
-        let in_tree_type = primary_merk.tree_type;
-        let is_layered_target = existing.is_any_tree();
-
-        let mut parent_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                parent_path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        let psit_element = cost_return_on_error!(
-            &mut cost,
-            Element::get(&parent_merk, psit_key, true, grove_version).map_err(Error::MerkError)
-        );
-        let secondary_root_key_before = match psit_element.underlying() {
-            Element::ProvableSumIndexedTree(_, sec, ..) => sec.clone(),
-            _ => {
-                return Err(Error::CorruptedData(
-                    "parent element at PSIT key is not a ProvableSumIndexedTree".to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                &mut primary_merk,
-                item_key,
-                None,
-                is_layered_target,
-                in_tree_type,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-
-        // If the deleted entry was a tree, clear its orphaned child
-        // storage (and indexed-secondary namespaces) — otherwise the
-        // descendants remain in storage and resurface to verify_grovedb
-        // / a future insert at the same key.
-        if is_layered_target {
-            let entry_path = path.derive_owned_with_child(item_key.to_vec());
-            cost_return_on_error!(
-                &mut cost,
-                self.cleanup_dedicated_indexed_child_storage(
-                    &existing,
-                    SubtreePath::from(&entry_path),
-                    transaction,
-                    batch,
-                    grove_version,
-                )
-            );
-        }
-
-        // Delete corresponding secondary entry.
-        let mut secondary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_indexed_secondary_at_path(
-                path,
-                IndexAxis::Sum,
-                secondary_root_key_before,
-                transaction,
-                Some(batch),
-                grove_version,
-            )
-        );
-        let old_secondary_key = make_axis_secondary_key(IndexAxis::Sum, 0, old_sum, item_key);
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                &mut secondary_merk,
-                old_secondary_key.as_slice(),
-                None,
-                false,
-                TreeType::ProvableSumTree,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-
-        let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
-            &mut cost,
-            primary_merk
-                .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
-        );
-        let (secondary_root_hash, secondary_root_key, _) = cost_return_on_error!(
-            &mut cost,
-            secondary_merk
-                .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
-        );
-
-        let reconstructed = cost_return_on_error_no_add!(
-            cost,
-            psit_element
-                .reconstruct_with_two_root_keys(
-                    primary_root_key,
-                    secondary_root_key,
-                    primary_aggregate_data,
-                )
-                .ok_or(Error::CorruptedCodeExecution(
-                    "reconstruct_with_two_root_keys returned None for a PSIT element"
-                ))
-        );
-        cost_return_on_error!(
-            &mut cost,
-            reconstructed
-                .insert_count_indexed_subtree(
-                    &mut parent_merk,
-                    psit_key,
-                    primary_root_hash,
-                    secondary_root_hash,
-                    None,
-                    grove_version,
-                )
-                .map_err(Error::MerkError)
-        );
-
-        let mut merk_cache: std::collections::HashMap<
-            SubtreePath<B>,
-            Merk<PrefixedRocksDbTransactionContext>,
-        > = std::collections::HashMap::default();
-        merk_cache.insert(parent_path.clone(), parent_merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                parent_path,
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
-
-        Ok(true).wrap_with_cost(cost)
+        self.delete_from_indexed_tree_via_batch(
+            path,
+            item_key,
+            TreeType::ProvableSumIndexedTree,
+            "delete_from_provable_sum_indexed_tree",
+            transaction,
+            grove_version,
+        )
     }
 
     // -----------------------------------------------------------------
@@ -2457,228 +1878,14 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
         P: Into<SubtreePath<'b, B>>,
     {
-        let mut cost = OperationCost::default();
-        let path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
-        let tx = TxRef::new(&self.db, transaction);
-        let tx_ref = tx.as_ref();
-
-        let removed = cost_return_on_error!(
-            &mut cost,
-            self.delete_from_pcpsit_on_transaction(path, item_key, tx_ref, &batch, grove_version,)
-        );
-
-        cost_return_on_error!(
-            &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx_ref))
-                .map_err(Into::into)
-        );
-
-        cost_return_on_error_no_add!(cost, tx.commit_local());
-        Ok(removed).wrap_with_cost(cost)
-    }
-
-    fn delete_from_pcpsit_on_transaction<'db, 'b, B: AsRef<[u8]>>(
-        &'db self,
-        path: SubtreePath<'b, B>,
-        item_key: &[u8],
-        transaction: &'db Transaction,
-        batch: &'db StorageBatch,
-        grove_version: &GroveVersion,
-    ) -> CostResult<bool, Error> {
-        let mut cost = OperationCost::default();
-
-        let (parent_path, pcpsit_key) = match path.derive_parent() {
-            Some(p) => p,
-            None => {
-                return Err(Error::InvalidPath(
-                    "cannot delete from ProvableCountProvableSumIndexedTree at the root path"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-
-        let mut primary_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        if !matches!(
-            primary_merk.tree_type,
-            TreeType::ProvableCountProvableSumIndexedTree
-        ) {
-            return Err(Error::InvalidPath(
-                "delete_from_provable_count_provable_sum_indexed_tree requires the path's \
-                 last segment to be a ProvableCountProvableSumIndexedTree element"
-                    .to_string(),
-            ))
-            .wrap_with_cost(cost);
-        }
-
-        let existing_item = cost_return_on_error!(
-            &mut cost,
-            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
-                .map_err(Error::MerkError)
-        );
-        let Some(existing) = existing_item else {
-            return Ok(false).wrap_with_cost(cost);
-        };
-        let (old_count, old_sum) = existing.count_sum_value_or_default();
-
-        let in_tree_type = primary_merk.tree_type;
-        let is_layered_target = existing.is_any_tree();
-
-        let mut parent_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(
-                parent_path.clone(),
-                transaction,
-                Some(batch),
-                grove_version
-            )
-        );
-        let pcpsit_element = cost_return_on_error!(
-            &mut cost,
-            Element::get(&parent_merk, pcpsit_key, true, grove_version).map_err(Error::MerkError)
-        );
-        let axes_before = match pcpsit_element.underlying() {
-            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes.clone(),
-            _ => {
-                return Err(Error::CorruptedData(
-                    "parent element at PCPSIT key is not a ProvableCountProvableSumIndexedTree"
-                        .to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
-        };
-
-        cost_return_on_error!(
-            &mut cost,
-            Element::delete(
-                &mut primary_merk,
-                item_key,
-                None,
-                is_layered_target,
-                in_tree_type,
-                grove_version,
-            )
-            .map_err(Error::MerkError)
-        );
-
-        // Clear orphaned child storage (and indexed-secondary namespaces)
-        // when the deleted entry was itself a tree.
-        if is_layered_target {
-            let entry_path = path.derive_owned_with_child(item_key.to_vec());
-            cost_return_on_error!(
-                &mut cost,
-                self.cleanup_dedicated_indexed_child_storage(
-                    &existing,
-                    SubtreePath::from(&entry_path),
-                    transaction,
-                    batch,
-                    grove_version,
-                )
-            );
-        }
-
-        let mut new_axes: Vec<(u8, Option<Vec<u8>>)> = Vec::with_capacity(axes_before.len());
-        let mut axis_root_hashes: Vec<(u8, grovedb_merk::CryptoHash)> =
-            Vec::with_capacity(axes_before.len());
-        for (tag, sec_root_key_before) in &axes_before {
-            let axis = cost_return_on_error_no_add!(
-                cost,
-                IndexAxis::try_from_tag(*tag).map_err(|e| {
-                    Error::CorruptedData(format!("invalid axis tag in PCPSIT element: {e}"))
-                })
-            );
-            let mut secondary_merk = cost_return_on_error!(
-                &mut cost,
-                self.open_indexed_secondary_at_path(
-                    path.clone(),
-                    axis,
-                    sec_root_key_before.clone(),
-                    transaction,
-                    Some(batch),
-                    grove_version,
-                )
-            );
-            cost_return_on_error!(
-                &mut cost,
-                mirror_indexed_axis_to_secondary(
-                    &mut secondary_merk,
-                    axis,
-                    item_key,
-                    Some(old_count),
-                    Some(old_sum),
-                    None,
-                    None,
-                    grove_version,
-                )
-            );
-            let (sec_hash, sec_root_key, _) = cost_return_on_error!(
-                &mut cost,
-                secondary_merk
-                    .root_hash_key_and_aggregate_data()
-                    .map_err(Error::MerkError)
-            );
-            new_axes.push((*tag, sec_root_key));
-            axis_root_hashes.push((*tag, sec_hash));
-        }
-
-        let (primary_root_hash, primary_root_key, primary_aggregate_data) = cost_return_on_error!(
-            &mut cost,
-            primary_merk
-                .root_hash_key_and_aggregate_data()
-                .map_err(Error::MerkError)
-        );
-        let axes_digest_value =
-            grovedb_merk::tree::axes_digest(&axis_root_hashes).unwrap_add_cost(&mut cost);
-
-        let reconstructed = cost_return_on_error_no_add!(
-            cost,
-            pcpsit_element
-                .reconstruct_with_axes(primary_root_key, primary_aggregate_data, new_axes)
-                .ok_or(Error::CorruptedCodeExecution(
-                    "reconstruct_with_axes returned None for a PCPSIT element"
-                ))
-        );
-        cost_return_on_error!(
-            &mut cost,
-            reconstructed
-                .insert_count_indexed_subtree(
-                    &mut parent_merk,
-                    pcpsit_key,
-                    primary_root_hash,
-                    axes_digest_value,
-                    None,
-                    grove_version,
-                )
-                .map_err(Error::MerkError)
-        );
-
-        let mut merk_cache: std::collections::HashMap<
-            SubtreePath<B>,
-            Merk<PrefixedRocksDbTransactionContext>,
-        > = std::collections::HashMap::default();
-        merk_cache.insert(parent_path.clone(), parent_merk);
-        cost_return_on_error!(
-            &mut cost,
-            self.propagate_changes_with_transaction(
-                merk_cache,
-                parent_path,
-                transaction,
-                batch,
-                grove_version,
-            )
-        );
-
-        Ok(true).wrap_with_cost(cost)
+        self.delete_from_indexed_tree_via_batch(
+            path,
+            item_key,
+            TreeType::ProvableCountProvableSumIndexedTree,
+            "delete_from_provable_count_provable_sum_indexed_tree",
+            transaction,
+            grove_version,
+        )
     }
 }
 
@@ -2787,32 +1994,6 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
         );
     }
     Ok(()).wrap_with_cost(cost)
-}
-
-/// Apply the secondary-mirror update for a primary insert/update.
-///
-/// `old_count` is `None` for a fresh insert, `Some(c)` for an update.
-///
-/// The [`IndexAxis::Count`], always-present-`new_count` special case of
-/// [`mirror_indexed_axis_to_secondary`]. The Count-axis key and payload
-/// ignore the threaded sum values.
-pub(crate) fn mirror_to_secondary<'db, S: StorageContext<'db>>(
-    secondary: &mut Merk<S>,
-    item_key: &[u8],
-    old_count: Option<u64>,
-    new_count: u64,
-    grove_version: &GroveVersion,
-) -> CostResult<(), Error> {
-    mirror_indexed_axis_to_secondary(
-        secondary,
-        IndexAxis::Count,
-        item_key,
-        old_count,
-        old_count.map(|_| 0i64),
-        Some(new_count),
-        Some(0i64),
-        grove_version,
-    )
 }
 
 /// Maximum allowed length for a key inserted directly into a cidx
