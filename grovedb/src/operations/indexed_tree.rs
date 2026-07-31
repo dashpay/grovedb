@@ -763,18 +763,31 @@ impl GroveDb {
     /// Rebuild the count-ordered secondary index for a `CountIndexedTree`
     /// element from scratch by walking its primary Merk.
     ///
-    /// **When you need this:**
+    /// **When you need this: normally, never.**
     ///
-    /// The dedicated [`Self::insert_into_count_indexed_tree`] /
-    /// [`Self::delete_from_count_indexed_tree`] APIs maintain the
-    /// secondary inline. The regular [`Self::insert`] / batch paths do
-    /// **not** know about the secondary, so if the application uses
-    /// those paths to mutate a sub-element whose `count_value` lives
-    /// inside a CountIndexedTree primary (for example by inserting into
-    /// a sub-`CountTree` stored as an item in the primary, which causes
-    /// the sub-tree's aggregate count to propagate up into the primary's
-    /// element bytes), the secondary will fall out of sync. After such
-    /// updates, call this method to bring the secondary back in sync.
+    /// This is a repair API. No supported write can desync the secondary
+    /// any more, so nothing in ordinary operation requires calling it:
+    ///
+    /// - The dedicated `insert_into_*` / `delete_from_*` APIs maintain
+    ///   the secondary inline.
+    /// - The batch path mirrors it per axis, and a generic write that
+    ///   targets an indexed primary directly is rejected outright rather
+    ///   than silently skipping the mirror.
+    /// - A deep write *under* a child of the primary — inserting into a
+    ///   sub-`CountTree` held in the primary, so the sub-tree's aggregate
+    ///   propagates up into the primary's element bytes — keeps the index
+    ///   in sync through both paths. That case used to be exactly what
+    ///   this method was for; it is pinned now by
+    ///   `a_deep_write_under_an_indexed_child_keeps_the_secondary_in_sync`.
+    ///
+    /// What remains is repair of a secondary already damaged by something
+    /// outside those paths: storage-level corruption, a partially applied
+    /// migration, or a bug. `verify_grovedb` reporting
+    /// `__cidx_count_mismatch__` for a primary is the signal.
+    ///
+    /// The rebuild is canonical rather than incremental, so the repaired
+    /// secondary depends only on the primary's contents — two differently
+    /// damaged indexes over the same primary reconcile to the same bytes.
     ///
     /// Calling this method when the secondary is already correct is
     /// idempotent — it will rewrite the secondary to a state that

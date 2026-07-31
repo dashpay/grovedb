@@ -595,9 +595,25 @@ pub(crate) fn inspect_cidx_overwrite<'db, S: StorageContext<'db>>(
     let mut cidx_path = path.to_vec();
     cidx_path.push(key_info.get_key_clone());
 
-    // CONSISTENCY CHECK: writes UNDER the cidx's path in the same
-    // batch would be silently lost when the post-apply cleanup
-    // clears the prefix.
+    // CONSISTENCY CHECK: writes UNDER the cidx's path in the same batch
+    // would be silently lost when the post-apply cleanup clears the prefix.
+    //
+    // This loop is currently UNREACHABLE, and deliberately kept anyway.
+    // The reason it cannot fire is self-cancelling: a descendant write makes
+    // the deeper level bubble a `ReplaceTreeRootKey` into this key's slot
+    // before the shallower level runs, so by the time this function reads the
+    // existing element it no longer sees an indexed tree and returns above,
+    // never reaching here. In other words the very condition being checked
+    // for is what prevents the check from running. Verified by instrumenting
+    // both this loop and the function entry: for a PCIT overwritten with a
+    // plain tree alongside a write underneath it, the function is entered and
+    // returns early, and the loop is never reached.
+    //
+    // It stays because the unreachability is a property of the ORDER the
+    // levels are processed in, not of this function — reorder the bubble-up,
+    // or call the classifier from anywhere that reads the pre-batch element,
+    // and the hazard is live again. Do not treat it as protection that exists
+    // today.
     let cidx_path_len = cidx_path.len();
     for q_path in ops_by_qualified_paths.keys() {
         if q_path.len() > cidx_path_len && q_path[..cidx_path_len] == cidx_path[..] {

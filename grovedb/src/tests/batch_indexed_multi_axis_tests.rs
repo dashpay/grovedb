@@ -1300,4 +1300,78 @@ mod tests {
             );
         }
     }
+
+    /// A deep write *under* a child of an indexed primary keeps the secondary
+    /// in sync on its own, through both the generic and the batch path.
+    ///
+    /// This is the scenario `reconcile_count_indexed_tree_secondary` was
+    /// written for: inserting into a sub-`CountTree` held inside a PCIT
+    /// propagates the sub-tree's aggregate up into the primary's element
+    /// bytes, which is the value the secondary orders by. It used to desync
+    /// because neither path knew about the secondary. Both now maintain it,
+    /// which is what makes reconcile a repair-only API rather than a step
+    /// callers have to remember — so if this ever regresses, the failure is
+    /// silent index corruption and reconcile's doc needs revisiting too.
+    #[test]
+    fn a_deep_write_under_an_indexed_child_keeps_the_secondary_in_sync() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcit(&db, b"cidx", gv);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"child",
+            Element::empty_count_tree(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("child count tree");
+        assert_eq!(
+            db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
+                .unwrap()
+                .expect("top_k"),
+            vec![(0u64, b"child".to_vec())],
+            "baseline: an empty child is indexed at count 0"
+        );
+
+        db.insert(
+            [TEST_LEAF, b"cidx", b"child"].as_ref(),
+            b"a",
+            Element::new_item(b"v".to_vec()),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("a deep generic write under the child is allowed");
+        assert_eq!(
+            db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
+                .unwrap()
+                .expect("top_k"),
+            vec![(1u64, b"child".to_vec())],
+            "the generic path must have carried the new aggregate into the index"
+        );
+        assert_clean(&db, gv);
+
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"cidx".to_vec(), b"child".to_vec()],
+                b"b".to_vec(),
+                Element::new_item(b"w".to_vec()),
+            )],
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("the same write through the batch path");
+        assert_eq!(
+            db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, gv)
+                .unwrap()
+                .expect("top_k"),
+            vec![(2u64, b"child".to_vec())],
+            "the batch path must maintain the index identically"
+        );
+        assert_clean(&db, gv);
+    }
 }
