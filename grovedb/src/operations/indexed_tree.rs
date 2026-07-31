@@ -23,6 +23,7 @@ use grovedb_merk::{
         costs::ElementCostExtensions, decode::ElementDecodeExtensions,
         delete::ElementDeleteFromStorageExtensions, get::ElementFetchFromStorageExtensions,
         insert::ElementInsertToStorageExtensions, reconstruct::ElementReconstructExtensions,
+        tree_type::ElementTreeTypeExtensions,
     },
     merk::KVIterator,
     proofs::Query,
@@ -414,6 +415,91 @@ impl GroveDb {
         Ok(merks).wrap_with_cost(cost)
     }
 
+    /// Clear orphaned child-subtree storage (and any indexed-secondary
+    /// namespaces) for an existing tree/indexed entry that is about to
+    /// be overwritten or deleted at `entry_path`. No-op when `existing`
+    /// is not a tree.
+    ///
+    /// Shared by the PCIT/PSIT/PCPSIT dedicated insert (overwrite) and
+    /// delete paths. Without it, replacing or deleting a tree-typed
+    /// child orphans the child's storage namespace — the entry is gone
+    /// from the primary Merk but its descendants still occupy storage
+    /// and resurface to `verify_grovedb`'s raw_iter pass (and to a
+    /// future insert at the same key). For an indexed-tree child the
+    /// per-axis secondary namespaces at `Blake3(primary_prefix ‖
+    /// axis_tag)` must be cleared too.
+    fn cleanup_dedicated_indexed_child_storage<'db, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        existing: &Element,
+        entry_path: SubtreePath<'b, B>,
+        transaction: &'db Transaction,
+        batch: &'db StorageBatch,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        if !existing.is_any_tree() {
+            return Ok(()).wrap_with_cost(cost);
+        }
+        // Recursively clear all primary subtree storage under entry_path.
+        let subtrees_paths = cost_return_on_error!(
+            &mut cost,
+            self.find_subtrees(&entry_path, Some(transaction), grove_version)
+        );
+        for subtree_path in subtrees_paths {
+            let p: SubtreePath<_> = subtree_path.as_slice().into();
+            let mut storage = self
+                .db
+                .get_transactional_storage_context(p, Some(batch), transaction)
+                .unwrap_add_cost(&mut cost);
+            cost_return_on_error!(
+                &mut cost,
+                storage.clear().map_err(|e| {
+                    Error::CorruptedData(format!(
+                        "unable to clean up old subtree storage in dedicated indexed-tree \
+                         overwrite/delete: {e}",
+                    ))
+                })
+            );
+        }
+        // Clear the per-axis secondary namespaces for indexed primaries.
+        let axes: Vec<IndexAxis> = match existing.underlying() {
+            Element::ProvableCountIndexedTree(..) => vec![IndexAxis::Count],
+            Element::ProvableSumIndexedTree(..) => vec![IndexAxis::Sum],
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes_tlv, _) => axes_tlv
+                .iter()
+                .filter_map(|(tag, _)| IndexAxis::try_from_tag(*tag).ok())
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !axes.is_empty() {
+            let primary_prefix =
+                RocksDbStorage::build_prefix(entry_path.clone()).unwrap_add_cost(&mut cost);
+            for axis in axes {
+                let secondary_prefix =
+                    RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
+                        .unwrap_add_cost(&mut cost);
+                let mut secondary_storage = self
+                    .db
+                    .get_transactional_storage_context_by_subtree_prefix(
+                        secondary_prefix,
+                        Some(batch),
+                        transaction,
+                    )
+                    .unwrap_add_cost(&mut cost);
+                cost_return_on_error!(
+                    &mut cost,
+                    secondary_storage.clear().map_err(|e| {
+                        Error::CorruptedData(format!(
+                            "unable to clean up indexed secondary (axis {axis:?}) during \
+                             dedicated indexed-tree overwrite/delete: {e}",
+                        ))
+                    })
+                );
+            }
+        }
+        Ok(()).wrap_with_cost(cost)
+    }
+
     /// Validate that `path` names an indexed primary of the expected variant,
     /// then hand the write to the batch pipeline.
     ///
@@ -483,8 +569,44 @@ impl GroveDb {
             )))
             .wrap_with_cost(cost);
         }
+        let existing_child = cost_return_on_error!(
+            &mut cost,
+            Element::get_optional_from_storage(&primary_merk.storage, item_key, grove_version)
+                .map_err(Error::MerkError)
+        );
         drop(primary_merk);
         drop(probe_batch);
+
+        // Overwriting a TREE-typed child replaces the element but leaves the
+        // subtree it owned at its derived prefix. Prefixes are path-derived, so
+        // the replacement occupies the same namespace and inherits those rows:
+        // `db.query` returns them via raw iteration and `verify_grovedb`
+        // rejects them as data the Merk cannot attest to.
+        // `GroveOp::InsertOrReplace` does not sweep them, and the batch path's
+        // overwrite hook classifies only INDEXED existing children, so the
+        // sweep runs here against the same transaction.
+        if let Some(existing) = existing_child.as_ref()
+            && existing.tree_type().is_some()
+        {
+            let cleanup_batch = StorageBatch::new();
+            let entry_path_owned = path.derive_owned_with_child(item_key);
+            cost_return_on_error!(
+                &mut cost,
+                self.cleanup_dedicated_indexed_child_storage(
+                    existing,
+                    SubtreePath::from(&entry_path_owned),
+                    tx.as_ref(),
+                    &cleanup_batch,
+                    grove_version,
+                )
+            );
+            cost_return_on_error!(
+                &mut cost,
+                self.db
+                    .commit_multi_context_batch(cleanup_batch, Some(tx.as_ref()))
+                    .map_err(Into::into)
+            );
+        }
 
         let op = crate::batch::QualifiedGroveDbOp::insert_or_replace_op(
             path.to_vec(),
@@ -559,7 +681,27 @@ impl GroveDb {
             return Ok(false).wrap_with_cost(cost);
         }
 
-        let op = crate::batch::QualifiedGroveDbOp::delete_op(path.to_vec(), item_key.to_vec());
+        // A tree-typed child owns a whole storage namespace at its derived
+        // prefix, and `GroveOp::Delete` only unlinks the entry — the batch
+        // path's recursive storage cleanup and per-axis secondary sweep are
+        // driven by `DeleteTree`. Emitting a plain delete here orphaned the
+        // child's subtree: re-creating at the same key (prefixes are
+        // path-derived, so it is the same namespace) resurrected the old rows,
+        // which `db.query` returns via raw iteration and `verify_grovedb`
+        // rejects as data the Merk cannot attest to.
+        let op = match existing
+            .as_ref()
+            .expect("existence checked above")
+            .tree_type()
+        {
+            Some(child_tree_type) => crate::batch::QualifiedGroveDbOp::delete_tree_op(
+                path.to_vec(),
+                item_key.to_vec(),
+                child_tree_type,
+                crate::batch::SubelementsDeletionBehavior::DeleteChildren,
+            ),
+            None => crate::batch::QualifiedGroveDbOp::delete_op(path.to_vec(), item_key.to_vec()),
+        };
         cost_return_on_error!(
             &mut cost,
             self.apply_batch(vec![op], None, Some(tx.as_ref()), grove_version)
@@ -2114,6 +2256,131 @@ fn corrupted_secondary_key_error(axis: IndexAxis, secondary_key: &[u8]) -> Error
 }
 
 #[cfg(test)]
+mod secondary_key_codec_tests {
+    //! The secondary keyspace is `sort_key ‖ item_key`, and every per-axis
+    //! direct query API round-trips through these helpers. They are the reason
+    //! a caller gets `(count, original_key)` back rather than raw bytes, and
+    //! the reason a malformed row surfaces as `CorruptedData` instead of being
+    //! silently dropped — so the prefix widths and the short-key rejections are
+    //! pinned here directly.
+
+    use grovedb_element::indexed::IndexAxis;
+
+    use super::{
+        axis_sort_key_len, axis_sort_prefix_len, corrupted_secondary_key_error,
+        decode_avg_secondary_key, decode_secondary_key, decode_sum_secondary_key,
+        make_axis_secondary_key, make_secondary_key, max_item_key_len_for_axis,
+        MAX_AVG_INDEXED_ITEM_KEY_LEN, MAX_CIDX_ITEM_KEY_LEN,
+    };
+    use crate::Error;
+
+    #[test]
+    fn count_secondary_keys_round_trip_and_sort_by_count() {
+        let key = make_secondary_key(258, b"row");
+        assert_eq!(
+            key,
+            vec![0, 0, 0, 0, 0, 0, 1, 2, b'r', b'o', b'w'],
+            "count prefix must be 8-byte big-endian followed by the item key"
+        );
+        assert_eq!(
+            decode_secondary_key(&key),
+            Some((258u64, b"row".to_vec())),
+            "decode must invert make_secondary_key"
+        );
+        // Big-endian is what makes byte order equal count order.
+        assert!(make_secondary_key(2, b"a") < make_secondary_key(10, b"a"));
+        // The shared axis builder must agree with the count-specific one.
+        assert_eq!(
+            make_axis_secondary_key(IndexAxis::Count, 258, 0, b"row"),
+            key
+        );
+    }
+
+    #[test]
+    fn sum_and_avg_secondary_keys_round_trip_through_their_axis_builders() {
+        let sum_key = make_axis_secondary_key(IndexAxis::Sum, 0, -9, b"row");
+        assert_eq!(sum_key.len(), 8 + 3, "sum prefix is 8 bytes");
+        assert_eq!(
+            decode_sum_secondary_key(&sum_key),
+            Some((-9i64, b"row".to_vec()))
+        );
+        // Sign-flipped big-endian: negative sums sort below positive ones.
+        assert!(sum_key < make_axis_secondary_key(IndexAxis::Sum, 0, 1, b"row"));
+
+        // avg = floor(sum * 10^15 / count) = 5 * 10^15 for (count 2, sum 10).
+        let avg_key = make_axis_secondary_key(IndexAxis::Avg, 2, 10, b"row");
+        assert_eq!(avg_key.len(), 16 + 3, "avg prefix is 16 bytes");
+        assert_eq!(
+            decode_avg_secondary_key(&avg_key),
+            Some((5_000_000_000_000_000i128, b"row".to_vec()))
+        );
+        assert!(avg_key < make_axis_secondary_key(IndexAxis::Avg, 2, 11, b"row"));
+    }
+
+    /// A key one byte shorter than its axis prefix must decode to `None` — that
+    /// is what makes the query cores raise `CorruptedData` rather than index
+    /// out of bounds or truncate a row into a bogus value.
+    #[test]
+    fn a_key_shorter_than_its_axis_prefix_fails_to_decode() {
+        assert_eq!(decode_secondary_key(&[0u8; 7]), None);
+        assert_eq!(
+            decode_secondary_key(&[0u8; 8]),
+            Some((0u64, Vec::new())),
+            "exactly the prefix width is a valid (empty item key) row"
+        );
+        assert_eq!(decode_sum_secondary_key(&[0u8; 7]), None);
+        assert!(decode_sum_secondary_key(&[0u8; 8]).is_some());
+        assert_eq!(decode_avg_secondary_key(&[0u8; 15]), None);
+        assert!(decode_avg_secondary_key(&[0u8; 16]).is_some());
+    }
+
+    #[test]
+    fn prefix_widths_and_key_ceilings_agree_across_the_axis_helpers() {
+        for (axis, width) in [
+            (IndexAxis::Count, 8usize),
+            (IndexAxis::Sum, 8),
+            (IndexAxis::Avg, 16),
+        ] {
+            assert_eq!(axis_sort_prefix_len(axis), width, "{axis:?} prefix width");
+            assert_eq!(axis_sort_key_len(axis), width, "{axis:?} sort key length");
+            // Merk requires keys < 256 bytes, so the ceiling is 255 - prefix.
+            assert_eq!(
+                max_item_key_len_for_axis(axis),
+                255 - width,
+                "{axis:?} item-key ceiling must leave room for its sort key"
+            );
+            assert_eq!(
+                make_axis_secondary_key(axis, 1, 1, &vec![b'k'; max_item_key_len_for_axis(axis)])
+                    .len(),
+                255,
+                "a max-length item key must produce exactly a 255-byte secondary key"
+            );
+        }
+        assert_eq!(
+            max_item_key_len_for_axis(IndexAxis::Count),
+            MAX_CIDX_ITEM_KEY_LEN
+        );
+        assert_eq!(
+            max_item_key_len_for_axis(IndexAxis::Avg),
+            MAX_AVG_INDEXED_ITEM_KEY_LEN
+        );
+    }
+
+    #[test]
+    fn the_corruption_error_names_the_axis_and_its_expected_width() {
+        match corrupted_secondary_key_error(IndexAxis::Avg, &[1, 2, 3]) {
+            Error::CorruptedData(message) => {
+                assert!(
+                    message.contains("axis Avg") && message.contains("shorter than 16 bytes"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected CorruptedData, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod bug2_avg_axis_mirror_tests {
     //! BUG 2 regression: `mirror_indexed_axis_to_secondary` must not
     //! early-return on the Avg axis when the sort key is unchanged but
@@ -2134,7 +2401,7 @@ mod bug2_avg_axis_mirror_tests {
 
     use grovedb_costs::OperationCost;
     use grovedb_element::indexed::{compute_avg_fixed_point, IndexAxis};
-    use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
+    use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, tree::AggregateData};
     use grovedb_path::SubtreePath;
     use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
@@ -2355,5 +2622,106 @@ mod bug2_avg_axis_mirror_tests {
             .unwrap()
             .expect("entry present");
         assert_eq!(entry.sum_value_or_default(), 10, "payload must remain 10");
+    }
+
+    /// A delete reaches the mirror as `new_count = new_sum = None`, which must
+    /// resolve to "no new key" and leave only the removal. The row has to
+    /// disappear from the axis secondary — not merely stop being findable — or
+    /// the secondary's own aggregate keeps counting it.
+    #[test]
+    fn avg_axis_mirror_removes_the_row_when_the_new_state_is_absent() {
+        let grove_version = GroveVersion::latest();
+        let db = make_test_grovedb(grove_version);
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(IndexAxis::Avg.tag(), None)];
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"pcpsit",
+            Element::empty_provable_count_provable_sum_indexed_tree(axes).expect("canonical axes"),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("empty PCPSIT insert");
+
+        let tx = db.start_transaction();
+        let item_key = b"row";
+        let batch = StorageBatch::new();
+        let path_segments: [&[u8]; 2] = [TEST_LEAF, b"pcpsit".as_ref()];
+        let path: SubtreePath<_> = (&path_segments).into();
+        let mut secondary = db
+            .open_indexed_secondary_at_path(
+                path,
+                IndexAxis::Avg,
+                None,
+                &tx,
+                Some(&batch),
+                grove_version,
+            )
+            .unwrap()
+            .expect("open empty avg secondary");
+
+        mirror_indexed_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Avg,
+            item_key,
+            None,
+            None,
+            Some(2),
+            Some(10),
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert (2,10)");
+        let key = make_axis_secondary_key(IndexAxis::Avg, 2, 10, item_key);
+        assert!(
+            Element::get(&secondary, key.as_slice(), true, grove_version)
+                .unwrap()
+                .is_ok(),
+            "entry must exist before the delete"
+        );
+        let (_, _, aggregate_before) = secondary
+            .root_hash_key_and_aggregate_data()
+            .unwrap()
+            .expect("secondary root state");
+        assert_eq!(
+            aggregate_before,
+            AggregateData::ProvableCountAndProvableSum(1, 10),
+            "the avg secondary must aggregate (count 1, sum 10) while the row is present"
+        );
+
+        mirror_indexed_axis_to_secondary(
+            &mut secondary,
+            IndexAxis::Avg,
+            item_key,
+            Some(2),
+            Some(10),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("delete transition");
+
+        assert!(
+            Element::get(&secondary, key.as_slice(), true, grove_version)
+                .unwrap()
+                .is_err(),
+            "the row must be gone from the avg secondary"
+        );
+        let (_, root_key_after, aggregate_after) = secondary
+            .root_hash_key_and_aggregate_data()
+            .unwrap()
+            .expect("secondary root state");
+        assert!(
+            root_key_after.is_none(),
+            "the secondary must be empty after removing its only row"
+        );
+        assert_eq!(
+            aggregate_after,
+            AggregateData::NoAggregateData,
+            "an empty secondary reports no aggregate at all, so the removed row \
+             cannot still be contributing"
+        );
     }
 }

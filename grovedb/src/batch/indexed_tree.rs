@@ -326,7 +326,17 @@ pub(crate) fn apply_indexed_secondary_mirror_post_apply<'db, S: StorageContext<'
         if old_entry == new_entry {
             continue;
         }
-        if let Some((old_secondary_key, _)) = &old_entry {
+        // Delete the old row ONLY if the new one lands on a different key.
+        // On the avg axis a change can alter the payload while leaving the
+        // sort key fixed — (count, sum) going (1, 5) -> (2, 10) keeps
+        // avg = 5 — and emitting a delete plus a put for one key in a single
+        // Merk batch is rejected outright ("Keys in batch must be unique"),
+        // failing the whole GroveDB batch. Where the key is unchanged the put
+        // alone overwrites the payload, which is what the row needs.
+        let new_secondary_key_ref = new_entry.as_ref().map(|(key, _)| key);
+        if let Some((old_secondary_key, _)) = &old_entry
+            && Some(old_secondary_key) != new_secondary_key_ref
+        {
             cost_return_on_error!(
                 &mut cost,
                 Element::delete_into_batch_operations(

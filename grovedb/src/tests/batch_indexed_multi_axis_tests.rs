@@ -1054,4 +1054,191 @@ mod tests {
             "the count-indexed delete must refuse a PSIT target, got {result:?}"
         );
     }
+
+    // ---------------------------------------------------------------
+    // Storage-cleanup regressions from the consolidation
+    // ---------------------------------------------------------------
+
+    /// Deleting a TREE-typed child must sweep the subtree it owned.
+    ///
+    /// `GroveOp::Delete` only unlinks the entry; the batch path's recursive
+    /// storage cleanup is driven by `DeleteTree`. Emitting a plain delete left
+    /// the child's rows at its derived prefix, and since prefixes are
+    /// path-derived, re-creating at the same key inherited them — `db.query`
+    /// returns them via raw iteration and `verify_grovedb` rejects them as
+    /// data the Merk cannot attest to.
+    #[test]
+    fn deleting_a_tree_child_sweeps_its_storage() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcit(&db, b"cidx", gv);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("insert tree child");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"seed",
+            Element::new_item(b"ghost".to_vec()),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("populate child");
+
+        assert!(
+            db.delete_from_count_indexed_tree([TEST_LEAF, b"cidx"].as_ref(), b"a", None, gv)
+                .unwrap()
+                .expect("delete child"),
+            "deleting an existing child reports true"
+        );
+
+        // Re-create at the same key: the namespace must be empty, not haunted.
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("re-create child");
+        assert!(
+            db.verify_grovedb(None, true, true, gv)
+                .expect("verify must not hard-error on resurrected rows")
+                .is_empty(),
+            "the re-created child must not inherit the deleted child's rows"
+        );
+        assert!(
+            db.get([TEST_LEAF, b"cidx", b"a"].as_ref(), b"seed", None, gv)
+                .unwrap()
+                .is_err(),
+            "the old row must be gone, not merely unlinked"
+        );
+    }
+
+    /// Overwriting a populated TREE-typed child must sweep it too — same
+    /// hazard as delete, reached without a delete/recreate cycle.
+    #[test]
+    fn overwriting_a_populated_tree_child_sweeps_its_storage() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcit(&db, b"cidx", gv);
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("insert tree child");
+        db.insert(
+            [TEST_LEAF, b"cidx", b"a"].as_ref(),
+            b"seed",
+            Element::new_item(b"ghost".to_vec()),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("populate child");
+
+        db.insert_into_count_indexed_tree(
+            [TEST_LEAF, b"cidx"].as_ref(),
+            b"a",
+            Element::empty_count_tree(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("overwrite with a fresh empty tree");
+
+        assert!(
+            db.verify_grovedb(None, true, true, gv)
+                .expect("verify must not hard-error")
+                .is_empty(),
+            "the replacement must not inherit the overwritten child's rows"
+        );
+    }
+
+    /// An avg-axis change that alters the payload but NOT the sort key must
+    /// not emit a delete and a put for one key.
+    ///
+    /// `(count, sum)` going (1, 5) -> (2, 10) keeps avg = 5, so the row stays
+    /// at the same secondary key while its stored sum changes. Emitting both
+    /// operations put a duplicate key in one Merk batch, which merk rejects
+    /// outright — failing the entire GroveDB batch.
+    #[test]
+    fn avg_axis_payload_change_at_a_fixed_sort_key_succeeds() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcpsit(
+            &db,
+            b"idx",
+            &[IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg],
+            gv,
+        );
+        db.insert_into_provable_count_provable_sum_indexed_tree(
+            [TEST_LEAF, b"idx"].as_ref(),
+            b"k",
+            Element::empty_count_sum_tree(),
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("empty child");
+        db.insert(
+            [TEST_LEAF, b"idx", b"k"].as_ref(),
+            b"a",
+            Element::new_sum_item(5),
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("child becomes (count 1, sum 5)");
+
+        let avg_before = db
+            .indexed_avg_top_k([TEST_LEAF, b"idx"].as_ref(), 5, true, None, gv)
+            .unwrap()
+            .expect("avg top_k");
+
+        // (1, 5) -> (2, 10): avg is unchanged, the payload is not.
+        db.apply_batch(
+            vec![QualifiedGroveDbOp::insert_or_replace_op(
+                vec![TEST_LEAF.to_vec(), b"idx".to_vec(), b"k".to_vec()],
+                b"b".to_vec(),
+                Element::new_sum_item(5),
+            )],
+            None,
+            None,
+            gv,
+        )
+        .unwrap()
+        .expect("a payload-only change on the avg axis must not fail the batch");
+
+        let avg_after = db
+            .indexed_avg_top_k([TEST_LEAF, b"idx"].as_ref(), 5, true, None, gv)
+            .unwrap()
+            .expect("avg top_k");
+        assert_eq!(
+            avg_before, avg_after,
+            "the avg sort key is unchanged by (1,5) -> (2,10)"
+        );
+        assert_eq!(
+            db.indexed_sum_top_k([TEST_LEAF, b"idx"].as_ref(), 5, true, None, gv)
+                .unwrap()
+                .expect("sum top_k"),
+            vec![(10, b"k".to_vec())],
+            "the sum axis must reflect the new total"
+        );
+        assert_clean(&db, gv);
+    }
 }
