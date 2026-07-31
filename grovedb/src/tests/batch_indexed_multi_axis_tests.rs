@@ -1241,4 +1241,63 @@ mod tests {
         );
         assert_clean(&db, gv);
     }
+
+    /// Every non-Merk tree type survives a full insert/delete cycle as a
+    /// child of an indexed primary.
+    ///
+    /// PCIT places no shape restriction on its children, so all four
+    /// append-style tree types can land under one. They matter here because
+    /// the delete path passes the child's ACTUAL stored tree type to
+    /// `delete_tree_op`, which is what selects the cleanup namespaces — the
+    /// behaviour GROVE_V4's `delete_tree_cleanup_type_source` gate turns on.
+    /// A type the sweep mishandles would orphan storage exactly the way a
+    /// plain `Delete` did, so each variant is verified, not just accepted.
+    #[test]
+    fn every_non_merk_tree_type_round_trips_as_an_indexed_child() {
+        let gv = GroveVersion::latest();
+        let db = make_test_grovedb(gv);
+        make_pcit(&db, b"cidx", gv);
+
+        for (label, element) in [
+            ("mmr", Element::empty_mmr_tree()),
+            (
+                "commitment",
+                Element::empty_commitment_tree(4).expect("chunk_power 4 is in range"),
+            ),
+            ("dense", Element::empty_dense_tree(4)),
+            (
+                "bulk",
+                Element::empty_bulk_append_tree(4).expect("chunk_power 4 is in range"),
+            ),
+        ] {
+            db.insert_into_count_indexed_tree(
+                [TEST_LEAF, b"cidx"].as_ref(),
+                label.as_bytes(),
+                element,
+                None,
+                gv,
+            )
+            .unwrap()
+            .unwrap_or_else(|e| panic!("{label} must be insertable under a PCIT: {e}"));
+
+            assert!(
+                db.delete_from_count_indexed_tree(
+                    [TEST_LEAF, b"cidx"].as_ref(),
+                    label.as_bytes(),
+                    None,
+                    gv,
+                )
+                .unwrap()
+                .unwrap_or_else(|e| panic!("{label} must be deletable from a PCIT: {e}")),
+                "{label}: deleting an existing child reports true"
+            );
+
+            assert!(
+                db.verify_grovedb(None, true, true, gv)
+                    .unwrap_or_else(|e| panic!("{label}: verify hard-errored: {e}"))
+                    .is_empty(),
+                "{label}: the sweep must leave no orphaned rows behind"
+            );
+        }
+    }
 }
