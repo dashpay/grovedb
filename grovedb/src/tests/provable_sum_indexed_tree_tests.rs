@@ -1770,7 +1770,7 @@ mod tests {
             bytes[32] ^= 0xff;
         }
 
-        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(v1), config).expect("encode");
+        let tampered = bincode::encode_to_vec(GroveDBProof::V1(v1), config).expect("encode");
         let result = crate::GroveDb::verify_query(&tampered, &pq, v);
         assert!(
             matches!(result, Err(crate::Error::InvalidProof(_, ref m))

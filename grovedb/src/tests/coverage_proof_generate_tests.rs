@@ -457,7 +457,7 @@ mod tests {
         if let ProofBytes::IndexedTreeTerminal(bytes) = &mut terminal.merk_proof {
             bytes[0] ^= 0xff;
         }
-        let tampered = bincode::encode_to_vec(&GroveDBProof::V1(v1), bincode::config::standard())
+        let tampered = bincode::encode_to_vec(GroveDBProof::V1(v1), bincode::config::standard())
             .expect("encode");
         let result = GroveDb::verify_query(&tampered, &pq, v);
         assert!(

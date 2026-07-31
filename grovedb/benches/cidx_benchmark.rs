@@ -150,8 +150,8 @@ fn bench_cidx_top_k(c: &mut Criterion) {
     group.finish();
 }
 
-/// top_k via plain CountTree: full O(n) scan + sort.
-///
+// top_k via plain CountTree: full O(n) scan + sort.
+//
 // NOTE: a true matched baseline for "plain CountTree top-k" would
 // iterate every child via raw_iter, decode each entry's count_value,
 // and sort to take top-k. That code lives in user code rather than

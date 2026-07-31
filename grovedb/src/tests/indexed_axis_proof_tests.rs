@@ -906,7 +906,7 @@ mod tests {
     // =================================================================
 
     /// Helper: build a PSIT and prove a sum top-k. Returns (proof, path).
-    fn psit_sum_top_k_proof<'a>(
+    fn psit_sum_top_k_proof(
         db: &GroveDb,
         grove_version: &GroveVersion,
         k: u16,

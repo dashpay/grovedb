@@ -46,7 +46,7 @@ mod tests {
         let tx = db.start_transaction();
         let batch = StorageBatch::new();
         {
-            let mut ctx = db
+            let ctx = db
                 .db
                 .get_transactional_storage_context_by_subtree_prefix(
                     secondary_prefix,
