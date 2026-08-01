@@ -1004,8 +1004,8 @@ impl GroveDb {
                 // Take the new ordering values from the element we just wrote,
                 // NOT from `aggregate_data`. The batch path reads both sides
                 // of the delta from the element
-                // (`batch::indexed_tree::capture_cidx_pre_state` /
-                // `apply_cidx_secondary_mirror_post_apply`), and the two
+                // (`batch::indexed_tree::capture_indexed_pre_state` /
+                // `apply_indexed_secondary_mirror_post_apply`), and the two
                 // differ for children that carry no count aggregate — a plain
                 // `Tree` or `SumTree` child defaults to 1 via the element, but
                 // `AggregateData::as_count_u64` reports 0. Deriving it from
