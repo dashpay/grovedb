@@ -59,7 +59,17 @@ fn enforce_axis_item_key_bound<'a>(
 
 /// Re-read each captured key's aggregates after the primary apply, pairing
 /// them with the captured pre-state into one transition per key.
-fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
+///
+/// Called ONCE per level, not once per axis: the `(count, sum)` transitions
+/// are axis-independent — only the sort-key encoding differs per axis — so
+/// the caller computes them once and hands the same slice to every axis's
+/// [`apply_indexed_secondary_mirror_post_apply`]. Re-reading inside the
+/// per-axis call charged a PCPSIT batch three primary reads per key where
+/// one suffices.
+///
+/// The result is key-sorted (built from the `BTreeMap` capture), which is
+/// what makes each axis's assembled batch deterministic.
+pub(crate) fn read_post_apply_transitions<'db, S: StorageContext<'db>>(
     primary_merk: &Merk<S>,
     pre: &BTreeMap<Vec<u8>, AggregatePair>,
     grove_version: &GroveVersion,
@@ -153,39 +163,39 @@ fn build_axis_mirror_batch(
     Ok(secondary_batch).wrap_with_cost(cost)
 }
 
-/// Apply one axis's secondary-mirror update for every key captured by
-/// [`capture_indexed_pre_state`], after the primary merk's batch ops have been
-/// applied. Returns that axis secondary's post-mirror `(root_hash, root_key)`
-/// so the caller can fold it into the parent's H1-A composition — directly for
-/// the single-axis variants, or through `axes_digest` for PCPSIT.
+/// Apply one axis's secondary-mirror update for every captured transition,
+/// after the primary merk's batch ops have been applied. Returns that axis
+/// secondary's post-mirror `(root_hash, root_key)` so the caller can fold it
+/// into the parent's H1-A composition — directly for the single-axis
+/// variants, or through `axes_digest` for PCPSIT.
 ///
-/// Call once per configured axis. Each axis derives its own sort key from the
-/// same `(count, sum)` pair, so an entry can move in the count index while
-/// staying put in the sum index, and the avg index can move when neither of
-/// the other two does.
+/// Call once per configured axis, with the SAME transitions slice from one
+/// [`read_post_apply_transitions`] call. Each axis derives its own sort key
+/// from the same `(count, sum)` pair, so an entry can move in the count
+/// index while staying put in the sum index, and the avg index can move when
+/// neither of the other two does.
 ///
-/// **Determinism and atomic-transition note:** the input `pre` is a
-/// `BTreeMap`, so iteration is key-sorted. All deletes and inserts for this
-/// axis are assembled into one sorted Merk batch. Applying them as separate
-/// Merk mutations can retain a stale row after multiple same-level changes;
-/// one atomic batch gives the secondary a single pre/post transition.
+/// **Determinism and atomic-transition note:** the transitions slice is
+/// key-sorted (built from the `BTreeMap` capture). All deletes and inserts
+/// for this axis are assembled into one sorted Merk batch. Applying them as
+/// separate Merk mutations can retain a stale row after multiple same-level
+/// changes; one atomic batch gives the secondary a single pre/post
+/// transition.
 pub(crate) fn apply_indexed_secondary_mirror_post_apply<'db, S: StorageContext<'db>>(
-    primary_merk: &Merk<S>,
-    pre: &BTreeMap<Vec<u8>, AggregatePair>,
+    transitions: &[AggregateTransition],
     axis: IndexAxis,
     secondary_merk: &mut Merk<S>,
     grove_version: &GroveVersion,
 ) -> CostResult<(CryptoHash, Option<Vec<u8>>), Error> {
     let mut cost = OperationCost::default();
 
-    let transitions = cost_return_on_error!(
-        &mut cost,
-        read_post_apply_transitions(primary_merk, pre, grove_version)
+    cost_return_on_error_no_add!(
+        cost,
+        enforce_axis_item_key_bound(transitions.iter().map(|(key, ..)| key), axis)
     );
-    cost_return_on_error_no_add!(cost, enforce_axis_item_key_bound(pre.keys(), axis));
     let secondary_batch = cost_return_on_error!(
         &mut cost,
-        build_axis_mirror_batch(&transitions, axis, grove_version)
+        build_axis_mirror_batch(transitions, axis, grove_version)
     );
 
     if !secondary_batch.is_empty() {

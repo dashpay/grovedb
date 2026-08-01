@@ -52,7 +52,7 @@ use grovedb_costs::{
 use grovedb_merk::{element::costs::ElementCostExtensions, Merk};
 use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
-pub(crate) use mirror::apply_indexed_secondary_mirror_post_apply;
+pub(crate) use mirror::{apply_indexed_secondary_mirror_post_apply, read_post_apply_transitions};
 pub(crate) use overwrite::inspect_cidx_overwrite;
 pub(crate) use pre_state::capture_indexed_pre_state;
 pub(crate) use preflight::reject_freshly_inserted_cidx_with_descendants;

@@ -1398,23 +1398,6 @@ impl GroveDbOpConsistencyResults {
     }
 }
 
-/// Axes an indexed primary maintains, derived from its tree type.
-///
-/// PCIT and PSIT are single-axis by construction. A PCPSIT's axes are carried
-/// by its ELEMENT, not its tree type, so the widest set is assumed here for
-/// the key-length bound; the actual per-axis mirroring is driven by the axes
-/// the secondary-opening closure reads off the element.
-fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::indexed::IndexAxis> {
-    use grovedb_element::indexed::IndexAxis;
-    match tree_type {
-        TreeType::ProvableSumIndexedTree => vec![IndexAxis::Sum],
-        TreeType::ProvableCountProvableSumIndexedTree => {
-            vec![IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]
-        }
-        _ => vec![IndexAxis::Count],
-    }
-}
-
 /// Cache for Merk trees by their paths.
 struct TreeCacheMerkByPath<S, F, F2> {
     merks: HashMap<Vec<Vec<u8>>, Merk<S>>,
@@ -3559,13 +3542,20 @@ where
             // keys), then mirror each one from the same captured pre-state.
             let secondaries = cost_return_on_error!(&mut cost, (self.get_secondary_merks_fn)(path));
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
+            // One post-state read per captured key, shared by every axis: the
+            // (count, sum) transitions are axis-independent, only the sort-key
+            // encoding differs. Reading inside the per-axis call charged a
+            // PCPSIT batch three primary reads per key where one suffices.
+            let transitions = cost_return_on_error!(
+                &mut cost,
+                indexed_tree::read_post_apply_transitions(primary_merk, &pre, grove_version)
+            );
             let mut per_axis = Vec::with_capacity(secondaries.len());
             for (axis, mut secondary_merk) in secondaries {
                 let (sec_hash, sec_root_key) = cost_return_on_error!(
                     &mut cost,
                     indexed_tree::apply_indexed_secondary_mirror_post_apply(
-                        primary_merk,
-                        &pre,
+                        &transitions,
                         axis,
                         &mut secondary_merk,
                         grove_version,
