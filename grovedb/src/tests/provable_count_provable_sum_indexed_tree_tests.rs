@@ -1027,7 +1027,7 @@ mod tests {
     /// Populate `[TEST_LEAF, "pcpsit"]` with CountSumTree children whose
     /// derived (count, sum) values give distinct secondary keys across all
     /// three axes. Each tuple is `(item_key, count, sum)`; the avg axis
-    /// encodes `floor(sum * 10^15 / count)`.
+    /// encodes `floor(sum * 10^19 / count)`.
     fn pcpsit_populate_count_sum_dataset(
         db: &crate::GroveDb,
         grove_version: &GroveVersion,
@@ -1045,7 +1045,7 @@ mod tests {
         dataset
     }
 
-    /// SCALE used by the avg-axis encoding (10^15).
+    /// SCALE used by the avg-axis encoding (10^19).
     const AVG_SCALE: i128 = grovedb_element::indexed::AVG_FIXED_POINT_SCALE;
 
     // ---- indexed_count_* over PCPSIT (count axis in TLV) ----
@@ -1251,7 +1251,7 @@ mod tests {
         insert_empty_pcpsit_all_axes(&db, b"pcpsit", grove_version);
         pcpsit_populate_count_sum_dataset(&db, grove_version);
 
-        // Avg fixed-point (× 10^15):
+        // Avg fixed-point (× 10^19):
         //   alice  (2, 10)   →  5 * SCALE
         //   bob    (4, 100)  → 25 * SCALE
         //   carol  (5, -25)  → -5 * SCALE

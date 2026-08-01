@@ -1669,7 +1669,7 @@ impl GroveDb {
 
     /// Iterate the avg-axis secondary in avg-order and return the
     /// **top `k`** entries by fixed-point average `floor(sum * SCALE /
-    /// count)` (`SCALE = 10^15`). `descending = true` returns the
+    /// count)` (`SCALE = 10^19`). `descending = true` returns the
     /// largest averages first; ties on avg are broken in descending
     /// lex order of the original key.
     ///
@@ -1679,10 +1679,10 @@ impl GroveDb {
     /// `Error::InvalidPath`.
     ///
     /// Each returned entry is `(avg_fixed_point_i128, original_key)`.
-    /// Divide by `AVG_FIXED_POINT_SCALE` (`10^15`) to recover the
-    /// floating-point average if you need a `f64` view; the
-    /// `i128`-backed encoding round-trips through that scale exactly
-    /// across the practical i64 sum / u64 count domain.
+    /// Divide by `AVG_FIXED_POINT_SCALE` (`10^19`) to recover a float
+    /// view if you need one — noting an `f64` view is approximate at
+    /// this scale; the `i128` fixed-point value is the exact consensus
+    /// value.
     pub fn indexed_avg_top_k<'b, B, P>(
         &self,
         path: P,
@@ -1740,7 +1740,7 @@ impl GroveDb {
     /// by `descending`.
     ///
     /// The `lo_avg` / `hi_avg` bounds are i128 fixed-point values at
-    /// `SCALE = 10^15`. To filter by a floating-point threshold `t`,
+    /// `SCALE = 10^19`. To filter by a floating-point threshold `t`,
     /// pass `(t * SCALE) as i128`. `lo_avg > hi_avg` returns an empty
     /// vector. `lo_avg == i128::MIN && hi_avg == i128::MAX` is
     /// equivalent to a full scan.
@@ -2111,7 +2111,7 @@ pub(crate) fn mirror_indexed_axis_to_secondary<'db, S: StorageContext<'db>>(
     // the stored payload are unchanged.
     //
     // Equal sort keys do NOT imply equal payloads on the Avg axis: the
-    // avg key is floor(sum * 10^15 / count) while the payload carries the
+    // avg key is floor(sum * 10^19 / count) while the payload carries the
     // raw `sum`, so e.g. (count, sum) = (1, 5) and (2, 10) share a key
     // (avg 5.0) but differ in payload sum (5 vs 10). Returning early on
     // key-equality alone would leave a stale hash-committed sum in the
@@ -2245,7 +2245,7 @@ fn decode_sum_secondary_key(secondary_key: &[u8]) -> Option<(i64, Vec<u8>)> {
 /// `None` if the key is shorter than the 16-byte avg-sort prefix.
 ///
 /// The 16-byte prefix is the sign-flipped big-endian encoding of an `i128`
-/// fixed-point average with `SCALE = 10^15` (see
+/// fixed-point average with `SCALE = 10^19` (see
 /// [`grovedb_element::indexed::encode_avg_sort_key`]); the suffix is the
 /// entry's original primary key.
 #[inline]
@@ -2334,12 +2334,15 @@ mod secondary_key_codec_tests {
         // Sign-flipped big-endian: negative sums sort below positive ones.
         assert!(sum_key < make_axis_secondary_key(IndexAxis::Sum, 0, 1, b"row"));
 
-        // avg = floor(sum * 10^15 / count) = 5 * 10^15 for (count 2, sum 10).
+        // avg = floor(sum * SCALE / count) = 5 * SCALE for (count 2, sum 10).
         let avg_key = make_axis_secondary_key(IndexAxis::Avg, 2, 10, b"row");
         assert_eq!(avg_key.len(), 16 + 3, "avg prefix is 16 bytes");
         assert_eq!(
             decode_avg_secondary_key(&avg_key),
-            Some((5_000_000_000_000_000i128, b"row".to_vec()))
+            Some((
+                5 * grovedb_element::indexed::AVG_FIXED_POINT_SCALE,
+                b"row".to_vec()
+            ))
         );
         assert!(avg_key < make_axis_secondary_key(IndexAxis::Avg, 2, 11, b"row"));
     }
@@ -2413,7 +2416,7 @@ mod bug2_avg_axis_mirror_tests {
     //! early-return on the Avg axis when the sort key is unchanged but
     //! the stored payload sum differs.
     //!
-    //! The avg sort key is `floor(sum * 10^15 / count)`, while the stored
+    //! The avg sort key is `floor(sum * 10^19 / count)`, while the stored
     //! payload is `ItemWithSumItem(_, sum)`. Two `(count, sum)` pairs can
     //! share a key yet differ in payload sum — e.g. `(1, 5)` and `(2, 10)`
     //! both encode avg `5.0` but carry payload sums `5` and `10`. The old

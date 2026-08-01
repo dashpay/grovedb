@@ -473,7 +473,7 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         // Each item has count=1 + its sum, so avg = sum/1 = sum (in
-        // fixed-point at SCALE=10^15 → multiply by 10^15).
+        // fixed-point at SCALE=10^19 → multiply by 10^19).
         const SCALE: i128 = grovedb_element::indexed::AVG_FIXED_POINT_SCALE;
         build_pcpsit(
             &db,

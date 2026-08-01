@@ -14,11 +14,33 @@
 //! lexicographic compare of the resulting `[u8; N]` matches a numeric
 //! compare of the source integer.
 
-/// SCALE for fixed-point average: 10^15. Picked to match the exactly-
-/// representable integer range of float64 (2^53 ≈ 9.0×10^15). Averages
-/// computed as `sum * SCALE / count` therefore round-trip through `f64`
-/// without losing precision over the practical sum / count domain.
-pub const AVG_FIXED_POINT_SCALE: i128 = 1_000_000_000_000_000;
+/// SCALE for the fixed-point average: 10^19, the largest power of ten whose
+/// worst-case product `|i64::MIN| × SCALE` still fits in `i128`
+/// (≈ 9.2×10^37 against `i128::MAX` ≈ 1.7×10^38 — proven by the
+/// compile-time assertion below).
+///
+/// The scale is chosen to maximize ordering resolution. Two distinct
+/// averages `s1/c1 ≠ s2/c2` differ by at least `1/(c1·c2)`, so they can
+/// collapse onto one fixed-point value only when `c1·c2 > SCALE` — at
+/// 10^19 that requires both counts above ~3.16 billion. A collapse is
+/// benign (the full secondary key is `sort_key ‖ item_key`, so tied
+/// averages order deterministically by item key), but at
+/// billions-of-rows table sizes the previous 10^15 scale started
+/// collapsing averages it should distinguish: its threshold was two
+/// children of ~31.6 million rows each.
+///
+/// Fixed-point values at this scale do NOT round-trip through `f64`
+/// (anything with `|avg| > ~0.0009` exceeds 2^53). That is deliberate:
+/// the index never touches floats — ordering, encoding and consensus all
+/// operate on the `i128` — and a consumer wanting a float view divides by
+/// SCALE and accepts ordinary `f64` rounding of the display value.
+pub const AVG_FIXED_POINT_SCALE: i128 = 10_000_000_000_000_000_000;
+
+/// Compile-time proof of the overflow bound `|i64::MIN| × SCALE ≤
+/// i128::MAX` that [`compute_avg_fixed_point`] relies on. A future scale
+/// bump that breaks the bound fails the build here instead of silently
+/// saturating at run time.
+const _: () = assert!(AVG_FIXED_POINT_SCALE.checked_mul(1i128 << 63).is_some());
 
 /// `u64` big-endian. Lexicographic order on the bytes equals numeric order
 /// on the source `u64`.
@@ -58,11 +80,11 @@ pub fn decode_sum_sort_key(bytes: &[u8; 8]) -> i64 {
 /// - `0 / 0` is defined to be `0` (the conventional choice for an empty
 ///   index where no entries have contributed yet).
 /// - The intermediate `sum * SCALE` is performed in `i128` with
-///   `saturating_mul`; the only way it could saturate is if `|sum|` were
-///   to exceed `i128::MAX / SCALE`, which is `≈ 1.7×10^23` — orders of
-///   magnitude beyond any realistic `i64` aggregation. Saturation is
-///   therefore a defensive last line of defense; in practice the operation
-///   never saturates.
+///   `saturating_mul`. Saturation is unreachable: `|sum| ≤ |i64::MIN| =
+///   2^63` by type, and `2^63 × SCALE ≤ i128::MAX` is proven at compile
+///   time by the assertion next to [`AVG_FIXED_POINT_SCALE`] (headroom
+///   ≈ 1.84×). The saturating form is a defensive last line, not a
+///   reachable code path.
 /// - Euclidean division is used explicitly so negative fractional results
 ///   round toward negative infinity. Rust's `/` operator truncates signed
 ///   integers toward zero and would place negative averages one fixed-point
@@ -219,7 +241,7 @@ mod tests {
 
     #[test]
     fn avg_basic_arithmetic() {
-        // 10 / 2 = 5; with SCALE: 5 * 10^15.
+        // 10 / 2 = 5; with SCALE: 5 * 10^19.
         assert_eq!(compute_avg_fixed_point(10, 2), 5 * AVG_FIXED_POINT_SCALE);
         // -10 / 2 = -5.
         assert_eq!(compute_avg_fixed_point(-10, 2), -5 * AVG_FIXED_POINT_SCALE);
@@ -278,14 +300,13 @@ mod tests {
 
     #[test]
     fn avg_saturating_at_boundary() {
-        // Pin behavior at the documented saturation boundary: a sum that
-        // would overflow `i128::MAX / SCALE` is saturating-clamped, not
-        // panicking. With the current SCALE (10^15) the i128 boundary is
-        // unreachable from any i64 sum.
+        // Pin behavior at the extreme: the worst-case i64 sum must NOT
+        // saturate. The compile-time assertion next to the constant proves
+        // `2^63 × SCALE ≤ i128::MAX` (with SCALE = 10^19 the product is
+        // ≈ 9.2e37 against i128::MAX ≈ 1.7e38, headroom ≈ 1.84×); this
+        // pins the same fact at run time from the public API.
         let max_sum = i64::MAX;
         let v = compute_avg_fixed_point(max_sum, 1);
-        // (i64::MAX as i128) * 10^15 fits in i128 (≈ 9.2e33, well under
-        // i128::MAX ≈ 1.7e38), so the multiplication does NOT saturate.
         let expected = (max_sum as i128) * AVG_FIXED_POINT_SCALE;
         assert_eq!(v, expected);
     }
