@@ -417,9 +417,15 @@ mod tests {
         assert_eq!(k16_count - k8_count, 16);
         // A 8-byte primary + the avg axis and a 16-byte primary + the
         // count axis both produce a 24-byte secondary key, so what is
-        // left is purely the wider aggregate of the avg secondary.
-        assert_eq!(k8_avg - k16_count, 16);
-        assert_eq!(k8_avg - k8_count, 32);
+        // left is the avg secondary's two widenings: its count-AND-sum
+        // merk nodes carry a 16-byte-wider aggregate, and its row payload
+        // is an `ItemWithSumItem` (12 bytes at worst sum width) where the
+        // count axis stores a 3-byte empty `Item` — the mirror estimator
+        // sizes each axis's row with its REAL payload shape, since sizing
+        // all three as an empty item put the PCPSIT estimate under actual
+        // `added_bytes`.
+        assert_eq!(k8_avg - k16_count, 16 + 9);
+        assert_eq!(k8_avg - k8_count, 32 + 9);
         let count_axis = narrow;
 
         let sizes = EstimatedLayerSizes::AllItems(8, 100, None);

@@ -2151,4 +2151,118 @@ mod tests {
             four.seek_count
         );
     }
+
+    /// The ≥-actual contract must hold for the MULTI-axis variant, not just
+    /// PCIT. The sum and avg axes' secondary rows (`SumItem`,
+    /// `ItemWithSumItem`) are larger than the count axis's empty `Item`;
+    /// sizing all three as an empty item put the PCPSIT estimate ~25 bytes
+    /// per key UNDER actual `added_bytes` — and the PCIT-only test above
+    /// could never see it because there the shapes coincide.
+    ///
+    /// The inserted elements carry worst-width sums (9-byte varint) on
+    /// purpose: `average_case_merk_insert_element` sizes non-tree elements by
+    /// their actual serialized size while the real charge always uses the
+    /// fixed worst-case sum width, a PRE-EXISTING gap shared with live sum
+    /// trees that this PR neither introduced nor may change (live estimator
+    /// outputs feed fees). Worst-width sums make actual serialized size equal
+    /// the charged width, so what this test pins is the indexed machinery's
+    /// own contract, not that unrelated gap.
+    #[test]
+    fn test_batch_pcpsit_insert_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        // Worst varint width, but small enough that eight of them cannot
+        // overflow the primary's i64 sum aggregate.
+        let worst_width_sum = i64::MAX >> 8;
+        for n in [1usize, 4, 8] {
+            let db = make_empty_grovedb();
+            let tx = db.start_transaction();
+            db.insert(
+                EMPTY_PATH,
+                b"idx",
+                Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                    (0u8, None),
+                    (1u8, None),
+                    (2u8, None),
+                ])
+                .expect("canonical axes"),
+                None,
+                Some(&tx),
+                grove_version,
+            )
+            .unwrap()
+            .expect("create pcpsit");
+
+            let ops: Vec<_> = (0..n)
+                .map(|i| {
+                    QualifiedGroveDbOp::insert_or_replace_op(
+                        vec![b"idx".to_vec()],
+                        vec![b'k', i as u8],
+                        Element::new_item_with_sum_item(b"v".to_vec(), worst_width_sum - i as i64),
+                    )
+                })
+                .collect();
+
+            let mut paths = HashMap::new();
+            paths.insert(
+                KeyInfoPath(vec![]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::NormalTree,
+                    estimated_layer_count: ApproximateElements(1),
+                    estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
+                },
+            );
+            paths.insert(
+                KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
+                EstimatedLayerInformation {
+                    tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                    estimated_layer_count: ApproximateElements(n as u32),
+                    estimated_layer_sizes:
+                        grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
+                },
+            );
+
+            let est = GroveDb::estimated_case_operations_for_batch(
+                AverageCaseCostsType(paths),
+                ops.clone(),
+                None,
+                |_cost, _old_flags, _new_flags| Ok(false),
+                |_flags, _removed_key_bytes, _removed_value_bytes| {
+                    Ok((NoStorageRemoval, NoStorageRemoval))
+                },
+                grove_version,
+            )
+            .cost_as_result()
+            .expect("estimate");
+
+            let actual = db
+                .apply_batch(ops, None, Some(&tx), grove_version)
+                .cost_as_result()
+                .expect("apply");
+
+            assert!(
+                est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+                "n={n}: estimated added_bytes {} must not be under actual {}",
+                est.storage_cost.added_bytes,
+                actual.storage_cost.added_bytes
+            );
+            assert!(
+                est.seek_count >= actual.seek_count,
+                "n={n}: estimated seeks {} must not be under actual {}",
+                est.seek_count,
+                actual.seek_count
+            );
+            assert!(
+                est.hash_node_calls >= actual.hash_node_calls,
+                "n={n}: estimated hash_node_calls {} must not be under actual {}",
+                est.hash_node_calls,
+                actual.hash_node_calls
+            );
+            assert!(
+                est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+                "n={n}: estimated storage_loaded_bytes {} must not be under actual {}",
+                est.storage_loaded_bytes,
+                actual.storage_loaded_bytes
+            );
+        }
+    }
 }

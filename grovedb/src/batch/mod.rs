@@ -2418,11 +2418,29 @@ where
                     // version (indexed trees are introduced by this PR). Closing it
                     // therefore belongs with the protocol version that activates
                     // indexed trees, gated so live versions keep today's cost.
-                    } else if op_could_overwrite && !matches!(&element, Element::Reference(..)) {
+                    } else if op_could_overwrite
+                        && !matches!(&element, Element::Reference(..))
+                        && grove_version
+                            .grovedb_versions
+                            .apply_batch
+                            .overwrite_indexed_cleanup_inspection
+                            >= 1
+                    {
                         // Tree-override protection is OFF; let the
                         // cidx helper classify the overwrite (safe
                         // subset → schedule cleanup, ambiguous → err,
                         // non-cidx → no-op).
+                        //
+                        // Gated exactly like `delete_tree_cleanup_type_source`:
+                        // the classification starts with a stored-element read,
+                        // which costs +1 seek and +129 loaded bytes per
+                        // overwrite-capable op. Cost feeds fees, so V1..V3 must
+                        // keep their released cost shape — and the hole this
+                        // closes needs an indexed tree to be the element being
+                        // overwritten, which cannot occur before the version
+                        // that introduces indexed trees. The bare-Reference
+                        // exclusion above is the same principle applied to the
+                        // reference overwrite path.
                         let merk = self.merks.get(path).expect("the Merk is cached");
                         let maybe_cleanup_path = cost_return_on_error!(
                             &mut cost,

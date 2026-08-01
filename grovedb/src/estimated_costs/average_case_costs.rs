@@ -539,6 +539,23 @@ impl GroveDb {
             };
             // The mirror is delete-old-row then insert-new-row, each of which
             // rebalances and re-roots the secondary.
+            //
+            // The inserted row must be sized with the AXIS's real payload
+            // shape: `average_case_merk_insert_element` charges non-tree
+            // elements by their own serialized size, and the sum and avg rows
+            // are larger than the count axis's empty `Item`. Sizing all three
+            // as an empty `Item` put the PCPSIT estimate ~25 bytes per key
+            // UNDER actual `added_bytes` — the one dimension a storage-fee
+            // reservation cannot come in under. Sum values are charged at
+            // their fixed worst-case varint width, so `i64::MAX` here is the
+            // upper bound, not an average.
+            let worst_case_row = match axis {
+                grovedb_element::indexed::IndexAxis::Count => Element::new_item(vec![]),
+                grovedb_element::indexed::IndexAxis::Sum => Element::new_sum_item(i64::MAX),
+                grovedb_element::indexed::IndexAxis::Avg => {
+                    Element::new_item_with_sum_item(vec![], i64::MAX)
+                }
+            };
             cost_return_on_error!(
                 &mut cost,
                 Self::average_case_merk_delete_element(
@@ -552,7 +569,7 @@ impl GroveDb {
                 &mut cost,
                 Self::average_case_merk_insert_element(
                     &secondary_key,
-                    &Element::new_item(vec![]),
+                    &worst_case_row,
                     secondary_layer.tree_type,
                     Some(&secondary_layer),
                     grove_version,

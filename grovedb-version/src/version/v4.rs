@@ -10,6 +10,13 @@
 //!   stored-element read per op, which is why it cannot apply to the released
 //!   versions.
 //!
+//! - `apply_batch.overwrite_indexed_cleanup_inspection: 1` — a batch overwrite
+//!   of a non-reference element (with tree-override protection off) reads the
+//!   stored element to detect an indexed tree being overwritten, scheduling
+//!   its per-axis secondary storage for cleanup or refusing the ambiguous
+//!   case. Same shape as the gate above: one extra stored-element read per
+//!   overwrite-capable op, so V1..V3 keep their released cost shape.
+//!
 //! Note that `GroveVersion::latest()` resolves to this version, so anything
 //! defaulting to "latest" — tests, benchmarks, tools — exercises every gate
 //! listed above rather than V3 behaviour.
@@ -59,6 +66,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             apply_partial_batch_with_element_flags_update: 0,
             estimated_case_operations_for_batch: 0,
             delete_tree_cleanup_type_source: 1,
+            overwrite_indexed_cleanup_inspection: 1,
         },
         element: GroveDBElementMethodVersions {
             delete: 0,
