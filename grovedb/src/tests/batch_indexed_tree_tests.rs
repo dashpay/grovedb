@@ -624,10 +624,12 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn batch_fresh_cidx_with_descendant_writes_rejected() {
-        // Per audit: creating a fresh cidx primary in the same batch
-        // as writes under that path is rejected because mirror logic
-        // can't see the fresh primary's state.
+    fn batch_fresh_cidx_with_descendant_writes_succeeds_and_matches_two_batches() {
+        // Creating a PCIT and populating it in ONE batch is supported:
+        // the level executor opens the fresh primary and its secondary
+        // from the in-batch element, and the bubble-up emits
+        // `InsertAggregateIndexedTreeRootKeys`. The root hash must be
+        // byte-identical to the two-batch sequence.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         let ops = vec![
@@ -642,11 +644,41 @@ mod tests {
                 Element::new_item(b"v".to_vec()),
             ),
         ];
-        let result = db.apply_batch(ops, None, None, grove_version).unwrap();
-        assert!(
-            result.is_err(),
-            "expected rejection on fresh-cidx + descendant write, got {:?}",
-            result
+        db.apply_batch(ops, None, None, grove_version)
+            .unwrap()
+            .expect("fresh create + populate in one batch is supported");
+
+        let reference = make_test_grovedb(grove_version);
+        reference
+            .apply_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec()],
+                    b"cidx".to_vec(),
+                    Element::empty_provable_count_indexed_tree(),
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create");
+        reference
+            .apply_batch(
+                vec![QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![TEST_LEAF.to_vec(), b"cidx".to_vec()],
+                    b"row".to_vec(),
+                    Element::new_item(b"v".to_vec()),
+                )],
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("populate");
+        assert_eq!(
+            db.root_hash(None, grove_version).unwrap().unwrap(),
+            reference.root_hash(None, grove_version).unwrap().unwrap(),
+            "one-batch and two-batch sequences must reach the same root hash"
         );
     }
 

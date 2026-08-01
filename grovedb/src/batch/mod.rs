@@ -386,6 +386,26 @@ pub enum GroveOp {
         /// PCPSIT.
         axes: Vec<(u8, [u8; 32], Option<Vec<u8>>)>,
     },
+    /// Insert-side counterpart of [`Self::ReplaceAggregateIndexedTreeRootKeys`]
+    /// for an indexed primary CREATED in this same batch: there is no stored
+    /// element to read during propagation, so the op carries the caller's
+    /// element itself (root keys unset — enforced by the rootless-aggregate
+    /// rule) alongside the computed primary and per-axis secondary state.
+    /// Internal: emitted by the bubble-up when a deeper level finishes under
+    /// a freshly-inserted indexed element; rejected in user-supplied batches.
+    InsertAggregateIndexedTreeRootKeys {
+        /// The freshly created indexed element as the caller supplied it.
+        element: Element,
+        /// Root hash of the indexed primary Merk after this batch's ops.
+        primary_hash: CryptoHash,
+        /// Root key of the indexed primary Merk after this batch's ops.
+        primary_root_key: Option<Vec<u8>>,
+        /// The primary's aggregate data after this batch's ops.
+        primary_aggregate_data: AggregateData,
+        /// Post-mirror per-axis state, in the element's canonical axis
+        /// order: `(axis_tag, secondary_root_hash, secondary_root_key)`.
+        axes: Vec<(u8, CryptoHash, Option<Vec<u8>>)>,
+    },
     /// Refresh a reference. The full op shape (which on-disk variant,
     /// trust mode, sum-update behavior) lives in `mode` — see
     /// [`RefreshReferenceMode`] for the per-variant contract.
@@ -491,6 +511,7 @@ impl GroveOp {
             GroveOp::ReplaceNonMerkTreeRoot { .. } => 15,
             GroveOp::InsertNonMerkTree { .. } => 16,
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => 17,
+            GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => 18,
         }
     }
 
@@ -539,7 +560,8 @@ impl GroveOp {
             | GroveOp::InsertTreeWithRootHash { .. }
             | GroveOp::ReplaceNonMerkTreeRoot { .. }
             | GroveOp::InsertNonMerkTree { .. }
-            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => true,
+            | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => true,
 
             // Non-Merk-tree leaf inserts (commitment/MMR/bulk-append/
             // dense) don't change count_value for their own entries
@@ -844,6 +866,9 @@ impl fmt::Debug for QualifiedGroveDbOp {
             GroveOp::DenseTreeInsert { .. } => "Dense Tree Insert".to_string(),
             GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
                 "Replace CountIndexedTree primary+secondary roots".to_string()
+            }
+            GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => {
+                "Insert fresh indexed tree with primary+secondary roots".to_string()
             }
         };
 
@@ -1488,7 +1513,10 @@ trait TreeCache<G, SR> {
 impl<'db, S, F, F2> TreeCacheMerkByPath<S, F, F2>
 where
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    F2: FnMut(&[Vec<u8>]) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
+    F2: FnMut(
+        &[Vec<u8>],
+        Option<&Element>,
+    ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
     /// Processes a reference, determining whether it can be retrieved from a
@@ -1921,6 +1949,7 @@ where
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
                 | GroveOp::InsertNonMerkTree { .. }
                 | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+                | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
                 | GroveOp::CommitmentTreeInsert { .. }
                 | GroveOp::MmrTreeAppend { .. }
                 | GroveOp::BulkAppend { .. }
@@ -2150,7 +2179,10 @@ where
         u32,
     ) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
     F: FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
-    F2: FnMut(&[Vec<u8>]) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
+    F2: FnMut(
+        &[Vec<u8>],
+        Option<&Element>,
+    ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
     S: StorageContext<'db>,
 {
     fn insert(
@@ -3379,6 +3411,32 @@ where
                         )
                     );
                 }
+                GroveOp::InsertAggregateIndexedTreeRootKeys {
+                    element,
+                    primary_hash,
+                    primary_root_key,
+                    primary_aggregate_data,
+                    axes,
+                } => {
+                    // Bubble-up from an indexed primary CREATED in this same
+                    // batch: there is no stored element to read, so the op
+                    // carries it. Build the parent-merk INSERT with the same
+                    // H1-A value hash composition the replace arm uses.
+                    cost_return_on_error!(
+                        &mut cost,
+                        GroveDb::insert_indexed_tree_item_into_batch_operations(
+                            element,
+                            in_tree_type,
+                            key_info.get_key(),
+                            primary_root_key,
+                            axes,
+                            primary_aggregate_data,
+                            primary_hash,
+                            &mut batch_operations,
+                            grove_version,
+                        )
+                    );
+                }
             }
         }
 
@@ -3540,7 +3598,28 @@ where
             // Open every configured axis secondary via the closure (it does the
             // parent merk lookup to learn the axes and their current root
             // keys), then mirror each one from the same captured pre-state.
-            let secondaries = cost_return_on_error!(&mut cost, (self.get_secondary_merks_fn)(path));
+            // A freshly-created indexed primary has no stored element for the
+            // opener to read — the batch op that creates it carries the
+            // element, so hand it over. `None` for an existing primary keeps
+            // the read-from-parent path. Overwrite-with-descendants is
+            // rejected in preflight, so an in-batch insert op at this exact
+            // path means the element is fresh.
+            let fresh_indexed_element = ops_by_qualified_paths.get(path).and_then(|op| match op {
+                GroveOp::InsertOrReplace { element }
+                | GroveOp::InsertWithKnownToNotAlreadyExist { element }
+                | GroveOp::InsertIfNotExists { element, .. }
+                | GroveOp::Replace { element }
+                | GroveOp::Patch { element, .. }
+                    if element.is_indexed_tree() =>
+                {
+                    Some(element)
+                }
+                _ => None,
+            });
+            let secondaries = cost_return_on_error!(
+                &mut cost,
+                (self.get_secondary_merks_fn)(path, fresh_indexed_element)
+            );
             let primary_merk = self.merks.get(path).expect("the Merk is cached");
             // One post-state read per captured key, shared by every axis: the
             // (count, sum) transitions are axis-independent, only the sort-key
@@ -3749,6 +3828,9 @@ impl GroveDb {
                                                 GroveOp::InsertTreeWithRootHash { .. }
                                                 | GroveOp::InsertNonMerkTree { .. }
                                                 | GroveOp::ReplaceAggregateIndexedTreeRootKeys {
+                                                    ..
+                                                }
+                                                | GroveOp::InsertAggregateIndexedTreeRootKeys {
                                                     ..
                                                 } => {
                                                     return Err(Error::CorruptedCodeExecution(
@@ -3986,44 +4068,51 @@ impl GroveDb {
                                                                 },
                                                                 non_counted,
                                                             }
-                                                    // Cidx (`CountIndexedTree` /
-                                                    // `ProvableCountIndexedTree`) needs BOTH
-                                                    // primary and secondary root state to
-                                                    // propagate via the H1-A composition.
-                                                    // For a freshly-inserted cidx in the same
-                                                    // batch, there is no
-                                                    // `InsertAggregateIndexedTreeWithRootKeys`
-                                                    // counterpart to
-                                                    // `ReplaceAggregateIndexedTreeRootKeys`,
-                                                    // and the secondary merk cannot be opened
-                                                    // by stale parent state during bubble-up.
-                                                    // Reject this combination with a clear,
-                                                    // actionable error rather than silently
-                                                    // misapplying (the generic catch-all below
-                                                    // would otherwise surface a confusing
-                                                    // "insertion of element under a non tree"
-                                                    // message).
+                                                    // A freshly-inserted indexed primary
+                                                    // needs BOTH primary and secondary root
+                                                    // state to propagate via the H1-A
+                                                    // composition, and there is no stored
+                                                    // element to read — so the op carries the
+                                                    // caller's element itself alongside the
+                                                    // level's computed state. The per-axis
+                                                    // state comes from the mirror this level
+                                                    // just ran (the fresh secondaries were
+                                                    // opened from the in-batch element).
                                                     } else if matches!(
                                                         element,
                                                         Element::ProvableSumIndexedTree(..)
                                                             | Element::ProvableCountIndexedTree(..)
                                                             | Element::ProvableCountProvableSumIndexedTree(..)
                                                     ) {
-                                                        return Err(Error::NotSupported(
-                                                            "populating a freshly-inserted \
-                                                             indexed-tree element in the same \
-                                                             batch as its creation is not \
-                                                             supported (no Insert variant for \
-                                                             aggregate-indexed two-Merk \
-                                                             propagation). Split into two \
-                                                             batches: insert the empty \
-                                                             indexed tree first, then populate \
-                                                             it via the dedicated \
-                                                             `db.insert_into_count_indexed_tree` \
-                                                             API or a follow-up batch."
-                                                                .to_string(),
-                                                        ))
-                                                        .wrap_with_cost(cost);
+                                                        if non_counted
+                                                            || not_summed
+                                                            || not_counted_or_summed
+                                                        {
+                                                            return Err(Error::InvalidBatchOperation(
+                                                                "indexed-tree elements cannot be \
+                                                                 wrapped in NonCounted / NotSummed \
+                                                                 / NotCountedOrSummed",
+                                                            ))
+                                                            .wrap_with_cost(cost);
+                                                        }
+                                                        // The real TreeCache always reports
+                                                        // per-axis state for an indexed level;
+                                                        // only the worst-case ESTIMATOR cache
+                                                        // cannot (its layer information carries
+                                                        // no tree type), and estimation never
+                                                        // applies the op — the apply arm's
+                                                        // empty-axes check guards the real path.
+                                                        *mutable_occupied_entry =
+                                                            GroveOp::InsertAggregateIndexedTreeRootKeys {
+                                                                element: element.clone(),
+                                                                primary_hash: root_hash,
+                                                                primary_root_key:
+                                                                    calculated_root_key,
+                                                                primary_aggregate_data:
+                                                                    aggregate_data,
+                                                                axes: cidx_secondary_state
+                                                                    .unwrap_or_default(),
+                                                            };
                                                     } else {
                                                         return Err(Error::InvalidBatchOperation(
                                                             "insertion of element under a non tree",
@@ -4161,6 +4250,7 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         get_secondary_merks_fn: impl FnMut(
             &[Vec<u8>],
+            Option<&Element>,
         ) -> CostResult<
             Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
             Error,
@@ -4215,6 +4305,7 @@ impl GroveDb {
         get_merk_fn: impl FnMut(&[Vec<u8>], bool) -> CostResult<Merk<S>, Error>,
         get_secondary_merks_fn: impl FnMut(
             &[Vec<u8>],
+            Option<&Element>,
         ) -> CostResult<
             Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>,
             Error,
@@ -4535,7 +4626,8 @@ impl GroveDb {
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::ReplaceNonMerkTreeRoot { .. }
                 | GroveOp::InsertNonMerkTree { .. }
-                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+                | GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => {
                     return Err(Error::NotSupported(
                         "internal tree ops not supported in apply_operations_without_batching"
                             .to_string(),
@@ -4756,9 +4848,14 @@ impl GroveDb {
             }
         }
 
-        cost_return_on_error_no_add!(
-            cost,
-            indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
+        cost_return_on_error!(
+            &mut cost,
+            indexed_tree::reject_indexed_overwrite_with_descendants(
+                self,
+                &ops,
+                tx.as_ref(),
+                grove_version,
+            )
         );
 
         // `StorageBatch` collects all operations (preprocessing + apply_body)
@@ -5053,12 +5150,13 @@ impl GroveDb {
                         grove_version,
                     )
                 },
-                |primary_path: &[Vec<u8>]| {
+                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
                     let primary_refs: Vec<&[u8]> =
                         primary_path.iter().map(|v| v.as_slice()).collect();
                     let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
                     self.open_indexed_secondaries_for_batch(
                         cidx_path,
+                        fresh_element,
                         &storage_batch,
                         tx.as_ref(),
                         grove_version,
@@ -5329,9 +5427,14 @@ impl GroveDb {
             }
         }
 
-        cost_return_on_error_no_add!(
-            cost,
-            indexed_tree::reject_freshly_inserted_cidx_with_descendants(&ops)
+        cost_return_on_error!(
+            &mut cost,
+            indexed_tree::reject_indexed_overwrite_with_descendants(
+                self,
+                &ops,
+                tx.as_ref(),
+                grove_version,
+            )
         );
 
         // `StorageBatch` collects all operations (preprocessing + apply_body)
@@ -5600,12 +5703,13 @@ impl GroveDb {
                         grove_version,
                     )
                 },
-                |primary_path: &[Vec<u8>]| {
+                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
                     let primary_refs: Vec<&[u8]> =
                         primary_path.iter().map(|v| v.as_slice()).collect();
                     let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
                     self.open_indexed_secondaries_for_batch(
                         cidx_path,
+                        fresh_element,
                         &storage_batch,
                         tx.as_ref(),
                         grove_version,
@@ -5685,12 +5789,13 @@ impl GroveDb {
                         grove_version,
                     )
                 },
-                |primary_path: &[Vec<u8>]| {
+                |primary_path: &[Vec<u8>], fresh_element: Option<&Element>| {
                     let primary_refs: Vec<&[u8]> =
                         primary_path.iter().map(|v| v.as_slice()).collect();
                     let cidx_path: SubtreePath<&[u8]> = primary_refs.as_slice().into();
                     self.open_indexed_secondaries_for_batch(
                         cidx_path,
+                        fresh_element,
                         &continue_storage_batch,
                         tx.as_ref(),
                         grove_version,

@@ -15,7 +15,10 @@ use grovedb_merk::estimated_costs::worst_case_costs::{
     add_worst_case_merk_has_value, worst_case_merk_propagate, WorstCaseLayerInformation,
     MERK_BIGGEST_VALUE_SIZE,
 };
-use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
+use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
+    RootHashKeyAndAggregateData,
+};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
@@ -370,6 +373,22 @@ impl GroveOp {
             // public type extended, which is a breaking change for callers
             // that construct it. Worst-case fee reservation for indexed-tree
             // ops must not rely on this number until then.
+            GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
+                // Insert-side counterpart of the replace arm below. Sized
+                // from the CARRIED element's own tree type — the aggregate a
+                // worst-case estimate carries is `NoAggregateData`, whose
+                // fallback under-sizes an indexed parent. Flags come off the
+                // element; indexed elements cannot be wrapped.
+                GroveDb::worst_case_merk_insert_tree(
+                    key,
+                    element.get_flags(),
+                    element.tree_type().unwrap_or(TreeType::NormalTree),
+                    in_parent_tree_type,
+                    0,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
             GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                 primary_aggregate_data,
                 ..

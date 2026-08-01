@@ -595,14 +595,12 @@ mod tests {
     // (batch/mod.rs L3961-3981)
     // =================================================================
 
-    /// L3967-3981: creating a PSIT and writing into it in the same
-    /// batch is rejected during bubble-up with an actionable
-    /// `NotSupported` error (there is no "insert aggregate-indexed
-    /// tree with root keys" propagation op). The PCIT flavour of the
-    /// same mistake is caught earlier by the pre-flight, so PSIT /
-    /// PCPSIT are the variants that reach this arm.
+    /// Creating a PSIT and writing into it in the same batch is
+    /// supported: the bubble-up emits
+    /// `InsertAggregateIndexedTreeRootKeys` carrying the in-batch
+    /// element, and the sum index reflects the rows immediately.
     #[test]
-    fn coverage_batch_fresh_psit_populated_in_same_batch_rejected() {
+    fn coverage_batch_fresh_psit_populated_in_same_batch_succeeds() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         let ops = vec![
@@ -617,26 +615,22 @@ mod tests {
                 Element::new_sum_item(5),
             ),
         ];
-        match db.apply_batch(ops, None, None, grove_version).unwrap() {
-            Err(Error::NotSupported(msg)) => {
-                assert!(
-                    msg.contains("populating a freshly-inserted indexed tree"),
-                    "expected the fresh-indexed-tree bubble-up rejection, got: {msg}"
-                );
-            }
-            other => panic!("expected NotSupported, got {other:?}"),
-        }
-        // The batch was atomic: neither the PSIT nor the entry landed.
-        assert!(db
-            .get([TEST_LEAF].as_ref(), b"psit", None, grove_version)
+        db.apply_batch(ops, None, None, grove_version)
             .unwrap()
-            .is_err());
+            .expect("fresh PSIT create + populate in one batch is supported");
+        assert_eq!(
+            db.indexed_sum_top_k([TEST_LEAF, b"psit"].as_ref(), 5, true, None, grove_version)
+                .unwrap()
+                .expect("sum top_k"),
+            vec![(5i64, b"a".to_vec())],
+            "the sum index must reflect the row inserted alongside the creation"
+        );
         assert_verify_passes(&db, grove_version);
     }
 
-    /// PCPSIT flavour of the same bubble-up rejection.
+    /// PCPSIT flavour of the same one-batch create + populate.
     #[test]
-    fn coverage_batch_fresh_pcpsit_populated_in_same_batch_rejected() {
+    fn coverage_batch_fresh_pcpsit_populated_in_same_batch_succeeds() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         let ops = vec![
@@ -651,19 +645,22 @@ mod tests {
                 Element::new_item_with_sum_item(b"a".to_vec(), 5),
             ),
         ];
-        match db.apply_batch(ops, None, None, grove_version).unwrap() {
-            Err(Error::NotSupported(msg)) => {
-                assert!(
-                    msg.contains("populating a freshly-inserted indexed tree"),
-                    "expected the fresh-indexed-tree bubble-up rejection, got: {msg}"
-                );
-            }
-            other => panic!("expected NotSupported, got {other:?}"),
-        }
-        assert!(db
-            .get([TEST_LEAF].as_ref(), b"pcpsit", None, grove_version)
+        db.apply_batch(ops, None, None, grove_version)
             .unwrap()
-            .is_err());
+            .expect("fresh PCPSIT create + populate in one batch is supported");
+        assert_eq!(
+            db.indexed_sum_top_k(
+                [TEST_LEAF, b"pcpsit"].as_ref(),
+                5,
+                true,
+                None,
+                grove_version
+            )
+            .unwrap()
+            .expect("sum top_k"),
+            vec![(5i64, b"a".to_vec())],
+            "the sum index must reflect the row inserted alongside the creation"
+        );
         assert_verify_passes(&db, grove_version);
     }
 

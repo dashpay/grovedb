@@ -14,7 +14,10 @@ use grovedb_costs::{
 use grovedb_merk::estimated_costs::average_case_costs::{
     add_average_case_merk_has_value, average_case_merk_propagate, EstimatedLayerInformation,
 };
-use grovedb_merk::{tree::AggregateData, tree_type::TreeType, RootHashKeyAndAggregateData};
+use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
+    RootHashKeyAndAggregateData,
+};
 #[cfg(feature = "minimal")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 #[cfg(feature = "minimal")]
@@ -360,6 +363,24 @@ impl GroveOp {
                 propagate_if_input(),
                 grove_version,
             ),
+            GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
+                // Insert-side counterpart of the replace arm below. The tree
+                // type comes from the CARRIED element, not the aggregate: the
+                // estimated execute returns `NoAggregateData`, whose
+                // aggregate-derived fallback is NormalTree (cost size 3) —
+                // 25 bytes under a PCPSIT's 28, which the fresh-path
+                // ≥-actual contract test caught. Flags come off the element;
+                // indexed elements cannot be wrapped, so no wrapper overhead.
+                GroveDb::average_case_merk_insert_tree(
+                    key,
+                    element.get_flags(),
+                    element.tree_type().unwrap_or(TreeType::NormalTree),
+                    in_tree_type,
+                    0,
+                    propagate_if_input(),
+                    grove_version,
+                )
+            }
             GroveOp::ReplaceAggregateIndexedTreeRootKeys {
                 primary_aggregate_data,
                 ..
@@ -605,7 +626,21 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             self.pending_cidx_axes.insert(path.to_path(), axes.clone());
         }
 
-        Ok(([0u8; 32], None, AggregateData::NoAggregateData)).wrap_with_cost(cost)
+        // Return an aggregate whose KIND matches the layer's tree type, so
+        // the bubble-up ops built from this return size the parent node as
+        // the right element: `NoAggregateData` maps to NormalTree (cost size
+        // 3), silently under-sizing an indexed parent's 13/28 bytes in the
+        // Replace/Insert aggregate arms. Values are zero — only the variant
+        // drives estimator sizing.
+        let aggregate_kind = match layer_element_estimates.tree_type {
+            TreeType::ProvableCountIndexedTree => AggregateData::ProvableCount(0),
+            TreeType::ProvableSumIndexedTree => AggregateData::ProvableSum(0),
+            TreeType::ProvableCountProvableSumIndexedTree => {
+                AggregateData::ProvableCountAndProvableSum(0, 0)
+            }
+            _ => AggregateData::NoAggregateData,
+        };
+        Ok(([0u8; 32], None, aggregate_kind)).wrap_with_cost(cost)
     }
 
     // Clippy's suggestion doesn't respect ownership in this case
@@ -2264,5 +2299,99 @@ mod tests {
                 actual.storage_loaded_bytes
             );
         }
+    }
+
+    /// The ≥-actual contract must also hold for the FRESH path: a batch that
+    /// CREATES the indexed primary and populates it in one go exercises
+    /// `InsertAggregateIndexedTreeRootKeys` (the insert-side bubble-up arm)
+    /// instead of the replace arm the other contract tests reach.
+    ///
+    /// Worst-width sums for the same reason as the PCPSIT test above.
+    #[test]
+    fn test_batch_fresh_pcpsit_create_and_populate_average_case_cost_is_not_under_actual() {
+        let grove_version = GroveVersion::latest();
+        let worst_width_sum = i64::MAX >> 8;
+        let db = make_empty_grovedb();
+        let tx = db.start_transaction();
+
+        let mut ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
+            vec![],
+            b"idx".to_vec(),
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (0u8, None),
+                (1u8, None),
+                (2u8, None),
+            ])
+            .expect("canonical axes"),
+        )];
+        ops.extend((0..4usize).map(|i| {
+            QualifiedGroveDbOp::insert_or_replace_op(
+                vec![b"idx".to_vec()],
+                vec![b'k', i as u8],
+                Element::new_item_with_sum_item(b"v".to_vec(), worst_width_sum - i as i64),
+            )
+        }));
+
+        let mut paths = HashMap::new();
+        paths.insert(
+            KeyInfoPath(vec![]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(1),
+                estimated_layer_sizes: AllSubtrees(3, NoSumTrees, None),
+            },
+        );
+        paths.insert(
+            KeyInfoPath(vec![KeyInfo::KnownKey(b"idx".to_vec())]),
+            EstimatedLayerInformation {
+                tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+                estimated_layer_count: ApproximateElements(4),
+                estimated_layer_sizes:
+                    grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem(2, 2, None),
+            },
+        );
+
+        let est = GroveDb::estimated_case_operations_for_batch(
+            AverageCaseCostsType(paths),
+            ops.clone(),
+            None,
+            |_cost, _old_flags, _new_flags| Ok(false),
+            |_flags, _removed_key_bytes, _removed_value_bytes| {
+                Ok((NoStorageRemoval, NoStorageRemoval))
+            },
+            grove_version,
+        )
+        .cost_as_result()
+        .expect("estimate");
+
+        let actual = db
+            .apply_batch(ops, None, Some(&tx), grove_version)
+            .cost_as_result()
+            .expect("apply");
+
+        assert!(
+            est.storage_cost.added_bytes >= actual.storage_cost.added_bytes,
+            "estimated added_bytes {} must not be under actual {}",
+            est.storage_cost.added_bytes,
+            actual.storage_cost.added_bytes
+        );
+        assert!(
+            est.seek_count >= actual.seek_count,
+            "estimated seeks {} must not be under actual {}",
+            est.seek_count,
+            actual.seek_count
+        );
+        assert!(
+            est.hash_node_calls >= actual.hash_node_calls,
+            "estimated hash_node_calls {} must not be under actual {}",
+            est.hash_node_calls,
+            actual.hash_node_calls
+        );
+        assert!(
+            est.storage_loaded_bytes >= actual.storage_loaded_bytes,
+            "estimated storage_loaded_bytes {} must not be under actual {}",
+            est.storage_loaded_bytes,
+            actual.storage_loaded_bytes
+        );
     }
 }

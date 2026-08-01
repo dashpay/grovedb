@@ -793,10 +793,9 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn pcit_batch_rejects_creating_pcit_with_children_in_same_batch() {
-        // Phase 1 invariant: a batch that BOTH creates a PCIT and
-        // contains writes under its path is rejected with
-        // NotSupported. Workaround is splitting into two batches.
+    fn pcit_batch_creates_pcit_with_children_in_same_batch() {
+        // A batch that BOTH creates a PCIT and writes under its path
+        // is supported; the count index reflects the row immediately.
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         let result = db
@@ -818,13 +817,15 @@ mod tests {
                 grove_version,
             )
             .unwrap();
-        match result {
-            Err(Error::NotSupported(msg)) => assert!(
-                msg.contains("freshly-inserted") || msg.contains("CountIndexedTree"),
-                "expected fresh-cidx rejection, got: {msg}"
-            ),
-            other => panic!("expected NotSupported, got {:?}", other),
-        }
+        result.expect("fresh PCIT create + populate in one batch is supported");
+        assert_eq!(
+            db.indexed_count_top_k([TEST_LEAF, b"cidx"].as_ref(), 5, true, None, grove_version)
+                .unwrap()
+                .expect("count top_k"),
+            vec![(1u64, b"row".to_vec())],
+            "the count index must reflect the row inserted alongside the creation \
+             (a plain Item contributes count 1; only an empty tree indexes at 0)"
+        );
     }
 
     // -----------------------------------------------------------------

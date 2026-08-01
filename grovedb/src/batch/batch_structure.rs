@@ -177,7 +177,8 @@ where
                 GroveOp::ReplaceTreeRootKey { .. }
                 | GroveOp::InsertTreeWithRootHash { .. }
                 | GroveOp::InsertNonMerkTree { .. }
-                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. } => {
+                | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+                | GroveOp::InsertAggregateIndexedTreeRootKeys { .. } => {
                     Err(Error::InvalidBatchOperation(
                         "replace and insert tree hash are internal operations only",
                     ))

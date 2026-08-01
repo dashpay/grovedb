@@ -6,11 +6,13 @@
 //! the pipeline runs them:
 //!
 //! - [`preflight`] runs in the `apply_batch*` entry points before any merk
-//!   is touched: [`reject_freshly_inserted_cidx_with_descendants`] rejects
-//!   batches that both create an indexed primary AND write under it in the
-//!   same batch — there is no `InsertAggregateIndexedTreeWithRootKeys` op,
-//!   so the H1-A propagation cannot read the just-created element from a
-//!   parent merk that has not been flushed yet.
+//!   is touched: [`reject_indexed_overwrite_with_descendants`] rejects
+//!   batches that OVERWRITE an existing element with an indexed tree while
+//!   also writing under it (the post-apply cleanup of the old element's
+//!   storage would clear the new writes). Genuine creation plus population
+//!   in one batch is supported — the level executor opens the fresh primary
+//!   and secondaries from the in-batch element, and the bubble-up emits
+//!   `InsertAggregateIndexedTreeRootKeys`.
 //! - [`overwrite`] runs inside the per-op loop when tree-override protection
 //!   is OFF and the op could overwrite an existing element (V4+ only — the
 //!   stored-element read [`inspect_cidx_overwrite`] starts with is gated by
@@ -55,7 +57,7 @@ use grovedb_version::version::GroveVersion;
 pub(crate) use mirror::{apply_indexed_secondary_mirror_post_apply, read_post_apply_transitions};
 pub(crate) use overwrite::inspect_cidx_overwrite;
 pub(crate) use pre_state::capture_indexed_pre_state;
-pub(crate) use preflight::reject_freshly_inserted_cidx_with_descendants;
+pub(crate) use preflight::reject_indexed_overwrite_with_descendants;
 
 use crate::{Element, Error};
 

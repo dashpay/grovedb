@@ -360,6 +360,7 @@ impl GroveDb {
     pub(crate) fn open_indexed_secondaries_for_batch<'db, 'b, B>(
         &'db self,
         path: SubtreePath<'b, B>,
+        fresh_element: Option<&Element>,
         batch: &'db StorageBatch,
         tx: &'db Transaction,
         grove_version: &GroveVersion,
@@ -368,23 +369,34 @@ impl GroveDb {
         B: AsRef<[u8]> + 'b,
     {
         let mut cost = OperationCost::default();
-        let (parent_path, indexed_key) = match path.derive_parent() {
-            Some(p) => p,
-            None => {
-                return Err(Error::InvalidPath(
-                    "cannot open indexed secondaries at root path".to_string(),
-                ))
-                .wrap_with_cost(cost);
-            }
+        // A primary CREATED in this same batch has no stored element yet; the
+        // caller hands its in-batch element over instead. Its secondary root
+        // keys are necessarily unset (the rootless-aggregate rule refuses
+        // anything else), so every axis opens as an empty Merk at its derived
+        // prefix — which the delete/overwrite storage sweeps guarantee holds
+        // no leftover rows.
+        let element = if let Some(fresh) = fresh_element {
+            fresh.clone()
+        } else {
+            let (parent_path, indexed_key) = match path.derive_parent() {
+                Some(p) => p,
+                None => {
+                    return Err(Error::InvalidPath(
+                        "cannot open indexed secondaries at root path".to_string(),
+                    ))
+                    .wrap_with_cost(cost);
+                }
+            };
+            let parent_merk = cost_return_on_error!(
+                &mut cost,
+                self.open_transactional_merk_at_path(parent_path, tx, Some(batch), grove_version)
+            );
+            cost_return_on_error!(
+                &mut cost,
+                Element::get(&parent_merk, indexed_key, true, grove_version)
+                    .map_err(Error::MerkError)
+            )
         };
-        let parent_merk = cost_return_on_error!(
-            &mut cost,
-            self.open_transactional_merk_at_path(parent_path, tx, Some(batch), grove_version)
-        );
-        let element = cost_return_on_error!(
-            &mut cost,
-            Element::get(&parent_merk, indexed_key, true, grove_version).map_err(Error::MerkError)
-        );
         let axes: Vec<(IndexAxis, Option<Vec<u8>>)> = match element.underlying() {
             Element::ProvableCountIndexedTree(_, s, ..) => vec![(IndexAxis::Count, s.clone())],
             Element::ProvableSumIndexedTree(_, s, ..) => vec![(IndexAxis::Sum, s.clone())],

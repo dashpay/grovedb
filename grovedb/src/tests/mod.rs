@@ -13,6 +13,7 @@ mod aggregate_sum_carrier_query_tests;
 mod aggregate_sum_query_tests;
 mod batch_coverage_tests;
 mod batch_delete_tree_tests;
+mod batch_indexed_fresh_create_tests;
 mod batch_indexed_multi_axis_tests;
 mod batch_indexed_overwrite_tests;
 mod batch_indexed_tree_tests;

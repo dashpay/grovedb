@@ -92,6 +92,7 @@ fn validate_indexed_child_ops(
             | GroveOp::ReplaceNonMerkTreeRoot { .. }
             | GroveOp::InsertNonMerkTree { .. }
             | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
+            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
             | GroveOp::RefreshReference { .. }
             | GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
