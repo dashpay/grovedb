@@ -2307,22 +2307,17 @@ where
         // primary level represent a child subtree's bubble-up — the
         // child's element bytes have a new aggregate count, so its
         // secondary entry needs to move; we capture it here too.
-        let indexed_pre_state: Option<BTreeMap<Vec<u8>, Option<(u64, i64)>>> =
-            if in_tree_type.is_indexed_primary() {
-                let merk = self.merks.get(path).expect("the Merk is cached");
-                let axes = indexed_axes_for_tree_type(in_tree_type);
-                Some(cost_return_on_error!(
-                    &mut cost,
-                    indexed_tree::capture_indexed_pre_state(
-                        merk,
-                        &ops_at_path_by_key,
-                        &axes,
-                        grove_version,
-                    )
-                ))
-            } else {
-                None
-            };
+        let indexed_pre_state: Option<BTreeMap<Vec<u8>, Option<(u64, i64)>>> = if in_tree_type
+            .is_indexed_primary()
+        {
+            let merk = self.merks.get(path).expect("the Merk is cached");
+            Some(cost_return_on_error!(
+                &mut cost,
+                indexed_tree::capture_indexed_pre_state(merk, &ops_at_path_by_key, grove_version,)
+            ))
+        } else {
+            None
+        };
 
         let mut batch_operations: Vec<(Vec<u8>, Op)> = vec![];
         for (key_info, op) in ops_at_path_by_key.into_iter() {
