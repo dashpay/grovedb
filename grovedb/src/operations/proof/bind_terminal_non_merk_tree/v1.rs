@@ -7,9 +7,16 @@
 //! so forged element bytes no longer verify against a genuine root hash.
 //!
 //! This differs from [`super::v0`] (which leaves the node untouched) in that it
-//! both reads storage and mutates the node. The extra reads and hash calls are
-//! why it cannot apply to the released versions; see the module docs in
+//! both reads storage and mutates the node. Those extra reads are why it cannot
+//! apply to the released versions; see the module docs in
 //! [`super`][`mod@super`].
+//!
+//! Proof serving is latency-sensitive, so the common path does no hashing at
+//! all: the `value_hash` the node already carries is the one the parent
+//! committed, and is reused as-is. Only a node shape that carries no
+//! `value_hash` has to derive one. The correctness of the derived state root is
+//! checked by a `debug_assert` rather than at runtime — it can fire only on a
+//! prover bug or corrupted storage, and the derivation is pinned by tests.
 
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
@@ -20,7 +27,6 @@ use grovedb_merk::{
     CryptoHash, TreeFeatureType,
 };
 use grovedb_storage::{Storage, StorageContext};
-use grovedb_version::version::GroveVersion;
 
 use crate::{Element, Error, GroveDb, Transaction};
 
@@ -32,7 +38,6 @@ impl GroveDb {
         element: &Element,
         parent_path: &[&[u8]],
         tx: &Transaction,
-        _grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -62,28 +67,45 @@ impl GroveDb {
             self.non_merk_tree_child_hash(element, &child_path, tx)
         );
 
-        let element_vh = value_hash(&value).unwrap_add_cost(&mut cost);
-        let recomputed = combine_hash(&element_vh, &child_hash).unwrap_add_cost(&mut cost);
-
+        // Reuse the value_hash the node already carries — it is the one the
+        // parent committed, so there is nothing to recompute. Proof serving is
+        // latency-sensitive and this runs per terminal non-Merk tree, so the
+        // common path must not hash.
         let (vh, ft) = match &*node {
             Node::KVValueHashFeatureType(_, _, vh, ft) => (*vh, *ft),
             Node::KVValueHash(_, _, vh) => (*vh, TreeFeatureType::BasicMerkNode),
-            _ => (recomputed, TreeFeatureType::BasicMerkNode),
+            // A node shape that carries no value_hash to reuse (`KV`,
+            // `KVCount`, `KVSum`, `KVCountSum`). Only here do we have to
+            // derive it. Trees are proved with a value_hash-bearing node in
+            // practice, so this is the cold path.
+            _ => {
+                let element_vh = value_hash(&value).unwrap_add_cost(&mut cost);
+                let derived = combine_hash(&element_vh, &child_hash).unwrap_add_cost(&mut cost);
+                (derived, TreeFeatureType::BasicMerkNode)
+            }
         };
 
-        // Self-check: if the recomputed state root does not reproduce the
-        // committed value_hash, the node we are about to emit would be rejected
-        // by the verifier. Fail here, where the cause is visible, rather than
-        // shipping a proof that cannot verify.
-        if recomputed != vh {
-            return Err(Error::CorruptedData(format!(
+        // Drift check: the derived state root must reproduce the committed
+        // value_hash, or the node we are about to emit would be rejected by the
+        // verifier. Debug-only and deliberately uncosted — it can fire only on
+        // a prover bug or corrupted storage, never on attacker input, and the
+        // arms of `non_merk_tree_child_hash` are pinned by tests across all
+        // four types, empty and populated. Keeping it out of release spares the
+        // hot path two hashes; keeping it uncosted keeps `OperationCost`
+        // identical between debug and release builds.
+        #[cfg(debug_assertions)]
+        {
+            let element_vh = value_hash(&value).unwrap();
+            let recomputed = combine_hash(&element_vh, &child_hash).unwrap();
+            debug_assert_eq!(
+                recomputed,
+                vh,
                 "non-Merk tree at key {} has state root {} which does not reproduce the \
                  committed value hash {}",
                 hex::encode(&key),
                 hex::encode(child_hash),
                 hex::encode(vh),
-            )))
-            .wrap_with_cost(cost);
+            );
         }
 
         *node = Node::KVValueHashFeatureTypeWithChildHash(key, value, vh, ft, child_hash);

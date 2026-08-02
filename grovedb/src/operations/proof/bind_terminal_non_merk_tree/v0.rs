@@ -18,7 +18,6 @@
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::Node;
-use grovedb_version::version::GroveVersion;
 
 use crate::{Element, Error, GroveDb, Transaction};
 
@@ -30,7 +29,6 @@ impl GroveDb {
         _element: &Element,
         _parent_path: &[&[u8]],
         _tx: &Transaction,
-        _grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         Ok(()).wrap_with_cost(OperationCost::default())
     }
