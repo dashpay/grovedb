@@ -657,7 +657,6 @@ mod storage_tests {
     }
 
     #[test]
-    #[ignore] // ~60s: runs 500 Sinsemilla appends; use `cargo test -- --ignored`
     fn test_roundtrip_with_many_leaves() {
         let ctx = MockDataStorageContext::new();
         let mut ct = CommitmentTree::<_, DashMemo>::open(0, TEST_CHUNK_POWER, ctx)
@@ -1203,18 +1202,13 @@ mod storage_tests {
             .collect()
     }
 
-    /// Byte-for-byte equivalence: for the same input sequence, `append_many_raw`
-    /// must produce the same `CommitmentFrontier` state and the same
-    /// BulkAppendTree state root as N × `append_raw`. This is the core
-    /// invariant — if it ever fails, batched callers can produce anchors that
-    /// don't match what the per-leaf path would have produced.
-    #[test]
-    fn append_many_raw_byte_for_byte_matches_per_leaf() {
-        // 0 / 1 / 2 / 3 cover edge cases around the very-empty and pre-compaction
-        // shapes; 100 spans the buffer mid-range; 2048 fills exactly one epoch
-        // (with TEST_CHUNK_POWER=1 we hit MANY compactions, exercising the cache
-        // + MMR path); 10_000 spans several epochs at meaningful scale.
-        for n in [0u64, 1, 2, 3, 100, 2048, 10_000] {
+    /// Assert byte-for-byte equivalence between N × `append_raw` and a single
+    /// `append_many_raw` call for the given sizes: same `CommitmentFrontier`
+    /// state and same BulkAppendTree state root. This is the core invariant —
+    /// if it ever fails, batched callers can produce anchors that don't match
+    /// what the per-leaf path would have produced.
+    fn assert_append_many_matches_per_leaf(sizes: &[u64]) {
+        for &n in sizes {
             let entries = make_entries(n);
             let a = build_via_per_leaf_append(&entries);
             let b = build_via_append_many_raw(entries);
@@ -1246,6 +1240,24 @@ mod storage_tests {
             );
             assert_eq!(a.total_count(), n, "tree should hold exactly N={} items", n);
         }
+    }
+
+    /// Fast sizes: 0 / 1 / 2 / 3 cover edge cases around the very-empty and
+    /// pre-compaction shapes; 100 spans the buffer mid-range. The per-leaf
+    /// reference path is O(N) depth-32 Sinsemilla walks, so larger sizes live
+    /// in the `#[ignore]`d companion test below.
+    #[test]
+    fn append_many_raw_byte_for_byte_matches_per_leaf() {
+        assert_append_many_matches_per_leaf(&[0, 1, 2, 3, 100]);
+    }
+
+    /// Large sizes: 2048 fills exactly one epoch (with TEST_CHUNK_POWER=1 we
+    /// hit MANY compactions, exercising the cache + MMR path); 10_000 spans
+    /// several epochs at meaningful scale.
+    #[test]
+    #[ignore] // minutes in debug: ~12k eager Sinsemilla appends; runs in the Slow Tests CI workflow via `cargo test -- --ignored`
+    fn append_many_raw_byte_for_byte_matches_per_leaf_large() {
+        assert_append_many_matches_per_leaf(&[2048, 10_000]);
     }
 
     /// `CommitmentFrontier::append_no_root` is just the carry-chain part of the
