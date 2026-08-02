@@ -10,7 +10,11 @@ mod aggregate_count_and_sum;
 mod aggregate_sum;
 #[cfg(feature = "minimal")]
 mod generate;
-#[cfg(feature = "minimal")]
+// The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
+// the envelope types and verification entry points must be reachable from a
+// verifier-only build (Dash Platform's `drive` crate compiles its
+// proof-verification layer with `--no-default-features --features verify`).
+#[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod indexed_axis;
 /// Utility functions for proof display and conversion.
 pub mod util;

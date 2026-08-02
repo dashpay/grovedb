@@ -675,6 +675,35 @@ impl GroveDb {
         }
     }
 
+    /// Derive a Merk layer's root hash without reporting any of its rows.
+    ///
+    /// Used when a subset verification stops at a tree ELEMENT that the proof
+    /// descended into: the parent still has to bind the element bytes with
+    /// `combine_hash(H(value), child_root)`, but none of the child layer's rows
+    /// belong in this query's result set. An empty query walks the proof for
+    /// its root and matches nothing, so no row is produced and no limit is
+    /// consumed.
+    ///
+    /// The layer's own `lower_layers` are deliberately not descended into. The
+    /// root returned here is computed from this layer's nodes alone, whose
+    /// value hashes already commit to everything beneath them; the deeper
+    /// layers exist only to authenticate rows that are not being reported.
+    fn merk_layer_root_hash(
+        merk_proof_bytes: &[u8],
+        query: &PathQuery,
+    ) -> Result<CryptoHash, Error> {
+        let (root_hash, _) = Query::new()
+            .execute_proof(merk_proof_bytes, None, true, PROOF_VERSION_LATEST)
+            .unwrap()
+            .map_err(|e| {
+                Error::InvalidProof(
+                    query.clone(),
+                    format!("Invalid V1 lower layer proof (root derivation): {}", e),
+                )
+            })?;
+        Ok(root_hash)
+    }
+
     /// Takes the layer's Merk proof BYTES and its lower layers separately
     /// rather than a `&LayerProof`.
     ///
@@ -1014,23 +1043,44 @@ impl GroveDb {
                             | Element::DenseAppendOnlyFixedSizeTree(..) => {
                                 path.push(key);
                                 *last_parent_tree_type = element.tree_feature_type();
-                                if query.query_items_at_path(&path, grove_version)?.is_none() {
-                                    // Query targets the tree itself, not its
-                                    // contents — but a lower layer was still
-                                    // supplied, which an honest prover never
-                                    // does (every `lower_layers.insert` site is
-                                    // gated on there being a subquery for this
-                                    // key). Pushing the value here would skip
-                                    // both binding mechanisms: the
-                                    // `combine_hash` chain check below (which
-                                    // needs a query at the lower path) and the
-                                    // `child_hash_verified` requirement applied
-                                    // on the no-lower-layer path. Since a
-                                    // `KVValueHash` node commits only to
-                                    // (key, value_hash), accepting it would let
-                                    // a prover attach a dummy lower layer and
-                                    // substitute forged element bytes under a
-                                    // genuine root hash. Fail closed.
+                                // Does the current query ask for anything BELOW
+                                // this tree, or only for the tree element
+                                // itself?
+                                //
+                                // "Only the element itself" while the proof
+                                // still carries a lower layer is the ordinary
+                                // shape of a SUBSET verification: the proof was
+                                // generated for a wider query that descended
+                                // here, and is now being re-verified against a
+                                // narrower one that stops at the tree. Dash
+                                // Platform does exactly this to read a
+                                // CommitmentTree's total note count out of the
+                                // note-fetch proof it already has.
+                                //
+                                // Either way the element bytes must stay bound
+                                // to the parent-committed `value_hash`: a
+                                // `KVValueHash`-family node hashes only
+                                // (key, value_hash), so reporting `value`
+                                // unchecked would let a prover attach a dummy
+                                // lower layer and substitute forged element
+                                // bytes under a genuine root hash. The
+                                // `combine_hash` chain check below is what binds
+                                // it, and it needs the lower layer's root — so
+                                // the lower layer is consumed for its root hash
+                                // in BOTH cases. Only the reporting differs:
+                                // with no query below, none of the lower layer's
+                                // rows belong in this query's result set, so the
+                                // tree element itself is reported instead.
+                                let has_query_below =
+                                    query.query_items_at_path(&path, grove_version)?.is_some();
+
+                                if !has_query_below && options.verify_proof_succinctness {
+                                    // Succinct mode demands the proof carry
+                                    // nothing beyond what the query needs, and
+                                    // an honest prover never emits this layer
+                                    // for this query (every `lower_layers.insert`
+                                    // site is gated on there being a subquery
+                                    // for the key). Reject as extra data.
                                     return Err(Error::InvalidProof(
                                         query.clone(),
                                         format!(
@@ -1040,15 +1090,19 @@ impl GroveDb {
                                             hex::encode(key),
                                         ),
                                     ));
-                                } else {
+                                }
+
+                                {
                                     // Known limitation: this parent tree result
                                     // is pushed without decrementing limit_left.
                                     // Will be addressed by per-level limits
                                     // redesign.
-                                    if query.should_add_parent_tree_at_path(
-                                        current_path,
-                                        grove_version,
-                                    )? {
+                                    if has_query_below
+                                        && query.should_add_parent_tree_at_path(
+                                            current_path,
+                                            grove_version,
+                                        )?
+                                    {
                                         let path_key_optional_value =
                                             ProvedPathKeyOptionalValue::from_proved_key_value(
                                                 path.iter().map(|p| p.to_vec()).collect(),
@@ -1060,23 +1114,34 @@ impl GroveDb {
                                         );
                                     }
 
-                                    // Dispatch based on lower layer proof type
+                                    // Dispatch based on lower layer proof type.
+                                    // `has_query_below == false` derives the
+                                    // layer's root WITHOUT reporting any of its
+                                    // contents — every lower-layer flavour
+                                    // computes its root independently of the
+                                    // query, which only ever selects rows.
                                     let lower_hash = match &lower_layer.merk_proof {
                                         ProofBytes::Merk(_) => {
                                             // Standard Merk subtree - recurse
-                                            Self::verify_layer_proof_v1(
-                                                Self::merk_bytes_of_layer(lower_layer, query)?,
-                                                &lower_layer.lower_layers,
-                                                prove_options,
-                                                query,
-                                                limit_left,
-                                                &path,
-                                                result,
-                                                last_parent_tree_type,
-                                                options,
-                                                current_depth + 1,
-                                                grove_version,
-                                            )?
+                                            let merk_bytes =
+                                                Self::merk_bytes_of_layer(lower_layer, query)?;
+                                            if has_query_below {
+                                                Self::verify_layer_proof_v1(
+                                                    merk_bytes,
+                                                    &lower_layer.lower_layers,
+                                                    prove_options,
+                                                    query,
+                                                    limit_left,
+                                                    &path,
+                                                    result,
+                                                    last_parent_tree_type,
+                                                    options,
+                                                    current_depth + 1,
+                                                    grove_version,
+                                                )?
+                                            } else {
+                                                Self::merk_layer_root_hash(merk_bytes, query)?
+                                            }
                                         }
                                         ProofBytes::MMR(mmr_bytes) => Self::verify_mmr_lower_layer(
                                             mmr_bytes,
@@ -1085,6 +1150,7 @@ impl GroveDb {
                                             limit_left,
                                             result,
                                             query,
+                                            has_query_below,
                                             grove_version,
                                         )?,
                                         ProofBytes::BulkAppendTree(bulk_bytes) => {
@@ -1095,6 +1161,7 @@ impl GroveDb {
                                                 limit_left,
                                                 result,
                                                 query,
+                                                has_query_below,
                                                 grove_version,
                                             )?
                                         }
@@ -1106,6 +1173,7 @@ impl GroveDb {
                                                 limit_left,
                                                 result,
                                                 query,
+                                                has_query_below,
                                                 grove_version,
                                             )?
                                         }
@@ -1117,6 +1185,7 @@ impl GroveDb {
                                                 limit_left,
                                                 result,
                                                 query,
+                                                has_query_below,
                                                 grove_version,
                                             )?
                                         }
@@ -1154,6 +1223,33 @@ impl GroveDb {
                                             ),
                                         ));
                                     }
+
+                                    if !has_query_below {
+                                        // The tree element itself is the
+                                        // result, now bound by the
+                                        // `combine_hash` check above. Report it
+                                        // under the PARENT path (not the path
+                                        // we pushed the key onto for the root
+                                        // derivation), matching query_raw and
+                                        // the no-lower-layer terminal arm —
+                                        // including the key would make
+                                        // `(path, key)` lookups miss.
+                                        let parent_path: Vec<Vec<u8>> =
+                                            current_path.iter().map(|p| p.to_vec()).collect();
+                                        let path_key_optional_value =
+                                            ProvedPathKeyOptionalValue::from_proved_key_value(
+                                                parent_path,
+                                                proved_key_value,
+                                            );
+                                        result.push(
+                                            path_key_optional_value
+                                                .try_into_versioned(grove_version)?,
+                                        );
+                                        limit_left
+                                            .iter_mut()
+                                            .for_each(|limit| *limit = limit.saturating_sub(1));
+                                    }
+
                                     if limit_left == &Some(0) {
                                         break;
                                     }
@@ -1346,6 +1442,7 @@ impl GroveDb {
     /// Returns the computed MMR root hash, which the caller uses as the
     /// child hash for Merk authentication (`combine_hash(value_hash ||
     /// mmr_root)`).
+    #[allow(clippy::too_many_arguments)]
     fn verify_mmr_lower_layer<T>(
         mmr_bytes: &[u8],
         element: &Element,
@@ -1353,6 +1450,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1405,6 +1503,13 @@ impl GroveDb {
         let (mmr_root, verified_leaves) = mmr_proof
             .verify_and_get_root()
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Root only: the caller is binding the parent element and does not
+        // report this layer's leaves, so there is no query at this path to
+        // check completeness/succinctness against.
+        if !report_contents {
+            return Ok(mmr_root);
+        }
 
         // Get the sub-query items for this path to enforce succinctness.
         let sub_query =
@@ -1477,6 +1582,7 @@ impl GroveDb {
     /// For both `BulkAppendTree` and `CommitmentTree` elements: verifies
     /// internal consistency and returns the computed state_root as the lower
     /// hash (authenticated via child Merk hash).
+    #[allow(clippy::too_many_arguments)]
     fn verify_bulk_append_lower_layer<T>(
         bulk_bytes: &[u8],
         element: &Element,
@@ -1484,6 +1590,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1508,6 +1615,13 @@ impl GroveDb {
         let (bulk_state_root, proof_result) = bulk_proof
             .verify_and_compute_root(element_height, element_total_count)
             .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+
+        // Root only: the caller is binding the parent element and does not
+        // report this layer's entries, so there is no query at this path to
+        // extract a position range from.
+        if !report_contents {
+            return Ok(bulk_state_root);
+        }
 
         // Get the query range from the path query to extract matching values
         let sub_query =
@@ -1589,6 +1703,7 @@ impl GroveDb {
     /// Verifies the BulkAppendTree proof to get `bulk_state_root`, then returns
     /// `blake3("ct_state" || sinsemilla_root || bulk_state_root)` as the
     /// authenticated child hash.
+    #[allow(clippy::too_many_arguments)]
     fn verify_commitment_tree_lower_layer<T>(
         ct_bytes: &[u8],
         element: &Element,
@@ -1596,6 +1711,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1622,6 +1738,7 @@ impl GroveDb {
             limit_left,
             result,
             query,
+            report_contents,
             grove_version,
         )?;
 
@@ -1638,6 +1755,7 @@ impl GroveDb {
 
     /// Verify a DenseAppendOnlyFixedSizeTree lower layer proof and add results.
     /// Returns NULL_HASH since DenseTree has no child Merk.
+    #[allow(clippy::too_many_arguments)]
     fn verify_dense_tree_lower_layer<T>(
         dense_bytes: &[u8],
         element: &Element,
@@ -1645,6 +1763,7 @@ impl GroveDb {
         limit_left: &mut Option<u16>,
         result: &mut Vec<T>,
         query: &PathQuery,
+        report_contents: bool,
         grove_version: &GroveVersion,
     ) -> Result<CryptoHash, Error>
     where
@@ -1665,6 +1784,16 @@ impl GroveDb {
         let dense_proof =
             grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof::decode_from_slice(dense_bytes)
                 .map_err(|e| Error::CorruptedData(format!("{}", e)))?;
+
+        // Root only: the caller is binding the parent element and does not
+        // report this layer's entries, so there is no query at this path to
+        // check completeness/soundness against.
+        if !report_contents {
+            let (computed_root, _entries): ([u8; 32], Vec<(u16, Vec<u8>)>) = dense_proof
+                .verify_and_get_root(element_height, element_count)
+                .map_err(|e| Error::InvalidProof(query.clone(), format!("{}", e)))?;
+            return Ok(computed_root);
+        }
 
         // Get the sub-query items for this path to build a query for
         // verify_for_query, which enforces both completeness and soundness.

@@ -3,13 +3,18 @@
 //!
 //! Each wrapper pins the [`IndexAxis`] and forwards; no logic lives here.
 
+#[cfg(feature = "minimal")]
 use grovedb_costs::CostResult;
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::proofs::Query as MerkQuery;
+#[cfg(feature = "minimal")]
 use grovedb_path::SubtreePath;
+#[cfg(feature = "minimal")]
 use grovedb_version::version::GroveVersion;
 
-use crate::{Error, GroveDb, TransactionArg};
+#[cfg(feature = "minimal")]
+use crate::TransactionArg;
+use crate::{Error, GroveDb};
 
 use super::{IndexedAxisAggregateResult, IndexedAxisPaginatedResult, IndexedAxisQueryResult};
 
@@ -18,6 +23,7 @@ impl GroveDb {
 
     /// Prove the top-`k` entries of the count axis. Thin wrapper over
     /// [`Self::prove_indexed_axis_top_k`] with `axis = Count`.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_count_top_k<'b, B, P>(
         &self,
         path: P,
@@ -41,6 +47,7 @@ impl GroveDb {
     }
 
     /// Prove an offset-paginated top-`k` window on the count axis.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_count_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -66,6 +73,7 @@ impl GroveDb {
     }
 
     /// Prove an arbitrary query against the count-axis secondary.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_count_query<'b, B, P>(
         &self,
         path: P,
@@ -90,6 +98,7 @@ impl GroveDb {
 
     /// Prove the aggregate count of entries whose `count_value` is in
     /// `[lo_count, hi_count]`.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_count_range_aggregate<'b, B, P>(
         &self,
         path: P,
@@ -181,6 +190,7 @@ impl GroveDb {
     // ---------- sum axis ----------
 
     /// Prove the top-`k` entries of the sum axis.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_sum_top_k<'b, B, P>(
         &self,
         path: P,
@@ -207,6 +217,7 @@ impl GroveDb {
     /// Note: the secondary is a `ProvableSumTree`, which has no
     /// count-bound offset primitive, so the proof size is
     /// O(offset + k). Use sparingly with large offsets.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_sum_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -232,6 +243,7 @@ impl GroveDb {
     }
 
     /// Prove an arbitrary query against the sum-axis secondary.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_sum_query<'b, B, P>(
         &self,
         path: P,
@@ -256,6 +268,7 @@ impl GroveDb {
 
     /// Prove the aggregate sum of entries whose `sum_value` is in
     /// `[lo_sum, hi_sum]`.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_sum_range_aggregate<'b, B, P>(
         &self,
         path: P,
@@ -349,6 +362,7 @@ impl GroveDb {
     /// Prove the top-`k` entries of the avg axis. PCPSIT-only. No
     /// aggregate variant exists — averaging an average over a range is
     /// not closed-form.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_avg_top_k<'b, B, P>(
         &self,
         path: P,
@@ -372,6 +386,7 @@ impl GroveDb {
     }
 
     /// Prove an offset-paginated top-`k` window on the avg axis.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_avg_top_k_paginated<'b, B, P>(
         &self,
         path: P,
@@ -397,6 +412,7 @@ impl GroveDb {
     }
 
     /// Prove an arbitrary query against the avg-axis secondary.
+    #[cfg(feature = "minimal")]
     pub fn prove_indexed_avg_query<'b, B, P>(
         &self,
         path: P,
