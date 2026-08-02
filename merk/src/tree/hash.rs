@@ -349,6 +349,162 @@ mod tests {
         // 1 + 99 = 100 bytes → 2 blocks (one full 64, one partial 36).
         assert_eq!(cost3.hash_node_calls, 2);
     }
+
+    // -----------------------------------------------------------------
+    // Composition-ambiguity properties
+    //
+    // These pin the structural facts an auditor needs about how the
+    // hash primitives compose. They are cheap, and every one of them is
+    // a consensus-frozen property once a version carrying it activates.
+    // -----------------------------------------------------------------
+
+    /// Nesting is NOT associative, and a flat 3-input combine is distinct
+    /// from either nesting of 2-input combines.
+    ///
+    /// This is the `(A‖B)‖C` vs `A‖(B‖C)` question. It is safe here for a
+    /// structural reason, not a probabilistic one: Blake3 is applied at
+    /// every nesting level, so an intermediate is a 32-byte digest that
+    /// cannot be re-split into the pair that produced it. Equality would
+    /// require a hash fixed point (`Blake3(a‖b) == a`), not merely a
+    /// collision.
+    #[test]
+    fn hash_composition_is_not_associative() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let c = [3u8; 32];
+
+        let left_nested = combine_hash(&combine_hash(&a, &b).value().to_owned(), &c)
+            .value()
+            .to_owned();
+        let right_nested = combine_hash(&a, &combine_hash(&b, &c).value().to_owned())
+            .value()
+            .to_owned();
+        let flat = combine_hash_three(&a, &b, &c).value().to_owned();
+
+        assert_ne!(
+            left_nested, right_nested,
+            "(a‖b)‖c must differ from a‖(b‖c)"
+        );
+        assert_ne!(
+            flat, left_nested,
+            "the flat 3-input combine is its own shape"
+        );
+        assert_ne!(
+            flat, right_nested,
+            "the flat 3-input combine is its own shape"
+        );
+    }
+
+    /// `axes_digest`'s framing is injective: the 1-byte count prefix plus
+    /// fixed-width 33-byte entries means no two distinct axis lists can
+    /// produce the same preimage.
+    ///
+    /// Without the length prefix, a 1-axis digest would be a prefix of a
+    /// 2-axis digest's payload; with fixed-width entries and a leading
+    /// count, every list has exactly one encoding.
+    #[test]
+    fn axes_digest_framing_is_injective() {
+        let a = [0xAAu8; 32];
+        let b = [0xBBu8; 32];
+
+        let one = axes_digest(&[(0, a)]).value().to_owned();
+        let two = axes_digest(&[(0, a), (1, b)]).value().to_owned();
+        assert_ne!(one, two, "a 1-axis list must not collide with a 2-axis one");
+
+        // Tag placement matters: swapping which hash carries which tag is
+        // a different list and must be a different digest.
+        assert_ne!(
+            axes_digest(&[(0, a), (1, b)]).value().to_owned(),
+            axes_digest(&[(0, b), (1, a)]).value().to_owned(),
+            "each axis tag is bound to its own secondary root hash"
+        );
+
+        // Payload length is 1 + 33N, injective in N, so even a wrapped
+        // count byte cannot alias a legitimate list.
+        for n in 1..=3usize {
+            assert_eq!(1 + 33 * n, [34, 67, 100][n - 1]);
+        }
+    }
+
+    /// DOCUMENTED HAZARD, deliberately pinned rather than fixed.
+    ///
+    /// `node_hash` and `combine_hash_three` are the *same function*:
+    /// `Blake3` over three concatenated 32-byte hashes, with no domain
+    /// separation byte distinguishing them. Equal inputs produce equal
+    /// outputs.
+    ///
+    /// This is safe in the indexed-tree chain because every input to
+    /// `combine_hash_three` is bound to a hash fixed further up the
+    /// proof chain — substituting one composition for the other requires
+    /// a Blake3 preimage, not merely exploiting the shared shape. It is
+    /// recorded here so that any future code putting an attacker-chosen
+    /// 32-byte value into one of these slots *without* such a binding
+    /// knows it is re-opening a type-confusion surface, and so that a
+    /// future hash version adds explicit domain separation rather than
+    /// relying on input framing.
+    #[test]
+    fn node_hash_and_combine_hash_three_share_a_shape() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let c = [3u8; 32];
+        assert_eq!(
+            node_hash(&a, &b, &c).value().to_owned(),
+            combine_hash_three(&a, &b, &c).value().to_owned(),
+            "these are the same construction; see this test's doc for why that is \
+             currently safe and what would break it"
+        );
+    }
+
+    /// DOCUMENTED HAZARD (pre-existing, predates the indexed trees).
+    ///
+    /// A `node_hash` preimage is exactly 96 bytes (three hashes). A
+    /// `kv_digest_to_kv_hash` preimage is `varint(key_len) ‖ key ‖
+    /// value_hash`, which is *also* 96 bytes when the key is 63 bytes
+    /// long (`varint(63)` is one byte, `0x3F`). So the same 96-byte
+    /// string reads both ways whenever a node's kv hash happens to begin
+    /// with `0x3F` — roughly one node in 256.
+    ///
+    /// No exploit is claimed: Merk's proof verification derives structure
+    /// from the proof's operators rather than by inspecting hashes, so an
+    /// attacker cannot make the verifier reinterpret one as the other on
+    /// its own. It is pinned because it is the classic Merkle leaf/node
+    /// confusion shape (the reason RFC 6962 prefixes leaves with `0x00`
+    /// and internal nodes with `0x01`), and because the constraint it
+    /// places on future changes — do not add a code path that lets a
+    /// caller choose which reading applies — is invisible without it.
+    #[test]
+    fn kv_hash_and_node_hash_preimages_can_share_a_length() {
+        let mut kv = [0u8; 32];
+        kv[0] = 63; // the varint for a 63-byte key
+        for (i, byte) in kv.iter_mut().enumerate().skip(1) {
+            *byte = i as u8;
+        }
+        let left = [0xAAu8; 32];
+        let right = [0xBBu8; 32];
+
+        let mut key = Vec::with_capacity(63);
+        key.extend_from_slice(&kv[1..]);
+        key.extend_from_slice(&left);
+        assert_eq!(key.len(), 63);
+
+        assert_eq!(
+            node_hash(&kv, &left, &right).value().to_owned(),
+            kv_digest_to_kv_hash(&key, &right).value().to_owned(),
+            "the 96-byte preimage is readable as either construction"
+        );
+
+        // Only when the leading byte is exactly the 63-byte varint.
+        let mut other = kv;
+        other[0] = 62;
+        let mut other_key = Vec::new();
+        other_key.extend_from_slice(&other[1..]);
+        other_key.extend_from_slice(&left);
+        assert_ne!(
+            node_hash(&other, &left, &right).value().to_owned(),
+            kv_digest_to_kv_hash(&other_key, &right).value().to_owned(),
+            "a different leading byte is a different preimage"
+        );
+    }
 }
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
